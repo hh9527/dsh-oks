@@ -1,67 +1,33 @@
-// dsh-oks —— 一项 DSH 能力扩展：把"某个领域的知识服务（OKS）"接进 DSH，成为三个原生工具。
+// dsh-oks —— DSH 能力扩展：把"某个领域的知识服务（OKS）"接成三个原生工具。
+// 插件不认识任何模型：开放哪个模型、模型在哪，由**会话所在工作区**根目录的 oks.json 声明
+// （{"domain":"...","artifact":"...wasm"}）。工作区是会话属性，所以一份插件能服务任意多工作区。
 //
-// 它**不是某个具体 OKS 的包装**，插件本身不认识任何模型：开放哪个模型、模型在哪，
-// 一律由**会话所在工作区**根目录的 oks.json 声明（{"domain":"...","artifact":"...wasm"}）。
-// 工作区是会话属性（会话创建时的 cwd，由 harness 记录），不是进程属性；
-// 于是同一个插件能同时服务任意多个工作区，每个会话各用自己工作区声明的模型。
+// 三个工具：ontology_info（按 key 读知识节点，入口是 key "index"）、
+// ontology_map（概念图，动态伺服不落盘）、ontology_transform（Intent → SQL + bindings，不执行）。
+// 插件只写一样东西：计划文件（.sql/.json，落点由工作区声明，可关）。
+// 每次调用都在结果开头打印发给 OKS 的请求与响应摘要，工具卡因此自己呈现推理轨迹。
 //
-// 三个工具：ontology_info / ontology_map / ontology_transform。
-// 读知识地图不需要专门工具：ontology_info {key:"index"} 就是入口，key 从目录/links/诊断里原样取。
-// ontology_transform 返回**可执行查询计划**（SQL + bindings），不执行任何查询。
-// ontology_map 动态伺服概念图（Mermaid），图由知识节点投影而来，不新增知识。
-//
-// 插件只写一样东西：**计划文件**（.sql / .json，落点由工作区在 oks.json 里声明，可关）。
-// 地图只动态伺服、不落盘；工作区里的模型与 oks.json 是工作区
-// 自己的配置，插件只读。
-//
-// 过程可见：每次调用都在结果开头打印发给 OKS 的请求与响应摘要（含重试），
-// 让工具卡自身呈现推理轨迹，而不是一个黑盒。
-//
-// **反向解读由 Agent 做，工具不代劳**——这里曾经有一份"机械反查"（把 Intent 里的稳定 ID
-// 逐个换成模型声明的标签），已被删除。理由值得记住，免得有人再把它加回来：
-//   1. 它是 Intent schema 的第二份表示（DSL 每加一个字段它就得跟，而没有机制强制它跟上）；
-//   2. 它要预热整个知识点目录（每个工作区 235 次读、约 4.8 s），只为换一次查表；
-//   3. 它已经静默腐烂过一次：契约改成 PascalCase 之后它的 op 比较还是小写，
-//      于是**每个 Intent 都走兜底分支**，一直没被发现；
-//   4. 最要紧的是——**错的业务读法比没有更糟**，而这段读法正是用户用来对齐的东西。
-// 需要标签时，Agent 用 ontology_info 查它真正要说的那几个 ID。
-//
-// 刻意零依赖：不 import @deepseek-ai/dsh-tools，而是注册与该包 defineTool 产物等价
-// 的原始定义（parameters 已是 JSON Schema，output.schema 用受支持的子集）。
-// 这样插件无论被安装在 profile 里还是直接从工作区加载，都不会有模块解析问题。
-//
-// 支持的 JSON Schema 关键字子集（dsh-tools 的约束）只有：
-// type / oneOf / properties / required / additionalProperties / items / enum / const，
-// 外加 description / title / default / examples 注解，因此这里不用 minItems 等。
+// 零依赖：直接注册原始工具定义，因此装在 profile 里或从工作区加载都不会有模块解析问题。
+// parameters 只用受支持的 JSON Schema 关键字子集，数量校验放在 execute 里。
 
-import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createInterface } from 'node:readline';
 import { Worker } from 'node:worker_threads';
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
 export const inject = ['tools'];
 
-// 这里只放与机器、与模型都无关的默认值：路径、领域名、模型一律来自工作区声明，
-// 代码里不留任何绝对路径，插件因此可以整体搬走。
+// 与机器、模型无关的默认值：路径、领域名、模型一律来自工作区声明。
 const DEFAULTS = {
-  requestFuel: 10000,
-  memoryLimit: 512,
-  // 单次请求的墙钟上限，也是进程内宿主唯一能兜住死循环的东西（没有 fuel/抢占）：
-  // 到点 terminate 整个 worker 代，并立刻拒掉排队中的请求；下一次请求再拉起（约 30 ms）。
-  // 60s 是"一次 hang 的容忍时间"，不是正常请求的预期耗时——实测单次约 2.5 ms。
+  // 墙钟上限：死循环只能靠它兜住——到点 terminate 整个 worker 代并拒掉排队请求，下次请求
+  // 再拉起。正常单次请求约 2.5 ms。
   requestTimeoutMs: 60000,
-  // 服务只在整批 Intent 全部通过时返回 queries；开启后会把已通过的子集单独再降一次，
-  // 让被拒批次里成功的 Intent 也能看到 SQL。设 false 可关闭。
+  // 服务只在整批 Intent 通过时才返回 queries；开启后会把没有 Error 的子集再降一次。
   retryAcceptedSubset: true,
 };
 
-/** 从工作区读 oks.json —— 泛化的关键：**"哪个模型"由工作区声明，不由插件行声明**。
- *  于是 profile 里这一行不需要知道任何模型；一份配置服务任意工作区。
- *
- *  路径语义（重要）：`artifact` 一律**相对 oks.json 所在目录**解析，绝不相对于 cwd。
- *  oks.json 是那份声明，它所在的目录就是基准；cwd 是进程属性，与模型无关。 */
+/** 读工作区的 oks.json：**"哪个模型"由工作区声明**。
+ *  `artifact` 相对 oks.json 所在目录解析（绝对路径原样用）。 */
 function loadWorkspaceConfig(root) {
   const file = join(root, 'oks.json');
   let oks;
@@ -81,12 +47,8 @@ function loadWorkspaceConfig(root) {
   return { root, file, oks, artifact };
 }
 
-/** 会话 → 工作区目录。
- *
- *  工作区是**会话属性**（会话创建时的 cwd，由 harness 记录在会话头里），不是进程属性，
- *  所以绝不能拿 process.cwd() 顶替。三个容器按文档里出现过的位置依次探测，取第一个非空，
- *  并把命中的那一层记下来（这样只需一次确认就能删掉多余的分支）。
- *  `config.workspace` 只作为取不到会话 cwd 时的显式兜底，不参与正常路径。 */
+/** 会话 → 工作区目录。工作区是**会话属性**（会话头里的 cwd），不是进程属性；
+ *  config.workspace 只在会话头取不到 cwd 时兜底。 */
 function workspaceRootFor(exec, config) {
   const session = exec?.agent?.session;
   const probes = [
@@ -119,17 +81,13 @@ function workspaceSlug(root) {
   return `${base}-${digest}`;
 }
 
-/** 把一个工作区解析成一份运行设置。缺必要声明时给可执行的报错，而不是带着半截默认值去 spawn。 */
+/** 把一个工作区解析成一份运行设置。缺 domain / artifact 时报错并给出补法。 */
 function resolveSettings(root, config) {
   const workspace = loadWorkspaceConfig(root);
   // 优先级：插件行的显式 config > 工作区的 oks.json > 与机器/模型无关的 DEFAULTS。
   const fromWorkspace = {
     domain: workspace.oks.domain,
     artifact: workspace.artifact,
-    runner: workspace.oks.runner,
-    transport: workspace.oks.transport,
-    requestFuel: workspace.oks.requestFuel ?? DEFAULTS.requestFuel,
-    memoryLimit: workspace.oks.memoryLimit ?? DEFAULTS.memoryLimit,
     requestTimeoutMs: workspace.oks.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs,
     retryAcceptedSubset: workspace.oks.retryAcceptedSubset ?? DEFAULTS.retryAcceptedSubset,
     workspaceRoot: workspace.root,
@@ -162,19 +120,15 @@ function resolveSettings(root, config) {
 
 const OBJECT_OUTPUT = { type: 'object', additionalProperties: true };
 
-/** 插件**自带**的引导技能：注册进 ctx.skills 的 runtime 层，因此对所有工作区可见——
- *  它和工具同生共死，谁都不用再往工作区里拷一份提示词。
- *
- *  主体在同目录的 skill.md（纯正文，元数据在这里）。rank 250 的语义正好合用：
- *  工作区自己的 .dsh/skills(100) / .agents/skills(200) 能覆盖它，用户级(400/500)覆盖不了
- *  ——"插件给默认引导、工作区可以覆盖"。 */
+/** 自带的引导技能：注册进 ctx.skills 的 runtime 层，对所有工作区可见；正文在 skill.md。
+ *  rank 250：工作区自己的 skill(100/200) 能覆盖它，用户级(400/500) 不能。 */
 const SKILL = {
   name: 'ontology-query',
   description: 'Use when a user intent must become a query plan over domain data: discover the ontology with ontology_info, express the plan as structured intents through ontology_transform, and confirm alignment by restating the plan as a business intent.',
   source: 'runtime',
 };
 
-/** 产物里有没有可直接导入的服务快照（有就能走进程内宿主）。 */
+/** 产物里有没有可直接导入的服务快照。 */
 function hasSnapshot(artifactPath) {
   try {
     const module = new WebAssembly.Module(readFileSync(artifactPath));
@@ -184,13 +138,11 @@ function hasSnapshot(artifactPath) {
   }
 }
 
-// 进程内宿主的 worker 源码。用 eval 形式内联，插件因此保持单文件、可从任意位置加载。
+// 宿主 worker 的源码，eval 内联，插件因此保持单文件。
+// 放 worker 是为了能强杀：死循环只能靠超时 terminate() 兜住。
 //
-// 为什么放 worker：Node 没有 fuel/指令计量，也就没有抢占——一次死循环会卡死宿主线程。
-// 放进 worker 之后，超时可以直接 terminate()，这是"没有 fuel"下唯一可用的强杀手段。
-//
-// ABI 依据 crates/telora-run/src/engine.rs：零导入；mem-alloc 写请求；
-// run-service(in_ptr,in_len,1,0,record)，record 是 12 字节 (out_ptr,out_len,out_cap)。
+// ABI：零导入；mem-alloc 写请求；run-service(in_ptr,in_len,1,0,record)，
+// record 是 12 字节 (out_ptr,out_len,out_cap)。
 const WORKER_SOURCE = [
   "const { parentPort, workerData } = require('node:worker_threads');",
   "const { readFileSync } = require('node:fs');",
@@ -259,10 +211,8 @@ const WORKER_SOURCE = [
   '});',
 ].join('\n');
 
-/**
- * 进程内 runner：wasm 跑在 worker 里，超时直接 terminate 并复活。
- * 与 createStdioRunner 暴露同一个 { send(method, input, signal), dispose() } 接口。
- */
+/** 宿主：wasm 在进程内 worker 里，超时 terminate 并复活。
+ *  接口只有 { send(method, input, signal), dispose() }。 */
 function createWorkerRunner(config, log) {
   const pending = new Map();
   let worker = null;
@@ -284,7 +234,6 @@ function createWorkerRunner(config, log) {
     // 初始化失败（或之后崩溃）都当作这一代的死亡；下一次 send 会重新拉起。
     created.on('message', (message) => {
       if (message?.kind === 'ready') { log(`[oks] worker ready (globals restored: ${message.restored})`); return; }
-      if (message?.kind === 'fatal') { log(`[oks] worker init failed: ${message.message}`); return; }
       const entry = pending.get(message?.id);
       if (entry === undefined) return;
       pending.delete(message.id);
@@ -312,7 +261,7 @@ function createWorkerRunner(config, log) {
     if (worker === null) spawn();
     const id = nextId; nextId += 1;
     const timer = setTimeout(() => {
-      // 没有 fuel 就没有抢占：唯一的强杀手段是终止整个 worker 代。
+      // 到点终止整个 worker 代。
       pending.delete(id);
       const dead = worker; worker = null;
       if (dead !== null) dead.terminate();
@@ -331,139 +280,24 @@ function createWorkerRunner(config, log) {
     if (dead !== null) dead.terminate();
   };
 
-  return { send, dispose, transport: 'worker' };
-}
-
-/** 常驻 JSONL 服务进程：一次一个在途请求，保证请求/响应按序配对。 */
-function createStdioRunner(config, log) {
-  let child = null;
-  const pending = [];
-  let chain = Promise.resolve();
-
-  const failAll = (error) => {
-    while (pending.length > 0) {
-      const entry = pending.shift();
-      clearTimeout(entry.timer);
-      if (!entry.settled) {
-        entry.settled = true;
-        entry.reject(error);
-      }
-    }
-  };
-
-  const start = () => {
-    const args = [
-      config.artifact,
-      '--serve', 'stdio+jsonl://',
-      '--request-fuel', String(config.requestFuel),
-      '--with-memory-limit', String(config.memoryLimit),
-    ];
-    log(`[oks] starting ${config.runner} ${args.join(' ')}`);
-    child = spawn(config.runner, args, { stdio: ['pipe', 'pipe', 'pipe'] });
-
-    createInterface({ input: child.stdout, crlfDelay: Infinity }).on('line', (line) => {
-      const entry = pending.shift();
-      if (!entry) return;
-      clearTimeout(entry.timer);
-      if (entry.settled) return;
-      entry.settled = true;
-      try {
-        entry.resolve(JSON.parse(line));
-      } catch {
-        entry.reject(new Error(`ontology service returned invalid JSON: ${String(line).slice(0, 200)}`));
-      }
-    });
-
-    child.stderr.on('data', (chunk) => log(`[oks] ${String(chunk).trim()}`));
-    child.on('error', (cause) => { child = null; failAll(cause); });
-    child.on('close', (code) => { child = null; failAll(new Error(`ontology runner exited (${code})`)); });
-  };
-
-  const dispatch = (method, input, signal) => new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new Error('ontology request was aborted before dispatch'));
-      return;
-    }
-    if (!child) {
-      try {
-        start();
-      } catch (cause) {
-        reject(cause);
-        return;
-      }
-    }
-    const entry = { resolve, reject, settled: false, timer: null };
-    entry.timer = setTimeout(() => {
-      if (entry.settled) return;
-      entry.settled = true;
-      reject(new Error(`ontology request timed out after ${config.requestTimeoutMs} ms`));
-    }, config.requestTimeoutMs);
-    signal?.addEventListener?.('abort', () => {
-      if (entry.settled) return;
-      entry.settled = true;
-      clearTimeout(entry.timer);
-      reject(new Error('ontology request was aborted'));
-    }, { once: true });
-    // entry 即使已结算也留在队列里，等对应响应到达时再出队，保证配对不乱序。
-    pending.push(entry);
-    try {
-      child.stdin.write(`${JSON.stringify({ method, input })}\n`);
-    } catch (cause) {
-      reject(cause);
-    }
-  });
-
-  const send = (method, input, signal) => {
-    const run = chain.then(() => dispatch(method, input, signal));
-    chain = run.then(() => undefined, () => undefined);
-    return run;
-  };
-
-  const dispose = () => {
-    const current = child;
-    child = null;
-    if (current) {
-      try { current.stdin.end(); } catch { /* already closed */ }
-      try { current.kill(); } catch { /* already gone */ }
-    }
-    failAll(new Error('ontology service was disposed'));
-  };
-
   return { send, dispose };
 }
 
-/**
- * 选宿主。默认 auto：产物带服务快照就走进程内 worker（无子进程、无 JSONL），
- * 否则退回 telora-run 子进程（非快照产物需要注入 module sources，那条路只实现了 stdio）。
- */
+/** 当前只支持快照产物：产物必须带 `telora.snapshot` 段，Node 内置引擎直接导入它。 */
 function createRunner(config, log) {
-  let transport = config.transport ?? 'auto';
-  if (transport === 'auto') transport = hasSnapshot(config.artifact) ? 'worker' : 'stdio';
-  if (transport === 'worker') {
-    log(`[oks] transport=worker (in-process wasm, artifact ${config.artifact})`);
-    return createWorkerRunner(config, log);
-  }
-  if (typeof config.runner !== 'string' || config.runner.length === 0) {
+  if (!hasSnapshot(config.artifact)) {
     throw new Error(
-      `dsh-oks: artifact ${config.artifact} has no telora.snapshot section, so it `
-      + 'needs the telora-run subprocess — but no `runner` is configured. Rebuild the artifact with '
-      + '`--snapshot`, or set `runner` in oks.json / the plugin row.',
+      `dsh-oks: artifact ${config.artifact} 里没有 telora.snapshot 段。`
+      + '当前只支持快照产物，请按 README 的「快照怎么来」用 `--snapshot` 重新构建。',
     );
   }
-  log(`[oks] transport=stdio (telora-run subprocess ${config.runner})`);
-  return createStdioRunner(config, log);
+  log(`[oks] in-process wasm worker (artifact ${config.artifact})`);
+  return createWorkerRunner(config, log);
 }
 
-// ── 渲染 ────────────────────────────────────────────────────────────────────
-
 // ── 概念图：把知识地图投影成 Mermaid，动态伺服，不落盘 ───────────────────────
-//
-// 这个能力**不新增任何知识**：节点、关系、术语、计数全部来自知识服务。它只是把
-// 地图换一种载体——布局交给 Mermaid，这里只负责"描述"。所以模型一改，重新生成即可，
-// 不存在需要同步的第二份数据。
-//
-// 页面只带框架，图源在打开时向 <base>/map.mmd 取：图永远是刚生成的，工作区里也不会
-// 留下会过期的产物。Mermaid 包本身由浏览器缓存（这里 302 到 CDN），所以也不落盘。
+// 节点、关系、术语、计数全部来自知识服务，所以模型一改重新生成即可，没有第二份数据；
+// 页面只带框架，图源在打开时向 <base>/map.mmd 取。
 
 const MERMAID_CDN = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
 const MAP_KIND_CN = {
@@ -472,7 +306,7 @@ const MAP_KIND_CN = {
 };
 const MAP_ESCAPE = (value) => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-/** 读知识地图并组装概念图的输入。只读，且不解析 key（id 与归属来自 detail）。 */
+/** 读知识地图并组装概念图的输入，id 与归属都取自 detail（不切分 key）。 */
 async function collectConceptMap(runner, domain, signal) {
   const info = async (key) => {
     const response = await runner.send(`${domain}/info`, { key }, signal);
@@ -522,13 +356,10 @@ async function collectConceptMap(runner, domain, signal) {
     }
   }
 
-  // 术语 → 它指向的概念，以及该概念所属的数据集（图上用虚线连过去）。
-  //
-  // 三个坑都在这里：
-  //   1. Value 的 detail.dimension 给的是**所属维度 id**，不是数据集 id——要再走一跳
-  //      （维度详情的 detail.dataset）才能落到数据集上，否则那条虚线永远画不出来。
-  //   2. 目标 id 一律取自节点自己声明的 detail/target，**不切分 key**（契约明令禁止）。
-  //   3. 维度归属按需构建：没有 Value 类术语时一次也不去读。
+  // 术语 → 它指向的概念 → 该概念所属的数据集（图上虚线）。三个坑：
+  //   1. Value 的 detail.dimension 是**维度 id**，要再走一跳（维度详情的 dataset）才落到数据集；
+  //   2. 目标 id 取自节点自己声明的 detail/target，**不切分 key**；
+  //   3. 维度归属按需构建（没有 Value 术语就不读）。
   let dimensionOwners = null;
   const ensureDimensionOwners = async () => {
     if (dimensionOwners !== null) return dimensionOwners;
@@ -561,7 +392,7 @@ async function collectConceptMap(runner, domain, signal) {
   return { datasets, relations, terms, nodeCount: roster.size, kinds };
 }
 
-/** 生成 Mermaid 描述。布局不在这里做——那是渲染器的事。 */
+/** 把知识地图渲染成 Mermaid 源。 */
 function renderMermaidMap(map) {
   const quote = (value) => String(value).replace(/"/g, '&quot;').replace(/[<>]/g, '');
   const counts = (members) => Object.entries(members)
@@ -595,8 +426,7 @@ function renderMermaidMap(map) {
   return lines.join('\n');
 }
 
-/** 动态伺服的页面外壳：只带框架与 Mermaid，图源在打开时向 /map.mmd 取。
- *  好处是页面本身很小、浏览器缓存 Mermaid 包，而图**永远是刚生成的**。 */
+/** 页面外壳：只带框架，图源在打开时向 /map.mmd 取。 */
 function renderMapShellLive(basePath, domain) {
   return `<!doctype html>
 <html lang="zh">
@@ -620,8 +450,8 @@ function renderMapShellLive(basePath, domain) {
 <body>
 <header>
   <h1>${MAP_ESCAPE(domain)} 本体概念图</h1>
-  <p class="meta">每次打开都重新从知识服务生成——节点、关系、术语、计数全部取自知识节点，未手工编造，因此不会过期。</p>
-  <p class="note">术语层（红色虚线）仅供发现：它指出常见俗称/别名指向哪个 canonical ID，不参与匹配、不做替换。</p>
+  <p class="meta">每次打开都重新从知识服务生成——节点、关系、术语、计数全部取自知识节点。</p>
+  <p class="note">术语层（红色虚线）仅供发现：它指出常见俗称/别名指向哪个 canonical ID。</p>
   <p class="meta"><a href="${basePath}/map.mmd">查看 Mermaid 源</a> · <a href="${basePath}/?refresh=1">强制刷新</a></p>
 </header>
 <main><pre class="mermaid" id="map"></pre></main>
@@ -650,7 +480,7 @@ function renderMapShellLive(basePath, domain) {
 /** ontology_map 的模型可见渲染：计数 + 伺服地址。 */
 function renderMap(_args, value) {
   const counts = value?.counts ?? {};
-  const lines = ['概念图（生成自知识地图，未手工编造）'];
+  const lines = ['概念图（生成自知识地图）'];
   lines.push(`  数据集 ${counts.datasets ?? 0} · 关系 ${counts.relations ?? 0} · 术语 ${counts.terms ?? 0} · 知识节点 ${counts.nodes ?? 0}`);
   const census = Object.entries(value?.kinds ?? {}).sort().map(([kind, n]) => `${kind} ${n}`).join(' · ');
   if (census !== '') lines.push(`  按 kind：${census}`);
@@ -658,7 +488,7 @@ function renderMap(_args, value) {
     lines.push(`  工作区：${value.workspace}`);
   }
   lines.push('', `用浏览器打开：${value.url}`);
-  lines.push('  动态伺服：每次打开都重新从知识服务生成，不落文件；Mermaid 包由浏览器缓存。');
+  lines.push('  动态伺服：每次打开都重新从知识服务生成。');
   lines.push(`  强制刷新：${value.url}?refresh=1 · 图源：${value.url}map.mmd`);
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
@@ -708,16 +538,11 @@ function renderJson(_args, value) {
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 
-/**
- * 目录节点（key "index"）的紧凑名册渲染，由 renderInfo 按内容分派调用。
- * 地图必须完整，但逐条 JSON 实测 83 KB（约 20k token），而工具结果会被截断到**尾部**
- * ——恰好把开头那几个"说明该怎么用"的协议节点截掉。所以这里按 type 分组、每行一个 key：
- * 协议类节点（Index / Terminology / Schema）的简述全文保留，其余仅在非空时给出并截断。
- */
+/** 目录节点的紧凑名册渲染。逐条 JSON 实测 83 KB，而工具结果截断到**尾部**——正好把开头
+ *  "该怎么用"的协议节点截掉。所以按 type 分组、每行一个 key，协议类节点保留全文简述。 */
 const INDEX_PROTOCOL_TYPES = ['Index', 'Terminology', 'Schema'];
 
-/** ontology_info 的渲染：读到的若是**目录节点**（detail.entries 是列表）就用紧凑名册，
- *  其余节点一律给完整 JSON。分派依据是节点内容，不是某个专门工具——入口只剩 info 一个。 */
+/** 目录节点用紧凑名册，其余给完整 JSON（分派依据是节点内容）。 */
 function renderInfo(args, value) {
   const entries = value?.trace?.[0]?.response?.ok?.Document?.Found?.detail?.entries;
   return Array.isArray(entries) ? renderIndex(args, value) : renderJson(args, value);
@@ -742,7 +567,7 @@ function renderIndex(_args, value) {
     return at === -1 ? INDEX_PROTOCOL_TYPES.length : at;
   };
   const types = [...groups.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
-  lines.push('', `知识地图共 ${entries.length} 个节点。key 原样传给 ontology_info，不要构造或猜。`);
+  lines.push('', `知识地图共 ${entries.length} 个节点。key 原样传给 ontology_info。`);
   for (const type of types) {
     const items = groups.get(type);
     lines.push('', `── ${type} (${items.length}) ──`);
@@ -770,13 +595,12 @@ function renderPlan(_args, value) {
   const plans = value?.plans ?? null;
   const lines = renderTrace(value?.trace);
 
-  // 批次级诊断是扁平数组，每条带 index 与 severity。没有 per-Intent 的 valid 字段了，
-  // 所以「哪个 Intent 失败」要从 Error 级诊断推导。
+  // 失败的 Intent 从 Error 级诊断的 index 推导。
   const errorIndexes = [...new Set(diagnostics
     .filter((item) => item?.diagnostic?.severity === 'Error')
     .map((item) => item.index))].sort((left, right) => left - right);
 
-  // 成功的 Intent 也可能带 Warning，所以诊断必须全列——只在失败时看 results 会漏掉它。
+  // 成功的 Intent 也可能带 Warning，所以诊断要全列。
   if (diagnostics.length > 0) {
     lines.push('', '诊断（批次级；成功的 Intent 也可能带 Warning，使用 Queries 前先读这里）');
     for (const item of diagnostics) {
@@ -788,7 +612,7 @@ function renderPlan(_args, value) {
 
   if (plans) {
     if (plans.planFiles) {
-      // 内容寻址：同一份计划重复问到的是同一对文件，所以要点明"这是复用，不是又长了一份"。
+      // 内容寻址：同一份计划重复问到的是同一对文件，渲染里要点明是复用。
       lines.push('', plans.planFiles.reused
         ? '计划文件（内容与已有计划一致，直接复用）'
         : '计划文件（按内容命名，可直接点开）',
@@ -812,7 +636,7 @@ function renderPlan(_args, value) {
   }
 
   if (!plans) {
-    lines.push('', '没有任何 Intent 通过。用 ontology_info 找到已声明的词汇（完整目录在 key "index"）再修 Intent；不要为了通过而改变业务含义。');
+    lines.push('', '没有任何 Intent 通过。用 ontology_info 找到已声明的词汇（完整目录在 key "index"）再修 Intent，保持业务含义不变。');
   }
 
   lines.push('', '上面的 SQL 是给授权执行层的中间计划，此处没有执行。');
@@ -831,15 +655,10 @@ function renderPlanSql(items) {
     .join('\n\n')}\n`;
 }
 
-/** 写一对**内容寻址**的文件：名字 = 计划内容的 sha256 前 16 位十六进制。
- *
- *  为什么不是时间戳：计划是 (intents, model) 的派生结果，同一批 Intent 反复问、重试、
- *  换措辞问，时间戳命名会一遍遍长出内容相同的副本（实测 113 份里只有 13 份不同）。
- *  按内容命名则天然去重：同样的计划永远落在同一个名字上，而且这个名字是**可引用的身份**。
- *
- *  纯在哪：.json 的字节**就是**被哈希的内容，所以 `sha256sum plan-<hash>.json` 可以自校验
- *  （前缀即文件名）。里面不放时间戳、不放模型名——名字已经把它是什么说完了。
- *  文件一旦写下就不再改动，唯一的后续动作是把 mtime 跟到最近一次用到，好让 `ls -t` 仍有意义。 */
+/** 写一对**内容寻址**的文件：名字 = 计划内容的 sha256 前 16 位。
+ *  同一批 Intent 反复问、重试、换措辞问都落在同一对文件上。
+ *  .json 的字节**就是**被哈希的内容（`sha256sum` 可自校验，前缀即文件名）。
+ *  写下后不再改动，只把 mtime 跟到最近一次用到，`ls -t` 因此仍有意义。 */
 function writePlan(config, envelope, intents) {
   const queries = envelope?.ok?.queries ?? [];
   const items = queries.map((query, index) => ({
@@ -878,18 +697,11 @@ export function apply(ctx, config = {}) {
     }
   };
 
-  // ── 工作区注册表 ─────────────────────────────────────────────────────────
-  //
-  // 插件不认识模型：设置、wasm 宿主、知识目录、地图缓存、地图路由，全部在**第一次用到
-  // 某个工作区**时按那份 oks.json 惰性建立并缓存。一个进程里可以有任意多个工作区：
-  // 各自的模型、各自的 .oks/plans、各自的伺服地址，互不影响。
+  // 插件不认识模型：设置、wasm 宿主、地图缓存与路由都在**第一次用到某个工作区**时按那份
+  // oks.json 惰性建立；一个进程里可以有任意多个工作区，互不影响。
   const workspaces = new Map(); // root -> entry
 
-  // ── web 服务：可选依赖 ───────────────────────────────────────────────────
-  //
-  // 用文档里的 ctx.get（"read a service from the store without the inject requirement"）取，
-  // 而不是写成必需 inject——否则没有 web 服务的组合里，另外三个工具也会跟着失效。
-  // apply 阶段它可能还没激活，所以第一次用到时再解析，并把结果记住。
+  // webServer 是可选依赖，用 ctx.get 取，第一次用到时再解析并记住（apply 阶段它可能还没激活）。
   const MAP_BASE = '/ontology-map';
   const MAP_TTL_MS = 60000; // 同一分钟内重复打开不重复读服务
   let webServer; // undefined = 还没解析过；null = 解析过但没有
@@ -923,7 +735,7 @@ export function apply(ctx, config = {}) {
     return entry.mapCache;
   };
 
-  /** 每个工作区一个 handler，闭包捕获自己的 entry——路由按工作区注册，绝不错配模型。 */
+  /** 每个工作区一个 handler，闭包捕获自己的 entry，不会错配模型。 */
   const handlerFor = (entry) => async (req, res) => {
     const base = `${MAP_BASE}/${entry.slug}`;
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -957,7 +769,7 @@ export function apply(ctx, config = {}) {
     }
   };
 
-  /** 路由只在第一次用到该工作区时注册一次；注册时机可以是任意一次工具调用。 */
+  /** 路由在第一次用到该工作区时注册一次。 */
   const ensureRoute = (entry) => {
     if (entry.routeRegistered) return;
     const server = resolveWebServer();
@@ -973,8 +785,7 @@ export function apply(ctx, config = {}) {
     }
   };
 
-  // 自带引导：能注册就注册。技能服务是**可选**依赖（和 webServer 一样用 ctx.get 取），
-  // 没有它的组合里三个工具照常工作；加载时它可能还没起来，所以第一次工具调用会再试一次。
+  // 技能服务是可选依赖（ctx.get 取），加载时它可能还没起来，所以第一次工具调用会再试一次。
   let skillRegistered = false;
   const registerSkill = () => {
     if (skillRegistered) return true;
@@ -1028,18 +839,17 @@ export function apply(ctx, config = {}) {
     return entry;
   };
 
-  // 工具描述按寄存器一次性注册，此时**还不知道**任何工作区，所以文本里不出现领域名：
-  // 领域由工作区的 oks.json 声明，插件本身不认识任何模型。
+  // 工具描述在注册时写死，此时还不知道任何工作区，所以文本里不出现领域名。
   const definitions = [
     {
       name: 'ontology_info',
-      description: 'Read one knowledge node of this workspace\'s knowledge service by its opaque string key. Start with key "index": it is the one key you may supply from memory, and it returns the complete flat catalog of every visible node with its key, type and brief description. Every other key must be passed unchanged from an index entry, from a node\'s links, or from a diagnostic — never construct, split, decode or guess one. Use only these canonical IDs when writing Intents; display names and physical column names are not substitutes.',
+      description: 'Read one knowledge node of this workspace\'s knowledge service by its opaque string key. Start with key "index": it is the one key you may supply from memory, and it returns the complete flat catalog of every visible node with its key, type and brief description. Keys are opaque — copy each one verbatim from what the service returned: an index entry, a node\'s links, or a diagnostic. Use only these canonical IDs when writing Intents; display names and physical column names are not substitutes.',
       parameters: {
         type: 'object',
         properties: {
           key: {
             type: 'string',
-            description: 'Opaque knowledge key, taken unchanged from an index entry, a node link, or a diagnostic. The only key you may supply from memory is "index" — start there. Do not construct or guess keys.',
+            description: 'Opaque knowledge key, copied verbatim from what the service returned — an index entry, a node\'s links, or a diagnostic. "index" is the one key you may supply from memory.',
           },
         },
         required: ['key'],
@@ -1065,7 +875,7 @@ export function apply(ctx, config = {}) {
     },
     {
       name: 'ontology_map',
-      description: 'Generate a browsable concept map of this workspace\'s domain, from the knowledge map itself, and serve it live over HTTP as Mermaid. Nothing is hand-authored — nodes, relations, terminology and counts all come from the knowledge service, so the map follows the model automatically and cannot drift. Nothing is written to disk: the route is registered per workspace, so the URL identifies which model the picture came from. Use it when a human wants to see the domain\'s shape, or when a picture answers better than prose.',
+      description: 'Generate a browsable concept map of this workspace\'s domain and serve it live over HTTP as Mermaid. Nodes, relations, terminology and counts all come from the knowledge service, so the map always matches the current model. The route is registered per workspace, so the URL identifies which model the picture came from. Use it when a human wants to see the domain\'s shape, or when a picture answers better than prose.',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       output: { schema: OBJECT_OUTPUT, render: renderMap },
       async execute(_args, exec) {
@@ -1073,13 +883,12 @@ export function apply(ctx, config = {}) {
         ensureRoute(entry);
         if (!entry.routeRegistered) {
           throw new Error(
-            'dsh-oks: 概念图是动态伺服的，需要 profile 里有 web 服务；当前没有，所以给不出地址。'
-            + '（本插件不为地图落盘，以免在工作区里留下会过期的产物。）',
+            'dsh-oks: 概念图是动态伺服的，需要 profile 里有 web 服务；当前没有，所以给不出地址。',
           );
         }
         const server = resolveWebServer();
         const cached = await currentConceptMap(entry, true, exec?.signal);
-        // 返回值必须是 lossless JSON：内部的 map 含 Map 实例，不能直接交给 harness。
+        // 返回值必须是 lossless JSON（内部的 map 含 Map 实例）。
         return {
           mode: 'served',
           workspace: entry.root,
@@ -1096,13 +905,13 @@ export function apply(ctx, config = {}) {
     },
     {
       name: 'ontology_transform',
-      description: 'Validate one to five independent graph Intents against this workspace\'s ontology and return an executable query plan (parameterized SQL + bindings) for each. Nothing is executed. All Intents are checked even if one fails; queries come back only when every Intent is accepted. On rejection, read the diagnostics and repair the Intent instead of changing the business meaning.',
+      description: 'Validate one to five independent graph Intents against this workspace\'s ontology and return an executable query plan (parameterized SQL + bindings) for each. Nothing is executed. All Intents are checked even if one fails, and every accepted Intent comes back as a plan. On rejection, read the diagnostics and repair the Intent with its business meaning intact.',
       parameters: {
         type: 'object',
         properties: {
           intents: {
             type: 'array',
-            description: 'One to five independent graph Intents, e.g. {"op":"Graph","root":"d","nodes":[{"id":"d","entity":"<dataset id>"}],"edges":[],"select":[],"count":"d"}. Closed Intent choices use the declared enum spelling in PascalCase (e.g. op "Graph", filter op "Eq", direction "Desc", row_grain "Root"); read the Intent-syntax knowledge nodes listed in the knowledge index (type Schema) for the authoritative list instead of relying on memory.',
+            description: 'One to five independent graph Intents, e.g. {"op":"Graph","root":"d","nodes":[{"id":"d","entity":"<dataset id>"}],"edges":[],"select":[],"count":"d"}. Closed Intent choices use the declared enum spelling in PascalCase (e.g. op "Graph", filter op "Eq", direction "Desc", row_grain "Root"); the Intent-syntax knowledge nodes listed in the knowledge index (type Schema) hold the authoritative list.',
             items: { type: 'object', additionalProperties: true },
           },
         },

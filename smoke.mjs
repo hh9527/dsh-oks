@@ -1,11 +1,9 @@
-// 本地冒烟测试：用一个假的 cordis ctx 加载插件，直接调用三个工具的真实实现，
-// 验证 runner 生命周期、请求配对、SQL+bindings 的渲染、按工作区注册的地图路由，
-// 以及"两个工作区各用自己 oks.json 声明的模型"。不安装进 profile。
+// 本地冒烟测试：用假的 cordis ctx 加载插件，直接调用三个工具的真实实现，不安装进 profile。
+// 插件行**什么都不配**——模型、领域、路径全部来自工作区，正是要验证的那一点。
+// 覆盖：宿主生命周期、请求配对、SQL/bindings 渲染、按工作区注册的地图路由、内容寻址去重、
+// 技能注册、两个工作区各用自己的模型、超时强杀、无 oks.json 与无快照两种报错。
 //
-// 插件行这里**什么都不配**：模型、领域、路径全部来自工作区，正是要验证的那一点。
-//
-// 被测工作区默认取**当前目录**（它必须有 oks.json，否则会明确报错），也可以用环境变量指定：
-//
+// 被测工作区默认取**当前目录**（必须有 oks.json，否则明确报错），也可用环境变量指定：
 //   cd /path/to/workspace && node /path/to/dsh-oks/smoke.mjs
 //   ONTOLOGY_WORKSPACE=/path/to/workspace node smoke.mjs
 import { apply } from './index.js';
@@ -178,12 +176,8 @@ if (!route) {
 }
 
 // ── 多工作区：同一个插件，两份 oks.json ──────────────────────────────────────
-//
-// 关键验证：工作区由**会话头**定位；artifact 相对 **oks.json** 解析（这里刻意多套一层目录，
-// cwd 相对解析会失败）；地图路由按工作区注册，两个工作区拿到不同的地址。
-//
-// 第二个工作区复用基准工作区的模型：领域与 artifact 从它的 oks.json 抄，路径按新目录
-// 重算相对路径——所以这份测试里不出现任何领域名，插件本来也不该认识领域。
+// 工作区由**会话头**定位；artifact 相对 **oks.json** 解析（这里刻意多套一层目录）；
+// 两个工作区拿到不同的路由与落点，且测试里不出现任何领域名（插件也不该认识领域）。
 console.log('=== 第二个工作区（嵌套目录，artifact 相对 oks.json 解析）===');
 const second = `${DEV_ROOT}/.oks-smoke/nested`;
 mkdirSync(second, { recursive: true });
@@ -235,6 +229,29 @@ try {
   console.log('  ✗ 本该报错，却成功了');
 } catch (cause) {
   console.log(`  ✓ 拒绝: ${String(cause?.message ?? cause).split('\n')[0]}`);
+}
+
+// ── 非快照产物：只支持 Node 内置引擎，所以必须明确报错 ──────────────────────────
+// 产物不合格就在第一次用到这个工作区时报错。
+console.log('=== 没有 telora.snapshot 段的产物（只支持 Node 内置引擎）===');
+{
+  const plain = `${DEV_ROOT}/.oks-smoke/plain`;
+  mkdirSync(plain, { recursive: true });
+  // 合法但空的最小 wasm 模块：WebAssembly.Module 读得动，但没有 telora.snapshot 段。
+  writeFileSync(`${plain}/plain.wasm`, Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]));
+  writeFileSync(`${plain}/oks.json`, `${JSON.stringify({
+    version: 1,
+    domain: anchor.domain,
+    artifact: 'plain.wasm',
+  }, null, 2)}\n`);
+  try {
+    await call('ontology_info', { key: 'index' }, plain);
+    console.log('  ✗ 本该报错，却成功了');
+  } catch (cause) {
+    const message = String(cause?.message ?? cause);
+    console.log(`  ✓ 拒绝: ${message.split('\n')[0]}`);
+    console.log(`  指向 --snapshot 重建: ${message.includes('telora.snapshot') && message.includes('--snapshot') ? '✓' : '✗'}`);
+  }
 }
 
 // ── 超时强杀 + 复活：用 1ms 上限的实例，验证 worker 被终止、而且不会把测试挂住 ──
