@@ -140,9 +140,11 @@ cd lab-ontology
 ## 本地冒烟测试（不安装）
 
 ```sh
-node smoke.mjs                          # 默认工作区 /home/h00629578/ws/lab-ws
-ONTOLOGY_WORKSPACE=/path/to/ws node smoke.mjs
+cd /path/to/workspace && node /path/to/dsh-oks/smoke.mjs   # 被测工作区 = 当前目录
+ONTOLOGY_WORKSPACE=/path/to/ws node smoke.mjs              # 或者显式指定
 ```
+
+被测工作区必须是**已经声明了 `oks.json`** 的那个目录——没有它会明确报错，不会退化到别的模型。
 
 它用一个假的 cordis `ctx` 加载插件（插件行**什么都不配**，正是要验证"模型只来自工作区"），
 并真实调用三个工具：验证 runner 生命周期、请求配对、SQL/bindings 渲染、计划文件落点与

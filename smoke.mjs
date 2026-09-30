@@ -1,17 +1,19 @@
-// 本地冒烟测试：用一个假的 cordis ctx 加载插件，直接调用四个工具的真实实现，
+// 本地冒烟测试：用一个假的 cordis ctx 加载插件，直接调用三个工具的真实实现，
 // 验证 runner 生命周期、请求配对、SQL+bindings 的渲染、按工作区注册的地图路由，
 // 以及"两个工作区各用自己 oks.json 声明的模型"。不安装进 profile。
 //
 // 插件行这里**什么都不配**：模型、领域、路径全部来自工作区，正是要验证的那一点。
 //
-//   node smoke.mjs
+// 被测工作区默认取**当前目录**（它必须有 oks.json，否则会明确报错），也可以用环境变量指定：
+//
+//   cd /path/to/workspace && node /path/to/dsh-oks/smoke.mjs
 //   ONTOLOGY_WORKSPACE=/path/to/workspace node smoke.mjs
 import { apply } from './index.js';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, relative, resolve } from 'node:path';
 
-const DEV_ROOT = process.env.ONTOLOGY_WORKSPACE ?? '/home/h00629578/ws/lab-ws';
+const DEV_ROOT = process.env.ONTOLOGY_WORKSPACE ?? process.cwd();
 
 const registered = new Map();
 const disposers = [];
