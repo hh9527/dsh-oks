@@ -1,0 +1,15 @@
+# 插入一行 Host 插件：把**工作区声明的**知识服务注册成 ontology_index / ontology_info /
+# ontology_map / ontology_transform 四个工具。
+#
+# 这一行**不需要知道任何模型**：模型、领域、路径全部来自工作区根目录的 oks.json
+# （{"domain":"<领域名>","artifact":"<相对 oks.json 的 .wasm 路径>"}），
+# 所以同一份配置可以服务任意多个工作区。config 留空即可。
+#
+# 只有在需要覆盖工作区声明时才写 config（优先级：config > oks.json > 默认值）：
+#   domain / artifact / runner / transport / planDir /
+#   requestFuel / memoryLimit / requestTimeoutMs / retryAcceptedSubset
+# 另有 workspace：仅在会话头取不到 cwd 时作为兜底，正常情况下不要写。
+- insert:
+    - id: oks
+      name: '@local/dsh-oks'
+      config: {}

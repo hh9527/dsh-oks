@@ -1,0 +1,166 @@
+# dsh-oks
+
+把**某个领域的知识服务（OKS）**接进 DSH，成为三个原生工具 — 用于在 Harness Web 里
+**亲手体验**「业务问句 → 可执行查询计划」这条链路。只做计划，不执行查询。
+
+它是一项 **DSH 能力扩展，不是某个 OKS 的包装**：插件本身不认识任何模型。开放哪个模型、
+模型在哪，一律由**会话所在工作区**根目录的 `oks.json` 声明，所以同一份插件、同一行配置
+可以同时服务任意多个工作区。
+
+```jsonc
+// <workspace>/oks.json   —— 领域名、模型路径、计划落点都由工作区自己给
+{
+  "version": 1,
+  "domain": "<领域名>",
+  "artifact": "<相对 oks.json 的 .wasm 路径>",
+  "planDir": "<相对 oks.json 的计划目录>"   // 省略 = <ws>/.oks/plans；false = 不写
+}
+```
+
+`artifact` 一律**相对 `oks.json` 所在目录**解析（绝对路径原样使用），与 `cwd` 无关。
+没有 `oks.json` 的工作区会**明确报错**，而不是悄悄退化到别的模型——用错模型比报错贵。
+
+## 迭代时的一个坑
+
+插件是按**绝对路径**被 loader `import` 的，Node 按 URL 缓存 ESM 模块，所以：
+
+- 改 `cordis.patch.yml` 只会让 profile 重读**配置**；
+- 改 `index.js` **不会**热生效——需要重启 web profile 才会加载新的模块代。
+
+（我试过两种免重启的路子：改配置触发重载、把 `name` 换成 `file://…?v=N` 做缓存失效。
+在本机都没生效，而且第二种依赖 loader 是否接受 URL 形式，没验证前不要留在配置里。）
+
+## 提供的能力
+
+| 工具 | 输入 | 作用 |
+| --- | --- | --- |
+| `ontology_info` | `{key:"<不透明字符串>"}` | 按 key 读一个知识节点。**入口是 `key:"index"`**：它一次返回完整扁平目录（每条带 key/type/简述），并按 type 分组渲染——逐条 JSON 实测 83 KB，而工具结果会截断到尾部，那会把开头"该怎么用"的协议节点截掉。其余 key 只从目录条目、节点的 links、诊断回吐里取，**不要构造或猜** |
+| `ontology_map` | `{}` | 把知识地图**动态伺服**成概念图网页：图在**每次打开时**从知识服务重新生成，**不落文件**。节点、关系、术语、计数全部来自知识服务，**零手工编造**，所以不可能过期 |
+| `ontology_transform` | `{intents:[1..5]}` | 把 graph Intent 降低为**参数化 SQL + bindings**，不执行 |
+
+### 自带引导（技能与工具一起走）
+
+插件**自带**一份引导技能 `ontology-query`：加载时通过 `ctx.skills.register()` 注册进 runtime 层，
+因此对**所有工作区**可见——用它的人不需要再往工作区里拷提示词，能力是完整的一件东西。
+
+- 正文是同目录的 `skill.md`（单一来源，元数据在 `index.js` 里）；
+- runtime 的 rank 是 250，所以工作区自己的 `.dsh/skills`(100) 或 `.agents/skills`(200)
+  **可以覆盖**它，用户级(400/500)覆盖不了——正好是"插件给默认引导、工作区可覆盖"；
+- 技能服务是**可选**依赖（和 `webServer` 一样用 `ctx.get` 取）：profile 里没有它时静默降级，
+  三个工具照常工作。
+
+### 工作区与地图路由
+
+工作区是**会话属性**（会话创建时的 `cwd`，由 harness 记录在会话头里），不是进程属性；
+三个工具都在调用时从 `exec.agent.session` 取当前会话的工作区。每个工作区各有一份
+惰性建立的运行环境：设置、wasm 宿主、地图缓存。
+
+概念图路由**按工作区注册**——HTTP 请求没有会话，所以"这是哪一份模型"只能由 URL 自己带上：
+
+```
+<DSH_WEB_URL>/ontology-map/<目录名>-<短哈希>/         页面外壳（约 2 KB，只带框架）
+                                    /map.mmd          图源，每次打开按需生成
+                                    /mermaid.min.js   302 → CDN（包由浏览器缓存，不落盘）
+```
+
+`ontology_map` 返回的就是本会话那一条地址；换一个工作区就换一条，互不覆盖。
+**没有 `webServer` 服务时**（例如纯 CLI 组合）`ontology_map` 直接报错说明原因——
+这个能力不为地图落盘，以免在工作区里留下会过期的产物。
+
+### 计划与诊断
+
+`ontology_transform` 的结果里包含三类东西：
+
+1. 模型可见文本：每个 Intent 的 SQL、bindings 与**批次级诊断**；
+2. 计划文件：每次成功的批次写一对 `plan-<hash>.sql` 与 `.json`，路径随结果返回，点开即见。
+   名字是**内容哈希**（计划内容的 sha256 前 16 位）——所以同一批 Intent 反复问、重试、换措辞问，
+   都落在同一对文件上，不会长出内容相同的副本（改成内容寻址前实测：113 份里只有 13 份内容不同，
+   最热的一份被写了 29 遍）。`.json` 的字节**就是**被哈希的内容，`sha256sum plan-<hash>.json`
+   可以自校验（前缀即文件名）；里面没有时间戳、没有模型名——名字已经把它是什么说完了。
+   文件一旦写下就不再改动，只有 mtime 跟到最近一次用到，`ls -t` 因此仍能看"最近用过的计划"。
+   落点由工作区在 `oks.json` 里声明（`planDir`，相对 `oks.json` 解析）；**不声明就写
+   `<workspace>/.oks/plans`，声明成 `false` 就不写**。文件落在工作区内才能在 GUI 里直接点开；
+3. 原始服务信封 `{schema, ok:{accepted, diagnostics, queries}, error, diagnostics}`（结构化值）。
+
+除了计划文件，插件不写任何东西：地图只动态伺服、知识目录只在进程内缓存；模型与 `oks.json`
+是工作区自己的配置，插件只读。
+
+**诊断是批次级的**（`ok.diagnostics: [{index, diagnostic:{severity, message, locs}}]`；`locs[0]` 是规则位置，
+其后是各参数来源，动态输入的位置报道为 `<input>`）——
+服务不提供 per-Intent 的 `valid` 字段，所以「哪个 Intent 失败」由带 `severity: "Error"`
+的诊断**按 index 推导**。而且**成功的 Intent 也可能带 Warning**（例如聚合 Top-N 的分组被
+隐藏身份键拆开），因此诊断必须全列，不能只在失败时读；使用 `queries` 前先看诊断。
+
+服务只在**整批 Intent 全部通过**时才返回 `queries`。插件默认会把被拒批次中已通过的子集
+单独再降一次（`retryAcceptedSubset`），这样"3 个 Intent 里坏了 1 个"也不会看不到 SQL。
+
+## 配置
+
+插件代码里**不含任何机器路径，也不含任何模型**。模型、领域、`artifact` 全部来自工作区的
+`oks.json`；插件行的 `config` 只是**覆盖**（优先级：`config` > `oks.json` > 默认值）：
+
+| 键 | 含义 |
+| --- | --- |
+| `domain` / `artifact` / `runner` / `transport` | 覆盖工作区声明（缺 `domain` 或 `artifact` 时给出可执行的报错，不会带着半截默认值去 spawn） |
+| `planDir` | 计划文件落点（插件行覆盖用）。`oks.json` 里也可声明：`"planDir": "plans"`（相对 oks.json）、`"planDir": false`（不写）；两处都不声明时默认 `<workspace>/.oks/plans` |
+| `requestFuel` | 默认 10000 |
+| `memoryLimit` | 默认 512（构建快照时的 `--with-memory-limit`） |
+| `requestTimeoutMs` | 默认 60000，单次请求的墙钟上限（到点 terminate worker，下次请求再拉起） |
+| `retryAcceptedSubset` | 默认 true |
+| `workspace` | **兜底**：仅当会话头里取不到 `cwd` 时用；正常情况不要写 |
+
+```yaml
+- insert:
+    - id: oks
+      name: '@local/dsh-oks'
+      config: {}        # 模型由工作区声明，这里通常什么都不用写
+```
+
+`runner` 与 `artifact` 都被当作**独立部署物**：插件不依赖 `lab-ontology` 源码树，
+只依赖这两个路径。换机器、换域、换工作区都不用改插件。
+
+## 快照怎么来
+
+```sh
+cd lab-ontology
+./bin/telora -C <模型目录> build <模型名> --snapshot --with-memory-limit 512 \
+  -o /path/to/model.wasm   # 这个路径相对工作区的 oks.json 填进 artifact
+```
+
+注意 `--with-memory-limit 512` 不是可选项：缺省构建会在初始化阶段报
+`growth operation limited` 而失败。
+
+## 安装 / 卸载
+
+- **推荐**：在 Web 的「插件」页用 `install_bundle` 指向本目录（绝对路径）。
+- 手动等价操作：`dsh plugin --profile web add file:<本目录>`，再把包名加进
+  profile `package.json` 的 `dsh.profile.bundles`。
+- 卸载：从 `dsh.profile.bundles` 去掉包名并 `dsh plugin --profile web remove @local/dsh-oks`。
+
+## 本地冒烟测试（不安装）
+
+```sh
+node smoke.mjs                          # 默认工作区 /home/h00629578/ws/lab-ws
+ONTOLOGY_WORKSPACE=/path/to/ws node smoke.mjs
+```
+
+它用一个假的 cordis `ctx` 加载插件（插件行**什么都不配**，正是要验证"模型只来自工作区"），
+并真实调用三个工具：验证 runner 生命周期、请求配对、SQL/bindings 渲染、计划文件落点与
+**内容寻址去重**（同一批 Intent 重问一次：路径相同、目录不增长、名字等于内容的 sha256 前缀、
+渲染里明说"复用"）、**自带技能的注册**（名字合法、描述非空、正文与 `skill.md` 逐字一致、
+正文不含任何具体领域名）、按工作区注册的地图路由（含 302 与 404）、**两个工作区**各自拿到自己的
+路由与落点、无 `oks.json` 时明确报错、以及 1 ms 上限下的超时强杀与复活。
+
+## 实现备注
+
+- **零依赖**：不 `import` `@deepseek-ai/dsh-tools`。该包的 `defineTool` 只是把 DSL 编译成
+  JSON Schema 并包一层参数校验，`ctx.tools.register()` 本身只校验 `output.schema`；所以
+  这里直接注册原始定义。好处是插件无论被硬链接进 profile 还是从工作区直接加载，都不会
+  出现 ESM 模块解析失败。
+- `parameters` 只使用受支持的 JSON Schema 关键字子集：`type` / `oneOf` / `properties` /
+  `required` / `additionalProperties` / `items` / `enum` / `const` 加注解关键字，
+  因此不能用 `minItems` / `maxItems`（数量校验放在 `execute` 里）。
+- 宿主默认是**进程内 worker**（`node:worker_threads` + 内置 WebAssembly），直接导入快照；
+  产物没有 `telora.snapshot` 段时才退回 `telora-run --serve stdio+jsonl://` 子进程。
+  进程内宿主唯一能兜住死循环的是墙钟超时：到点 `terminate()` 整个 worker 代并拒掉排队请求。
+- 相对时间必须由 Agent 解析成绝对边界再提交 Intent；服务不读时钟，也拒绝 `now`/`ctx`。

@@ -1,0 +1,26 @@
+{
+  "name": "@local/dsh-oks",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A Harness capability, not a wrapper for one model: whatever knowledge service (OKS) a session's workspace declares in oks.json becomes four native tools — index / info / map / transform — turning a business question into an executable, not-yet-executed query plan.",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "icon": "./icon.svg",
+  "files": [
+    "index.js",
+    "skill.md",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
