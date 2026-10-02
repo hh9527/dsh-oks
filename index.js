@@ -1,11 +1,14 @@
-// dsh-oks —— DSH 能力扩展：把"某个领域的知识服务（OKS）"接成三个原生工具。
+// dsh-oks —— DSH 能力扩展：把"某个领域的知识服务（OKS）"接成两个原生工具。
 // 插件不认识任何模型：开放哪个模型、模型在哪，由**会话所在工作区**根目录的 oks.json 声明
 // （{"domain":"...","artifact":"...wasm"}）。工作区是会话属性，所以一份插件能服务任意多工作区。
 //
-// 三个工具：ontology_info（按 key 读知识节点，入口是 key "index"）、
-// ontology_map（概念图，动态伺服不落盘）、ontology_transform（Intent → SQL + bindings，不执行）。
+// 两个工具：ontology_info（按服务给出的不透明 key 读节点，入口是 key "index"）、
+// ontology_transform（把结构化 Intent 降成可执行查询计划，不执行）。
 // 插件只写一样东西：计划文件（.sql/.json，落点由工作区声明，可关）。
 // 每次调用都在结果开头打印发给 OKS 的请求与响应摘要，工具卡因此自己呈现推理轨迹。
+//
+// **代码里不写任何"地图长什么样"的假设**（有哪些种类、入口、字段、格式、路由、分页）：
+// 那些是服务自己的声明，由 agent 按 key 自主探索；插件只负责协议与呈现。
 //
 // 零依赖：直接注册原始工具定义，因此装在 profile 里或从工作区加载都不会有模块解析问题。
 // parameters 只用受支持的 JSON Schema 关键字子集，数量校验放在 execute 里。
@@ -13,7 +16,7 @@
 import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 
 export const inject = ['tools'];
 
@@ -70,15 +73,6 @@ function workspaceRootFor(exec, config) {
     'dsh-oks: 无法确定当前会话的工作区目录（会话头里没有 cwd），因此不知道用哪个模型。'
     + '可在插件行的 config 里显式给 workspace。',
   );
-}
-
-/** 工作区在 URL 里的短名：可读的目录名 + 路径哈希，不同工作区互不冲突。
- *  概念图路由**按工作区注册**（/ontology-map/<slug>/）——HTTP 请求没有会话，
- *  所以"这是哪一份模型"只能由 URL 自己带上。 */
-function workspaceSlug(root) {
-  const base = basename(root).replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'workspace';
-  const digest = createHash('sha256').update(root).digest('hex').slice(0, 8);
-  return `${base}-${digest}`;
 }
 
 /** 把一个工作区解析成一份运行设置。缺 domain / artifact 时报错并给出补法。 */
@@ -295,204 +289,6 @@ function createRunner(config, log) {
   return createWorkerRunner(config, log);
 }
 
-// ── 概念图：把知识地图投影成 Mermaid，动态伺服，不落盘 ───────────────────────
-// 节点、关系、术语、计数全部来自知识服务，所以模型一改重新生成即可，没有第二份数据；
-// 页面只带框架，图源在打开时向 <base>/map.mmd 取。
-
-const MERMAID_CDN = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
-const MAP_KIND_CN = {
-  Dimension: '维度', Measure: '度量', Field: '字段', Value: '值',
-  TimeRole: '时间角色', Metric: '指标', BusinessLink: '业务链接', Relation: '关系',
-};
-const MAP_ESCAPE = (value) => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-/** 读知识地图并组装概念图的输入，id 与归属都取自 detail（不切分 key）。 */
-async function collectConceptMap(runner, domain, signal) {
-  const info = async (key) => {
-    const response = await runner.send(`${domain}/info`, { key }, signal);
-    const document = response?.ok?.Document;
-    return document === undefined || typeof document === 'string' ? null : document.Found;
-  };
-  const shortId = (key) => String(key).split('/').pop();
-
-  const index = await info('index');
-  const roster = new Map((index?.detail?.entries ?? []).map((entry) => [entry.key, entry]));
-  if (roster.size === 0) throw new Error('knowledge index returned no entries');
-  const ofType = (type) => [...roster.values()].filter((entry) => entry.type === type);
-  const kinds = [...roster.values()].reduce((acc, entry) => {
-    acc[entry.type] = (acc[entry.type] ?? 0) + 1;
-    return acc;
-  }, {});
-
-  const datasets = new Map();
-  for (const entry of ofType('Dataset')) {
-    const node = await info(entry.key);
-    const members = {};
-    for (const link of node?.links ?? []) {
-      const type = roster.get(link.key)?.type ?? '?';
-      (members[type] ??= []).push(link.key);
-    }
-    datasets.set(entry.key, {
-      key: entry.key,
-      id: node?.detail?.id ?? shortId(entry.key),
-      label: entry.description?.label ?? shortId(entry.key),
-      members,
-    });
-  }
-  const byId = new Map([...datasets.values()].map((item) => [item.id, item]));
-
-  const relations = [];
-  for (const entry of ofType('Relation')) {
-    const detail = (await info(entry.key))?.detail ?? {};
-    const from = byId.get(detail.from_dataset);
-    const to = byId.get(detail.to_dataset);
-    if (from && to) {
-      relations.push({
-        label: entry.description?.label ?? shortId(entry.key),
-        kind: detail.kind ?? '',
-        from,
-        to,
-      });
-    }
-  }
-
-  // 术语 → 它指向的概念 → 该概念所属的数据集（图上虚线）。三个坑：
-  //   1. Value 的 detail.dimension 是**维度 id**，要再走一跳（维度详情的 dataset）才落到数据集；
-  //   2. 目标 id 取自节点自己声明的 detail/target，**不切分 key**；
-  //   3. 维度归属按需构建（没有 Value 术语就不读）。
-  let dimensionOwners = null;
-  const ensureDimensionOwners = async () => {
-    if (dimensionOwners !== null) return dimensionOwners;
-    dimensionOwners = new Map();
-    for (const entry of ofType('Dimension')) {
-      const detail = (await info(entry.key))?.detail ?? {};
-      if (detail.id !== undefined && detail.dataset !== undefined) {
-        dimensionOwners.set(String(detail.id), String(detail.dataset));
-      }
-    }
-    return dimensionOwners;
-  };
-
-  const terms = [];
-  for (const item of (await info('terminology'))?.detail?.entries ?? []) {
-    const type = roster.get(item.key)?.type ?? '?';
-    const detail = type === 'Dataset' ? null : (await info(item.key))?.detail ?? {};
-    const target = type === 'Dataset'
-      ? String(datasets.get(item.key)?.id ?? '')
-      : String(detail.id ?? '');
-    let owner = '';
-    if (type === 'Dataset') owner = target;
-    else if (type === 'Relation') owner = String(detail.from_dataset ?? '');
-    else if (type === 'Value') {
-      owner = (await ensureDimensionOwners()).get(String(detail.dimension ?? '')) ?? '';
-    } else owner = String(detail.dataset ?? '');
-    terms.push({ term: item.term, type, target, owner });
-  }
-
-  return { datasets, relations, terms, nodeCount: roster.size, kinds };
-}
-
-/** 把知识地图渲染成 Mermaid 源。 */
-function renderMermaidMap(map) {
-  const quote = (value) => String(value).replace(/"/g, '&quot;').replace(/[<>]/g, '');
-  const counts = (members) => Object.entries(members)
-    .sort((a, b) => b[1].length - a[1].length)
-    .map(([kind, keys]) => `${keys.length} ${MAP_KIND_CN[kind] ?? kind}`)
-    .join(' · ');
-
-  const nodeIds = new Map([...map.datasets.keys()].map((key, i) => [key, `d${i}`]));
-  const lines = ['---', `title: ${map.domainLabel ?? 'Ontology'} 概念图（生成自知识地图）`, '---', 'flowchart LR'];
-  for (const item of map.datasets.values()) {
-    const title = item.label && item.label !== item.id ? item.label : item.id;
-    lines.push(`  ${nodeIds.get(item.key)}["<b>${quote(title)}</b><br/><small>${quote(item.id)}</small><br/><small>${quote(counts(item.members))}</small>"]:::dataset`);
-  }
-  const seen = new Set();
-  for (const edge of map.relations) {
-    const line = `${nodeIds.get(edge.from.key)} -->|"${quote(edge.label)}"| ${nodeIds.get(edge.to.key)}`;
-    if (!seen.has(line)) { seen.add(line); lines.push(`  ${line}`); }
-  }
-  lines.push('  subgraph TERMS["术语层 · 模型声明的俗称/别名，仅供发现，不是查询词汇"]');
-  lines.push('    direction TB');
-  map.terms.forEach((term, i) => lines.push(`    t${i}{{"${quote(term.term)}"}}:::term`));
-  lines.push('  end');
-  map.terms.forEach((term, i) => {
-    const owner = [...map.datasets.values()].find((item) => item.id === term.owner);
-    if (owner) lines.push(`  t${i} -.->|"${quote(term.type)} ${quote(term.target)}"| ${nodeIds.get(owner.key)}`);
-  });
-  lines.push('  classDef dataset fill:#ffffff,stroke:#2c4a57,stroke-width:2px,color:#10232c;');
-  lines.push('  classDef term fill:#fff5f5,stroke:#c92a2a,color:#c92a2a;');
-  const census = Object.entries(map.kinds).sort().map(([kind, n]) => `${kind} ${n}`).join(' · ');
-  lines.push(`  %% ${map.nodeCount} 个知识节点：${census}`);
-  return lines.join('\n');
-}
-
-/** 页面外壳：只带框架，图源在打开时向 /map.mmd 取。 */
-function renderMapShellLive(basePath, domain) {
-  return `<!doctype html>
-<html lang="zh">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${MAP_ESCAPE(domain)} 本体概念图</title>
-<style>
-  body { margin:0; background:#fbfcfd; color:#10232c;
-         font:15px/1.6 ui-sans-serif,-apple-system,"Segoe UI","Noto Sans CJK SC",Roboto,sans-serif; }
-  header { padding:26px 32px 16px; background:#fff; border-bottom:1px solid #e3e8ea; }
-  h1 { margin:0 0 6px; font-size:25px; }
-  .meta { margin:0; color:#5b6b73; font-size:14px; }
-  .note { margin:8px 0 0; color:#c92a2a; font-size:13px; }
-  main { padding:20px 32px 36px; overflow:auto; }
-  #map { background:#fff; border:1px solid #e3e8ea; border-radius:12px; padding:20px; }
-  #map:empty::after { content:"正在从知识服务读取地图…"; color:#8a979e; }
-</style>
-<script src="${basePath}/mermaid.min.js"></script>
-</head>
-<body>
-<header>
-  <h1>${MAP_ESCAPE(domain)} 本体概念图</h1>
-  <p class="meta">每次打开都重新从知识服务生成——节点、关系、术语、计数全部取自知识节点。</p>
-  <p class="note">术语层（红色虚线）仅供发现：它指出常见俗称/别名指向哪个 canonical ID。</p>
-  <p class="meta"><a href="${basePath}/map.mmd">查看 Mermaid 源</a> · <a href="${basePath}/?refresh=1">强制刷新</a></p>
-</header>
-<main><pre class="mermaid" id="map"></pre></main>
-<script>
-  mermaid.initialize({
-    startOnLoad: false, securityLevel: 'loose', theme: 'base',
-    flowchart: { htmlLabels: true, curve: 'basis', nodeSpacing: 34, rankSpacing: 90 },
-    themeVariables: {
-      fontFamily: 'ui-sans-serif,-apple-system,"Segoe UI","Noto Sans CJK SC",Roboto,sans-serif',
-      fontSize: '14px', lineColor: '#9fb3bd', primaryColor: '#ffffff',
-      primaryBorderColor: '#2c4a57', primaryTextColor: '#10232c',
-      tertiaryColor: '#fffafa', tertiaryBorderColor: '#c92a2a', tertiaryTextColor: '#c92a2a',
-    },
-  });
-  const target = document.getElementById('map');
-  fetch('${basePath}/map.mmd', { cache: 'no-store' })
-    .then((response) => { if (!response.ok) throw new Error('HTTP ' + response.status); return response.text(); })
-    .then((source) => { target.textContent = source; return mermaid.run({ nodes: [target] }); })
-    .catch((error) => { target.textContent = '生成失败：' + error.message; });
-</script>
-</body>
-</html>
-`;
-}
-
-/** ontology_map 的模型可见渲染：计数 + 伺服地址。 */
-function renderMap(_args, value) {
-  const counts = value?.counts ?? {};
-  const lines = ['概念图（生成自知识地图）'];
-  lines.push(`  数据集 ${counts.datasets ?? 0} · 关系 ${counts.relations ?? 0} · 术语 ${counts.terms ?? 0} · 知识节点 ${counts.nodes ?? 0}`);
-  const census = Object.entries(value?.kinds ?? {}).sort().map(([kind, n]) => `${kind} ${n}`).join(' · ');
-  if (census !== '') lines.push(`  按 kind：${census}`);
-  if (typeof value?.workspace === 'string' && value.workspace !== '') {
-    lines.push(`  工作区：${value.workspace}`);
-  }
-  lines.push('', `用浏览器打开：${value.url}`);
-  lines.push('  动态伺服：每次打开都重新从知识服务生成。');
-  lines.push(`  强制刷新：${value.url}?refresh=1 · 图源：${value.url}map.mmd`);
-  return [{ type: 'text', text: `${lines.join('\n')}\n` }];
-}
-
 function summarize(response) {
   if (response?.error === true) {
     const count = Array.isArray(response.diagnostics) ? response.diagnostics.length : 0;
@@ -504,11 +300,17 @@ function summarize(response) {
     if (typeof document === 'string') return `error=false · Document=${document}`;
     const found = document?.Found;
     const shape = Object.keys(document ?? {})[0] ?? 'Document';
-    const entries = found?.detail?.entries;
-    if (Array.isArray(entries)) {
-      return `error=false · Document=${shape} · ${found.type} · entries=${entries.length}`;
+    const detail = found?.detail;
+    // 只报"收回了什么形状"，不解释字段含义——字段语义由节点自己的 description 讲。
+    if (detail !== null && typeof detail === 'object') {
+      const parts = Object.entries(detail).map(([k, v]) => {
+        if (Array.isArray(v)) return `${k}#${v.length}`;
+        if (v !== null && typeof v === 'object') return `${k}={…}`;
+        return `${k}=${String(v)}`;
+      }).join(' ');
+      return `error=false · Document=${shape} · ${found?.type ?? '?'}${parts === '' ? '' : ` · ${parts}`}`;
     }
-    return `error=false · Document=${shape}`;
+    return `error=false · Document=${shape} · ${found?.type ?? '?'}`;
   }
   if (ok.accepted !== undefined) {
     // 批次级诊断：成功路径也可能带 Warning，所以要分别数 error / warning。
@@ -535,54 +337,6 @@ function renderTrace(trace) {
 function renderJson(_args, value) {
   const lines = renderTrace(value?.trace);
   lines.push('', JSON.stringify(value?.trace?.[0]?.response ?? value, null, 2));
-  return [{ type: 'text', text: `${lines.join('\n')}\n` }];
-}
-
-/** 目录节点的紧凑名册渲染。逐条 JSON 实测 83 KB，而工具结果截断到**尾部**——正好把开头
- *  "该怎么用"的协议节点截掉。所以按 type 分组、每行一个 key，协议类节点保留全文简述。 */
-const INDEX_PROTOCOL_TYPES = ['Index', 'Terminology', 'Schema'];
-
-/** 目录节点用紧凑名册，其余给完整 JSON（分派依据是节点内容）。 */
-function renderInfo(args, value) {
-  const entries = value?.trace?.[0]?.response?.ok?.Document?.Found?.detail?.entries;
-  return Array.isArray(entries) ? renderIndex(args, value) : renderJson(args, value);
-}
-
-function renderIndex(_args, value) {
-  const lines = renderTrace(value?.trace);
-  const response = value?.trace?.[0]?.response ?? {};
-  const entries = response?.ok?.Document?.Found?.detail?.entries;
-  if (!Array.isArray(entries)) {
-    lines.push('', JSON.stringify(response, null, 2));
-    return [{ type: 'text', text: `${lines.join('\n')}\n` }];
-  }
-  const groups = new Map();
-  for (const entry of entries) {
-    const type = String(entry?.type ?? '?');
-    if (!groups.has(type)) groups.set(type, []);
-    groups.get(type).push(entry);
-  }
-  const rank = (type) => {
-    const at = INDEX_PROTOCOL_TYPES.indexOf(type);
-    return at === -1 ? INDEX_PROTOCOL_TYPES.length : at;
-  };
-  const types = [...groups.keys()].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
-  lines.push('', `知识地图共 ${entries.length} 个节点。key 原样传给 ontology_info。`);
-  for (const type of types) {
-    const items = groups.get(type);
-    lines.push('', `── ${type} (${items.length}) ──`);
-    for (const entry of items) {
-      const key = String(entry?.key ?? '');
-      const id = key.split('/').pop();
-      const label = String(entry?.description?.label ?? '');
-      const summary = String(entry?.description?.summary ?? '').trim();
-      lines.push(`  ${key}${label && label !== id ? ` — ${label}` : ''}`);
-      if (summary !== '') {
-        const keepWhole = INDEX_PROTOCOL_TYPES.includes(type) || summary.length <= 140;
-        lines.push(`      ${keepWhole ? summary : `${summary.slice(0, 140)}…`}`);
-      }
-    }
-  }
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 
@@ -636,7 +390,7 @@ function renderPlan(_args, value) {
   }
 
   if (!plans) {
-    lines.push('', '没有任何 Intent 通过。用 ontology_info 找到已声明的词汇（完整目录在 key "index"）再修 Intent，保持业务含义不变。');
+    lines.push('', '没有任何 Intent 通过。用 ontology_info 按服务给出的 key 读它声明的词汇，再修 Intent，保持业务含义不变。');
   }
 
   lines.push('', '上面的 SQL 是给授权执行层的中间计划，此处没有执行。');
@@ -697,93 +451,9 @@ export function apply(ctx, config = {}) {
     }
   };
 
-  // 插件不认识模型：设置、wasm 宿主、地图缓存与路由都在**第一次用到某个工作区**时按那份
-  // oks.json 惰性建立；一个进程里可以有任意多个工作区，互不影响。
+  // 插件不认识模型：设置与 wasm 宿主都在**第一次用到某个工作区**时按那份 oks.json 惰性建立；
+  // 一个进程里可以有任意多个工作区，互不影响。
   const workspaces = new Map(); // root -> entry
-
-  // webServer 是可选依赖，用 ctx.get 取，第一次用到时再解析并记住（apply 阶段它可能还没激活）。
-  const MAP_BASE = '/ontology-map';
-  const MAP_TTL_MS = 60000; // 同一分钟内重复打开不重复读服务
-  let webServer; // undefined = 还没解析过；null = 解析过但没有
-  const resolveWebServer = () => {
-    if (webServer !== undefined) return webServer;
-    try {
-      webServer = ctx.get?.('webServer') ?? null;
-    } catch {
-      webServer = null;
-    }
-    return webServer;
-  };
-  /** 伺服地址：优先用 harness 自己公布的 URL，否则按 web 服务的 host:port 拼。 */
-  const publicBase = (server) => {
-    const announced = process.env.DSH_WEB_URL;
-    if (typeof announced === 'string' && announced.length > 0) return announced.replace(/\/+$/, '');
-    const host = server?.host === '0.0.0.0' ? '127.0.0.1' : (server?.host ?? '127.0.0.1');
-    return `http://${host}:${server?.port}`;
-  };
-
-  const currentConceptMap = async (entry, refresh, signal) => {
-    const now = Date.now();
-    if (!refresh && entry.mapCache.source !== null && now - entry.mapCache.at < MAP_TTL_MS) {
-      return entry.mapCache;
-    }
-    const map = await collectConceptMap(entry.runner, entry.settings.domain, signal);
-    map.domainLabel = entry.settings.domain;
-    entry.mapCache.map = map;
-    entry.mapCache.source = renderMermaidMap(map);
-    entry.mapCache.at = now;
-    return entry.mapCache;
-  };
-
-  /** 每个工作区一个 handler，闭包捕获自己的 entry，不会错配模型。 */
-  const handlerFor = (entry) => async (req, res) => {
-    const base = `${MAP_BASE}/${entry.slug}`;
-    const url = new URL(req.url ?? '/', 'http://localhost');
-    const path = url.pathname.replace(/\/+$/, '') || '/';
-    const send = (status, type, body, extra = {}) => {
-      res.writeHead(status, { 'content-type': type, ...extra });
-      res.end(body);
-    };
-    try {
-      if (path === `${base}/mermaid.min.js`) {
-        // 不落盘：让浏览器去取并缓存 CDN 上的包。
-        send(302, 'text/plain; charset=utf-8', '', { location: MERMAID_CDN });
-        return;
-      }
-      if (path === `${base}/map.mmd`) {
-        const cached = await currentConceptMap(entry, url.searchParams.has('refresh'));
-        send(200, 'text/plain; charset=utf-8', cached.source, { 'cache-control': 'no-store' });
-        return;
-      }
-      if (path === base || path === `${base}/index.html`) {
-        // 打开页面顺手刷新一次，让"看到的就是刚生成的"。
-        await currentConceptMap(entry, url.searchParams.has('refresh'));
-        send(200, 'text/html; charset=utf-8', renderMapShellLive(base, entry.settings.domain), {
-          'cache-control': 'no-store',
-        });
-        return;
-      }
-      send(404, 'text/plain; charset=utf-8', 'not found');
-    } catch (cause) {
-      send(500, 'text/plain; charset=utf-8', `ontology map failed: ${cause?.message ?? cause}`);
-    }
-  };
-
-  /** 路由在第一次用到该工作区时注册一次。 */
-  const ensureRoute = (entry) => {
-    if (entry.routeRegistered) return;
-    const server = resolveWebServer();
-    if (typeof server?.register !== 'function') return;
-    const path = `${MAP_BASE}/${entry.slug}`;
-    try {
-      const handler = handlerFor(entry);
-      ctx.effect(() => server.register({ kind: 'prefix', path, handler }));
-      entry.routeRegistered = true;
-      log(`[oks] concept map of ${entry.root} served at ${path}/`);
-    } catch (cause) {
-      log(`[oks] cannot register ${path}: ${cause?.message ?? cause}`);
-    }
-  };
 
   // 技能服务是可选依赖（ctx.get 取），加载时它可能还没起来，所以第一次工具调用会再试一次。
   let skillRegistered = false;
@@ -827,15 +497,11 @@ export function apply(ctx, config = {}) {
       root,
       from,
       settings,
-      slug: workspaceSlug(root),
       runner: null,
-      mapCache: { source: null, map: null, at: 0 },
-      routeRegistered: false,
     };
     workspaces.set(root, entry);
     log(`[oks] workspace ${root} (cwd from ${from}) · domain=${settings.domain} · model=${settings.artifact}`);
     entry.runner = createRunner(settings, log);
-    ensureRoute(entry);
     return entry;
   };
 
@@ -843,19 +509,19 @@ export function apply(ctx, config = {}) {
   const definitions = [
     {
       name: 'ontology_info',
-      description: 'Read one knowledge node of this workspace\'s knowledge service by its opaque string key. Start with key "index": it is the one key you may supply from memory, and it returns the complete flat catalog of every visible node with its key, type and brief description. Keys are opaque — copy each one verbatim from what the service returned: an index entry, a node\'s links, or a diagnostic. Use only these canonical IDs when writing Intents; display names and physical column names are not substitutes.',
+      description: 'Read one knowledge node of this workspace\'s knowledge service by its opaque string key. Start with key "index" — the one key you may supply from memory; it tells you where to go next. From there, follow the keys the service returns, whatever shape it declares, and copy each key verbatim: never construct, split or decode one. Use only the canonical IDs the service declares when writing Intents; display names and physical column names are not substitutes.',
       parameters: {
         type: 'object',
         properties: {
           key: {
             type: 'string',
-            description: 'Opaque knowledge key, copied verbatim from what the service returned — an index entry, a node\'s links, or a diagnostic. "index" is the one key you may supply from memory.',
+            description: 'Opaque knowledge key, copied verbatim from what the service returned — another node, a link, or a diagnostic. "index" is the one key you may supply from memory.',
           },
         },
         required: ['key'],
         additionalProperties: false,
       },
-      output: { schema: OBJECT_OUTPUT, render: renderInfo },
+      output: { schema: OBJECT_OUTPUT, render: renderJson },
       async execute(args, exec) {
         const entry = ensureWorkspace(exec);
         const method = `${entry.settings.domain}/info`;
@@ -874,36 +540,6 @@ export function apply(ctx, config = {}) {
       },
     },
     {
-      name: 'ontology_map',
-      description: 'Generate a browsable concept map of this workspace\'s domain and serve it live over HTTP as Mermaid. Nodes, relations, terminology and counts all come from the knowledge service, so the map always matches the current model. The route is registered per workspace, so the URL identifies which model the picture came from. Use it when a human wants to see the domain\'s shape, or when a picture answers better than prose.',
-      parameters: { type: 'object', properties: {}, additionalProperties: false },
-      output: { schema: OBJECT_OUTPUT, render: renderMap },
-      async execute(_args, exec) {
-        const entry = ensureWorkspace(exec);
-        ensureRoute(entry);
-        if (!entry.routeRegistered) {
-          throw new Error(
-            'dsh-oks: 概念图是动态伺服的，需要 profile 里有 web 服务；当前没有，所以给不出地址。',
-          );
-        }
-        const server = resolveWebServer();
-        const cached = await currentConceptMap(entry, true, exec?.signal);
-        // 返回值必须是 lossless JSON（内部的 map 含 Map 实例）。
-        return {
-          mode: 'served',
-          workspace: entry.root,
-          url: `${publicBase(server)}${MAP_BASE}/${entry.slug}/`,
-          counts: {
-            nodes: cached.map.nodeCount,
-            datasets: cached.map.datasets.size,
-            relations: cached.map.relations.length,
-            terms: cached.map.terms.length,
-          },
-          kinds: cached.map.kinds,
-        };
-      },
-    },
-    {
       name: 'ontology_transform',
       description: 'Validate one to five independent graph Intents against this workspace\'s ontology and return an executable query plan (parameterized SQL + bindings) for each. Nothing is executed. All Intents are checked even if one fails, and every accepted Intent comes back as a plan. On rejection, read the diagnostics and repair the Intent with its business meaning intact.',
       parameters: {
@@ -911,7 +547,7 @@ export function apply(ctx, config = {}) {
         properties: {
           intents: {
             type: 'array',
-            description: 'One to five independent graph Intents, e.g. {"op":"Graph","root":"d","nodes":[{"id":"d","entity":"<dataset id>"}],"edges":[],"select":[],"count":"d"}. Closed Intent choices use the declared enum spelling in PascalCase (e.g. op "Graph", filter op "Eq", direction "Desc", row_grain "Root"); the Intent-syntax knowledge nodes listed in the knowledge index (type Schema) hold the authoritative list.',
+            description: 'One to five independent graph Intents, e.g. {"op":"Graph","root":"d","nodes":[{"id":"d","entity":"<dataset id>"}],"edges":[],"select":[],"count":"d"}. Closed Intent choices use the declared enum spelling in PascalCase (e.g. op "Graph", filter op "Eq", direction "Desc", row_grain "Root"); the service also declares the authoritative Intent syntax — read it from the knowledge nodes it points you to instead of relying on memory.',
             items: { type: 'object', additionalProperties: true },
           },
         },
