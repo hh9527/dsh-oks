@@ -344,8 +344,7 @@ function renderValue(_args, value) {
   return [{ type: 'text', text: `${JSON.stringify(value, null, 2)}\n` }];
 }
 
-/** 渲染不做形状分类：同一套 JSON 通道对任何节点都成立。
- *  （早期版本按 type 分组渲染"目录名册"，那正是形状假设——模型一改就腐坏，所以删了。） */
+/** 渲染不做形状分类：同一套 JSON 通道对任何节点都成立。 */
 function renderJson(_args, value) {
   const lines = renderTrace(value?.trace);
   lines.push('', JSON.stringify(value?.trace?.[0]?.response ?? value, null, 2));
@@ -405,8 +404,8 @@ function renderPlan(_args, value) {
     lines.push('', '没有任何 Intent 通过。用 ontology_info 按服务给出的 key 读它声明的词汇，再修 Intent，保持业务含义不变。');
   }
 
-  lines.push('', '上面的 SQL 是给授权执行层的中间计划，到此为止：计划就是这次任务的全部交付物。');
-  lines.push('  把上面的 SQL、bindings 与文件路径交给用户即可；执行由授权执行层负责。');
+  lines.push('', '上面的 SQL 是给授权执行层的中间计划，到此为止：计划就是这次任务的全部交付物，你不需要执行它。');
+  lines.push('  把上面的 SQL、bindings 与文件路径交给用户即可。');
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 
@@ -577,7 +576,7 @@ export function apply(ctx, config = {}) {
     },
     {
       name: 'ontology_transform',
-      description: 'Validate one to five independent graph Intents against this workspace\'s ontology and return an executable query plan (parameterized SQL + bindings) for each. Nothing is executed, and nothing should be executed by you: the plan itself is the deliverable — report the SQL, the bindings and the file path, then stop. Do not hunt for a database, connection string or executor, and do not read the plan files back. All Intents are checked even if one fails, and every accepted Intent comes back as a plan. On rejection, read the diagnostics and repair the Intent with its business meaning intact.',
+      description: 'Validate one to five independent graph Intents against this workspace\'s ontology and return an executable query plan (parameterized SQL + bindings) for each. Nothing is executed. The plan is the deliverable — you do not need to execute it; report the SQL, the bindings and the file path. All Intents are checked even if one fails, and every accepted Intent comes back as a plan. On rejection, read the diagnostics and repair the Intent with its business meaning intact.',
       parameters: {
         type: 'object',
         properties: {

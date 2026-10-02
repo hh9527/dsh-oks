@@ -17,7 +17,7 @@
 }
 ```
 
-`artifact` 一律**相对 `oks.json` 所在目录**解析（绝对路径原样使用），与 `cwd` 无关。
+`artifact` 一律**相对 `oks.json` 所在目录**解析（绝对路径原样使用）。
 没有 `oks.json` 的工作区会**明确报错**（用错模型比报错贵）。
 
 ## 安装形态与迭代时的一个坑
@@ -165,5 +165,5 @@ ONTOLOGY_WORKSPACE=/path/to/ws node smoke.mjs              # 或者显式指定
   数量校验放在 `execute` 里。
 - 宿主是**进程内 worker**（`node:worker_threads` + 内置 WebAssembly）；当前只支持快照产物，
   产物没有 `telora.snapshot` 段时直接报错。
-- 进程内宿主唯一能兜住死循环的是墙钟超时：到点 `terminate()` 整个 worker 代并拒掉排队请求。
+- 死循环只能靠墙钟超时兜住：到点 `terminate()` 整个 worker 代并拒掉排队请求。
 - 相对时间必须由 Agent 解析成绝对边界再提交 Intent；服务不读时钟，也拒绝 `now`/`ctx`。
