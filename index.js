@@ -55,8 +55,8 @@ function loadWorkspaceConfig(root) {
 }
 
 /** 会话 → 工作区目录。工作区是**会话属性**（会话头里的 cwd），不是进程属性；
- *  config.workspace 只在会话头取不到 cwd 时兜底。 */
-function workspaceRootFor(exec, config) {
+ *  取不到就报错——插件不接受配置兜底。 */
+function workspaceRootFor(exec) {
   const session = exec?.agent?.session;
   const probes = [
     ['session.meta.cwd', () => session?.meta?.cwd],
@@ -69,13 +69,9 @@ function workspaceRootFor(exec, config) {
       if (typeof value === 'string' && value.length > 0) return { root: value, from: where };
     } catch { /* 这一层取不到，试下一层 */ }
   }
-  const declared = typeof config?.workspace === 'string' && config.workspace.length > 0
-    ? config.workspace
-    : null;
-  if (declared !== null) return { root: declared, from: 'config.workspace' };
   throw new Error(
     'dsh-oks: 无法确定当前会话的工作区目录（会话头里没有 cwd），因此不知道用哪个模型。'
-    + '可在插件行的 config 里显式给 workspace。',
+    + '工作区是会话属性，插件不接受配置兜底——请让会话带上 cwd。',
   );
 }
 
@@ -484,17 +480,17 @@ export function apply(ctx, config = {}) {
     log('[oks] cannot observe agent/pre-step: ' + String(cause?.message ?? cause));
   }
 
-  // 时区兜底的**声明**（可选，与 time-context 插件同名，优先级低于上下文）。**不做宿主兜底**：
-  // 时区只来自这里的声明或工具参数；两者都没有时，两个时间工具会明确报错。
-  const configuredTimeZone = config.timeZone;
-  if (configuredTimeZone !== undefined) {
-    try {
-      new Intl.DateTimeFormat('en-US', { timeZone: configuredTimeZone });
-    } catch (cause) {
-      throw new Error('dsh-oks: 插件行里的 timeZone 不是合法的 IANA 时区: ' + JSON.stringify(configuredTimeZone), { cause });
+  // 不接受任何"兜底"配置：时区来自本次请求的上下文（用户消息上的浏览器时区），
+  // 工作区来自会话头的 cwd。配了就直接报错——缺东西应该看得见，而不是让插件猜。
+  for (const key of ['timeZone', 'workspace']) {
+    if (config?.[key] !== undefined) {
+      throw new Error('dsh-oks: 不接受 config.' + key + ' 这种兜底配置（'
+        + (key === 'timeZone'
+          ? '时区只来自本次请求的上下文，或工具调用的 timeZone 参数'
+          : '工作区是会话属性，来自会话头的 cwd')
+        + '）。请删掉它；缺了就应该报错。');
     }
   }
-
   // 插件不认识模型：设置与 wasm 宿主都在**第一次用到某个工作区**时按那份 oks.json 惰性建立；
   // 一个进程里可以有任意多个工作区，互不影响。
   const workspaces = new Map(); // root -> entry
@@ -533,7 +529,7 @@ export function apply(ctx, config = {}) {
   /** 每个工具的入口动作：由**会话**定位工作区，再拿到（或惰性建立）它的运行环境。 */
   const ensureWorkspace = (exec) => {
     registerSkill(); // 加载时技能服务若还没起来，这里补上（已注册则是空操作）
-    const { root, from } = workspaceRootFor(exec, config);
+    const { root, from } = workspaceRootFor(exec);
     const existing = workspaces.get(root);
     if (existing !== undefined) return existing;
     const settings = resolveSettings(root, config);
@@ -672,7 +668,7 @@ export function apply(ctx, config = {}) {
       },
       output: { schema: OBJECT_OUTPUT, render: renderValue },
       async execute(args, exec) {
-        const { zone, source } = resolveZone(args?.timeZone, contextTimeZones.get(exec?.agent?.session), configuredTimeZone);
+        const { zone, source } = resolveZone(args?.timeZone, contextTimeZones.get(exec?.agent?.session));
         return { timeZone: zone, timeZoneSource: source, ...encode(Date.now(), zone) };
       },
     },
@@ -700,7 +696,7 @@ export function apply(ctx, config = {}) {
       },
       output: { schema: OBJECT_OUTPUT, render: renderValue },
       async execute(args, exec) {
-        const { zone, source } = resolveZone(args?.timeZone, contextTimeZones.get(exec?.agent?.session), configuredTimeZone);
+        const { zone, source } = resolveZone(args?.timeZone, contextTimeZones.get(exec?.agent?.session));
         const base = parseMoment(args?.base, zone);
         const result = applyOps({ epochMillis: base, zone }, args?.operations);
         return {

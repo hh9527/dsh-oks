@@ -159,17 +159,33 @@ console.log('=== 时间辅助工具 ===');
   if (overridden.value.timeZoneSource !== 'argument' || overridden.value.timeZone !== Z) {
     throw new Error('显式参数没有覆盖上下文');
   }
-  // 插件行声明了时区就按声明走
-  const declared = new Map();
-  apply({
-    logger: { info: () => {} },
-    get: () => undefined,
-    tools: { register: (tool) => { declared.set(tool.name, tool); return () => {}; } },
-    effect: (fn) => { const d = fn(); if (typeof d === 'function') disposers.push(d); },
-  }, { timeZone: Z });
-  const fromConfig = await declared.get('time_now').execute({}, { signal: new AbortController().signal, ...sessionFor(nowhere) });
-  console.log(`  插件行声明 timeZone → source=${fromConfig.timeZoneSource} · zone=${fromConfig.timeZone}`);
-  if (fromConfig.timeZoneSource !== 'config' || fromConfig.timeZone !== Z) throw new Error('配置声明的时区没生效');
+  // 兜底配置一律不接受：配了就在加载时报错
+  for (const [key, value] of [['timeZone', Z], ['workspace', '/tmp']]) {
+    try {
+      apply({
+        logger: { info: () => {} },
+        get: () => undefined,
+        tools: { register: () => () => {} },
+        effect: () => {},
+        on: () => () => {},
+      }, { [key]: value });
+      console.log('  ✗ config.' + key + ' 竟然被接受了');
+      throw new Error('config.' + key + ' 不应被接受');
+    } catch (cause) {
+      if (!/兜底配置/.test(String(cause?.message ?? cause))) throw cause;
+      console.log('  ✓ config.' + key + ' 被拒绝（不做兜底）');
+    }
+  }
+  // 会话头里没有 cwd 时明确报错，而不是回落到别的目录
+  try {
+    const tool = registered.get('ontology_info');
+    await tool.execute({ key: 'index' }, { signal: new AbortController().signal, agent: { session: { meta: {} } } });
+    console.log('  ✗ 会话头没有 cwd 却成功了');
+    throw new Error('没有 cwd 时不应成功');
+  } catch (cause) {
+    if (!/无法确定当前会话的工作区目录/.test(String(cause?.message ?? cause))) throw cause;
+    console.log('  ✓ 会话头没有 cwd 时明确报错，不兜底');
+  }
 }
 
 // ── 发现协议：从 index 出发，只跟随节点给出的 key ────────────────────────────

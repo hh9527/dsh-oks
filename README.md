@@ -96,9 +96,11 @@ Node 按 URL 缓存 ESM 模块，所以：
 | `domain` / `artifact` | 覆盖工作区声明（缺 `domain` 或 `artifact` 时报错并给出补法） |
 | `planDir` | 计划文件落点（插件行覆盖用）。`oks.json` 里也可声明：`"planDir": "plans"`（相对 oks.json）、`"planDir": false`（不写）；两处都不声明时默认 `<workspace>/.oks/plans` |
 | `requestTimeoutMs` | 默认 60000，单次请求的墙钟上限（到点 terminate worker，下次请求再拉起） |
-| `timeZone` | **兜底声明**（IANA，与 `time-context` 插件同名）：仅在上下文取不到时区时生效。时区优先级 = 调用参数 > 本次请求的浏览器时区（按插件规范从用户消息读取）> 这里；三者都没有就报错要求向用户澄清。**任何情况下都不使用宿主时区** |
 | `retryAcceptedSubset` | 默认 true |
-| `workspace` | **兜底**：仅当会话头里取不到 `cwd` 时用；正常情况不要写 |
+
+**没有兜底配置**：`timeZone` 与 `workspace` 都**不接受**在 config 里声明——时区来自本次请求的
+上下文（用户消息上的浏览器时区，或调用参数），工作区来自会话头的 `cwd`。配了这两个键会在加载时
+直接报错；缺失时也是报错，而不是让插件猜。
 
 ```yaml
 - insert:

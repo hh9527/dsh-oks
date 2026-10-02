@@ -62,12 +62,12 @@ function assertZone(zone) {
 }
 
 /**
- * 时区从哪来：调用方显式给的 > **本次请求的上下文时区**（按插件规范从用户消息推导）
- * > 插件行声明。来源要一起报出去，便于在回答里写明口径。
+ * 时区从哪来：调用方显式给的 > **本次请求的上下文时区**（按插件规范从用户消息推导）。
+ * 来源要一起报出去，便于在回答里写明口径。没有配置兜底。
  * 三者都没有时**明确报错并要求向用户澄清**——绝不使用宿主时区：宿主时区与用户所在时区无关，
  * 用它算"今天""上周"会静默偏掉，而偏了看不出来。
  */
-function resolveZone(requested, context, configured) {
+function resolveZone(requested, context) {
   if (typeof requested === 'string' && requested.length > 0) {
     return { zone: assertZone(requested), source: 'argument' };
   }
@@ -80,9 +80,6 @@ function resolveZone(requested, context, configured) {
   if (kind === 'invalid') {
     throw new Error('dsh-oks: 本次请求带的浏览器时区不合法（' + String(context.timeZone)
       + '）。请向用户确认时区，或显式传 timeZone。');
-  }
-  if (typeof configured === 'string' && configured.length > 0) {
-    return { zone: assertZone(configured), source: 'config' };
   }
   throw new Error('dsh-oks: 上下文里没有时区（本次请求没有带浏览器时区）。按规范要请用户澄清，'
     + '或显式传 timeZone；本插件不使用宿主时区兜底——宿主时区与用户所在时区无关，会把时间边界静默算错。');
