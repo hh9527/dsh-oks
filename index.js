@@ -55,7 +55,7 @@ function loadWorkspaceConfig(root) {
 }
 
 /** 会话 → 工作区目录。工作区是**会话属性**（会话头里的 cwd），不是进程属性；
- *  取不到就报错——插件不接受配置兜底。 */
+ *  取不到就报错，让会话把 cwd 带上。 */
 function workspaceRootFor(exec) {
   const session = exec?.agent?.session;
   const probes = [
@@ -71,7 +71,7 @@ function workspaceRootFor(exec) {
   }
   throw new Error(
     'dsh-oks: 无法确定当前会话的工作区目录（会话头里没有 cwd），因此不知道用哪个模型。'
-    + '工作区是会话属性，插件不接受配置兜底——请让会话带上 cwd。',
+    + '工作区是会话属性，来源是会话头的 cwd——请让会话带上它。',
   );
 }
 
@@ -87,8 +87,7 @@ function resolveSettings(root, config) {
     workspaceRoot: workspace.root,
     workspaceFile: workspace.file,
   };
-  // 只认契约里的覆盖键；其它键（例如 timeZone / workspace）根本不在契约里，
-  // 插件不感知也不会用它们——时区与工作区各有唯一来源，取不到就在运行时报错。
+  // 设置有三个来源：与机器无关的默认值、工作区的 oks.json、插件行 config 里的这几个覆盖键。
   const overrides = {};
   for (const key of ['domain', 'artifact', 'requestTimeoutMs', 'retryAcceptedSubset']) {
     if (config?.[key] !== undefined) overrides[key] = config[key];
@@ -406,9 +405,8 @@ function renderPlan(_args, value) {
     lines.push('', '没有任何 Intent 通过。用 ontology_info 按服务给出的 key 读它声明的词汇，再修 Intent，保持业务含义不变。');
   }
 
-  lines.push('', '上面的 SQL 是给授权执行层的中间计划，此处没有执行——也不会由你去执行。');
-  lines.push('  计划就是这次任务的全部交付物：不要去找数据库、连接串或执行器，不要读回计划文件，');
-  lines.push('  把上面的 SQL、bindings 与文件路径交给用户即可。');
+  lines.push('', '上面的 SQL 是给授权执行层的中间计划，到此为止：计划就是这次任务的全部交付物。');
+  lines.push('  把上面的 SQL、bindings 与文件路径交给用户即可；执行由授权执行层负责。');
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 
@@ -468,7 +466,7 @@ export function apply(ctx, config = {}) {
 
   // 上下文时区：按插件规范，浏览器时区挂在**当轮用户消息**的 source.clientTimeZone 上
   // （与 dsh-time-context 同一套字段与 resolved / mixed / missing 三态）。这里在 agent/pre-step
-  // 时读一次并按会话记下，供两个时间工具取用。取不到就报错让 agent 去问用户，不做宿主兜底。
+  // 时读一次并按会话记下，供两个时间工具取用；取不到就报错，让 agent 去问用户。
   const contextTimeZones = new Map(); // session -> 规范推导结果
   try {
     ctx.on('agent/pre-step', async (payload, next) => {
@@ -656,7 +654,7 @@ export function apply(ctx, config = {}) {
         properties: {
           timeZone: {
             type: 'string',
-            description: 'IANA time zone such as "Asia/Shanghai". By default the zone comes from the request context — the browser zone the client attached to the current turn messages, read per the plugin spec — so pass one only to override it (for example when the context zone is mixed or missing). There is no host-zone fallback: with no context zone and no argument, the call fails and tells you to ask the user. The source actually used is echoed back.',
+            description: 'IANA time zone such as "Asia/Shanghai". By default the zone comes from the request context — the browser zone the client attached to the current turn messages, read per the plugin spec — so pass one only to override it (for example when the context zone is mixed or missing). The zone comes from the request context or from this argument; with neither, the call fails and asks you to confirm it with the user. The source actually used is echoed back.',
           },
         },
         additionalProperties: false,
@@ -679,7 +677,7 @@ export function apply(ctx, config = {}) {
           },
           timeZone: {
             type: 'string',
-            description: 'IANA time zone such as "Asia/Shanghai". By default the zone comes from the request context — the browser zone the client attached to the current turn messages, read per the plugin spec — so pass one only to override it (for example when the context zone is mixed or missing). There is no host-zone fallback: with no context zone and no argument, the call fails and tells you to ask the user. The source actually used is echoed back.',
+            description: 'IANA time zone such as "Asia/Shanghai". By default the zone comes from the request context — the browser zone the client attached to the current turn messages, read per the plugin spec — so pass one only to override it (for example when the context zone is mixed or missing). The zone comes from the request context or from this argument; with neither, the call fails and asks you to confirm it with the user. The source actually used is echoed back.',
           },
           operations: {
             type: 'array',

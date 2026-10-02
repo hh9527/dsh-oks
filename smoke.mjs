@@ -110,7 +110,7 @@ console.log('=== 时间辅助工具 ===');
   const calc = await call('time_calc', { base: '2026-09-30 17:00:00', timeZone: Z, operations: [{ op: 'floor', unit: 'week' }] }, nowhere);
   console.log(`  time_calc: ${calc.value.operations.join(' → ')} → ${calc.value.local.text}`);
   if (calc.value.local.text !== '2026-09-28 00:00:00') throw new Error('time_calc 结果不对');
-  // 上下文里没有时区（本次请求没带）→ 必须报错并要求向用户澄清；宿主时区不是兜底
+  // 上下文里没有时区（本次请求没带）→ 报错并要求向用户澄清
   const preStep = events.get('agent/pre-step');
   if (typeof preStep !== 'function') throw new Error('插件没有监听 agent/pre-step，取不到上下文时区');
   const firePreStep = (cwd, messages) => preStep(
@@ -119,10 +119,10 @@ console.log('=== 时间辅助工具 ===');
   );
   try {
     await call('time_now', {}, nowhere);
-    console.log('  ✗ 没给时区却成功了（不该用宿主时区兜底）');
+    console.log('  ✗ 没给时区却成功了');
     throw new Error('没有时区时 time_now 不应成功');
   } catch (cause) {
-    if (!/上下文里没有时区/.test(String(cause?.message ?? cause))) throw cause;
+    if (!/本次请求没有带浏览器时区/.test(String(cause?.message ?? cause))) throw cause;
     console.log('  ✓ 上下文没有时区时明确报错，要求向用户澄清');
   }
   // 上下文带来浏览器时区 → 自动取用（规范字段 source.clientTimeZone）
@@ -159,7 +159,7 @@ console.log('=== 时间辅助工具 ===');
   if (overridden.value.timeZoneSource !== 'argument' || overridden.value.timeZone !== Z) {
     throw new Error('显式参数没有覆盖上下文');
   }
-  // 契约里不存在 timeZone / workspace：给了也不起作用（插件不感知）
+  // 设置里能覆盖的只有那几个键：给了别的键，行为照旧（时区来自上下文，工作区来自会话头）
   const buildCtx = (config) => {
     const tools = new Map();
     const events = new Map();
@@ -181,15 +181,15 @@ console.log('=== 时间辅助工具 ===');
     }, async () => ({ kind: 'enter' }));
     const value = await tools.get('time_now').execute({}, { signal: new AbortController().signal, agent: { session } });
     console.log('  config.timeZone=UTC 时实际用 → ' + value.timeZoneSource + ' / ' + value.timeZone);
-    if (value.timeZoneSource !== 'context' || value.timeZone !== Z) throw new Error('config.timeZone 竟然生效了');
+    if (value.timeZoneSource !== 'context' || value.timeZone !== Z) throw new Error('时区应当只来自上下文');
     const second = buildCtx({ workspace: '/tmp/whatever' });
     try {
       await second.tools.get('ontology_info').execute({ key: 'index' }, { signal: new AbortController().signal, agent: { session: { meta: {} } } });
-      console.log('  ✗ config.workspace 竟然兜底了');
-      throw new Error('config.workspace 不应起作用');
+      console.log('  ✗ 竟然用了 config 里的路径');
+      throw new Error('工作区应当只来自会话头');
     } catch (cause) {
       if (!/无法确定当前会话的工作区目录/.test(String(cause?.message ?? cause))) throw cause;
-      console.log('  ✓ config.workspace 不兜底：没有 cwd 仍然在运行时报错');
+      console.log('  ✓ 工作区只来自会话头：没有 cwd 时在运行时报错');
     }
   }
   // 会话头里没有 cwd 时明确报错，而不是回落到别的目录
@@ -200,7 +200,7 @@ console.log('=== 时间辅助工具 ===');
     throw new Error('没有 cwd 时不应成功');
   } catch (cause) {
     if (!/无法确定当前会话的工作区目录/.test(String(cause?.message ?? cause))) throw cause;
-    console.log('  ✓ 会话头没有 cwd 时明确报错，不兜底');
+    console.log('  ✓ 会话头没有 cwd 时明确报错');
   }
 }
 

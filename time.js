@@ -11,9 +11,9 @@
 //      hour/minute/second 是精确时长。
 //   4. month/quarter/year 加减按日历钳制（1 月 31 日 + 1 月 = 2 月 28/29 日）。
 //   5. 区间一律半开 [start, end)：调用方用两次计算得到两端。
-//   6. 时区按**插件规范**取：优先本次请求的上下文时区（用户消息上的 source.clientTimeZone），
-//      调用方也可显式覆盖；**绝不使用宿主时区兜底**（会把时间边界静默算错）。都没有时报错，
-//      让 agent 去问用户——规范的策略文本也是这么要求的（mixed / missing → ask the user）。
+//   6. 时区按**插件规范**取：本次请求的上下文时区（用户消息上的 source.clientTimeZone），
+//      调用方也可以显式覆盖；两者都没有时报错，让 agent 按规范的策略去问用户
+//      （mixed / missing → ask the user）。
 
 const PARTS = { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', weekday: 'short', hourCycle: 'h23' };
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -63,9 +63,8 @@ function assertZone(zone) {
 
 /**
  * 时区从哪来：调用方显式给的 > **本次请求的上下文时区**（按插件规范从用户消息推导）。
- * 来源要一起报出去，便于在回答里写明口径。没有配置兜底。
- * 三者都没有时**明确报错并要求向用户澄清**——绝不使用宿主时区：宿主时区与用户所在时区无关，
- * 用它算"今天""上周"会静默偏掉，而偏了看不出来。
+ * 来源要一起报出去，便于在回答里写明口径。
+ * 两者都没有时明确报错，并要求向用户澄清——这样"今天""上周"这类边界始终落在用户所在的时区里。
  */
 function resolveZone(requested, context) {
   if (typeof requested === 'string' && requested.length > 0) {
@@ -81,8 +80,8 @@ function resolveZone(requested, context) {
     throw new Error('dsh-oks: 本次请求带的浏览器时区不合法（' + String(context.timeZone)
       + '）。请向用户确认时区，或显式传 timeZone。');
   }
-  throw new Error('dsh-oks: 上下文里没有时区（本次请求没有带浏览器时区）。按规范要请用户澄清，'
-    + '或显式传 timeZone；本插件不使用宿主时区兜底——宿主时区与用户所在时区无关，会把时间边界静默算错。');
+  throw new Error('dsh-oks: 本次请求没有带浏览器时区。请向用户确认时区后显式传入 timeZone，'
+    + '或让请求带上浏览器时区——上下文时区按插件规范从用户消息读取。');
 }
 
 const pad = (value, width = 2) => String(value).padStart(width, '0');
@@ -171,7 +170,7 @@ function encode(epochMillis, zone) {
   };
 }
 
-/** 解析调用方给的"某个时刻"。字符串按自身语法判定，绝不猜。 */
+/** 解析调用方给的"某个时刻"：字符串按自身语法判定，不合语法就报错。 */
 function parseMoment(value, zone) {
   if (value === undefined || value === null || value === 'now') return Date.now();
   if (typeof value === 'number') {
