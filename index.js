@@ -460,6 +460,17 @@ export function apply(ctx, config = {}) {
     }
   };
 
+  // 时区与 time-context 插件**同名**（插件规范里的约定）。**不做宿主兜底**：
+  // 时区只来自这里的声明或工具参数；两者都没有时，两个时间工具会明确报错。
+  const configuredTimeZone = config.timeZone;
+  if (configuredTimeZone !== undefined) {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: configuredTimeZone });
+    } catch (cause) {
+      throw new Error('dsh-oks: 插件行里的 timeZone 不是合法的 IANA 时区: ' + JSON.stringify(configuredTimeZone), { cause });
+    }
+  }
+
   // 插件不认识模型：设置与 wasm 宿主都在**第一次用到某个工作区**时按那份 oks.json 惰性建立；
   // 一个进程里可以有任意多个工作区，互不影响。
   const workspaces = new Map(); // root -> entry
@@ -627,14 +638,14 @@ export function apply(ctx, config = {}) {
         properties: {
           timeZone: {
             type: 'string',
-            description: 'IANA time zone such as "Asia/Shanghai". Defaults to the host zone; the source actually used is echoed back.',
+            description: 'IANA time zone such as "Asia/Shanghai". It must come from the user or the context: pass it here, or declare it once as config.timeZone on the plugin row. There is no host-zone fallback — with neither, the call fails instead of guessing. The source actually used is echoed back.',
           },
         },
         additionalProperties: false,
       },
       output: { schema: OBJECT_OUTPUT, render: renderValue },
       async execute(args) {
-        const { zone, source } = resolveZone(args?.timeZone);
+        const { zone, source } = resolveZone(args?.timeZone, configuredTimeZone);
         return { timeZone: zone, timeZoneSource: source, ...encode(Date.now(), zone) };
       },
     },
@@ -650,7 +661,7 @@ export function apply(ctx, config = {}) {
           },
           timeZone: {
             type: 'string',
-            description: 'IANA time zone used to interpret zone-less input and to render the result. Defaults to the host zone.',
+            description: 'IANA time zone such as "Asia/Shanghai". It must come from the user or the context: pass it here, or declare it once as config.timeZone on the plugin row. There is no host-zone fallback — with neither, the call fails instead of guessing. The source actually used is echoed back.',
           },
           operations: {
             type: 'array',
@@ -662,7 +673,7 @@ export function apply(ctx, config = {}) {
       },
       output: { schema: OBJECT_OUTPUT, render: renderValue },
       async execute(args) {
-        const { zone, source } = resolveZone(args?.timeZone);
+        const { zone, source } = resolveZone(args?.timeZone, configuredTimeZone);
         const base = parseMoment(args?.base, zone);
         const result = applyOps({ epochMillis: base, zone }, args?.operations);
         return {

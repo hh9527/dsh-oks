@@ -103,6 +103,26 @@ console.log('=== 时间辅助工具 ===');
   const calc = await call('time_calc', { base: '2026-09-30 17:00:00', timeZone: Z, operations: [{ op: 'floor', unit: 'week' }] }, nowhere);
   console.log(`  time_calc: ${calc.value.operations.join(' → ')} → ${calc.value.local.text}`);
   if (calc.value.local.text !== '2026-09-28 00:00:00') throw new Error('time_calc 结果不对');
+  // 没给时区就必须报错——宿主时区不是兜底
+  try {
+    await call('time_now', {}, nowhere);
+    console.log('  ✗ 没给时区却成功了（不该用宿主时区兜底）');
+    throw new Error('没有时区时 time_now 不应成功');
+  } catch (cause) {
+    if (!/没有可用的时区/.test(String(cause?.message ?? cause))) throw cause;
+    console.log('  ✓ 不给时区时明确报错，不猜');
+  }
+  // 插件行声明了时区就按声明走
+  const declared = new Map();
+  apply({
+    logger: { info: () => {} },
+    get: () => undefined,
+    tools: { register: (tool) => { declared.set(tool.name, tool); return () => {}; } },
+    effect: (fn) => { const d = fn(); if (typeof d === 'function') disposers.push(d); },
+  }, { timeZone: Z });
+  const fromConfig = await declared.get('time_now').execute({}, { signal: new AbortController().signal, ...sessionFor(nowhere) });
+  console.log(`  插件行声明 timeZone → source=${fromConfig.timeZoneSource} · zone=${fromConfig.timeZone}`);
+  if (fromConfig.timeZoneSource !== 'config' || fromConfig.timeZone !== Z) throw new Error('配置声明的时区没生效');
 }
 
 // ── 发现协议：从 index 出发，只跟随节点给出的 key ────────────────────────────

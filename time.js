@@ -11,6 +11,8 @@
 //      hour/minute/second 是精确时长。
 //   4. month/quarter/year 加减按日历钳制（1 月 31 日 + 1 月 = 2 月 28/29 日）。
 //   5. 区间一律半开 [start, end)：调用方用两次计算得到两端。
+//   6. 时区必须由**调用方**或**插件行声明**给出，**绝不使用宿主时区兜底**——那会把时间边界
+//      静默算错；两者都没有时报错，让 agent 去问用户或去声明。
 
 const PARTS = { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', weekday: 'short', hourCycle: 'h23' };
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -26,15 +28,22 @@ function assertZone(zone) {
   return zone;
 }
 
-/** 时区从哪来：调用方显式给的 > 宿主默认。来源要一起报出去，便于在回答里写明口径。 */
-function resolveZone(requested) {
+/**
+ * 时区从哪来：调用方显式给的 > 插件行声明的。来源要一起报出去，便于在回答里写明口径。
+ * 这里**故意没有宿主时区兜底**：宿主时区与用户所在的时区无关，用它算"今天""上周"会静默偏掉。
+ */
+function resolveZone(requested, configured) {
   if (typeof requested === 'string' && requested.length > 0) {
     return { zone: assertZone(requested), source: 'argument' };
   }
-  const host = typeof Intl.DateTimeFormat().resolvedOptions().timeZone === 'string'
-    ? Intl.DateTimeFormat().resolvedOptions().timeZone
-    : '';
-  return host === '' ? { zone: 'UTC', source: 'fallback' } : { zone: host, source: 'host' };
+  if (typeof configured === 'string' && configured.length > 0) {
+    return { zone: assertZone(configured), source: 'config' };
+  }
+  throw new Error(
+    'dsh-oks: 没有可用的时区。时区只能来自调用参数 timeZone，或插件行 config.timeZone 的声明；'
+    + '本插件不使用宿主时区兜底（宿主时区与用户所在时区无关，会把时间边界静默算错）。'
+    + '请向用户确认时区后显式传入，或在 profile 的插件行声明它。',
+  );
 }
 
 const pad = (value, width = 2) => String(value).padStart(width, '0');

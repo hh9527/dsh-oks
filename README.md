@@ -90,6 +90,7 @@
 | `domain` / `artifact` | 覆盖工作区声明（缺 `domain` 或 `artifact` 时报错并给出补法） |
 | `planDir` | 计划文件落点（插件行覆盖用）。`oks.json` 里也可声明：`"planDir": "plans"`（相对 oks.json）、`"planDir": false`（不写）；两处都不声明时默认 `<workspace>/.oks/plans` |
 | `requestTimeoutMs` | 默认 60000，单次请求的墙钟上限（到点 terminate worker，下次请求再拉起） |
+| `timeZone` | 两个时间工具用的时区（IANA，与 `time-context` 插件同名）。**不做宿主兜底**：不声明就必须每次显式传 `timeZone`，否则报错 |
 | `retryAcceptedSubset` | 默认 true |
 | `workspace` | **兜底**：仅当会话头里取不到 `cwd` 时用；正常情况不要写 |
 
