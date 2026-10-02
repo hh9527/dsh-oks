@@ -11,11 +11,44 @@
 //      hour/minute/second 是精确时长。
 //   4. month/quarter/year 加减按日历钳制（1 月 31 日 + 1 月 = 2 月 28/29 日）。
 //   5. 区间一律半开 [start, end)：调用方用两次计算得到两端。
-//   6. 时区必须由**调用方**或**插件行声明**给出，**绝不使用宿主时区兜底**——那会把时间边界
-//      静默算错；两者都没有时报错，让 agent 去问用户或去声明。
+//   6. 时区按**插件规范**取：优先本次请求的上下文时区（用户消息上的 source.clientTimeZone），
+//      调用方也可显式覆盖；**绝不使用宿主时区兜底**（会把时间边界静默算错）。都没有时报错，
+//      让 agent 去问用户——规范的策略文本也是这么要求的（mixed / missing → ask the user）。
 
 const PARTS = { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', weekday: 'short', hourCycle: 'h23' };
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+/** 规范里的 IANA 形态：UTC 或 Area/Location。 */
+const IANA_TIME_ZONE = /^[A-Za-z][A-Za-z0-9_+.-]*(?:\/[A-Za-z0-9_+.-]+)+$/;
+
+/**
+ * 按插件规范从**当轮用户消息**里推导浏览器时区（与 dsh-time-context 同一套字段与三态）：
+ * 只认 source.kind === "user" 且带 rpcId 的消息上的 source.clientTimeZone。
+ * 返回 {kind:"resolved",timeZone} | {kind:"mixed",timeZones} | {kind:"missing"} | {kind:"invalid",...}。
+ * 规范里不合法是抛错；这里降级成可报告的态，让工具能给出"去问用户"的指引而不是打断回合。
+ */
+function deriveContextTimeZone(messages) {
+  const zones = new Set();
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const source = message?.source;
+    if (source?.kind !== 'user' || typeof source.rpcId !== 'string') continue;
+    const value = source.clientTimeZone;
+    if (typeof value !== 'string') continue;
+    if (value !== 'UTC' && !IANA_TIME_ZONE.test(value)) return { kind: 'invalid', timeZone: value };
+    try {
+      if (new Intl.DateTimeFormat('en-US', { timeZone: value }).resolvedOptions().timeZone !== value) {
+        return { kind: 'invalid', timeZone: value };
+      }
+    } catch {
+      return { kind: 'invalid', timeZone: value };
+    }
+    zones.add(value);
+  }
+  const sorted = [...zones].sort();
+  if (sorted.length === 0) return { kind: 'missing' };
+  if (sorted.length === 1) return { kind: 'resolved', timeZone: sorted[0] };
+  return { kind: 'mixed', timeZones: sorted };
+}
 
 /** 校验并规范化 IANA 时区名；不合法就明确报错，不静默回退。 */
 function assertZone(zone) {
@@ -29,21 +62,30 @@ function assertZone(zone) {
 }
 
 /**
- * 时区从哪来：调用方显式给的 > 插件行声明的。来源要一起报出去，便于在回答里写明口径。
- * 这里**故意没有宿主时区兜底**：宿主时区与用户所在的时区无关，用它算"今天""上周"会静默偏掉。
+ * 时区从哪来：调用方显式给的 > **本次请求的上下文时区**（按插件规范从用户消息推导）
+ * > 插件行声明。来源要一起报出去，便于在回答里写明口径。
+ * 三者都没有时**明确报错并要求向用户澄清**——绝不使用宿主时区：宿主时区与用户所在时区无关，
+ * 用它算"今天""上周"会静默偏掉，而偏了看不出来。
  */
-function resolveZone(requested, configured) {
+function resolveZone(requested, context, configured) {
   if (typeof requested === 'string' && requested.length > 0) {
     return { zone: assertZone(requested), source: 'argument' };
+  }
+  const kind = context?.kind;
+  if (kind === 'resolved') return { zone: assertZone(context.timeZone), source: 'context' };
+  if (kind === 'mixed') {
+    throw new Error('dsh-oks: 本次请求带进来的浏览器时区不一致（' + context.timeZones.join(', ')
+      + '）。按规范应向用户澄清用哪个时区，或显式传 timeZone。');
+  }
+  if (kind === 'invalid') {
+    throw new Error('dsh-oks: 本次请求带的浏览器时区不合法（' + String(context.timeZone)
+      + '）。请向用户确认时区，或显式传 timeZone。');
   }
   if (typeof configured === 'string' && configured.length > 0) {
     return { zone: assertZone(configured), source: 'config' };
   }
-  throw new Error(
-    'dsh-oks: 没有可用的时区。时区只能来自调用参数 timeZone，或插件行 config.timeZone 的声明；'
-    + '本插件不使用宿主时区兜底（宿主时区与用户所在时区无关，会把时间边界静默算错）。'
-    + '请向用户确认时区后显式传入，或在 profile 的插件行声明它。',
-  );
+  throw new Error('dsh-oks: 上下文里没有时区（本次请求没有带浏览器时区）。按规范要请用户澄清，'
+    + '或显式传 timeZone；本插件不使用宿主时区兜底——宿主时区与用户所在时区无关，会把时间边界静默算错。');
 }
 
 const pad = (value, width = 2) => String(value).padStart(width, '0');
@@ -253,4 +295,4 @@ function applyOps(state, operations) {
   return { epochMillis, zone, applied };
 }
 
-export { applyOps, assertZone, encode, isoWeek, localParts, offsetMinutes, offsetText, parseMoment, resolveZone };
+export { applyOps, assertZone, deriveContextTimeZone, encode, isoWeek, localParts, offsetMinutes, offsetText, parseMoment, resolveZone };

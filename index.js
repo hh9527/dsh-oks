@@ -20,7 +20,7 @@ import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { applyOps, encode, parseMoment, resolveZone } from './time.js';
+import { applyOps, deriveContextTimeZone, encode, parseMoment, resolveZone } from './time.js';
 
 export const inject = ['tools'];
 
@@ -460,7 +460,23 @@ export function apply(ctx, config = {}) {
     }
   };
 
-  // 时区与 time-context 插件**同名**（插件规范里的约定）。**不做宿主兜底**：
+  // 上下文时区：按插件规范，浏览器时区挂在**当轮用户消息**的 source.clientTimeZone 上
+  // （与 dsh-time-context 同一套字段与 resolved / mixed / missing 三态）。这里在 agent/pre-step
+  // 时读一次并按会话记下，供两个时间工具取用。取不到就报错让 agent 去问用户，不做宿主兜底。
+  const contextTimeZones = new Map(); // session -> 规范推导结果
+  try {
+    ctx.on('agent/pre-step', async (payload, next) => {
+      const decision = await next();
+      if (decision?.kind !== 'reject' && payload?.agent?.session !== undefined) {
+        contextTimeZones.set(payload.agent.session, deriveContextTimeZone(payload.messages));
+      }
+      return decision;
+    });
+  } catch (cause) {
+    log('[oks] cannot observe agent/pre-step: ' + String(cause?.message ?? cause));
+  }
+
+  // 时区兜底的**声明**（可选，与 time-context 插件同名，优先级低于上下文）。**不做宿主兜底**：
   // 时区只来自这里的声明或工具参数；两者都没有时，两个时间工具会明确报错。
   const configuredTimeZone = config.timeZone;
   if (configuredTimeZone !== undefined) {
@@ -638,14 +654,14 @@ export function apply(ctx, config = {}) {
         properties: {
           timeZone: {
             type: 'string',
-            description: 'IANA time zone such as "Asia/Shanghai". It must come from the user or the context: pass it here, or declare it once as config.timeZone on the plugin row. There is no host-zone fallback — with neither, the call fails instead of guessing. The source actually used is echoed back.',
+            description: 'IANA time zone such as "Asia/Shanghai". By default the zone comes from the request context — the browser zone the client attached to the current turn messages, read per the plugin spec — so pass one only to override it (for example when the context zone is mixed or missing). There is no host-zone fallback: with no context zone and no argument, the call fails and tells you to ask the user. The source actually used is echoed back.',
           },
         },
         additionalProperties: false,
       },
       output: { schema: OBJECT_OUTPUT, render: renderValue },
-      async execute(args) {
-        const { zone, source } = resolveZone(args?.timeZone, configuredTimeZone);
+      async execute(args, exec) {
+        const { zone, source } = resolveZone(args?.timeZone, contextTimeZones.get(exec?.agent?.session), configuredTimeZone);
         return { timeZone: zone, timeZoneSource: source, ...encode(Date.now(), zone) };
       },
     },
@@ -661,7 +677,7 @@ export function apply(ctx, config = {}) {
           },
           timeZone: {
             type: 'string',
-            description: 'IANA time zone such as "Asia/Shanghai". It must come from the user or the context: pass it here, or declare it once as config.timeZone on the plugin row. There is no host-zone fallback — with neither, the call fails instead of guessing. The source actually used is echoed back.',
+            description: 'IANA time zone such as "Asia/Shanghai". By default the zone comes from the request context — the browser zone the client attached to the current turn messages, read per the plugin spec — so pass one only to override it (for example when the context zone is mixed or missing). There is no host-zone fallback: with no context zone and no argument, the call fails and tells you to ask the user. The source actually used is echoed back.',
           },
           operations: {
             type: 'array',
@@ -672,8 +688,8 @@ export function apply(ctx, config = {}) {
         additionalProperties: false,
       },
       output: { schema: OBJECT_OUTPUT, render: renderValue },
-      async execute(args) {
-        const { zone, source } = resolveZone(args?.timeZone, configuredTimeZone);
+      async execute(args, exec) {
+        const { zone, source } = resolveZone(args?.timeZone, contextTimeZones.get(exec?.agent?.session), configuredTimeZone);
         const base = parseMoment(args?.base, zone);
         const result = applyOps({ epochMillis: base, zone }, args?.operations);
         return {

@@ -37,8 +37,11 @@ const ctx = {
     const dispose = fn();
     if (typeof dispose === 'function') disposers.push(dispose);
   },
+  // 插件按规范监听 agent/pre-step 以取得上下文时区；桩把监听器记下来，测试里手动触发。
+  on: (name, listener) => { events.set(name, listener); return () => events.delete(name); },
 };
 
+const events = new Map();
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
@@ -50,7 +53,11 @@ for (const name of EXPECTED_TOOLS) {
 }
 
 // exec 模拟 harness 传进来的 ToolRunContext：工作区从会话头里取，不由调用方给。
-const sessionFor = (cwd) => ({ agent: { session: { meta: { cwd } } } });
+const sessions = new Map();
+const sessionFor = (cwd) => {
+  if (!sessions.has(cwd)) sessions.set(cwd, { meta: { cwd } });
+  return { agent: { session: sessions.get(cwd) } };
+};
 const call = async (name, args, cwd = DEV_ROOT) => {
   const tool = registered.get(name);
   if (!tool) throw new Error(`tool ${name} was not registered`);
@@ -103,14 +110,47 @@ console.log('=== 时间辅助工具 ===');
   const calc = await call('time_calc', { base: '2026-09-30 17:00:00', timeZone: Z, operations: [{ op: 'floor', unit: 'week' }] }, nowhere);
   console.log(`  time_calc: ${calc.value.operations.join(' → ')} → ${calc.value.local.text}`);
   if (calc.value.local.text !== '2026-09-28 00:00:00') throw new Error('time_calc 结果不对');
-  // 没给时区就必须报错——宿主时区不是兜底
+  // 上下文里没有时区（本次请求没带）→ 必须报错并要求向用户澄清；宿主时区不是兜底
+  const preStep = events.get('agent/pre-step');
+  if (typeof preStep !== 'function') throw new Error('插件没有监听 agent/pre-step，取不到上下文时区');
+  const firePreStep = (cwd, messages) => preStep(
+    { agent: sessionFor(cwd).agent, messages, turn: 1, step: 1 },
+    async () => ({ kind: 'enter' }),
+  );
   try {
     await call('time_now', {}, nowhere);
     console.log('  ✗ 没给时区却成功了（不该用宿主时区兜底）');
     throw new Error('没有时区时 time_now 不应成功');
   } catch (cause) {
-    if (!/没有可用的时区/.test(String(cause?.message ?? cause))) throw cause;
-    console.log('  ✓ 不给时区时明确报错，不猜');
+    if (!/上下文里没有时区/.test(String(cause?.message ?? cause))) throw cause;
+    console.log('  ✓ 上下文没有时区时明确报错，要求向用户澄清');
+  }
+  // 上下文带来浏览器时区 → 自动取用（规范字段 source.clientTimeZone）
+  await firePreStep(nowhere, [{ source: { kind: 'user', rpcId: 'r1', clientTimeZone: Z } }]);
+  const fromContext = await call('time_now', {}, nowhere);
+  console.log(`  上下文浏览器时区 → source=${fromContext.value.timeZoneSource} · zone=${fromContext.value.timeZone}`);
+  if (fromContext.value.timeZoneSource !== 'context' || fromContext.value.timeZone !== Z) {
+    throw new Error('上下文时区没有生效');
+  }
+  // 上下文时区冲突 → 按规范请用户澄清，而不是随便挑一个
+  await firePreStep(nowhere, [
+    { source: { kind: 'user', rpcId: 'r1', clientTimeZone: Z } },
+    { source: { kind: 'user', rpcId: 'r2', clientTimeZone: 'UTC' } },
+  ]);
+  try {
+    await call('time_now', {}, nowhere);
+    console.log('  ✗ 时区冲突却成功了');
+    throw new Error('时区冲突时不应成功');
+  } catch (cause) {
+    if (!/不一致/.test(String(cause?.message ?? cause))) throw cause;
+    console.log('  ✓ 上下文时区冲突时明确报错，要求澄清');
+  }
+  // 显式参数可以覆盖上下文
+  await firePreStep(nowhere, [{ source: { kind: 'user', rpcId: 'r1', clientTimeZone: 'UTC' } }]);
+  const overridden = await call('time_now', { timeZone: Z }, nowhere);
+  console.log(`  显式参数覆盖上下文 → source=${overridden.value.timeZoneSource} · zone=${overridden.value.timeZone}`);
+  if (overridden.value.timeZoneSource !== 'argument' || overridden.value.timeZone !== Z) {
+    throw new Error('显式参数没有覆盖上下文');
   }
   // 插件行声明了时区就按声明走
   const declared = new Map();
