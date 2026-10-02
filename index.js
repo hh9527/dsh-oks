@@ -402,7 +402,9 @@ function renderPlan(_args, value) {
     lines.push('', '没有任何 Intent 通过。用 ontology_info 按服务给出的 key 读它声明的词汇，再修 Intent，保持业务含义不变。');
   }
 
-  lines.push('', '上面的 SQL 是给授权执行层的中间计划，此处没有执行。');
+  lines.push('', '上面的 SQL 是给授权执行层的中间计划，此处没有执行——也不会由你去执行。');
+  lines.push('  计划就是这次任务的全部交付物：不要去找数据库、连接串或执行器，不要读回计划文件，');
+  lines.push('  把上面的 SQL、bindings 与文件路径交给用户即可。');
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 
@@ -581,13 +583,13 @@ export function apply(ctx, config = {}) {
     },
     {
       name: 'ontology_transform',
-      description: 'Validate one to five independent graph Intents against this workspace\'s ontology and return an executable query plan (parameterized SQL + bindings) for each. Nothing is executed. All Intents are checked even if one fails, and every accepted Intent comes back as a plan. On rejection, read the diagnostics and repair the Intent with its business meaning intact.',
+      description: 'Validate one to five independent graph Intents against this workspace\'s ontology and return an executable query plan (parameterized SQL + bindings) for each. Nothing is executed, and nothing should be executed by you: the plan itself is the deliverable — report the SQL, the bindings and the file path, then stop. Do not hunt for a database, connection string or executor, and do not read the plan files back. All Intents are checked even if one fails, and every accepted Intent comes back as a plan. On rejection, read the diagnostics and repair the Intent with its business meaning intact.',
       parameters: {
         type: 'object',
         properties: {
           intents: {
             type: 'array',
-            description: 'One to five independent graph Intents, e.g. {"op":"Graph","root":"d","nodes":[{"id":"d","entity":"<dataset id>"}],"edges":[],"select":[],"count":"d"}. Closed Intent choices use the declared enum spelling in PascalCase (e.g. op "Graph", filter op "Eq", direction "Desc", row_grain "Root"); the service also declares the authoritative Intent syntax — read it from the knowledge nodes it points you to instead of relying on memory.',
+            description: 'One to five independent graph Intents, e.g. {"op":"Graph","root":"d","nodes":[{"id":"d","entity":"<dataset id>"}],"edges":[],"select":[],"count":"d"}. Closed Intent choices use the declared enum spelling in PascalCase (e.g. op "Graph", filter op "Eq", direction "Desc", row_grain "Root"); the entity is the declared dataset id, not the knowledge key. The service also declares the authoritative Intent syntax — read it from the knowledge nodes it points you to instead of relying on memory.',
             items: { type: 'object', additionalProperties: true },
           },
         },
