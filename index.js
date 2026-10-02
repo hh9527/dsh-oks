@@ -4,6 +4,9 @@
 //
 // 两个工具：ontology_info（按服务给出的不透明 key 读节点，入口是 key "index"）、
 // ontology_transform（把结构化 Intent 降成可执行查询计划，不执行）。
+// 外加两个与模型无关的辅助工具：time_now（当前时刻的各种标准表示）、
+// time_calc（日历代数：加减 / 对齐到日历边界 / 换时区）——服务不读时钟，相对时间
+// 必须在提交前换成绝对边界；这两个工具只做标准表示，不解释任何领域格式。
 // 插件只写一样东西：计划文件（.sql/.json，落点由工作区声明，可关）。
 // 每次调用都在结果开头打印发给 OKS 的请求与响应摘要，工具卡因此自己呈现推理轨迹。
 //
@@ -17,6 +20,7 @@ import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { applyOps, encode, parseMoment, resolveZone } from './time.js';
 
 export const inject = ['tools'];
 
@@ -118,7 +122,7 @@ const OBJECT_OUTPUT = { type: 'object', additionalProperties: true };
  *  rank 250：工作区自己的 skill(100/200) 能覆盖它，用户级(400/500) 不能。 */
 const SKILL = {
   name: 'ontology-query',
-  description: 'Use when a user intent must become a query plan over domain data: discover the ontology with ontology_info, express the plan as structured intents through ontology_transform, and confirm alignment by restating the plan as a business intent.',
+  description: 'Use when a user intent must become a query plan over domain data: discover the ontology with ontology_info, express the plan as structured intents through ontology_transform, and confirm alignment by restating the plan as a business intent. Resolve relative time into absolute boundaries first — time_now and time_calc do that without knowing any domain format.',
   source: 'runtime',
 };
 
@@ -332,6 +336,11 @@ function renderTrace(trace) {
     lines.push(`◂ OKS ${step.method}  ${summarize(step.response)}`);
   }
   return lines;
+}
+
+/** 纯计算类工具（不经过 OKS）的渲染：直接给结构化结果。 */
+function renderValue(_args, value) {
+  return [{ type: 'text', text: `${JSON.stringify(value, null, 2)}\n` }];
 }
 
 function renderJson(_args, value) {
@@ -608,6 +617,61 @@ export function apply(ctx, config = {}) {
         }
 
         return { trace, response, intents, plans };
+      },
+    },
+    {
+      name: 'time_now',
+      description: 'Read the current instant from the host clock in several standard forms — epoch milliseconds and seconds, UTC text, RFC 3339, local text with its UTC offset, calendar date, and ISO week. The knowledge service never reads the clock, so every relative expression ("last week", "the last 24 hours") has to become an absolute boundary before it is submitted: resolve it here, state the time zone you used, and pick whichever form the knowledge node itself declares. This tool knows nothing about domain time formats.',
+      parameters: {
+        type: 'object',
+        properties: {
+          timeZone: {
+            type: 'string',
+            description: 'IANA time zone such as "Asia/Shanghai". Defaults to the host zone; the source actually used is echoed back.',
+          },
+        },
+        additionalProperties: false,
+      },
+      output: { schema: OBJECT_OUTPUT, render: renderValue },
+      async execute(args) {
+        const { zone, source } = resolveZone(args?.timeZone);
+        return { timeZone: zone, timeZoneSource: source, ...encode(Date.now(), zone) };
+      },
+    },
+    {
+      name: 'time_calc',
+      description: 'Apply ordered calendar arithmetic to an instant and return every standard form of the result: add (year/quarter/month/week/day/hour/minute/second), floor/ceil to a calendar boundary (weeks start on Monday unless weekStartsOn is given), and convert between time zones. Day and week arithmetic keeps the local wall clock, so a day across a daylight-saving change is not always 24 hours; month/quarter/year addition clamps to the last valid day. Intervals are half-open [start, end), so compute both ends. base accepts "now" (the default), epoch milliseconds as a number, RFC 3339 text, or zone-less text "YYYY-MM-DD[ HH:MM[:SS]]" read as local time in the given zone.',
+      parameters: {
+        type: 'object',
+        properties: {
+          base: {
+            oneOf: [{ type: 'string' }, { type: 'number' }],
+            description: '"now" (default), epoch milliseconds as a number, RFC 3339 text, or zone-less "YYYY-MM-DD[ HH:MM[:SS]]" read as local time in timeZone.',
+          },
+          timeZone: {
+            type: 'string',
+            description: 'IANA time zone used to interpret zone-less input and to render the result. Defaults to the host zone.',
+          },
+          operations: {
+            type: 'array',
+            description: 'Applied in order, e.g. {"op":"add","unit":"month","amount":-1}, {"op":"floor","unit":"week","weekStartsOn":1}, {"op":"ceil","unit":"day"}, {"op":"convert","zone":"UTC"}.',
+            items: { type: 'object', additionalProperties: true },
+          },
+        },
+        additionalProperties: false,
+      },
+      output: { schema: OBJECT_OUTPUT, render: renderValue },
+      async execute(args) {
+        const { zone, source } = resolveZone(args?.timeZone);
+        const base = parseMoment(args?.base, zone);
+        const result = applyOps({ epochMillis: base, zone }, args?.operations);
+        return {
+          timeZone: result.zone,
+          timeZoneSource: source,
+          base: { input: args?.base ?? 'now', ...encode(base, zone) },
+          operations: result.applied,
+          ...encode(result.epochMillis, result.zone),
+        };
       },
     },
   ];

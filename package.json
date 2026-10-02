@@ -12,6 +12,7 @@
   "icon": "./icon.svg",
   "files": [
     "index.js",
+    "time.js",
     "skill.md",
     "cordis.patch.yml",
     "locale/*.json",

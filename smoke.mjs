@@ -1,4 +1,5 @@
-// 本地冒烟测试：用假的 cordis ctx 加载插件，直接调用两个工具的真实实现，不安装进 profile。
+// 本地冒烟测试：用假的 cordis ctx 加载插件，直接调用四个工具的真实实现，不安装进 profile。
+// 其中两个与模型无关的时间工具（time_now / time_calc）不需要工作区，也在这里单测。
 // 插件行**什么都不配**——模型、领域、路径全部来自工作区，正是要验证的那一点。
 //
 // 夹具**不含任何领域知识、也不假设地图形状**：实体 id 是运行时从服务里走出来的——读
@@ -9,6 +10,7 @@
 //   cd /path/to/workspace && node /path/to/dsh-oks/smoke.mjs
 //   ONTOLOGY_WORKSPACE=/path/to/workspace node smoke.mjs
 import { apply } from './index.js';
+import { applyOps, encode, parseMoment } from './time.js';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
@@ -40,9 +42,11 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${toolNames.length === 2 ? '✓' : '✗（应当只有两个）'}`);
-if (!toolNames.includes('ontology_info') || !toolNames.includes('ontology_transform')) {
-  throw new Error(`unexpected tool set: ${toolNames.join(', ')}`);
+const EXPECTED_TOOLS = ['ontology_info', 'ontology_transform', 'time_now', 'time_calc'];
+console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
+  EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
+for (const name of EXPECTED_TOOLS) {
+  if (!toolNames.includes(name)) throw new Error(`missing tool: ${name}（实际 ${toolNames.join(', ')}）`);
 }
 
 // exec 模拟 harness 传进来的 ToolRunContext：工作区从会话头里取，不由调用方给。
@@ -67,6 +71,38 @@ console.log('=== 自带技能（注册进 runtime 层，所有工作区可见）
     + ` · 描述非空: ${String(skill.description ?? '').length > 0 ? '✓' : '✗'}`);
   console.log(`  正文 = skill.md 原文: ${skill.content === body ? '✓' : '✗'}`);
   console.log(`  正文不含具体领域名: ${/\bic\b|icloud/i.test(skill.content) ? '✗' : '✓'}`);
+}
+
+// ── 与模型无关的时间工具（不依赖工作区、不解释领域格式）─────────────────────
+console.log('=== 时间辅助工具 ===');
+{
+  const Z = 'Asia/Shanghai';
+  const base = parseMoment('2026-09-30 17:00:00', Z);
+  const enc = encode(base, Z);
+  console.log(`  本地 2026-09-30 17:00:00 (+08) → UTC 文本 ${enc.utc.text} · RFC 3339 ${enc.utc.rfc3339}`);
+  if (enc.utc.text !== '2026-09-30 09:00:00') throw new Error(`UTC 文本错了: ${enc.utc.text}`);
+  const monday = applyOps({ epochMillis: base, zone: Z }, [{ op: 'floor', unit: 'week' }]);
+  const lastMonday = applyOps({ epochMillis: monday.epochMillis, zone: Z }, [{ op: 'add', unit: 'day', amount: -7 }]);
+  console.log(`  上周（周一到周日）半开区间 → [${encode(lastMonday.epochMillis, Z).local.text}, ${encode(monday.epochMillis, Z).local.text})`);
+  if (encode(monday.epochMillis, Z).local.text !== '2026-09-28 00:00:00') throw new Error('周一取整错了');
+  if (encode(lastMonday.epochMillis, Z).local.text !== '2026-09-21 00:00:00') throw new Error('上周取整错了');
+  const clamped = applyOps({ epochMillis: parseMoment('2026-01-31 12:00:00', Z), zone: Z }, [{ op: 'add', unit: 'month', amount: 1 }]);
+  console.log(`  1/31 + 1 月 → ${encode(clamped.epochMillis, Z).local.text}（钳制到月末）`);
+  if (encode(clamped.epochMillis, Z).local.text !== '2026-02-28 12:00:00') throw new Error('月末钳制错了');
+  const ny = 'America/New_York';
+  const before = parseMoment('2026-03-07 12:00:00', ny);
+  const after = applyOps({ epochMillis: before, zone: ny }, [{ op: 'add', unit: 'day', amount: 1 }]);
+  const hours = (after.epochMillis - before) / 3600000;
+  console.log(`  跨 DST：NY 3/7 12:00 + 1 天 → ${encode(after.epochMillis, ny).local.text}，实际 ${hours} 小时（保持墙钟）`);
+  if (hours !== 23) throw new Error(`DST 处理错了: ${hours} 小时`);
+  // 两个工具本身：故意给一个**没有 oks.json** 的 cwd，证明它们不依赖工作区
+  const nowhere = '/nonexistent-workspace-for-time-tools';
+  const now = await call('time_now', { timeZone: Z }, nowhere);
+  console.log(`  time_now: epochMillis=${now.value.epochMillis} · UTC ${now.value.utc.text} · 本地 ${now.value.local.text} · 第 ${now.value.isoWeek.week} 周`);
+  if (typeof now.value.epochMillis !== 'number' || typeof now.value.utc.text !== 'string') throw new Error('time_now 输出不对');
+  const calc = await call('time_calc', { base: '2026-09-30 17:00:00', timeZone: Z, operations: [{ op: 'floor', unit: 'week' }] }, nowhere);
+  console.log(`  time_calc: ${calc.value.operations.join(' → ')} → ${calc.value.local.text}`);
+  if (calc.value.local.text !== '2026-09-28 00:00:00') throw new Error('time_calc 结果不对');
 }
 
 // ── 发现协议：从 index 出发，只跟随节点给出的 key ────────────────────────────
