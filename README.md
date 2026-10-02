@@ -20,12 +20,18 @@
 `artifact` 一律**相对 `oks.json` 所在目录**解析（绝对路径原样使用），与 `cwd` 无关。
 没有 `oks.json` 的工作区会**明确报错**（用错模型比报错贵）。
 
-## 迭代时的一个坑
+## 安装形态与迭代时的一个坑
 
-插件是按**绝对路径**被 loader `import` 的，Node 按 URL 缓存 ESM 模块，所以：
+插件按 **bundle 安装**：profile 的 `dsh.profile.bundles` 里列出 `@local/dsh-oks`，
+依赖形式用 **`link:`**（`node_modules/@local/dsh-oks` 是指向本目录的符号链接）。
+这样插件页显示的是包名与 `locale/` 里的标题/描述，而不是一串路径。
 
-- 改 `cordis.patch.yml` 只会让 profile 重读**配置**；
-- 改 `index.js` **不会**热生效——需要重启 web profile 才会加载新的模块代。
+Node 按 URL 缓存 ESM 模块，所以：
+
+- 改 `index.js` / `time.js` / `skill.md` 后要**重启 web profile** 才加载新的模块代
+  （`link:` 的好处是**不必重新安装**，重启即可；若用 `file:`，pnpm 会硬链接成拷贝，
+  改源码不再生效）；
+- 改 profile 的 `cordis.patch.yml` 只会让 profile 重读**配置**。
 
 ## 提供的能力
 
@@ -122,9 +128,11 @@ bin/telora -C <模型目录> build <模型名> --snapshot \
 
 ## 安装 / 卸载
 
-- **推荐**：在 Web 的「插件」页用 `install_bundle` 指向本目录（绝对路径）。
-- 手动等价操作：`dsh plugin --profile web add file:<本目录>`，再把包名加进
-  profile `package.json` 的 `dsh.profile.bundles`。
+- **推荐**：在 Web 的「插件」页安装本目录，或命令行
+  `dsh plugin --profile web add link:<本目录>`，再把 `@local/dsh-oks` 加进
+  profile `package.json` 的 `dsh.profile.bundles`（两处缺一不可）。
+- 用 `link:` 而不是 `file:`：前者是符号链接（改源码重启即生效），后者会被 pnpm
+  硬链接成拷贝，插件页能显示但源码改动不再生效。
 - 卸载：从 `dsh.profile.bundles` 去掉包名并 `dsh plugin --profile web remove @local/dsh-oks`。
 
 ## 本地冒烟测试（不安装）
