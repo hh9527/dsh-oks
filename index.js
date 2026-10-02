@@ -87,7 +87,13 @@ function resolveSettings(root, config) {
     workspaceRoot: workspace.root,
     workspaceFile: workspace.file,
   };
-  const settings = { ...DEFAULTS, ...fromWorkspace, ...(config ?? {}) };
+  // 只认契约里的覆盖键；其它键（例如 timeZone / workspace）根本不在契约里，
+  // 插件不感知也不会用它们——时区与工作区各有唯一来源，取不到就在运行时报错。
+  const overrides = {};
+  for (const key of ['domain', 'artifact', 'requestTimeoutMs', 'retryAcceptedSubset']) {
+    if (config?.[key] !== undefined) overrides[key] = config[key];
+  }
+  const settings = { ...DEFAULTS, ...fromWorkspace, ...overrides };
   // 计划落点：声明成字符串就写在那儿（相对 oks.json 解析，和 artifact 同一条规则），
   // 声明成 false（或 config 里 false）就不写，什么都不说才用默认的 <ws>/.oks/plans。
   const planDirFrom = (value) => {
@@ -480,17 +486,6 @@ export function apply(ctx, config = {}) {
     log('[oks] cannot observe agent/pre-step: ' + String(cause?.message ?? cause));
   }
 
-  // 不接受任何"兜底"配置：时区来自本次请求的上下文（用户消息上的浏览器时区），
-  // 工作区来自会话头的 cwd。配了就直接报错——缺东西应该看得见，而不是让插件猜。
-  for (const key of ['timeZone', 'workspace']) {
-    if (config?.[key] !== undefined) {
-      throw new Error('dsh-oks: 不接受 config.' + key + ' 这种兜底配置（'
-        + (key === 'timeZone'
-          ? '时区只来自本次请求的上下文，或工具调用的 timeZone 参数'
-          : '工作区是会话属性，来自会话头的 cwd')
-        + '）。请删掉它；缺了就应该报错。');
-    }
-  }
   // 插件不认识模型：设置与 wasm 宿主都在**第一次用到某个工作区**时按那份 oks.json 惰性建立；
   // 一个进程里可以有任意多个工作区，互不影响。
   const workspaces = new Map(); // root -> entry

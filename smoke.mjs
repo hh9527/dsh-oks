@@ -159,21 +159,37 @@ console.log('=== 时间辅助工具 ===');
   if (overridden.value.timeZoneSource !== 'argument' || overridden.value.timeZone !== Z) {
     throw new Error('显式参数没有覆盖上下文');
   }
-  // 兜底配置一律不接受：配了就在加载时报错
-  for (const [key, value] of [['timeZone', Z], ['workspace', '/tmp']]) {
+  // 契约里不存在 timeZone / workspace：给了也不起作用（插件不感知）
+  const buildCtx = (config) => {
+    const tools = new Map();
+    const events = new Map();
+    apply({
+      logger: { info: () => {} },
+      get: () => undefined,
+      tools: { register: (tool) => { tools.set(tool.name, tool); return () => {}; } },
+      effect: (fn) => { const d = fn(); if (typeof d === 'function') disposers.push(d); },
+      on: (name, listener) => { events.set(name, listener); return () => {}; },
+    }, config);
+    return { tools, events };
+  };
+  {
+    const { tools, events } = buildCtx({ timeZone: 'UTC' });
+    const session = { meta: { cwd: nowhere } };
+    await events.get('agent/pre-step')({
+      agent: { session },
+      messages: [{ source: { kind: 'user', rpcId: 'r1', clientTimeZone: Z } }],
+    }, async () => ({ kind: 'enter' }));
+    const value = await tools.get('time_now').execute({}, { signal: new AbortController().signal, agent: { session } });
+    console.log('  config.timeZone=UTC 时实际用 → ' + value.timeZoneSource + ' / ' + value.timeZone);
+    if (value.timeZoneSource !== 'context' || value.timeZone !== Z) throw new Error('config.timeZone 竟然生效了');
+    const second = buildCtx({ workspace: '/tmp/whatever' });
     try {
-      apply({
-        logger: { info: () => {} },
-        get: () => undefined,
-        tools: { register: () => () => {} },
-        effect: () => {},
-        on: () => () => {},
-      }, { [key]: value });
-      console.log('  ✗ config.' + key + ' 竟然被接受了');
-      throw new Error('config.' + key + ' 不应被接受');
+      await second.tools.get('ontology_info').execute({ key: 'index' }, { signal: new AbortController().signal, agent: { session: { meta: {} } } });
+      console.log('  ✗ config.workspace 竟然兜底了');
+      throw new Error('config.workspace 不应起作用');
     } catch (cause) {
-      if (!/兜底配置/.test(String(cause?.message ?? cause))) throw cause;
-      console.log('  ✓ config.' + key + ' 被拒绝（不做兜底）');
+      if (!/无法确定当前会话的工作区目录/.test(String(cause?.message ?? cause))) throw cause;
+      console.log('  ✓ config.workspace 不兜底：没有 cwd 仍然在运行时报错');
     }
   }
   // 会话头里没有 cwd 时明确报错，而不是回落到别的目录
