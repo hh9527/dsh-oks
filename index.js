@@ -343,6 +343,8 @@ function renderValue(_args, value) {
   return [{ type: 'text', text: `${JSON.stringify(value, null, 2)}\n` }];
 }
 
+/** 渲染不做形状分类：同一套 JSON 通道对任何节点都成立。
+ *  （早期版本按 type 分组渲染"目录名册"，那正是形状假设——模型一改就腐坏，所以删了。） */
 function renderJson(_args, value) {
   const lines = renderTrace(value?.trace);
   lines.push('', JSON.stringify(value?.trace?.[0]?.response ?? value, null, 2));
@@ -548,6 +550,9 @@ export function apply(ctx, config = {}) {
   };
 
   // 工具描述在注册时写死，此时还不知道任何工作区，所以文本里不出现领域名。
+  // 设计约束：**这里也不写任何"地图长什么样"的假设**。工具描述只说协议（怎么打交道）
+  // 与呈现（收到什么就原样给什么）；具体有哪些种类、入口、字段、格式、路由、分页，
+  // 一律由服务自己的声明回答——模型换了形状，这里一行都不用改。
   const definitions = [
     {
       name: 'ontology_info',
