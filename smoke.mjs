@@ -132,6 +132,13 @@ console.log('=== 时间辅助工具 ===');
   if (fromContext.value.timeZoneSource !== 'context' || fromContext.value.timeZone !== Z) {
     throw new Error('上下文时区没有生效');
   }
+  // 同一回合的第 2 步：payload.messages 为空，不能把已取到的时区覆盖成 missing
+  await firePreStep(nowhere, []);
+  const afterEmptyStep = await call('time_now', {}, nowhere);
+  if (afterEmptyStep.value.timeZoneSource !== 'context' || afterEmptyStep.value.timeZone !== Z) {
+    throw new Error('空消息的那一步把上下文时区覆盖掉了');
+  }
+  console.log('  ✓ 同回合后续步骤（无用户消息）不会覆盖已取到的上下文时区');
   // 上下文时区冲突 → 按规范请用户澄清，而不是随便挑一个
   await firePreStep(nowhere, [
     { source: { kind: 'user', rpcId: 'r1', clientTimeZone: Z } },

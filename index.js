@@ -468,7 +468,11 @@ export function apply(ctx, config = {}) {
     ctx.on('agent/pre-step', async (payload, next) => {
       const decision = await next();
       if (decision?.kind !== 'reject' && payload?.agent?.session !== undefined) {
-        contextTimeZones.set(payload.agent.session, deriveContextTimeZone(payload.messages));
+        const derived = deriveContextTimeZone(payload.messages);
+        const carriesMessages = Array.isArray(payload.messages) && payload.messages.length > 0;
+        // 同一回合从第 2 步起 payload.messages 是空的（用户消息只在"进入"那一步），
+        // 此时不能把已知时区覆盖成 missing；只有这一步确实带了用户消息才更新。
+        if (derived.kind !== 'missing' || carriesMessages) contextTimeZones.set(payload.agent.session, derived);
       }
       return decision;
     });
