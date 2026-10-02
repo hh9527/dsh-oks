@@ -1,4 +1,4 @@
 {
   "title": "Ontology (OKS)",
-  "description": "Turns the knowledge service declared by the session's workspace into three native tools (info / map / transform): a business question becomes an executable query plan (parameterized SQL + bindings) that is never executed. No model is baked in — a workspace opts in with an oks.json."
+  "description": "Turns the knowledge service declared by the session's workspace into two native tools (info / transform): a business question becomes an executable query plan (parameterized SQL + bindings) that is never executed. No model is baked in — a workspace opts in with an oks.json, and the agent explores the domain through info, starting from the opaque key \"index\"."
 }
