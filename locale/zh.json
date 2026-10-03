@@ -1,4 +1,4 @@
 {
-  "title": "本体查询 (OKS)",
-  "description": "把**会话所在工作区**声明的知识服务接成两个原生工具（info / transform）：业务问句降低为可执行查询计划（参数化 SQL + bindings），只计划、不执行。插件本身不含任何模型——工作区根目录放一份 oks.json 就开放一个模型；领域知识由 agent 从 `index` 开始按 key 自主探索。"
+  "title": "知识服务查询 (OKS)",
+  "description": "把**会话所在工作区**声明的知识服务与数据文件接成三个原生工具（info / check_intent / query）：业务问句先校验成结构化 Intent，再在**只读**连接上查出真实结果。插件本身不含任何模型——工作区根目录放一份 oks.json 就开放一个模型；领域知识由 agent 从 `index` 开始按 key 自主探索。插件不在工作区里写任何文件。"
 }

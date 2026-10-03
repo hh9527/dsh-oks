@@ -1,4 +1,4 @@
 {
-  "title": "Ontology (OKS)",
-  "description": "Turns the knowledge service declared by the session's workspace into two native tools (info / transform): a business question becomes an executable query plan (parameterized SQL + bindings) that is never executed. No model is baked in — a workspace opts in with an oks.json, and the agent explores the domain through info, starting from the opaque key \"index\"."
+  "title": "Knowledge service (OKS)",
+  "description": "Turns the knowledge service and data file declared by the session's workspace into three native tools (info / check_intent / query): a business question is validated into structured intents, then answered with real rows over a read-only connection. No model is baked in — a workspace opts in with an oks.json, and the agent explores the domain through oks_info, starting from the opaque key \"index\". The plugin writes nothing into the workspace."
 }

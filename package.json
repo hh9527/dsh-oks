@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "A Harness capability, not a wrapper for one model: whatever knowledge service (OKS) a session's workspace declares in oks.json becomes two native tools — info / transform — turning a business question into an executable, not-yet-executed query plan. The service's knowledge is explored through info, starting from the opaque key \"index\".",
+  "description": "A Harness capability, not a wrapper for one model: whatever knowledge service (OKS) and data file a session's workspace declares in oks.json become three native tools — info / check_intent / query — turning a business question into rows read from that data file over a read-only connection. The knowledge catalog is explored through oks_info, starting from the opaque key \"index\".",
   "exports": {
     ".": "./index.js",
     "./package.json": "./package.json",

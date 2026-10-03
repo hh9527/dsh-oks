@@ -1,25 +1,28 @@
-// dsh-oks —— DSH 能力扩展：把"某个领域的知识服务（OKS）"接成两个原生工具。
+// dsh-oks —— DSH 能力扩展：把"某个领域的知识服务（OKS）"接成三个原生工具。
 // 插件不认识任何模型：开放哪个模型、模型在哪，由**会话所在工作区**根目录的 oks.json 声明
-// （{"domain":"...","artifact":"...wasm"}）。工作区是会话属性，所以一份插件能服务任意多工作区。
+// （{"domain":"...","artifact":"...wasm","dataFile":"...sqlite"}）。
+// 工作区是会话属性，所以一份插件能服务任意多工作区。
 //
-// 两个工具：ontology_info（按服务给出的不透明 key 读节点，入口是 key "index"）、
-// ontology_transform（把结构化 Intent 降成可执行查询计划，不执行）。
+// 三个工具：oks_info（按服务给出的不透明 key 读节点，入口是 key "index"）、
+// oks_check_intent（只校验结构化 Intent，只回诊断）、
+// oks_query（校验后**只读查询**数据文件，回结果；SQL/bindings 只在这一条路径上出现）。
 // 外加两个与模型无关的辅助工具：time_now（当前时刻的各种标准表示）、
 // time_calc（日历代数：加减 / 对齐到日历边界 / 换时区）——服务不读时钟，相对时间
 // 必须在提交前换成绝对边界；这两个工具只做标准表示，不解释任何领域格式。
-// 插件只写一样东西：计划文件（.sql/.json，落点由工作区声明，可关）。
-// 每次调用都在结果开头打印发给 OKS 的请求与响应摘要，工具卡因此自己呈现推理轨迹。
+//
+// **插件在工作区里不写任何东西**：没有计划文件、没有缓存产物。每次执行的 SQL、bindings、
+// 行数与耗时写进宿主日志（ctx.logger），工作区保持干净。
 //
 // **代码里不写任何"地图长什么样"的假设**（有哪些种类、入口、字段、格式、路由、分页）：
 // 那些是服务自己的声明，由 agent 按 key 自主探索；插件只负责协议与呈现。
 //
-// 零依赖：直接注册原始工具定义，因此装在 profile 里或从工作区加载都不会有模块解析问题。
-// parameters 只用受支持的 JSON Schema 关键字子集，数量校验放在 execute 里。
+// 零依赖：直接注册原始工具定义，因此装在 profile 里或从工作区加载都不会有模块解析问题；
+// 查询用 Node 自带的 node:sqlite（只读打开）。parameters 只用受支持的 JSON Schema
+// 关键字子集，数量校验放在 execute 里。
 
-import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
-import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { applyOps, deriveContextTimeZone, encode, parseMoment, resolveZone } from './time.js';
 
 export const inject = ['tools'];
@@ -31,10 +34,24 @@ const DEFAULTS = {
   requestTimeoutMs: 60000,
   // 服务只在整批 Intent 通过时才返回 queries；开启后会把没有 Error 的子集再降一次。
   retryAcceptedSubset: true,
+  // 只读查询的墙钟上限与被取回的最大行数（node:sqlite 是同步 API，卡住只能靠 terminate）。
+  queryTimeoutMs: 30000,
+  queryMaxRows: 200,
 };
 
-/** 读工作区的 oks.json：**"哪个模型"由工作区声明**。
- *  `artifact` 相对 oks.json 所在目录解析（绝对路径原样用）。 */
+// 模型可见文本的预算：留在宿主 tool-result pruner 的阈值（8192 字符）以下，否则结果会被
+// 从**中间**截掉，反而同时丢掉 SQL 和一部分行。
+const RESULT_BUDGET_CHARS = 6000;
+const RESULT_MAX_COLUMNS = 32;
+const RESULT_MAX_CELL_CHARS = 200;
+const SQL_DISPLAY_CHARS = 1200;
+const BINDINGS_DISPLAY_CHARS = 400;
+const REQUEST_DISPLAY_CHARS = 300;
+
+const capLine = (text, max) => (text.length <= max ? text : `${text.slice(0, max)}…`);
+
+/** 读工作区的 oks.json：**"哪个模型、哪份数据"由工作区声明**。
+ *  `artifact` 与 `dataFile` 都相对 oks.json 所在目录解析（绝对路径原样用）。 */
 function loadWorkspaceConfig(root) {
   const file = join(root, 'oks.json');
   let oks;
@@ -48,10 +65,10 @@ function loadWorkspaceConfig(root) {
       + '插件不提供默认模型——用错模型比报错贵。',
     );
   }
-  const artifact = typeof oks?.artifact === 'string' && oks.artifact.length > 0
-    ? (oks.artifact.startsWith('/') ? oks.artifact : join(root, oks.artifact))
-    : undefined;
-  return { root, file, oks, artifact };
+  const resolve = (value) => (typeof value === 'string' && value.length > 0
+    ? (value.startsWith('/') ? value : join(root, value))
+    : undefined);
+  return { root, file, oks, artifact: resolve(oks?.artifact), dataFile: resolve(oks?.dataFile) };
 }
 
 /** 会话 → 工作区目录。工作区是**会话属性**（会话头里的 cwd），不是进程属性；
@@ -82,29 +99,21 @@ function resolveSettings(root, config) {
   const fromWorkspace = {
     domain: workspace.oks.domain,
     artifact: workspace.artifact,
+    dataFile: workspace.dataFile,
     requestTimeoutMs: workspace.oks.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs,
     retryAcceptedSubset: workspace.oks.retryAcceptedSubset ?? DEFAULTS.retryAcceptedSubset,
+    queryTimeoutMs: workspace.oks.queryTimeoutMs ?? DEFAULTS.queryTimeoutMs,
+    queryMaxRows: workspace.oks.queryMaxRows ?? DEFAULTS.queryMaxRows,
     workspaceRoot: workspace.root,
     workspaceFile: workspace.file,
   };
   // 设置有三个来源：与机器无关的默认值、工作区的 oks.json、插件行 config 里的这几个覆盖键。
   const overrides = {};
-  for (const key of ['domain', 'artifact', 'requestTimeoutMs', 'retryAcceptedSubset']) {
+  for (const key of ['domain', 'artifact', 'dataFile', 'requestTimeoutMs',
+    'retryAcceptedSubset', 'queryTimeoutMs', 'queryMaxRows']) {
     if (config?.[key] !== undefined) overrides[key] = config[key];
   }
   const settings = { ...DEFAULTS, ...fromWorkspace, ...overrides };
-  // 计划落点：声明成字符串就写在那儿（相对 oks.json 解析，和 artifact 同一条规则），
-  // 声明成 false（或 config 里 false）就不写，什么都不说才用默认的 <ws>/.oks/plans。
-  const planDirFrom = (value) => {
-    if (value === false || value === null) return null;
-    if (typeof value !== 'string' || value.length === 0) return undefined;
-    return value.startsWith('/') ? value : join(workspace.root, value);
-  };
-  const fromConfig = planDirFrom(config?.planDir);
-  const declaredPlanDir = fromConfig !== undefined ? fromConfig : planDirFrom(workspace.oks.planDir);
-  settings.planDir = declaredPlanDir === undefined
-    ? join(workspace.root, '.oks', 'plans')
-    : declaredPlanDir;
   const missing = ['domain', 'artifact']
     .filter((key) => typeof settings[key] !== 'string' || settings[key].length === 0);
   if (missing.length > 0) {
@@ -122,8 +131,8 @@ const OBJECT_OUTPUT = { type: 'object', additionalProperties: true };
 /** 自带的引导技能：注册进 ctx.skills 的 runtime 层，对所有工作区可见；正文在 skill.md。
  *  rank 250：工作区自己的 skill(100/200) 能覆盖它，用户级(400/500) 不能。 */
 const SKILL = {
-  name: 'ontology-query',
-  description: 'Use when a user intent must become a query plan over domain data: discover the ontology with ontology_info, express the plan as structured intents through ontology_transform, and confirm alignment by restating the plan as a business intent. Resolve relative time into absolute boundaries first — time_now and time_calc do that without knowing any domain format.',
+  name: 'oks-query',
+  description: 'Use when a business question must be answered from domain data: discover the domain model with oks_info, validate structured intents with oks_check_intent, and get actual rows with oks_query. Resolve relative time into absolute boundaries first — time_now and time_calc do that without knowing any domain format.',
   source: 'runtime',
 };
 
@@ -240,15 +249,19 @@ function createWorkerRunner(config, log) {
       if (message.error !== undefined) entry.reject(new Error(message.error));
       else entry.resolve(message.response);
     });
+    // 只有**当前这一代**的死亡才能影响排队请求：被超时 terminate 的旧代，它的 exit
+    // 事件会晚到，而那时 worker 已经指向新一代了——不设这道门槛就会误杀新一代的请求。
     created.on('error', (cause) => {
       log(`[oks] worker error: ${cause?.message ?? cause}`);
-      if (worker === created) worker = null;
+      if (worker !== created) return;
+      worker = null;
       failAll(cause);
     });
     created.on('exit', (code) => {
       log(`[oks] worker exited with code ${code}`);
-      if (worker === created) worker = null;
-      failAll(new Error(`ontology worker exited with code ${code}`));
+      if (worker !== created) return;
+      worker = null;
+      failAll(new Error(`wasm worker exited with code ${code}`));
     });
     worker = created;
     return created;
@@ -264,7 +277,7 @@ function createWorkerRunner(config, log) {
       pending.delete(id);
       const dead = worker; worker = null;
       if (dead !== null) dead.terminate();
-      reject(new Error(`ontology request timed out after ${config.requestTimeoutMs} ms (worker terminated)`));
+      reject(new Error(`wasm request timed out after ${config.requestTimeoutMs} ms (worker terminated)`));
     }, config.requestTimeoutMs);
     pending.set(id, { resolve, reject, timer });
     worker.postMessage({ id, line });
@@ -274,7 +287,7 @@ function createWorkerRunner(config, log) {
   });
 
   const dispose = () => {
-    failAll(new Error('ontology worker was disposed'));
+    failAll(new Error('wasm worker was disposed'));
     const dead = worker; worker = null;
     if (dead !== null) dead.terminate();
   };
@@ -292,6 +305,124 @@ function createRunner(config, log) {
   }
   log(`[oks] in-process wasm worker (artifact ${config.artifact})`);
   return createWorkerRunner(config, log);
+}
+
+// 只读执行器的 worker 源码。放在 worker 里有两个理由：
+//   1. node:sqlite 是同步 API，一条慢查询会卡死宿主线程（GUI 一起卡）；
+//   2. 只有独立线程才能被超时 terminate。
+// 双重保险：连接以只读打开，且只允许 SELECT / WITH 开头的语句。
+const EXECUTOR_SOURCE = [
+  "const { parentPort, workerData } = require('node:worker_threads');",
+  "const { DatabaseSync } = require('node:sqlite');",
+  'const READ_ONLY = /^\\s*(select|with)\\b/i;',
+  'let db = null;',
+  'function open() { db = new DatabaseSync(workerData.dataFile, { readOnly: true }); }',
+  'function run(sql, bindings, maxRows) {',
+  '  if (!READ_ONLY.test(sql)) throw new Error(\'only read-only SELECT/WITH statements are executed\');',
+  '  if (db === null) open();',
+  '  const rows = []; let truncated = false;',
+  '  for (const row of db.prepare(sql).iterate(...bindings)) {',
+  '    if (rows.length >= maxRows) { truncated = true; break; }',
+  '    rows.push(row);',
+  '  }',
+  '  return { rows: rows, truncated: truncated };',
+  '}',
+  "parentPort.postMessage({ kind: 'ready' });",
+  "parentPort.on('message', (message) => {",
+  '  try {',
+  '    const result = run(message.sql, message.bindings || [], message.maxRows);',
+  "    parentPort.postMessage({ id: message.id, rows: result.rows, truncated: result.truncated });",
+  '  } catch (cause) {',
+  "    parentPort.postMessage({ id: message.id, error: String((cause && cause.message) || cause) });",
+  '  }',
+  '});',
+].join('\n');
+
+/** 只读查询执行器：一个数据文件一个 worker，超时 terminate 并复活。
+ *  接口是 { send(sql, bindings, signal), dispose() }。 */
+function createExecutor(config, log) {
+  const pending = new Map();
+  let worker = null;
+  let nextId = 1;
+
+  const failAll = (error) => {
+    for (const [, entry] of pending) {
+      clearTimeout(entry.timer);
+      entry.reject(error);
+    }
+    pending.clear();
+  };
+
+  const spawn = () => {
+    const created = new Worker(EXECUTOR_SOURCE, {
+      eval: true,
+      workerData: { dataFile: config.dataFile },
+    });
+    created.on('message', (message) => {
+      if (message?.kind === 'ready') { log(`[oks] executor ready (read-only ${config.dataFile})`); return; }
+      const entry = pending.get(message?.id);
+      if (entry === undefined) return;
+      pending.delete(message.id);
+      clearTimeout(entry.timer);
+      if (message.error !== undefined) entry.reject(new Error(message.error));
+      else entry.resolve({ rows: message.rows, truncated: message.truncated });
+    });
+    // 同模型宿主：晚到的旧代 exit 不能影响新一代的排队请求。
+    created.on('error', (cause) => {
+      log(`[oks] executor error: ${cause?.message ?? cause}`);
+      if (worker !== created) return;
+      worker = null;
+      failAll(cause);
+    });
+    created.on('exit', (code) => {
+      log(`[oks] executor exited with code ${code}`);
+      if (worker !== created) return;
+      worker = null;
+      failAll(new Error(`sqlite executor exited with code ${code}`));
+    });
+    worker = created;
+    return created;
+  };
+
+  const send = (sql, bindings, signal) => new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new Error('aborted')); return; }
+    if (worker === null) spawn();
+    const id = nextId; nextId += 1;
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      const dead = worker; worker = null;
+      if (dead !== null) dead.terminate();
+      reject(new Error(`query timed out after ${config.queryTimeoutMs} ms (executor terminated)`));
+    }, config.queryTimeoutMs);
+    pending.set(id, { resolve, reject, timer });
+    worker.postMessage({ id, sql, bindings, maxRows: config.queryMaxRows });
+  });
+
+  const dispose = () => {
+    failAll(new Error('sqlite executor was disposed'));
+    const dead = worker; worker = null;
+    if (dead !== null) dead.terminate();
+  };
+
+  return { send, dispose };
+}
+
+/** 数据目录里的清单（若在）：只取两处声明——数据窗口与来源 revision。
+ *  两处都按"有就用、没有就算了"处理，缺字段不影响查询。 */
+function readDataManifest(dataFile) {
+  try {
+    const manifest = JSON.parse(readFileSync(join(dirname(dataFile), 'manifest.json'), 'utf8'));
+    if (manifest === null || typeof manifest !== 'object') return null;
+    const window = manifest.window;
+    const hasWindow = window !== null && typeof window === 'object'
+      && typeof window.start === 'string' && typeof window.endExclusive === 'string';
+    return {
+      window: hasWindow ? { start: window.start, endExclusive: window.endExclusive } : null,
+      revision: typeof manifest.revision === 'string' ? manifest.revision : null,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function summarize(response) {
@@ -322,18 +453,31 @@ function summarize(response) {
     const diagnostics = Array.isArray(ok.diagnostics) ? ok.diagnostics : [];
     const errors = diagnostics.filter((item) => item?.diagnostic?.severity === 'Error').length;
     const warnings = diagnostics.filter((item) => item?.diagnostic?.severity === 'Warning').length;
-    return `error=false · accepted=${ok.accepted} · errors=${errors} · warnings=${warnings} · queries=${Array.isArray(ok.queries) ? ok.queries.length : 'null'}`;
+    const parts = ['error=false', `accepted=${ok.accepted}`, `errors=${errors}`, `warnings=${warnings}`];
+    // 校验路径会把 queries 摘掉（那是 SQL/bindings），所以这里只在真的有 queries 时才报数量。
+    if (Array.isArray(ok.queries)) parts.push(`queries=${ok.queries.length}`);
+    return parts.join(' · ');
   }
   return 'error=false';
 }
 
-/** 过程轨迹：让工具卡自己呈现「发了什么、收回了什么」。 */
+/** 校验路径的响应：**摘掉 queries**。SQL/bindings 只在 oks_query 的结果里出现，
+ *  而轨迹里的响应会被工具卡与宿主日志留存，所以这里必须真的摘掉，不能只靠渲染不打印。 */
+function withoutQueries(response) {
+  const ok = response?.ok;
+  if (ok === null || typeof ok !== 'object') return response;
+  const { queries: _queries, ...rest } = ok;
+  return { ...response, ok: rest };
+}
+
+/** 过程轨迹：让工具卡自己呈现「发了什么、收回了什么」。
+ *  请求回显只留一小段——Intent 批次可能很长，而写它的人正是读它的模型。 */
 function renderTrace(trace) {
   const lines = [];
   for (const step of trace ?? []) {
     const note = step.note ? `  （${step.note}）` : '';
     lines.push(`▸ OKS ${step.method}${note}`);
-    lines.push(`  请求 ${JSON.stringify(step.request)}`);
+    lines.push(`  请求 ${capLine(JSON.stringify(step.request), REQUEST_DISPLAY_CHARS)}`);
     lines.push(`◂ OKS ${step.method}  ${summarize(step.response)}`);
   }
   return lines;
@@ -351,106 +495,112 @@ function renderJson(_args, value) {
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 
-/** ontology_transform 的模型可见渲染：过程轨迹 → 诊断 → 计划。 */
-function renderPlan(_args, value) {
-  const envelope = value?.response ?? {};
-  const ok = envelope.ok ?? {};
-  const diagnostics = Array.isArray(ok.diagnostics) ? ok.diagnostics : [];
-  const intents = value?.intents ?? [];
-  const plans = value?.plans ?? null;
+/** 诊断段：批次级诊断必须全列——成功的 Intent 也可能带 Warning。 */
+function diagnosticLines(diagnostics) {
+  const lines = [];
+  if (!Array.isArray(diagnostics) || diagnostics.length === 0) return lines;
+  lines.push('', '诊断（批次级；成功的 Intent 也可能带 Warning）');
+  for (const item of diagnostics) {
+    const severity = item?.diagnostic?.severity ?? '?';
+    const mark = severity === 'Error' ? '✕' : severity === 'Warning' ? '⚠' : '·';
+    lines.push(`  #${(item?.index ?? 0) + 1}  ${mark} ${severity} — ${item?.diagnostic?.message ?? JSON.stringify(item)}`);
+  }
+  return lines;
+}
+
+const rejectedIndexes = (diagnostics) => [...new Set((diagnostics ?? [])
+  .filter((item) => item?.diagnostic?.severity === 'Error')
+  .map((item) => item.index))].sort((left, right) => left - right);
+
+/** oks_check_intent 的模型可见渲染：只有校验结论与诊断，**没有 SQL**。 */
+function renderCheck(_args, value) {
   const lines = renderTrace(value?.trace);
-
-  // 失败的 Intent 从 Error 级诊断的 index 推导。
-  const errorIndexes = [...new Set(diagnostics
-    .filter((item) => item?.diagnostic?.severity === 'Error')
-    .map((item) => item.index))].sort((left, right) => left - right);
-
-  // 成功的 Intent 也可能带 Warning，所以诊断要全列。
-  if (diagnostics.length > 0) {
-    lines.push('', '诊断（批次级；成功的 Intent 也可能带 Warning，使用 Queries 前先读这里）');
-    for (const item of diagnostics) {
-      const severity = item?.diagnostic?.severity ?? '?';
-      const mark = severity === 'Error' ? '✕' : severity === 'Warning' ? '⚠' : '·';
-      lines.push(`  #${(item?.index ?? 0) + 1}  ${mark} ${severity} — ${item?.diagnostic?.message ?? JSON.stringify(item)}`);
-    }
+  const intents = value?.intents ?? [];
+  lines.push(...diagnosticLines(value?.diagnostics));
+  if (value?.subset) {
+    lines.push('', `再校验一次（把没有报 Error 的 ${value.subset.indexes.length} 个 Intent 单独提交）：`
+      + `${value.subset.accepted ? '通过' : '仍被拒'}`);
   }
-
-  if (plans) {
-    if (plans.planFiles) {
-      // 内容寻址：同一份计划重复问到的是同一对文件，渲染里要点明是复用。
-      lines.push('', plans.planFiles.reused
-        ? '计划文件（内容与已有计划一致，直接复用）'
-        : '计划文件（按内容命名，可直接点开）',
-      `  ${plans.planFiles.sql}`, `  ${plans.planFiles.json}`);
-    }
-    if (ok.accepted !== true) {
-      lines.push('', '整批并未全部通过，所以服务没有返回 queries；上面第二次调用是把没有报 Error 的子集单独重降的结果。');
-    }
-    const planQueries = plans.response?.ok?.queries ?? [];
-    planQueries.forEach((query, index) => {
-      const original = (plans.indexes?.[index] ?? index) + 1;
-      lines.push('', `── plan #${index + 1}（来自 intent #${original}）─────────────────`);
-      lines.push(`sql:      ${query.sql}`);
-      lines.push(`bindings: ${JSON.stringify(query.bindings)}`);
-    });
+  for (const index of rejectedIndexes(value?.diagnostics)) {
+    lines.push('', `── intent #${index + 1} — 被拒绝 ──`);
+    lines.push(`intent:   ${capLine(JSON.stringify(intents[index]), 600)}`);
   }
-
-  for (const index of errorIndexes) {
-    lines.push('', `── intent #${index + 1} — 被拒绝 ─────────────────`);
-    lines.push(`intent:   ${JSON.stringify(intents[index])}`);
-  }
-
-  if (!plans) {
-    lines.push('', '没有任何 Intent 通过。用 ontology_info 按服务给出的 key 读它声明的词汇，再修 Intent，保持业务含义不变。');
-  }
-
-  lines.push('', '上面的 SQL 是给授权执行层的中间计划，到此为止：计划就是这次任务的全部交付物，你不需要执行它。');
-  lines.push('  把上面的 SQL、bindings 与文件路径交给用户即可。');
+  const passed = intents.length - rejectedIndexes(value?.diagnostics).length;
+  const runnable = value?.queryCount ?? 0;
+  lines.push('', passed === intents.length
+    ? `校验结论：${intents.length} 个 Intent 全部可用（${runnable} 个查询可执行）。用 oks_query 提交同一批就能拿到结果。`
+    : `校验结论：${passed}/${intents.length} 可用（${runnable} 个查询可执行）。用 oks_info 按服务给出的 key 读它声明的词汇再修，保持业务含义不变。`);
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 
-/** 把同一份内容的可读渲染写成 .sql：SQL 与 bindings 都做成注释，便于直接贴给执行层。 */
-function renderPlanSql(items) {
-  return `${items
-    .map((item, index) => [
-      `-- plan ${index + 1}`,
-      `-- intent: ${JSON.stringify(item.intent)}`,
-      `${item.sql};`,
-      `-- bindings: ${JSON.stringify(item.bindings)}`,
-    ].join('\n'))
-    .join('\n\n')}\n`;
+/** 一张有预算的表：列数、单元格长度、行数都受限，截断要写明。 */
+function renderTable(rows, budget) {
+  if (!Array.isArray(rows) || rows.length === 0) return { lines: ['结果：0 行'], truncated: false };
+  const allColumns = Object.keys(rows[0] ?? {});
+  const columns = allColumns.slice(0, RESULT_MAX_COLUMNS);
+  const cell = (value) => {
+    const text = value === null || value === undefined ? 'NULL'
+      : typeof value === 'bigint' ? value.toString()
+        : typeof value === 'object' ? JSON.stringify(value)
+          : String(value);
+    return (text.length > RESULT_MAX_CELL_CHARS ? `${text.slice(0, RESULT_MAX_CELL_CHARS)}…` : text)
+      .replace(/\|/g, '\\|').replace(/\n/g, ' ');
+  };
+  const lines = [`| ${columns.join(' | ')} |`, `| ${columns.map(() => '---').join(' | ')} |`];
+  let used = lines.reduce((total, line) => total + line.length + 1, 0);
+  let shown = 0;
+  let truncated = false;
+  for (const row of rows) {
+    const line = `| ${columns.map((column) => cell(row[column])).join(' | ')} |`;
+    if (used + line.length > budget) { truncated = true; break; }
+    lines.push(line);
+    used += line.length + 1;
+    shown += 1;
+  }
+  const notes = [];
+  if (allColumns.length > columns.length) notes.push(`只显示前 ${columns.length} 列（共 ${allColumns.length} 列）`);
+  if (truncated) notes.push(`只显示前 ${shown} 行（共 ${rows.length} 行）`);
+  return { lines, truncated, notes };
 }
 
-/** 写一对**内容寻址**的文件：名字 = 计划内容的 sha256 前 16 位。
- *  同一批 Intent 反复问、重试、换措辞问都落在同一对文件上。
- *  .json 的字节**就是**被哈希的内容（`sha256sum` 可自校验，前缀即文件名）。
- *  写下后不再改动，只把 mtime 跟到最近一次用到，`ls -t` 因此仍有意义。 */
-function writePlan(config, envelope, intents) {
-  const queries = envelope?.ok?.queries ?? [];
-  const items = queries.map((query, index) => ({
-    index,
-    intent: intents[index],
-    sql: query.sql,
-    bindings: query.bindings,
-  }));
-  const json = `${JSON.stringify({ items }, null, 2)}\n`;
-  const hash = createHash('sha256').update(json).digest('hex').slice(0, 16);
-  const base = join(config.planDir, `plan-${hash}`);
-  const jsonFile = `${base}.json`;
-  const sqlFile = `${base}.sql`;
+/** oks_query 的模型可见渲染：轨迹 → 诊断 → 每个结果的 SQL/bindings 与行。 */
+function renderQuery(_args, value) {
+  const lines = renderTrace(value?.trace);
+  let used = lines.reduce((total, line) => total + line.length + 1, 0);
+  const push = (line) => { lines.push(line); used += line.length + 1; };
+  for (const line of diagnosticLines(value?.diagnostics)) push(line);
 
-  mkdirSync(config.planDir, { recursive: true });
-  const reused = existsSync(jsonFile) || existsSync(sqlFile);
-  if (reused) {
-    const now = new Date();
-    for (const file of [jsonFile, sqlFile]) {
-      if (existsSync(file)) utimesSync(file, now, now);
+  (value?.results ?? []).forEach((result, at) => {
+    push('');
+    push(`── 结果 #${at + 1}（来自 intent #${result.index + 1}）──`);
+    push(`sql:      ${capLine(String(result.sql).replace(/\s+/g, ' '), SQL_DISPLAY_CHARS)}`);
+    push(`bindings: ${capLine(JSON.stringify(result.bindings), BINDINGS_DISPLAY_CHARS)}`);
+    if (result.error !== null && result.error !== undefined) {
+      push(`执行失败（数据文件 ${basename(value.dataFile)}）：${result.error}`);
+      return;
     }
-  } else {
-    writeFileSync(jsonFile, json);
-    writeFileSync(sqlFile, renderPlanSql(items));
+    push(`执行：${result.rows.length} 行 · ${result.ms} ms`
+      + `${result.truncated ? `（已到行数上限 ${value.queryMaxRows}，结果还有更多）` : ''}`);
+    const table = renderTable(result.rows, Math.max(240, RESULT_BUDGET_CHARS - used));
+    for (const line of table.lines) push(line);
+    for (const note of table.notes ?? []) push(`（${note}）`);
+    if (result.rows.length === 0 && value?.window) {
+      push(`提示：这份数据的窗口是 [${value.window.start}, ${value.window.endExclusive})，被过滤掉的可能是时间落在窗口之外。`);
+    }
+  });
+
+  const rejected = rejectedIndexes(value?.diagnostics);
+  for (const index of rejected) {
+    push('');
+    push(`── intent #${index + 1} — 被拒绝 ──`);
+    push(`intent:   ${capLine(JSON.stringify((value?.intents ?? [])[index]), 600)}`);
   }
-  return { sql: sqlFile, json: jsonFile, reused };
+  if ((value?.results ?? []).length === 0) {
+    push('', rejected.length === 0
+      ? '没有可执行的查询。'
+      : '没有任何 Intent 通过校验，所以没有执行。修 Intent 后再提交。');
+  }
+  return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 
 export function apply(ctx, config = {}) {
@@ -486,6 +636,32 @@ export function apply(ctx, config = {}) {
   // 插件不认识模型：设置与 wasm 宿主都在**第一次用到某个工作区**时按那份 oks.json 惰性建立；
   // 一个进程里可以有任意多个工作区，互不影响。
   const workspaces = new Map(); // root -> entry
+  // 执行器按**数据文件**持有：同一个数据文件被多个工作区声明时共享一个只读连接。
+  const executors = new Map(); // dataFile -> { executor, manifest }
+
+  const executorFor = (settings) => {
+    if (typeof settings.dataFile !== 'string' || settings.dataFile.length === 0) {
+      throw new Error(
+        `dsh-oks: ${settings.workspaceFile} 没有声明 dataFile，oks_query 无处可查。`
+        + '需要 {"dataFile":"<相对 oks.json 的 .sqlite 路径>"}；'
+        + '只做校验可以用 oks_check_intent。',
+      );
+    }
+    const existing = executors.get(settings.dataFile);
+    if (existing !== undefined) return existing;
+    if (!existsSync(settings.dataFile)) {
+      throw new Error(
+        `dsh-oks: ${settings.workspaceFile} 声明的 dataFile 不存在：${settings.dataFile}`,
+      );
+    }
+    const manifest = readDataManifest(settings.dataFile);
+    const entry = { executor: createExecutor(settings, log), manifest };
+    executors.set(settings.dataFile, entry);
+    log(`[oks] read-only executor for ${settings.dataFile}`
+      + `${manifest?.revision ? ` · data revision=${manifest.revision}` : ''}`
+      + `${manifest?.window ? ` · window=[${manifest.window.start}, ${manifest.window.endExclusive})` : ''}`);
+    return entry;
+  };
 
   // 技能服务是可选依赖（ctx.get 取），加载时它可能还没起来，所以第一次工具调用会再试一次。
   let skillRegistered = false;
@@ -537,13 +713,52 @@ export function apply(ctx, config = {}) {
     return entry;
   };
 
+  /** 降一批 Intent。服务只在整批通过时才回 queries，所以被拒批次里没有报 Error 的子集
+   *  会再提交一次——这样"5 个里坏了 1 个"仍能拿到其余 4 个的执行物。 */
+  const lowerBatch = async (entry, intents, signal) => {
+    const method = `${entry.settings.domain}/transform`;
+    const trace = [];
+    const response = await entry.runner.send(method, { intents }, signal);
+    trace.push({ method, request: { intents }, response });
+    const diagnostics = Array.isArray(response?.ok?.diagnostics) ? response.ok.diagnostics : [];
+    const errors = new Set(diagnostics
+      .filter((item) => item?.diagnostic?.severity === 'Error')
+      .map((item) => item.index));
+    let batch = null;
+    let subset = null;
+    if (response?.ok?.accepted === true && Array.isArray(response?.ok?.queries)) {
+      batch = { response, intents, indexes: intents.map((_intent, index) => index) };
+    } else if (entry.settings.retryAcceptedSubset !== false) {
+      const indexes = intents.map((_intent, index) => index).filter((index) => !errors.has(index));
+      if (indexes.length > 0 && indexes.length < intents.length) {
+        const subsetIntents = indexes.map((index) => intents[index]);
+        const retry = await entry.runner.send(method, { intents: subsetIntents }, signal);
+        trace.push({ method, request: { intents: subsetIntents }, response: retry, note: '仅未报 Error 的子集，再降一次' });
+        const passed = retry?.ok?.accepted === true && Array.isArray(retry?.ok?.queries);
+        subset = { indexes, accepted: passed };
+        if (passed) batch = { response: retry, intents: subsetIntents, indexes };
+      }
+    }
+    return { method, trace, response, diagnostics, batch, subset };
+  };
+
+  const arityError = (method, intents, toolName) => ({
+    trace: [{
+      method,
+      request: { intents },
+      response: { error: true, diagnostics: [{ message: `${toolName} requires one to five independent Intents` }] },
+    }],
+    intents,
+    diagnostics: [{ index: 0, diagnostic: { severity: 'Error', message: `${toolName} requires one to five independent Intents` } }],
+  });
+
   // 工具描述在注册时写死，此时还不知道任何工作区，所以文本里不出现领域名。
   // 设计约束：**这里也不写任何"地图长什么样"的假设**。工具描述只说协议（怎么打交道）
   // 与呈现（收到什么就原样给什么）；具体有哪些种类、入口、字段、格式、路由、分页，
   // 一律由服务自己的声明回答——模型换了形状，这里一行都不用改。
   const definitions = [
     {
-      name: 'ontology_info',
+      name: 'oks_info',
       description: 'Read one knowledge node of this workspace\'s knowledge service by its opaque string key. Start with key "index" — the one key you may supply from memory; it tells you where to go next. From there, follow the keys the service returns, whatever shape it declares, and copy each key verbatim: never construct, split or decode one. Use only the canonical IDs the service declares when writing Intents; display names and physical column names are not substitutes.',
       parameters: {
         type: 'object',
@@ -566,7 +781,7 @@ export function apply(ctx, config = {}) {
             trace: [{
               method,
               request: {},
-              response: { error: true, diagnostics: [{ message: 'ontology_info needs a knowledge key' }] },
+              response: { error: true, diagnostics: [{ message: 'oks_info needs a knowledge key' }] },
             }],
           };
         }
@@ -575,8 +790,8 @@ export function apply(ctx, config = {}) {
       },
     },
     {
-      name: 'ontology_transform',
-      description: 'Validate one to five independent graph Intents against this workspace\'s ontology and return an executable query plan (parameterized SQL + bindings) for each. Nothing is executed. The plan is the deliverable — you do not need to execute it; report the SQL, the bindings and the file path. All Intents are checked even if one fails, and every accepted Intent comes back as a plan. On rejection, read the diagnostics and repair the Intent with its business meaning intact.',
+      name: 'oks_check_intent',
+      description: 'Validate one to five independent graph Intents against this workspace\'s knowledge model and report the diagnostics. Nothing is executed and no query text comes back — this is the cheap way to find out whether a batch is acceptable. All Intents are checked even if one fails, and the subset without Error diagnostics is checked again so a partially bad batch still tells you which members are good. On rejection, read the diagnostics and repair the Intent with its business meaning intact.',
       parameters: {
         type: 'object',
         properties: {
@@ -589,60 +804,86 @@ export function apply(ctx, config = {}) {
         required: ['intents'],
         additionalProperties: false,
       },
-      output: { schema: OBJECT_OUTPUT, render: renderPlan },
+      output: { schema: OBJECT_OUTPUT, render: renderCheck },
+      async execute(args, exec) {
+        const entry = ensureWorkspace(exec);
+        const intents = Array.isArray(args?.intents) ? args.intents : [];
+        const method = `${entry.settings.domain}/transform`;
+        if (intents.length < 1 || intents.length > 5) return arityError(method, intents, 'oks_check_intent');
+        const { trace, response, diagnostics, batch, subset } = await lowerBatch(entry, intents, exec?.signal);
+        return {
+          trace: trace.map((step) => ({ ...step, response: withoutQueries(step.response) })),
+          intents,
+          accepted: response?.ok?.accepted === true,
+          diagnostics,
+          subset,
+          queryCount: Array.isArray(batch?.response?.ok?.queries) ? batch.response.ok.queries.length : 0,
+        };
+      },
+    },
+    {
+      name: 'oks_query',
+      description: 'Answer a business question from this workspace\'s data: validate one to five independent graph Intents, then run the accepted ones as read-only queries against the data file the workspace declares, returning the rows together with the statement and bindings that produced them. A rejected Intent returns diagnostics instead of rows. Use oks_check_intent first when you only want to iterate on the Intent shape.',
+      parameters: {
+        type: 'object',
+        properties: {
+          intents: {
+            type: 'array',
+            description: 'One to five independent graph Intents, same shape as oks_check_intent accepts.',
+            items: { type: 'object', additionalProperties: true },
+          },
+        },
+        required: ['intents'],
+        additionalProperties: false,
+      },
+      output: { schema: OBJECT_OUTPUT, render: renderQuery },
       async execute(args, exec) {
         const entry = ensureWorkspace(exec);
         const intents = Array.isArray(args?.intents) ? args.intents : [];
         const method = `${entry.settings.domain}/transform`;
         if (intents.length < 1 || intents.length > 5) {
-          return {
-            trace: [{
-              method,
-              request: { intents },
-              response: { error: true, diagnostics: [{ message: 'ontology_transform requires one to five independent Intents' }] },
-            }],
-            intents,
-          };
+          return { ...arityError(method, intents, 'oks_query'), results: [], dataFile: entry.settings.dataFile ?? null };
         }
-
-        const trace = [];
-        const response = await entry.runner.send(method, { intents }, exec?.signal);
-        trace.push({ method, request: { intents }, response });
-
-        const diagnostics = Array.isArray(response?.ok?.diagnostics) ? response.ok.diagnostics : [];
-        const errorIndexes = new Set(diagnostics
-          .filter((item) => item?.diagnostic?.severity === 'Error')
-          .map((item) => item.index));
-        let plans = null;
-        const planFor = (subsetResponse, subsetIntents, indexes) => {
-          let planFiles = null;
-          if (entry.settings.planDir !== null) {
-            try {
-              planFiles = writePlan(entry.settings, subsetResponse, subsetIntents);
-            } catch (cause) {
-              log(`[oks] failed to write plan files: ${cause?.message ?? cause}`);
-            }
-          }
-          return { response: subsetResponse, intents: subsetIntents, indexes, planFiles };
+        const { trace, response, diagnostics, batch } = await lowerBatch(entry, intents, exec?.signal);
+        const answers = {
+          trace,
+          intents,
+          accepted: response?.ok?.accepted === true,
+          diagnostics,
+          results: [],
+          dataFile: entry.settings.dataFile ?? null,
+          window: null,
+          queryMaxRows: entry.settings.queryMaxRows,
         };
-        if (response?.ok?.accepted === true && Array.isArray(response?.ok?.queries)) {
-          plans = planFor(response, intents, intents.map((_intent, index) => index));
-        } else if (entry.settings.retryAcceptedSubset !== false) {
-          // 服务只在整批通过时返回 queries；把没有报 Error 的子集单独再降一次，用户就能看到 SQL。
-          const indexes = intents
-            .map((_intent, index) => index)
-            .filter((index) => !errorIndexes.has(index));
-          if (indexes.length > 0 && indexes.length < intents.length) {
-            const subsetIntents = indexes.map((index) => intents[index]);
-            const retry = await entry.runner.send(method, { intents: subsetIntents }, exec?.signal);
-            trace.push({ method, request: { intents: subsetIntents }, response: retry, note: '仅未报 Error 的子集，重降一次以取出 SQL' });
-            if (retry?.ok?.accepted === true && Array.isArray(retry?.ok?.queries)) {
-              plans = planFor(retry, subsetIntents, indexes);
-            }
+        if (batch === null) return answers;
+
+        const { executor, manifest } = executorFor(entry.settings);
+        answers.window = manifest?.window ?? null;
+        const queries = batch.response?.ok?.queries ?? [];
+        for (let at = 0; at < queries.length; at += 1) {
+          const query = queries[at];
+          const index = batch.indexes[at] ?? at;
+          const sql = String(query?.sql ?? '');
+          const bindings = Array.isArray(query?.bindings) ? query.bindings : [];
+          const started = Date.now();
+          try {
+            const outcome = await executor.send(sql, bindings, exec?.signal);
+            const ms = Date.now() - started;
+            answers.results.push({
+              index, sql, bindings, rows: outcome.rows, truncated: outcome.truncated, error: null, ms,
+            });
+            // 执行留痕进宿主日志：模型可见面之外唯一能查到"跑了什么"的地方。
+            log(`[oks] query intent#${index + 1} → ${outcome.rows.length}${outcome.truncated ? '+' : ''} row(s)`
+              + ` · ${ms} ms · sql=${capLine(sql.replace(/\s+/g, ' '), 200)}`
+              + ` · bindings=${capLine(JSON.stringify(bindings), 200)}`);
+          } catch (cause) {
+            const ms = Date.now() - started;
+            const message = String(cause?.message ?? cause);
+            answers.results.push({ index, sql, bindings, rows: null, truncated: false, error: message, ms });
+            log(`[oks] query intent#${index + 1} failed after ${ms} ms: ${message}`);
           }
         }
-
-        return { trace, response, intents, plans };
+        return answers;
       },
     },
     {
@@ -707,7 +948,7 @@ export function apply(ctx, config = {}) {
     if (typeof dispose === 'function') ctx.effect(() => dispose);
   }
 
-  // 卸载时把每个工作区的 wasm 宿主都关掉。
+  // 卸载时把每个工作区的 wasm 宿主与每个数据文件的执行器都关掉。
   ctx.effect(() => () => {
     for (const entry of workspaces.values()) {
       try {
@@ -715,5 +956,11 @@ export function apply(ctx, config = {}) {
       } catch { /* 尽量都关掉，不让一个失败挡住其余 */ }
     }
     workspaces.clear();
+    for (const entry of executors.values()) {
+      try {
+        entry.executor?.dispose();
+      } catch { /* 同上 */ }
+    }
+    executors.clear();
   });
 }

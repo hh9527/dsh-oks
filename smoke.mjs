@@ -1,6 +1,6 @@
-// 本地冒烟测试：用假的 cordis ctx 加载插件，直接调用四个工具的真实实现，不安装进 profile。
+// 本地冒烟测试：用假的 cordis ctx 加载插件，直接调用五个工具的真实实现，不安装进 profile。
 // 其中两个与模型无关的时间工具（time_now / time_calc）不需要工作区，也在这里单测。
-// 插件行**什么都不配**——模型、领域、路径全部来自工作区，正是要验证的那一点。
+// 插件行**什么都不配**——领域、模型、数据文件全部来自工作区，正是要验证的那一点。
 //
 // 夹具**不含任何领域知识、也不假设地图形状**：实体 id 是运行时从服务里走出来的——读
 // `index`，按节点自己给出的 key 逐级跟随，直到拿到一个声明了 id 的成员。所以模型换形状
@@ -8,19 +8,22 @@
 //
 // 被测工作区默认取**当前目录**（必须有 oks.json，否则明确报错），也可用环境变量指定：
 //   cd /path/to/workspace && node /path/to/dsh-oks/smoke.mjs
-//   ONTOLOGY_WORKSPACE=/path/to/workspace node smoke.mjs
+//   OKS_WORKSPACE=/path/to/workspace node smoke.mjs
 import { apply } from './index.js';
 import { applyOps, encode, parseMoment } from './time.js';
-import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
 
-const DEV_ROOT = process.env.ONTOLOGY_WORKSPACE ?? process.cwd();
+const DEV_ROOT = process.env.OKS_WORKSPACE ?? process.cwd();
 const SCRATCH = `${DEV_ROOT}/.oks-smoke`;
+// 插件**不在工作区里写任何东西**，所以顶层清单在整场测试前后必须一致。
+const workspaceListing = () => readdirSync(DEV_ROOT).filter((name) => name !== '.oks-smoke').sort().join(',');
+const listingBefore = workspaceListing();
 
 const registered = new Map();
 const disposers = [];
 const skillsRegistered = [];
+const events = new Map();
 const ctx = {
   logger: { info: (message) => console.error(`[log] ${message}`) },
   // 技能服务是可选的：插件能拿到就注册，拿不到就静默降级。
@@ -41,11 +44,10 @@ const ctx = {
   on: (name, listener) => { events.set(name, listener); return () => events.delete(name); },
 };
 
-const events = new Map();
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['ontology_info', 'ontology_transform', 'time_now', 'time_calc'];
+const EXPECTED_TOOLS = ['oks_info', 'oks_check_intent', 'oks_query', 'time_now', 'time_calc'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -65,6 +67,21 @@ const call = async (name, args, cwd = DEV_ROOT) => {
   return { value, text: tool.output.render(args, value).map((block) => block.text ?? '').join('') };
 };
 const foundOf = (value) => value?.trace?.[0]?.response?.ok?.Document?.Found;
+const buildCtx = (config) => {
+  const tools = new Map();
+  const events = new Map();
+  apply({
+    logger: { info: () => {} },
+    get: () => undefined,
+    tools: { register: (tool) => { tools.set(tool.name, tool); return () => {}; } },
+    effect: (fn) => { const d = fn(); if (typeof d === 'function') disposers.push(d); },
+    on: (name, listener) => { events.set(name, listener); return () => {}; },
+  }, config);
+  return { tools, events };
+};
+// 只有 oks_info / oks_check_intent / oks_query 需要工作区；时间工具不需要。
+const NOWHERE = `${SCRATCH}/nowhere`;
+mkdirSync(NOWHERE, { recursive: true });
 
 // ── 自带技能 ────────────────────────────────────────────────────────────────
 console.log('=== 自带技能（注册进 runtime 层，所有工作区可见）===');
@@ -84,68 +101,68 @@ console.log('=== 自带技能（注册进 runtime 层，所有工作区可见）
 console.log('=== 时间辅助工具 ===');
 {
   const Z = 'Asia/Shanghai';
-  const base = parseMoment('2026-09-30 17:00:00', Z);
-  const enc = encode(base, Z);
-  console.log(`  本地 2026-09-30 17:00:00 (+08) → UTC 文本 ${enc.utc.text} · RFC 3339 ${enc.utc.rfc3339}`);
-  if (enc.utc.text !== '2026-09-30 09:00:00') throw new Error(`UTC 文本错了: ${enc.utc.text}`);
-  const monday = applyOps({ epochMillis: base, zone: Z }, [{ op: 'floor', unit: 'week' }]);
-  const lastMonday = applyOps({ epochMillis: monday.epochMillis, zone: Z }, [{ op: 'add', unit: 'day', amount: -7 }]);
-  console.log(`  上周（周一到周日）半开区间 → [${encode(lastMonday.epochMillis, Z).local.text}, ${encode(monday.epochMillis, Z).local.text})`);
-  if (encode(monday.epochMillis, Z).local.text !== '2026-09-28 00:00:00') throw new Error('周一取整错了');
-  if (encode(lastMonday.epochMillis, Z).local.text !== '2026-09-21 00:00:00') throw new Error('上周取整错了');
-  const clamped = applyOps({ epochMillis: parseMoment('2026-01-31 12:00:00', Z), zone: Z }, [{ op: 'add', unit: 'month', amount: 1 }]);
-  console.log(`  1/31 + 1 月 → ${encode(clamped.epochMillis, Z).local.text}（钳制到月末）`);
-  if (encode(clamped.epochMillis, Z).local.text !== '2026-02-28 12:00:00') throw new Error('月末钳制错了');
-  const ny = 'America/New_York';
-  const before = parseMoment('2026-03-07 12:00:00', ny);
-  const after = applyOps({ epochMillis: before, zone: ny }, [{ op: 'add', unit: 'day', amount: 1 }]);
-  const hours = (after.epochMillis - before) / 3600000;
-  console.log(`  跨 DST：NY 3/7 12:00 + 1 天 → ${encode(after.epochMillis, ny).local.text}，实际 ${hours} 小时（保持墙钟）`);
-  if (hours !== 23) throw new Error(`DST 处理错了: ${hours} 小时`);
-  // 两个工具本身：故意给一个**没有 oks.json** 的 cwd，证明它们不依赖工作区
-  const nowhere = '/nonexistent-workspace-for-time-tools';
-  const now = await call('time_now', { timeZone: Z }, nowhere);
-  console.log(`  time_now: epochMillis=${now.value.epochMillis} · UTC ${now.value.utc.text} · 本地 ${now.value.local.text} · 第 ${now.value.isoWeek.week} 周`);
-  if (typeof now.value.epochMillis !== 'number' || typeof now.value.utc.text !== 'string') throw new Error('time_now 输出不对');
-  const calc = await call('time_calc', { base: '2026-09-30 17:00:00', timeZone: Z, operations: [{ op: 'floor', unit: 'week' }] }, nowhere);
-  console.log(`  time_calc: ${calc.value.operations.join(' → ')} → ${calc.value.local.text}`);
-  if (calc.value.local.text !== '2026-09-28 00:00:00') throw new Error('time_calc 结果不对');
-  // 上下文里没有时区（本次请求没带）→ 报错并要求向用户澄清
-  const preStep = events.get('agent/pre-step');
-  if (typeof preStep !== 'function') throw new Error('插件没有监听 agent/pre-step，取不到上下文时区');
-  const firePreStep = (cwd, messages) => preStep(
-    { agent: sessionFor(cwd).agent, messages, turn: 1, step: 1 },
-    async () => ({ kind: 'enter' }),
-  );
+  const firePreStep = (cwd, messages) => {
+    const listener = events.get('agent/pre-step');
+    if (listener === undefined) throw new Error('插件没有监听 agent/pre-step');
+    return listener({ agent: { session: sessionFor(cwd).agent.session }, messages }, async () => ({ kind: 'enter' }));
+  };
+  // 先让上下文带上浏览器时区，后面的日历运算都用它
+  await firePreStep(NOWHERE, [{ source: { kind: 'user', rpcId: 'r1', clientTimeZone: Z } }]);
+  const fromNowhere = await call('time_now', {}, NOWHERE);
+  console.log(`  本地 ${fromNowhere.value.local.text} (${fromNowhere.value.offset})`
+    + ` → UTC 文本 ${fromNowhere.value.utc.text} · RFC 3339 ${fromNowhere.value.utc.rfc3339}`);
+  const week = await call('time_calc', {
+    base: '2026-09-30T12:00:00+08:00',
+    operations: [{ op: 'floor', unit: 'week', weekStartsOn: 1 }, { op: 'convert', zone: 'UTC' }],
+  }, NOWHERE);
+  const weekEnd = await call('time_calc', {
+    base: '2026-09-30T12:00:00+08:00',
+    operations: [{ op: 'floor', unit: 'week', weekStartsOn: 1 }, { op: 'add', unit: 'week', amount: 1 }, { op: 'convert', zone: 'UTC' }],
+  }, NOWHERE);
+  console.log(`  上周（周一到周日）半开区间 → [${week.value.utc.text}, ${weekEnd.value.utc.text})`);
+  if (week.value.utc.text !== '2026-09-27 16:00:00' || weekEnd.value.utc.text !== '2026-10-04 16:00:00') {
+    throw new Error('周对齐或时区换算不对');
+  }
+  const clamped = await call('time_calc', { base: '2026-01-31T12:00:00+08:00', operations: [{ op: 'add', unit: 'month', amount: 1 }] }, NOWHERE);
+  console.log(`  1/31 + 1 月 → ${clamped.value.local.text}（钳制到月末）`);
+  if (!clamped.value.local.text.startsWith('2026-02-28')) throw new Error('月末没有钳制');
+  const dst = await call('time_calc', {
+    base: '2026-03-07T12:00:00', timeZone: 'America/New_York',
+    operations: [{ op: 'add', unit: 'day', amount: 1 }],
+  }, NOWHERE);
+  console.log(`  跨 DST：NY 3/7 12:00 + 1 天 → ${dst.value.local.text}，偏移 ${dst.value.offset}（保持墙钟）`);
+  if (!dst.value.local.text.startsWith('2026-03-08')) throw new Error('跨 DST 的一天没有保持墙钟');
+  // 上下文里没有时区 → 报错并要求向用户澄清
+  await firePreStep(NOWHERE, [{ source: { kind: 'user', rpcId: 'r0' } }]);
   try {
-    await call('time_now', {}, nowhere);
-    console.log('  ✗ 没给时区却成功了');
-    throw new Error('没有时区时 time_now 不应成功');
+    await call('time_now', {}, NOWHERE);
+    console.log('  ✗ 上下文没有时区却成功了');
+    throw new Error('没有时区时不应成功');
   } catch (cause) {
-    if (!/本次请求没有带浏览器时区/.test(String(cause?.message ?? cause))) throw cause;
+    if (!/没有带浏览器时区/.test(String(cause?.message ?? cause))) throw cause;
     console.log('  ✓ 上下文没有时区时明确报错，要求向用户澄清');
   }
   // 上下文带来浏览器时区 → 自动取用（规范字段 source.clientTimeZone）
-  await firePreStep(nowhere, [{ source: { kind: 'user', rpcId: 'r1', clientTimeZone: Z } }]);
-  const fromContext = await call('time_now', {}, nowhere);
+  await firePreStep(NOWHERE, [{ source: { kind: 'user', rpcId: 'r1', clientTimeZone: Z } }]);
+  const fromContext = await call('time_now', {}, NOWHERE);
   console.log(`  上下文浏览器时区 → source=${fromContext.value.timeZoneSource} · zone=${fromContext.value.timeZone}`);
   if (fromContext.value.timeZoneSource !== 'context' || fromContext.value.timeZone !== Z) {
     throw new Error('上下文时区没有生效');
   }
   // 同一回合的第 2 步：payload.messages 为空，不能把已取到的时区覆盖成 missing
-  await firePreStep(nowhere, []);
-  const afterEmptyStep = await call('time_now', {}, nowhere);
+  await firePreStep(NOWHERE, []);
+  const afterEmptyStep = await call('time_now', {}, NOWHERE);
   if (afterEmptyStep.value.timeZoneSource !== 'context' || afterEmptyStep.value.timeZone !== Z) {
     throw new Error('空消息的那一步把上下文时区覆盖掉了');
   }
   console.log('  ✓ 同回合后续步骤（无用户消息）不会覆盖已取到的上下文时区');
   // 上下文时区冲突 → 按规范请用户澄清，而不是随便挑一个
-  await firePreStep(nowhere, [
+  await firePreStep(NOWHERE, [
     { source: { kind: 'user', rpcId: 'r1', clientTimeZone: Z } },
     { source: { kind: 'user', rpcId: 'r2', clientTimeZone: 'UTC' } },
   ]);
   try {
-    await call('time_now', {}, nowhere);
+    await call('time_now', {}, NOWHERE);
     console.log('  ✗ 时区冲突却成功了');
     throw new Error('时区冲突时不应成功');
   } catch (cause) {
@@ -153,39 +170,25 @@ console.log('=== 时间辅助工具 ===');
     console.log('  ✓ 上下文时区冲突时明确报错，要求澄清');
   }
   // 显式参数可以覆盖上下文
-  await firePreStep(nowhere, [{ source: { kind: 'user', rpcId: 'r1', clientTimeZone: 'UTC' } }]);
-  const overridden = await call('time_now', { timeZone: Z }, nowhere);
+  await firePreStep(NOWHERE, [{ source: { kind: 'user', rpcId: 'r1', clientTimeZone: 'UTC' } }]);
+  const overridden = await call('time_now', { timeZone: Z }, NOWHERE);
   console.log(`  显式参数覆盖上下文 → source=${overridden.value.timeZoneSource} · zone=${overridden.value.timeZone}`);
   if (overridden.value.timeZoneSource !== 'argument' || overridden.value.timeZone !== Z) {
     throw new Error('显式参数没有覆盖上下文');
   }
   // 设置里能覆盖的只有那几个键：给了别的键，行为照旧（时区来自上下文，工作区来自会话头）
-  const buildCtx = (config) => {
-    const tools = new Map();
-    const events = new Map();
-    apply({
-      logger: { info: () => {} },
-      get: () => undefined,
-      tools: { register: (tool) => { tools.set(tool.name, tool); return () => {}; } },
-      effect: (fn) => { const d = fn(); if (typeof d === 'function') disposers.push(d); },
-      on: (name, listener) => { events.set(name, listener); return () => {}; },
-    }, config);
-    return { tools, events };
-  };
   {
-    const { tools, events } = buildCtx({ timeZone: 'UTC' });
-    const session = { meta: { cwd: nowhere } };
-    await events.get('agent/pre-step')({
+    const { tools, events: built } = buildCtx({ timeZone: 'UTC' });
+    const session = { meta: { cwd: NOWHERE } };
+    await built.get('agent/pre-step')({
       agent: { session },
       messages: [{ source: { kind: 'user', rpcId: 'r1', clientTimeZone: Z } }],
     }, async () => ({ kind: 'enter' }));
     const value = await tools.get('time_now').execute({}, { signal: new AbortController().signal, agent: { session } });
     console.log('  config.timeZone=UTC 时实际用 → ' + value.timeZoneSource + ' / ' + value.timeZone);
     if (value.timeZoneSource !== 'context' || value.timeZone !== Z) throw new Error('时区应当只来自上下文');
-    const second = buildCtx({ workspace: '/tmp/whatever' });
     try {
-      await second.tools.get('ontology_info').execute({ key: 'index' }, { signal: new AbortController().signal, agent: { session: { meta: {} } } });
-      console.log('  ✗ 竟然用了 config 里的路径');
+      await tools.get('oks_info').execute({ key: 'index' }, { signal: new AbortController().signal, agent: { session: { meta: {} } } });
       throw new Error('工作区应当只来自会话头');
     } catch (cause) {
       if (!/无法确定当前会话的工作区目录/.test(String(cause?.message ?? cause))) throw cause;
@@ -194,8 +197,7 @@ console.log('=== 时间辅助工具 ===');
   }
   // 会话头里没有 cwd 时明确报错，而不是回落到别的目录
   try {
-    const tool = registered.get('ontology_info');
-    await tool.execute({ key: 'index' }, { signal: new AbortController().signal, agent: { session: { meta: {} } } });
+    await registered.get('oks_info').execute({ key: 'index' }, { signal: new AbortController().signal, agent: { session: { meta: {} } } });
     console.log('  ✗ 会话头没有 cwd 却成功了');
     throw new Error('没有 cwd 时不应成功');
   } catch (cause) {
@@ -212,11 +214,11 @@ let member = null;
 const walk = async (key, depth) => {
   if (member !== null || depth > 6 || seenKeys.size >= 24 || seenKeys.has(key)) return;
   seenKeys.add(key);
-  const found = foundOf((await call('ontology_info', { key })).value);
+  const found = foundOf((await call('oks_info', { key })).value);
   trail.push(`${'· '.repeat(depth)}${found?.type ?? '?'}  ${key}`);
   const detail = found?.detail;
   if (typeof detail?.id === 'string' && detail.id !== '') {
-    member = { key, id: detail.id, type: found?.type };
+    member = { key, id: detail.id, type: found?.type, links: found?.links ?? [] };
     return;
   }
   const children = [];
@@ -230,105 +232,195 @@ await walk('index', 0);
 for (const line of trail) console.log(`  ${line}`);
 if (member === null) throw new Error('从 index 出发没有走到任何声明了 id 的成员');
 console.log(`  跟随 ${seenKeys.size} 个 key，落到成员: ${member.type} · id=${member.id}`);
+// 再从那个成员往下找**第一个声明了 id 的 Dimension**（用来问"多行结果"）。
+// 找不到就跳过那一段——测试不写形状假设，模型的形状由服务回答。
+let dimension = null;
+{
+  const seen = new Set();
+  let budget = 60;
+  const seek = async (key, depth) => {
+    if (dimension !== null || budget <= 0 || depth > 6 || seen.has(key)) return;
+    seen.add(key); budget -= 1;
+    const found = foundOf((await call('oks_info', { key })).value);
+    const detail = found?.detail;
+    if (found?.type === 'Dimension' && typeof detail?.id === 'string') { dimension = { key, id: detail.id }; return; }
+    const children = [];
+    if (Array.isArray(detail?.entries)) for (const entry of detail.entries) if (typeof entry?.key === 'string') children.push(entry.key);
+    for (const link of found?.links ?? []) if (typeof link?.key === 'string') children.push(link.key);
+    for (const child of children) await seek(child, depth + 1);
+  };
+  await seek(member.key, 0);
+}
+console.log(`  维度（多行用例）：${dimension === null ? '未找到，跳过' : `id=${dimension.id}`}`);
 
-// ── transform：同一批 Intent 重放，验证内容寻址去重与落点 ──────────────────
-console.log('=== ontology_transform（真实提问 + 内容寻址）===');
-const intents = [{
-  op: 'Graph', root: 'x', nodes: [{ id: 'x', entity: member.id }], edges: [], select: [], count: 'x',
-}];
-const first = await call('ontology_transform', { intents });
-console.log(first.text.split('\n').filter((line) => /◂|sql:|bindings:|✕|⚠/.test(line)).join('\n').slice(0, 600));
-const planDir = `${DEV_ROOT}/.oks/plans`;
-const firstFiles = first.value.plans?.planFiles ?? null;
-if (firstFiles === null) throw new Error('一批通过的 Intent 没有写出计划文件');
-console.log(`  计划文件: ${firstFiles.sql}`);
-console.log(`  名字 = 内容 sha256 前缀: ${
-  /^plan-([0-9a-f]{16})\.json$/.test(firstFiles.json.split('/').pop())
-  && createHash('sha256').update(readFileSync(firstFiles.json)).digest('hex').slice(0, 16) === firstFiles.json.split('/').pop().slice(5, 21)
-    ? '✓' : '✗'}`);
-const beforeCount = existsSync(planDir) ? readdirSync(planDir).length : 0;
-const again = await call('ontology_transform', { intents });
-const afterCount = readdirSync(planDir).length;
-console.log(`  重问同一批 → reused=${again.value.plans?.planFiles?.reused}`
-  + ` · 路径相同=${again.value.plans?.planFiles?.json === firstFiles.json ? '✓' : '✗'}`
-  + ` · 目录文件数 ${beforeCount} → ${afterCount} ${beforeCount === afterCount ? '✓' : '✗'}`);
+const countIntents = [{ op: 'Graph', root: 'x', nodes: [{ id: 'x', entity: member.id }], edges: [], select: [], count: 'x' }];
+const brokenIntents = [{ op: 'Graph', root: 'x', nodes: [{ id: 'x', entity: 'no_such_entity_from_smoke' }], edges: [], select: [], count: 'x' }];
 
-// ── 被拒批次：诊断要能指路，且业务含义不被动过 ──────────────────────────────
-console.log('=== ontology_transform（被拒批次）===');
-const rejected = await call('ontology_transform', {
-  intents: [{ op: 'Graph', root: 'x', nodes: [{ id: 'x', entity: 'no_such_entity_from_smoke' }], edges: [], select: [], count: 'x' }],
-});
-const rejectedLines = rejected.text.split('\n').filter((line) => /◂|✕|被拒绝/.test(line));
-console.log(rejectedLines.map((l) => `  ${l}`).join('\n').slice(0, 500));
-console.log(`  有 Error 诊断: ${/✕\s*Error/.test(rejected.text) ? '✓' : '✗'}`);
+// ── 校验路径：只回诊断，不回任何语句 ────────────────────────────────────────
+console.log('=== oks_check_intent（只校验）===');
+{
+  const accepted = await call('oks_check_intent', { intents: countIntents });
+  console.log(accepted.text.split('\n').filter((line) => /◂|校验结论/.test(line)).map((l) => `  ${l}`).join('\n'));
+  if (!/全部可用/.test(accepted.text)) throw new Error('有效批次应当判定为可用');
+  const leak = /select\s|sql:|bindings:/i.test(accepted.text);
+  console.log(`  渲染里没有语句: ${leak ? '✗' : '✓'}`);
+  if (leak) throw new Error('校验路径不应当出现语句');
+  const structured = JSON.stringify(accepted.value);
+  console.log(`  结构化值里也没有 queries: ${/"queries"/.test(structured) ? '✗' : '✓'}`);
+  if (/"queries"/.test(structured)) throw new Error('校验路径的结构化值里仍然带着 queries');
 
-// ── 第二个工作区：相对路径解析 + 工作区声明的 planDir ───────────────────────
-console.log('=== 第二个工作区（嵌套目录，artifact 与 planDir 都由它自己声明）===');
-mkdirSync(`${SCRATCH}/nested`, { recursive: true });
-const anchor = JSON.parse(readFileSync(`${DEV_ROOT}/oks.json`, 'utf8'));
-const nested = `${SCRATCH}/nested`;
-writeFileSync(`${nested}/oks.json`, `${JSON.stringify({
-  version: 1,
-  domain: anchor.domain,
-  artifact: relative(nested, resolve(DEV_ROOT, anchor.artifact)),
-  planDir: 'plans',
-}, null, 2)}\n`);
-const nestedCall = await call('ontology_transform', { intents }, nested);
-const nestedFiles = nestedCall.value.plans?.planFiles ?? null;
-console.log(`  计划文件: ${nestedFiles?.sql ?? '(未写)'}`);
-console.log(`  落在工作区声明的目录下: ${nestedFiles !== null && nestedFiles.sql.startsWith(`${nested}/plans/`) ? '✓' : '✗'}`);
+  const partial = await call('oks_check_intent', { intents: [...countIntents, ...brokenIntents] });
+  console.log(partial.text.split('\n').filter((line) => /◂|✕|再校验|校验结论/.test(line)).map((l) => `  ${l}`).join('\n').slice(0, 700));
+  if (!/✕\s*Error/.test(partial.text)) throw new Error('坏 Intent 应当报 Error 诊断');
+  if (!/再校验一次.*通过/.test(partial.text)) throw new Error('未报 Error 的子集应当被单独确认');
+  if (!/被拒绝/.test(partial.text)) throw new Error('被拒的 Intent 应当单独列出');
+}
 
-// ── 第三个工作区：planDir 显式关掉 ─────────────────────────────────────────
-console.log('=== 第三个工作区（planDir: false）===');
-mkdirSync(`${SCRATCH}/off`, { recursive: true });
-const off = `${SCRATCH}/off`;
-writeFileSync(`${off}/oks.json`, `${JSON.stringify({
-  version: 1,
-  domain: anchor.domain,
-  artifact: relative(off, resolve(DEV_ROOT, anchor.artifact)),
-  planDir: false,
-}, null, 2)}\n`);
-const offCall = await call('ontology_transform', { intents }, off);
-console.log(`  计划文件: ${offCall.value.plans?.planFiles ?? '(未写)'} · 目录存在=${existsSync(`${off}/plans`)}`);
-console.log(`  SQL 仍然返回: ${/sql:\s+\S/.test(offCall.text) ? '✓' : '✗'}`);
+// ── 查询路径：真的执行、真的返回行，并且带上来源语句 ────────────────────────
+console.log('=== oks_query（只读执行）===');
+{
+  const answer = await call('oks_query', { intents: countIntents });
+  const first = answer.value.results?.[0] ?? null;
+  console.log(answer.text.split('\n').filter((line) => /◂|── 结果|执行：|^\|/.test(line)).map((l) => `  ${l}`).join('\n').slice(0, 700));
+  if (first === null) throw new Error('有效查询没有产生结果');
+  if (first.error !== null) throw new Error(`查询失败：${first.error}`);
+  console.log(`  行数 ${first.rows.length} · 渲染 ${answer.text.length} 字符（pruner 阈值 8192）`);
+  if (first.rows.length < 1) throw new Error('查询应当至少返回一行');
+  if (!/sql:/.test(answer.text) || !/执行：\d+ 行/.test(answer.text)) throw new Error('查询结果应当带上语句与执行摘要');
+  if (answer.text.length >= 8192) throw new Error('模型可见文本超过了 pruner 阈值');
+
+  const rejected = await call('oks_query', { intents: brokenIntents });
+  console.log(rejected.text.split('\n').filter((line) => /◂|✕|被拒绝|没有/.test(line)).map((l) => `  ${l}`).join('\n').slice(0, 500));
+  if ((rejected.value.results ?? []).length !== 0) throw new Error('被拒批次不应产生结果');
+  if (!/被拒绝/.test(rejected.text)) throw new Error('被拒批次应当列出诊断');
+}
+
+// ── 行数上限：换一个 queryMaxRows=2 的实例，看截断有没有说出来 ───────────────
+console.log('=== 行数上限与截断说明（queryMaxRows=2）===');
+if (dimension === null) {
+  console.log('  （跳过：发现协议没走到维度节点）');
+} else {
+  const { tools } = buildCtx({ queryMaxRows: 2 });
+  const tool = tools.get('oks_query');
+  const intents = [{ op: 'Graph', root: 'x', nodes: [{ id: 'x', entity: member.id }], edges: [], select: [{ node: 'x', dimension: dimension.id }] }];
+  const value = await tool.execute({ intents }, { signal: new AbortController().signal, ...sessionFor(DEV_ROOT) });
+  const text = tool.output.render({ intents }, value).map((block) => block.text ?? '').join('');
+  const first = value.results?.[0] ?? null;
+  console.log(text.split('\n').filter((line) => /执行：|只显示/.test(line)).map((l) => `  ${l}`).join('\n'));
+  if (first === null || first.error !== null) throw new Error(`多行查询失败：${first?.error ?? '(无结果)'}`);
+  if (first.truncated) {
+    if (first.rows.length !== 2) throw new Error('截断时应当恰好取回上限行数');
+    if (!/已到行数上限 2|只显示前 2 行/.test(text)) throw new Error('截断必须在模型可见文本里写明');
+    console.log('  ✓ 取回行数等于上限，渲染里写明截断');
+  } else {
+    console.log(`  （跳过：这个数据集只有 ${first.rows.length} 行，未触及上限）`);
+  }
+}
+
+// ── 第二个工作区：artifact 与 dataFile 都相对 oks.json 解析 ─────────────────
+console.log('=== 第二个工作区（嵌套目录，路径都相对 oks.json）===');
+{
+  mkdirSync(`${SCRATCH}/nested`, { recursive: true });
+  const anchor = JSON.parse(readFileSync(`${DEV_ROOT}/oks.json`, 'utf8'));
+  const nested = `${SCRATCH}/nested`;
+  const entry = {
+    version: 1,
+    domain: anchor.domain,
+    artifact: relative(nested, resolve(DEV_ROOT, anchor.artifact)),
+  };
+  if (typeof anchor.dataFile === 'string') entry.dataFile = relative(nested, resolve(DEV_ROOT, anchor.dataFile));
+  writeFileSync(`${nested}/oks.json`, `${JSON.stringify(entry, null, 2)}\n`);
+  const nestedAnswer = await call('oks_query', { intents: countIntents }, nested);
+  const first = nestedAnswer.value.results?.[0] ?? null;
+  console.log(`  相对路径解析 → ${first === null ? '✗ 无结果' : `行数 ${first.rows.length} ✓`}`);
+  if (first === null || first.error !== null) throw new Error('嵌套工作区的相对路径没有解析对');
+}
+
+// ── 第三个工作区：没有 dataFile → 查询报错，校验照常 ────────────────────────
+console.log('=== 没有 dataFile 的工作区（只能校验）===');
+{
+  mkdirSync(`${SCRATCH}/no-data`, { recursive: true });
+  const anchor = JSON.parse(readFileSync(`${DEV_ROOT}/oks.json`, 'utf8'));
+  const dir = `${SCRATCH}/no-data`;
+  writeFileSync(`${dir}/oks.json`, `${JSON.stringify({
+    version: 1, domain: anchor.domain, artifact: relative(dir, resolve(DEV_ROOT, anchor.artifact)),
+  }, null, 2)}\n`);
+  try {
+    await call('oks_query', { intents: countIntents }, dir);
+    console.log('  ✗ 没有 dataFile 却查成功了');
+    throw new Error('没有 dataFile 时 oks_query 应当报错');
+  } catch (cause) {
+    if (!/没有声明 dataFile/.test(String(cause?.message ?? cause))) throw cause;
+    console.log(`  ✓ oks_query 拒绝: ${String(cause.message).split('\n')[0].slice(0, 110)}`);
+  }
+  const checked = await call('oks_check_intent', { intents: countIntents }, dir);
+  console.log(`  oks_check_intent 仍可用: ${/全部可用/.test(checked.text) ? '✓' : '✗'}`);
+}
+
+// ── 第四个工作区：dataFile 不是数据库 → 结果里说明执行失败 ──────────────────
+console.log('=== 坏 dataFile（不是 SQLite）===');
+{
+  mkdirSync(`${SCRATCH}/bad-data`, { recursive: true });
+  const anchor = JSON.parse(readFileSync(`${DEV_ROOT}/oks.json`, 'utf8'));
+  const dir = `${SCRATCH}/bad-data`;
+  writeFileSync(`${dir}/junk.txt`, 'not a database\n');
+  writeFileSync(`${dir}/oks.json`, `${JSON.stringify({
+    version: 1, domain: anchor.domain,
+    artifact: relative(dir, resolve(DEV_ROOT, anchor.artifact)),
+    dataFile: 'junk.txt',
+  }, null, 2)}\n`);
+  const failed = await call('oks_query', { intents: countIntents }, dir);
+  const first = failed.value.results?.[0] ?? null;
+  console.log(`  ${String(first?.error ?? '(没有错误)').slice(0, 120)}`);
+  console.log(`  渲染里写明执行失败: ${/执行失败/.test(failed.text) ? '✓' : '✗'}`);
+  if (!/执行失败/.test(failed.text)) throw new Error('坏数据文件必须在结果里写明');
+}
 
 // ── 没有 oks.json 的工作区：明确报错，不回落到别的模型 ─────────────────────
 console.log('=== 没有 oks.json 的工作区 ===');
-const bare = `${SCRATCH}/bare`;
-mkdirSync(bare, { recursive: true });
-try {
-  await call('ontology_info', { key: 'index' }, bare);
-  console.log('  ✗ 本该报错，却成功了');
-} catch (cause) {
-  console.log(`  ✓ 拒绝: ${String(cause?.message ?? cause).split('\n')[0].slice(0, 120)}`);
+{
+  const bare = `${SCRATCH}/bare`;
+  mkdirSync(bare, { recursive: true });
+  try {
+    await call('oks_info', { key: 'index' }, bare);
+    console.log('  ✗ 本该报错，却成功了');
+  } catch (cause) {
+    console.log(`  ✓ 拒绝: ${String(cause?.message ?? cause).split('\n')[0].slice(0, 120)}`);
+  }
 }
 
 // ── 没有快照段的产物：准入检查要在第一次用到该工作区时就报错 ────────────────
 console.log('=== 非快照产物（只有 wasm 头，没有 telora.snapshot 段）===');
-const empty = `${SCRATCH}/empty`;
-mkdirSync(empty, { recursive: true });
-writeFileSync(`${empty}/empty.wasm`, Uint8Array.of(0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00));
-writeFileSync(`${empty}/oks.json`, `${JSON.stringify({
-  version: 1, domain: anchor.domain, artifact: 'empty.wasm',
-}, null, 2)}\n`);
-try {
-  await call('ontology_info', { key: 'index' }, empty);
-  console.log('  ✗ 本该报错，却成功了');
-} catch (cause) {
-  console.log(`  ✓ 拒绝: ${String(cause?.message ?? cause).split('\n')[0].slice(0, 140)}`);
+{
+  const empty = `${SCRATCH}/empty`;
+  mkdirSync(empty, { recursive: true });
+  writeFileSync(`${empty}/empty.wasm`, Uint8Array.of(0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00));
+  writeFileSync(`${empty}/oks.json`, `${JSON.stringify({
+    version: 1, domain: 'ic', artifact: 'empty.wasm',
+  }, null, 2)}\n`);
+  try {
+    await call('oks_info', { key: 'index' }, empty);
+    console.log('  ✗ 本该报错，却成功了');
+  } catch (cause) {
+    console.log(`  ✓ 拒绝: ${String(cause?.message ?? cause).split('\n')[0].slice(0, 140)}`);
+  }
+}
+
+// ── 插件不写工作区：整场测试前后顶层清单必须一致，且没有 .oks/plans ─────────
+console.log('=== 插件不在工作区里写任何东西 ===');
+{
+  const after = workspaceListing();
+  console.log(`  顶层清单未变: ${after === listingBefore ? '✓' : `✗ (${listingBefore} → ${after})`}`);
+  console.log(`  没有 .oks/plans: ${existsSync(`${DEV_ROOT}/.oks`) ? '✗' : '✓'}`);
+  if (after !== listingBefore) throw new Error('插件在工作区里创建了文件');
+  if (existsSync(`${DEV_ROOT}/.oks`)) throw new Error('计划文件目录不该存在');
 }
 
 // ── 超时强杀：1 ms 上限，验证 worker 被终止而且不会把测试挂住 ───────────────
 console.log('=== 超时强杀 + 复活（requestTimeoutMs=1）===');
 {
-  const hostile = new Map();
-  apply({
-    logger: { info: () => {} },
-    get: () => undefined,
-    tools: { register: (tool) => { hostile.set(tool.name, tool); return () => {}; } },
-    effect: (fn) => { const d = fn(); if (typeof d === 'function') disposers.push(d); },
-  }, { requestTimeoutMs: 1 });
-  const tool = hostile.get('ontology_info');
+  const { tools } = buildCtx({ requestTimeoutMs: 1 });
+  const tool = tools.get('oks_info');
   const attempt = async () => {
     try {
       await tool.execute({ key: 'index' }, { signal: new AbortController().signal, ...sessionFor(DEV_ROOT) });
@@ -336,6 +428,21 @@ console.log('=== 超时强杀 + 复活（requestTimeoutMs=1）===');
     } catch (cause) {
       return `拒绝: ${String(cause?.message ?? cause).slice(0, 80)}`;
     }
+  };
+  console.log(`  第 1 次: ${await attempt()}`);
+  console.log(`  第 2 次: ${await attempt()}`);
+}
+
+// ── 查询超时：同样的强杀路径要对执行器也成立 ────────────────────────────────
+console.log('=== 查询超时 + 复活（queryTimeoutMs=1）===');
+{
+  const { tools } = buildCtx({ queryTimeoutMs: 1 });
+  const tool = tools.get('oks_query');
+  const attempt = async () => {
+    const value = await tool.execute({ intents: countIntents }, { signal: new AbortController().signal, ...sessionFor(DEV_ROOT) });
+    const first = value.results?.[0] ?? null;
+    if (first === null) return '没有结果';
+    return first.error === null ? `ok（1 ms 内跑完，${first.rows.length} 行）` : `拒绝: ${first.error.slice(0, 70)}`;
   };
   console.log(`  第 1 次: ${await attempt()}`);
   console.log(`  第 2 次: ${await attempt()}`);
