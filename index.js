@@ -1,25 +1,34 @@
-// dsh-oks —— DSH 能力扩展：把"某个领域的知识服务（OKS）"接成三个原生工具。
+// dsh-oks —— DSH 能力扩展：把"某个领域的知识服务（OKS）"接成五个原生工具。
 // 插件不认识任何模型：开放哪个模型、模型在哪，由**会话所在工作区**根目录的 oks.json 声明
 // （{"domain":"...","artifact":"...wasm","dataFile":"...sqlite"}）。
 // 工作区是会话属性，所以一份插件能服务任意多工作区。
 //
-// 三个工具：oks_info（按服务给出的不透明 key 读节点，入口是 key "index"）、
+// 五个工具：oks_search（按名词/说法在词汇表里找到 key）、
+// oks_references（按 key 反向找到引用它的节点）、
+// oks_info（按服务给出的不透明 key 读节点，入口是 key "index"）、
 // oks_check_intent（只校验结构化 Intent，只回诊断）、
 // oks_query（校验后**只读查询**数据文件，回结果；SQL/bindings 只在这一条路径上出现）。
 // 外加两个与模型无关的辅助工具：time_now（当前时刻的各种标准表示）、
 // time_calc（日历代数：加减 / 对齐到日历边界 / 换时区）——服务不读时钟，相对时间
 // 必须在提交前换成绝对边界；这两个工具只做标准表示，不解释任何领域格式。
 //
+// 词汇表与引用图：第一次用到检索时，插件按服务声明的**发现契约**（`<domain>/discovery`
+// 给出可见入口，沿 `info` 的引用图走完，再在本地派生）在内存里建好词汇表与反向引用索引，
+// 之后整个进程按产物的 artifact_sha256 复用。索引里只有词汇与引用边，不含节点内容——
+// 读节点始终由 oks_info 透传给服务。它不写工作区、也不进模型上下文。
+//
 // **插件在工作区里不写任何东西**：没有计划文件、没有缓存产物。每次执行的 SQL、bindings、
 // 行数与耗时写进宿主日志（ctx.logger），工作区保持干净。
 //
 // **代码里不写任何"地图长什么样"的假设**（有哪些种类、入口、字段、格式、路由、分页）：
-// 那些是服务自己的声明，由 agent 按 key 自主探索；插件只负责协议与呈现。
+// 那些是服务自己的声明，由 agent 按 key 自主探索。唯一的例外是服务自己声明的消费契约
+// ——发现入口与派生规则；检索层照它派生，对不上时直接报错，不静默降级。
 //
 // 零依赖：直接注册原始工具定义，因此装在 profile 里或从工作区加载都不会有模块解析问题；
 // 查询用 Node 自带的 node:sqlite（只读打开）。parameters 只用受支持的 JSON Schema
 // 关键字子集，数量校验放在 execute 里。
 
+import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
@@ -180,22 +189,42 @@ const WORKER_SOURCE = [
   'const module = new WebAssembly.Module(readFileSync(workerData.artifact));',
   'const imports = WebAssembly.Module.imports(module);',
   'if (imports.length !== 0) throw new Error(\'expected a zero-import guest, got \' + imports.length);',
-  'const exports_ = new WebAssembly.Instance(module, {}).exports;',
-  'const memory = exports_.memory;',
   'const encoder = new TextEncoder(); const textDecoder = new TextDecoder();',
   'const section = WebAssembly.Module.customSections(module, \'telora.snapshot\')[0];',
   'if (section === undefined) throw new Error(\'artifact has no telora.snapshot section\');',
   'const snapshot = decodeSnapshot(new Uint8Array(section));',
-  'const boot = exports_[\'mem-alloc\'](snapshot.guest.length, 1);',
-  'new Uint8Array(memory.buffer, boot, snapshot.guest.length).set(snapshot.guest);',
-  'exports_.telora_snapshot_import(boot, snapshot.guest.length);',
-  'let restored = 0;',
-  'for (const [name, value] of snapshot.globals) {',
-  '  const global = exports_[name];',
-  '  if (global instanceof WebAssembly.Global) { global.value = value; restored += 1; }',
+  'let exports_ = null; let memory = null; let resetGlobals = [];',
+  'function instantiate() {',
+  '  const next = new WebAssembly.Instance(module, {}).exports;',
+  '  const boot = next[\'mem-alloc\'](snapshot.guest.length, 1);',
+  '  new Uint8Array(next.memory.buffer, boot, snapshot.guest.length).set(snapshot.guest);',
+  '  next.telora_snapshot_import(boot, snapshot.guest.length);',
+  '  let restored = 0;',
+  '  for (const [name, value] of snapshot.globals) {',
+  '    const global = next[name];',
+  '    if (global instanceof WebAssembly.Global) { global.value = value; restored += 1; }',
+  '  }',
+  '  if (restored === 0) throw new Error(\'snapshot restored no globals\');',
+  '  exports_ = next; memory = next.memory;',
+  '  next[\'reset-service\']();',
+  '  // 复位基线：运行时契约要求每次请求前把 telora_reset_global_* 恢复到初始化后的值，',
+  '  // 否则状态会在请求之间累积（长会话里表现为 guest trap：unreachable）。',
+  '  resetGlobals = [];',
+  '  for (const name of Object.keys(next)) {',
+  '    const global = next[name];',
+  '    if (name.indexOf(\'telora_reset_global_\') !== 0 || !(global instanceof WebAssembly.Global)) continue;',
+  '    try { global.value = global.value; resetGlobals.push([name, global.value]); } catch (ignored) { }',
+  '  }',
+  '  return restored;',
   '}',
-  "exports_['reset-service']();",
+  'const restored = instantiate();',
+  'function resetService() {',
+  '  try { exports_[\'reset-service\'](); }',
+  '  catch (ignored) { instantiate(); return; }',
+  '  for (const [name, value] of resetGlobals) exports_[name].value = value;',
+  '}',
   'function invoke(line) {',
+  '  resetService();',
   '  const input = encoder.encode(line);',
   '  const ptr = exports_[\'mem-alloc\'](input.length, 1);',
   '  new Uint8Array(memory.buffer, ptr, input.length).set(input);',
@@ -603,6 +632,267 @@ function renderQuery(_args, value) {
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 
+// ── 检索层 ───────────────────────────────────────────────────────────────────
+// 派生规则来自服务自己声明的**发现契约**：`<domain>/discovery` 返回可见的 Dataset /
+// Relation 入口 key；消费方沿 `info` 的引用图（`node.links`，`Index` 另加
+// `detail.schemas`）走完整个图，再把节点派生成词汇表与引用边。物理字段与基础类型不进
+// 词汇表——它们的语义由维度与度量承载。任何一步对不上契约都直接报错，不静默降级。
+
+const SEARCH_BUDGET_CHARS = 5600;
+const REFERENCE_BUDGET_CHARS = 5600;
+const FACET_DATASET_CHARS = 300;
+// 工具面上的 kind 就是 key 前缀：与 agent 拼 key 时看到的字面一致（Type 而非 DataType）。
+const TERM_KINDS = ['Dataset', 'Dimension', 'Measure', 'Relation', 'Type', 'Value'];
+const REFERENCE_KINDS = ['Member', 'Traversable', 'Related'];
+
+const normalize = (text) => String(text).replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
+const tokenize = (text) => normalize(text).split(/[^0-9a-z\u4e00-\u9fff]+/).filter((token) => token !== '');
+const uniqueText = (values) => [...new Set(values.filter((value) => typeof value === 'string' && value !== ''))];
+
+/** 一个节点 → 一条词条。文本只取自节点自己声明的描述（summary/label/aliases、localized、terms）。 */
+function deriveTerm(node) {
+  const parts = node.key.split('/').map((part) => decodeURIComponent(part));
+  const kind = parts[0];
+  const name = parts[parts.length - 1];
+  const detail = node.detail ?? {};
+  const description = node.description ?? {};
+  const localized = [...(description.localized ?? []), ...(detail.localized ?? [])];
+  const terms = description.terms ?? [];
+  const aliases = uniqueText([
+    description.label,
+    ...(description.aliases ?? []),
+    ...localized.map((item) => item.label),
+    ...terms.map((term) => term.term),
+  ]).filter((alias) => alias !== name);
+  const aliasDoc = (description.aliases ?? []).some((alias) => !terms.some((term) => term.term === alias))
+    ? (description.summary || description.label)
+    : '';
+  const doc = uniqueText([
+    description.summary,
+    ...localized.map((item) => item.summary),
+    ...terms.map((term) => term.description),
+    aliasDoc,
+  ]).join('\n');
+  const entry = { key: node.key, kind, name, doc, aliases };
+  if (kind === 'Dimension' || kind === 'Measure') entry.dataset = parts[1];
+  if (kind === 'Value') entry.typeId = parts[1];
+  // 关系的 naming 链是它两端的数据集，取自该节点自己声明的 from/to。
+  if (kind === 'Relation' && typeof detail.from_dataset === 'string' && typeof detail.to_dataset === 'string') {
+    entry.link = [detail.from_dataset, detail.to_dataset];
+  }
+  return entry;
+}
+
+/** 派生：词条 + 反向引用索引 + 已知 key 集合。断言保留自发现契约，走样时直接报错。
+ *  这里只留下检索需要的东西；节点本身不保留——读节点始终由 oks_info 透传给服务。 */
+function deriveIndex(nodes) {
+  const byKey = new Map(nodes.map((node) => [node.key, node]));
+  const revision = byKey.get('index')?.detail?.revision;
+  if (typeof revision !== 'string') throw new Error('dsh-oks: 知识入口 index 没有声明 revision');
+  const terms = [];
+  const edges = new Map();
+  for (const node of [...nodes].sort((left, right) => left.key.localeCompare(right.key, 'en'))) {
+    for (const link of node.links) {
+      if (!byKey.has(link.key)) throw new Error(`dsh-oks: 知识引用无法解析 ${node.key} → ${link.key}`);
+      if (!REFERENCE_KINDS.includes(link.type)) throw new Error(`dsh-oks: 未知的引用种类 ${link.type}`);
+      const edge = `${node.key}|${link.key}|${link.type}`;
+      if (!edges.has(edge)) edges.set(edge, { source: node.key, target: link.key, link: link.type });
+    }
+    const kind = node.key.split('/')[0];
+    if (!TERM_KINDS.includes(kind)) continue;
+    // 基础类型（没有 storage 的 DataType）不是业务词条：它们由维度/度量承载。
+    if (kind === 'Type' && typeof node.detail?.storage !== 'string') continue;
+    terms.push(deriveTerm(node));
+  }
+  const linksByTarget = new Map();
+  for (const edge of edges.values()) {
+    if (!linksByTarget.has(edge.target)) linksByTarget.set(edge.target, []);
+    linksByTarget.get(edge.target).push({ link: edge.link, source: edge.source });
+  }
+  const kindCounts = TERM_KINDS
+    .map((kind) => [kind, terms.filter((term) => term.kind === kind).length])
+    .filter(([, count]) => count > 0);
+  const datasets = terms.filter((term) => term.kind === 'Dataset').map((term) => term.name).sort();
+  return {
+    revision,
+    terms,
+    keys: new Set(byKey.keys()),
+    links: [...edges.values()],
+    linksByTarget,
+    facets: {
+      kinds: kindCounts.map(([kind, count]) => `${kind} ${count}`).join(' · '),
+      datasets: `${datasets.length} 个：${capLine(datasets.join(', '), FACET_DATASET_CHARS)}`,
+    },
+  };
+}
+
+/** 按发现契约爬完整个图并派生。首次检索时同步执行（同步阻塞，便于先跑通）。 */
+async function buildRetrievalIndex(entry, sha, log) {
+  const started = Date.now();
+  const { domain } = entry.settings;
+  const discovery = await entry.runner.send(`${domain}/discovery`, {});
+  if (discovery?.error === true) {
+    throw new Error(`dsh-oks: ${domain}/discovery 失败：`
+      + `${discovery?.diagnostics?.[0]?.message ?? '未知错误'}；检索需要这条路由。`);
+  }
+  const roots = Array.isArray(discovery?.ok) ? discovery.ok : [];
+  if (roots.length === 0) throw new Error(`dsh-oks: ${domain}/discovery 没有返回任何入口 key`);
+  const pending = [...new Set(['index', ...roots])];
+  const seen = new Set(pending);
+  const nodes = [];
+  for (const key of pending) {
+    const response = await entry.runner.send(`${domain}/info`, { key });
+    const node = response?.ok?.Document?.Found;
+    if (node?.key !== key || !Array.isArray(node.links)) {
+      throw new Error(`dsh-oks: 无法解析知识 key ${key}（发现契约要求每个入口都能取到节点）`);
+    }
+    nodes.push(node);
+    for (const link of node.links) {
+      if (typeof link?.key === 'string' && !seen.has(link.key)) {
+        seen.add(link.key);
+        pending.push(link.key);
+      }
+    }
+    if (node.type === 'Index' && Array.isArray(node.detail?.schemas)) {
+      for (const schema of node.detail.schemas) {
+        if (typeof schema === 'string' && !seen.has(schema)) {
+          seen.add(schema);
+          pending.push(schema);
+        }
+      }
+    }
+  }
+  const index = deriveIndex(nodes);
+  log(`[oks] discovery index · ${index.revision} · ${sha.slice(0, 12)} · `
+    + `${nodes.length} 节点 · ${index.terms.length} 词条 · ${index.links.length} 引用 · ${Date.now() - started} ms`);
+  return index;
+}
+
+/** 一条词条 → 检索结果行（不含 key：agent 按声明的 key 模式自己拼）。 */
+function termRow(term, field, score) {
+  const row = { kind: term.kind, name: term.name, field, score };
+  if (term.dataset !== undefined) row.dataset = term.dataset;
+  if (term.typeId !== undefined) row.type_id = term.typeId;
+  if (term.link !== undefined) row.link = term.link;
+  return row;
+}
+
+const termOwner = (row) => (row.dataset !== undefined ? `[${row.dataset}]`
+  : row.type_id !== undefined ? `[${row.type_id}]`
+    : row.link !== undefined ? `[${row.link.join(' → ')}]` : '');
+const termLine = (row) => {
+  const owner = termOwner(row);
+  return `${row.kind}  ${row.name}${owner === '' ? '' : `  ${owner}`}  ${row.field} ${row.score}`;
+};
+
+/** 匹配：对 name / aliases / doc 做模糊匹配（AND 全部查询词），报出命中的那一类。 */
+function matchTerm(term, tokens, query) {
+  const name = normalize(term.name);
+  const aliasText = normalize(term.aliases.join(' '));
+  const docText = normalize(term.doc);
+  const all = `${name} ${aliasText} ${docText}`;
+  if (!tokens.every((token) => all.includes(token))) return null;
+  if (tokens.every((token) => name.includes(token))) return { field: 'name', score: name === query ? 1 : 0.9 };
+  if (tokens.every((token) => aliasText.includes(token))) return { field: 'alias', score: 0.7 };
+  if (tokens.every((token) => docText.includes(token))) return { field: 'doc', score: 0.5 };
+  return { field: 'doc', score: 0.3 };
+}
+
+/** 检索：过滤 → 稳定排序 → 按字节装页。`skip` 是分页起点，`more` 是剩余条数。 */
+function searchIndex(index, args) {
+  const query = normalize(args?.query ?? '').trim();
+  const kind = typeof args?.kind === 'string' && args.kind !== '' ? args.kind : null;
+  const dataset = typeof args?.dataset === 'string' && args.dataset !== '' ? args.dataset : null;
+  const skip = Number.isInteger(args?.skip) && args.skip > 0 ? args.skip : 0;
+  if (kind !== null && !TERM_KINDS.includes(kind)) {
+    throw new Error(`dsh-oks: kind 只能是 ${TERM_KINDS.join(' / ')}`);
+  }
+  const tokens = tokenize(query);
+  const matched = [];
+  for (const term of index.terms) {
+    if (kind !== null && term.kind !== kind) continue;
+    if (dataset !== null && term.dataset !== dataset) continue;
+    if (tokens.length === 0) { matched.push({ term, field: 'all', score: 0 }); continue; }
+    const hit = matchTerm(term, tokens, query);
+    if (hit !== null) matched.push({ term, ...hit });
+  }
+  matched.sort((left, right) => right.score - left.score
+    || left.term.kind.localeCompare(right.term.kind, 'en')
+    || String(left.term.dataset ?? left.term.typeId ?? left.term.link?.join('/') ?? '')
+      .localeCompare(String(right.term.dataset ?? right.term.typeId ?? right.term.link?.join('/') ?? ''), 'en')
+    || left.term.name.localeCompare(right.term.name, 'en'));
+  const total = matched.length;
+  const page = matched.slice(skip);
+  const rows = [];
+  let used = 0;
+  for (const item of page) {
+    const row = termRow(item.term, item.field, item.score);
+    const size = termLine(row).length + 1;
+    if (used + size > SEARCH_BUDGET_CHARS) break;
+    used += size;
+    rows.push(row);
+  }
+  const remaining = total - skip - rows.length;
+  return { start: skip, total, more: remaining > 0 ? remaining : null, matched: rows, facets: index.facets };
+}
+
+/** 反向引用：`skip` 分页；未知 key 直接报错（区别于"没有任何引用"）。 */
+function referencesOf(index, args) {
+  const key = typeof args?.key === 'string' && args.key !== '' ? args.key : null;
+  if (key === null) throw new Error('dsh-oks: oks_references 需要 key');
+  const link = typeof args?.link === 'string' && args.link !== '' ? args.link : null;
+  const kind = typeof args?.kind === 'string' && args.kind !== '' ? args.kind : null;
+  const skip = Number.isInteger(args?.skip) && args.skip > 0 ? args.skip : 0;
+  if (link !== null && !REFERENCE_KINDS.includes(link)) {
+    throw new Error(`dsh-oks: link 只能是 ${REFERENCE_KINDS.join(' / ')}`);
+  }
+  if (kind !== null && !TERM_KINDS.includes(kind)) {
+    throw new Error(`dsh-oks: kind 只能是 ${TERM_KINDS.join(' / ')}`);
+  }
+  if (!index.keys.has(key)) {
+    throw new Error(`dsh-oks: ${key} 不是这个产物里的知识 key（用 oks_search 先找到 key）`);
+  }
+  const all = (index.linksByTarget.get(key) ?? [])
+    .filter((reference) => link === null || reference.link === link)
+    .filter((reference) => kind === null || reference.source.split('/')[0] === kind)
+    .sort((left, right) => left.link.localeCompare(right.link, 'en') || left.source.localeCompare(right.source, 'en'));
+  const total = all.length;
+  const page = all.slice(skip);
+  const rows = [];
+  let used = 0;
+  for (const reference of page) {
+    const line = `${reference.link}  ${reference.source}`;
+    if (used + line.length + 1 > REFERENCE_BUDGET_CHARS) break;
+    used += line.length + 1;
+    rows.push(reference);
+  }
+  const remaining = total - skip - rows.length;
+  return { key, start: skip, total, more: remaining > 0 ? remaining : null, references: rows };
+}
+
+/** oks_search 的模型可见渲染：命中概况 + 一行一条（key 由 agent 按声明的模式拼）。 */
+function renderSearch(_args, value) {
+  const lines = [`命中 ${value.total} · 从 ${value.start} 起显示 ${value.matched.length} 条`
+    + `${value.more === null ? '（已到底）' : ` · 还有 ${value.more}`}`];
+  if (value.matched.length === 0) {
+    lines.push('', '没有匹配。可用的 kind：' + value.facets.kinds, '可用的 dataset：' + value.facets.datasets,
+      '换个说法，或用 kind= / dataset= 收窄。');
+  } else {
+    for (const row of value.matched) lines.push(termLine(row));
+    lines.push('', '用 index 里声明的 key 模式把 kind/name[/owner] 拼成 key，再用 oks_info 读节点。');
+  }
+  return [{ type: 'text', text: `${lines.join('\n')}\n` }];
+}
+
+/** oks_references 的模型可见渲染：谁引用了这个 key（`link` 是引用种类）。 */
+function renderReferences(_args, value) {
+  const lines = [`引用 ${value.key} 的共 ${value.total} 条 · 从 ${value.start} 起显示 ${value.references.length} 条`
+    + `${value.more === null ? '（已到底）' : ` · 还有 ${value.more}`}`];
+  if (value.references.length === 0) lines.push('', '没有任何节点引用它。');
+  else for (const row of value.references) lines.push(`${row.link}  ${row.source}`);
+  return [{ type: 'text', text: `${lines.join('\n')}\n` }];
+}
+
 export function apply(ctx, config = {}) {
   const log = (message) => {
     try {
@@ -706,11 +996,31 @@ export function apply(ctx, config = {}) {
       from,
       settings,
       runner: null,
+      index: null, // 检索层：词汇表 + 反向引用索引
     };
     workspaces.set(root, entry);
     log(`[oks] workspace ${root} (cwd from ${from}) · domain=${settings.domain} · model=${settings.artifact}`);
     entry.runner = createRunner(settings, log);
     return entry;
+  };
+
+  // 词汇表与引用图按**产物**持有：同一份产物被多个工作区、多个会话声明时只派生一次。
+  // 身份用 artifact_sha256（revision 字符串在两次不同构建之间可能不变，不能当身份）。
+  const indexes = new Map(); // artifact sha256 -> index
+
+  /** 惰性同步建立检索层：第一次检索时执行，之后按产物哈希复用。 */
+  const ensureIndex = async (entry) => {
+    if (entry.index !== null) return entry.index;
+    const sha = createHash('sha256').update(readFileSync(entry.settings.artifact)).digest('hex');
+    const shared = indexes.get(sha);
+    if (shared !== undefined) {
+      entry.index = shared;
+      return shared;
+    }
+    const index = await buildRetrievalIndex(entry, sha, log);
+    indexes.set(sha, index);
+    entry.index = index;
+    return index;
   };
 
   /** 降一批 Intent。服务只在整批通过时才回 queries，所以被拒批次里没有报 Error 的子集
@@ -787,6 +1097,60 @@ export function apply(ctx, config = {}) {
         }
         const response = await entry.runner.send(method, request, exec?.signal);
         return { trace: [{ method, request, response }] };
+      },
+    },
+    {
+      name: 'oks_search',
+      description: 'Find this workspace\'s knowledge vocabulary by name, alias or description and get what you need to address a node: its kind, its name, its owner, where the term matched and how well. Keys are not returned — compose the key with the pattern the service declares for that kind in index.detail.key_patterns, then read the node with oks_info. Use it when you know what a thing is called but not its key; narrow with kind= or dataset=, and page with skip=.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'Words to look for in a term\'s name, aliases or description. Matching is case-insensitive and splits camelCase and separators; every word must appear somewhere in the term. Omit it to list everything the filters allow.',
+          },
+          kind: { type: 'string', enum: TERM_KINDS, description: 'Restrict to one kind of term.' },
+          dataset: { type: 'string', description: 'Restrict to terms whose owner dataset is this one (dimensions and measures declare one).' },
+          skip: { type: 'number', description: 'Start at this match (default 0). The response reports how many matches remain, so page with skip = start + matched.length.' },
+        },
+        additionalProperties: false,
+      },
+      output: { schema: OBJECT_OUTPUT, render: renderSearch },
+      async execute(args, exec) {
+        const entry = ensureWorkspace(exec);
+        const index = await ensureIndex(entry);
+        const result = searchIndex(index, args);
+        log(`[oks] search query=${JSON.stringify(args?.query ?? '')} kind=${args?.kind ?? '-'}`
+          + ` dataset=${args?.dataset ?? '-'} skip=${result.start} → ${result.total} 命中 · 返回 ${result.matched.length}`
+          + `${result.more === null ? '' : ` · 还有 ${result.more}`}`);
+        return result;
+      },
+    },
+    {
+      name: 'oks_references',
+      description: 'List what references a knowledge key, from the reference graph the plugin derives when the vocabulary is built. Each row names the reference kind and the referencing node\'s key, so you can read that node with oks_info or follow it further. Use it to see where a measure, dimension, type or dataset is used before you change how you address it.',
+      parameters: {
+        type: 'object',
+        properties: {
+          key: {
+            type: 'string',
+            description: 'A knowledge key that exists in this artifact — composed from the declared key patterns, or taken verbatim from what a node returned.',
+          },
+          link: { type: 'string', enum: REFERENCE_KINDS, description: 'Restrict to one reference kind.' },
+          kind: { type: 'string', enum: TERM_KINDS, description: 'Restrict to referencing nodes of one kind.' },
+          skip: { type: 'number', description: 'Start at this reference (default 0).' },
+        },
+        required: ['key'],
+        additionalProperties: false,
+      },
+      output: { schema: OBJECT_OUTPUT, render: renderReferences },
+      async execute(args, exec) {
+        const entry = ensureWorkspace(exec);
+        const index = await ensureIndex(entry);
+        const result = referencesOf(index, args);
+        log(`[oks] references key=${result.key} link=${args?.link ?? '-'} kind=${args?.kind ?? '-'}`
+          + ` skip=${result.start} → ${result.total} 条 · 返回 ${result.references.length}`);
+        return result;
       },
     },
     {

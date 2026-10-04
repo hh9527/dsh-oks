@@ -1,4 +1,4 @@
 {
   "title": "知识服务查询 (OKS)",
-  "description": "把**会话所在工作区**声明的知识服务与数据文件接成三个原生工具（info / check_intent / query）：业务问句先校验成结构化 Intent，再在**只读**连接上查出真实结果。插件本身不含任何模型——工作区根目录放一份 oks.json 就开放一个模型；领域知识由 agent 从 `index` 开始按 key 自主探索。插件不在工作区里写任何文件。"
+  "description": "把**会话所在工作区**声明的知识服务与数据文件接成五个原生工具（search / references / info / check_intent / query）：按名词或说法在词汇表里找到 key、按 key 反向找到引用它的节点、按 key 读节点说明，业务问句先校验成结构化 Intent，再在**只读**连接上查出真实结果。插件本身不含任何模型——工作区根目录放一份 oks.json 就开放一个模型；领域知识由 agent 从 `index` 开始按 key 自主探索。插件不在工作区里写任何文件。"
 }

@@ -1,4 +1,4 @@
-// 本地冒烟测试：用假的 cordis ctx 加载插件，直接调用五个工具的真实实现，不安装进 profile。
+// 本地冒烟测试：用假的 cordis ctx 加载插件，直接调用各工具的真实实现，不安装进 profile。
 // 其中两个与模型无关的时间工具（time_now / time_calc）不需要工作区，也在这里单测。
 // 插件行**什么都不配**——领域、模型、数据文件全部来自工作区，正是要验证的那一点。
 //
@@ -24,8 +24,9 @@ const registered = new Map();
 const disposers = [];
 const skillsRegistered = [];
 const events = new Map();
+const logs = [];
 const ctx = {
-  logger: { info: (message) => console.error(`[log] ${message}`) },
+  logger: { info: (message) => { logs.push(message); console.error(`[log] ${message}`); } },
   // 技能服务是可选的：插件能拿到就注册，拿不到就静默降级。
   get: (name) => (name === 'skills'
     ? { register: (skill) => { skillsRegistered.push(skill); return () => {}; } }
@@ -47,7 +48,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['oks_info', 'oks_check_intent', 'oks_query', 'time_now', 'time_calc'];
+const EXPECTED_TOOLS = ['oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'time_now', 'time_calc'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -210,28 +211,51 @@ console.log('=== 时间辅助工具 ===');
 console.log('=== 发现协议（不假设形状，只跟随服务给出的 key）===');
 const seenKeys = new Set();
 const trail = [];
-let member = null;
+let reached = null;
 const walk = async (key, depth) => {
-  if (member !== null || depth > 6 || seenKeys.size >= 24 || seenKeys.has(key)) return;
+  if (depth > 6 || seenKeys.size >= 24 || seenKeys.has(key)) return;
   seenKeys.add(key);
   const found = foundOf((await call('oks_info', { key })).value);
   trail.push(`${'· '.repeat(depth)}${found?.type ?? '?'}  ${key}`);
   const detail = found?.detail;
-  if (typeof detail?.id === 'string' && detail.id !== '') {
-    member = { key, id: detail.id, type: found?.type, links: found?.links ?? [] };
-    return;
+  if (reached === null && typeof detail?.id === 'string' && detail.id !== '') {
+    reached = { key, id: detail.id, type: found?.type, links: found?.links ?? [] };
   }
   const children = [];
   if (Array.isArray(detail?.entries)) {
     for (const entry of detail.entries) if (typeof entry?.key === 'string') children.push(entry.key);
+  }
+  if (Array.isArray(detail?.schemas)) {
+    for (const schema of detail.schemas) if (typeof schema === 'string') children.push(schema);
   }
   for (const link of found?.links ?? []) if (typeof link?.key === 'string') children.push(link.key);
   for (const child of children) await walk(child, depth + 1);
 };
 await walk('index', 0);
 for (const line of trail) console.log(`  ${line}`);
-if (member === null) throw new Error('从 index 出发没有走到任何声明了 id 的成员');
-console.log(`  跟随 ${seenKeys.size} 个 key，落到成员: ${member.type} · id=${member.id}`);
+console.log(`  跟随 ${seenKeys.size} 个 key${reached === null ? '（入口没直接落到成员）' : ` · 落到声明了 id 的节点: ${reached.type}`}`);
+
+// Intent 的实体是服务声明的数据集 id：用 oks_search 拿到词条，再按 index 声明的 key 模式
+// 拼出 key 去读节点——这就是 agent 的拼法（填声明的模式，名字各编码一次）。
+let member = reached !== null && reached.type === 'Dataset' ? reached : null;
+if (member === null) {
+  const indexNode = foundOf((await call('oks_info', { key: 'index' })).value);
+  const pattern = (indexNode?.detail?.key_patterns ?? []).find((item) => item.kind === 'Dataset'
+    || String(item.pattern).startsWith('Dataset/'));
+  const datasets = await call('oks_search', { kind: 'Dataset' });
+  for (const row of datasets.value.matched) {
+    if (pattern === undefined) break;
+    const key = String(pattern.pattern).replace(/\{(\w+)\}/g, () => encodeURIComponent(row.name));
+    const found = foundOf((await call('oks_info', { key })).value);
+    if (found?.type === 'Dataset' && typeof found.detail?.id === 'string') {
+      member = { key, id: found.detail.id, type: found.type, links: found.links ?? [] };
+      console.log(`  按声明的模式拼出实体 key: ${key} → id=${found.detail.id}`);
+      break;
+    }
+  }
+}
+if (member === null) throw new Error('没有找到任何声明了 id 的数据集实体');
+console.log(`  实体：${member.type} · id=${member.id}`);
 // 再从那个成员往下找**第一个声明了 id 的 Dimension**（用来问"多行结果"）。
 // 找不到就跳过那一段——测试不写形状假设，模型的形状由服务回答。
 let dimension = null;
@@ -252,6 +276,110 @@ let dimension = null;
   await seek(member.key, 0);
 }
 console.log(`  维度（多行用例）：${dimension === null ? '未找到，跳过' : `id=${dimension.id}`}`);
+
+// ── 检索层：词汇表与引用图（按服务声明的发现契约派生）───────────────────────
+console.log('=== oks_search（按名词/说法找 key）===');
+let seed = null;
+{
+  const started = Date.now();
+  const all = await call('oks_search', {});
+  console.log(`  首次检索（含按发现契约建索引）${Date.now() - started} ms · 命中 ${all.value.total} 条`);
+  // 没有 limit：页大小按字节定，装不下就整条截断并报出剩余
+  const capped = all.value.more !== null && all.value.matched.length < all.value.total;
+  console.log(`  超容量时整条截断并报出 more: ${capped ? '✓' : '✗'}`);
+  if (!capped) throw new Error('空查询应当匹配全部词条并按容量截断');
+  const bytes = Buffer.byteLength(all.text, 'utf8');
+  console.log(`  渲染 ${bytes} 字节 ≤ 8192: ${bytes <= 8192 ? '✓' : '✗'}`);
+  if (bytes > 8192) throw new Error('检索渲染超过了宿主裁剪阈值');
+  // 翻页：第二页与第一页不重叠，start 回显请求的 skip
+  const skip = all.value.matched.length;
+  const page2 = await call('oks_search', { skip });
+  const firstPage = new Set(all.value.matched.map((row) => JSON.stringify(row)));
+  const overlap = page2.value.matched.filter((row) => firstPage.has(JSON.stringify(row))).length;
+  console.log(`  skip=${skip} 翻页不重复: ${overlap === 0 ? '✓' : '✗'} · start 回显: ${page2.value.start === skip ? '✓' : '✗'}`);
+  if (overlap !== 0) throw new Error('翻页出现重复条目');
+  // 数据驱动：拿一条真实词条去搜它自己的名字
+  seed = all.value.matched.find((row) => row.name.length >= 4 && row.kind !== 'Value') ?? all.value.matched[0];
+  const hit = await call('oks_search', { query: seed.name });
+  const self = hit.value.matched.find((row) => row.kind === seed.kind && row.name === seed.name
+    && (seed.dataset === undefined || row.dataset === seed.dataset));
+  console.log(`  按名字 ${seed.kind}/${seed.name} 检索命中它本身: ${self === undefined ? '✗' : '✓'}`
+    + ` · 首位 field=${hit.value.matched[0]?.field} score=${hit.value.matched[0]?.score}`);
+  if (self === undefined) throw new Error('按名字检索没有命中该词条本身');
+  const byKind = await call('oks_search', { kind: 'Dataset' });
+  console.log(`  kind=Dataset 过滤生效: ${byKind.value.matched.every((row) => row.kind === 'Dataset') ? '✓' : '✗'} · 命中 ${byKind.value.total}`);
+  if (seed.dataset !== undefined) {
+    const byDataset = await call('oks_search', { kind: seed.kind, dataset: seed.dataset });
+    console.log(`  dataset=${seed.dataset} 过滤生效: ${byDataset.value.matched.every((row) => row.dataset === seed.dataset) ? '✓' : '✗'} · 命中 ${byDataset.value.total}`);
+  }
+  const again = await call('oks_search', { query: seed.name });
+  const stable = JSON.stringify(again.value) === JSON.stringify(hit.value);
+  console.log(`  同参数逐字可复现: ${stable ? '✓' : '✗'}`);
+  if (!stable) throw new Error('同参数两次结果不同');
+  const zero = await call('oks_search', { query: 'zzz-no-such-term-zzz' });
+  console.log(`  0 命中给出 facet: ${zero.value.total === 0 && /可用的 kind/.test(zero.text) ? '✓' : '✗'}`);
+  if (zero.value.total !== 0) throw new Error('不存在的词不该有命中');
+}
+
+// 与服务发布物对比：派生结果必须与同一份产物的发布物逐项相同（存在发布物才比）
+console.log('=== 与发布物对比 ===');
+{
+  const workspace = JSON.parse(readFileSync(`${DEV_ROOT}/oks.json`, 'utf8'));
+  const artifact = resolve(DEV_ROOT, workspace.artifact);
+  const base = artifact.replace(/\.snapshot\.wasm$/, '').replace(/\.wasm$/, '');
+  const reportPath = [`${base}.report.json`, `${base}.derived.report.json`]
+    .find((candidate) => existsSync(candidate));
+  if (reportPath === undefined) {
+    console.log('  未找到同前缀的 report.json，跳过');
+  } else {
+    const report = JSON.parse(readFileSync(reportPath, 'utf8'));
+    const line = logs.find((message) => message.includes('discovery index')) ?? '';
+    const nodes = Number(/·\s*(\d+) 节点/.exec(line)?.[1] ?? -1);
+    const links = Number(/·\s*(\d+) 引用/.exec(line)?.[1] ?? -1);
+    console.log(`  ${relative(DEV_ROOT, reportPath)} · 节点 ${nodes} = ${report.nodes} ${nodes === report.nodes ? '✓' : '✗'}`);
+    if (nodes !== report.nodes) throw new Error('派生节点数与发布物不一致');
+    console.log(`  引用 ${links} = ${report.links} ${links === report.links ? '✓' : '✗'}`);
+    if (links !== report.links) throw new Error('派生引用数与发布物不一致');
+    const groups = { Dataset: 'datasets', Dimension: 'dimensions', Measure: 'measures', Relation: 'rels', Type: 'types', Value: 'values' };
+    for (const [kind, group] of Object.entries(groups)) {
+      if (report.counts?.[group] === undefined) continue;
+      const total = (await call('oks_search', { kind })).value.total;
+      console.log(`  ${kind} ${total} = ${report.counts[group]} ${total === report.counts[group] ? '✓' : '✗'}`);
+      if (total !== report.counts[group]) throw new Error(`词条计数与发布物不一致：${kind}`);
+    }
+  }
+}
+
+console.log('=== oks_references（按 key 反向找引用）===');
+{
+  // 用正向图做往返验证：节点 A 指向 B，则 B 的反向引用里必须能看到 A
+  const node = foundOf((await call('oks_info', { key: member.key })).value);
+  const forward = (node?.links ?? []).find((link) => typeof link?.key === 'string');
+  if (forward === undefined) {
+    console.log('  该成员没有正向引用，跳过往返验证');
+  } else {
+    const back = await call('oks_references', { key: forward.key });
+    const roundTrip = back.value.references.some((ref) => ref.source === node.key && ref.link === forward.type);
+    console.log(`  ${node.key} → ${forward.key} 的反向引用含它自己: ${roundTrip ? '✓' : '✗'} · 该 key 共 ${back.value.total} 条引用`);
+    if (!roundTrip) throw new Error('正向引用没有出现在反向结果里');
+    const filtered = await call('oks_references', { key: forward.key, link: forward.type });
+    console.log(`  link=${forward.type} 过滤生效: ${filtered.value.references.every((ref) => ref.link === forward.type) ? '✓' : '✗'}`);
+    if (back.value.total > back.value.references.length) {
+      const next = await call('oks_references', { key: forward.key, skip: back.value.references.length });
+      console.log(`  skip 翻页 start=${next.value.start} ${next.value.start === back.value.references.length ? '✓' : '✗'}`);
+    } else {
+      console.log(`  一页装得下（more=null ${back.value.more === null ? '✓' : '✗'}）`);
+    }
+  }
+  let rejected = false;
+  try {
+    await call('oks_references', { key: 'Dataset/zzz-no-such-key-zzz' });
+  } catch (cause) {
+    rejected = /不是这个产物里的知识 key/.test(String(cause?.message ?? cause));
+  }
+  console.log(`  未知 key 明确报错: ${rejected ? '✓' : '✗'}`);
+  if (!rejected) throw new Error('未知 key 应当报错，而不是回空');
+}
 
 const countIntents = [{ op: 'Graph', root: 'x', nodes: [{ id: 'x', entity: member.id }], edges: [], select: [], count: 'x' }];
 const brokenIntents = [{ op: 'Graph', root: 'x', nodes: [{ id: 'x', entity: 'no_such_entity_from_smoke' }], edges: [], select: [], count: 'x' }];

@@ -1,6 +1,6 @@
-# 插入一行 Host 插件：把**工作区声明的**知识服务注册成 oks_info / oks_check_intent /
-# oks_query 三个工具，外加 time_now / time_calc 两个与模型无关的时间辅助工具。
-# 知识探索的入口是 oks_info 的 key "index"；这里不写任何形状假设。
+# 插入一行 Host 插件：把**工作区声明的**知识服务注册成 oks_search / oks_references /
+# oks_info / oks_check_intent / oks_query 五个工具，外加 time_now / time_calc 两个与模型无关的
+# 时间辅助工具。知识探索的入口是 oks_info 的 key "index"；这里不写任何形状假设。
 #
 # 这一行不需要知道任何模型：领域、artifact、dataFile 全部来自工作区根目录的 oks.json
 # （{"domain":"<领域名>","artifact":"<相对 oks.json 的 .wasm 路径>",
