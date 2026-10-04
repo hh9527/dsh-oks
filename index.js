@@ -13,16 +13,17 @@
 // 必须在提交前换成绝对边界；这两个工具只做标准表示，不解释任何领域格式。
 //
 // 词汇表与引用图：第一次用到检索时，插件按服务声明的**发现契约**（`<domain>/discovery`
-// 给出可见入口，沿 `info` 的引用图走完，再在本地派生）在内存里建好词汇表与反向引用索引，
-// 之后整个进程按产物的 artifact_sha256 复用。索引里只有词汇与引用边，不含节点内容——
-// 读节点始终由 oks_info 透传给服务。它不写工作区、也不进模型上下文。
+// 声明 revision、入口 roots、每类 key 的 key 模式，以及哪些 kind 进词汇表、每类词条的
+// 归属字段与必须非空的字段；沿 `info` 的引用图走完，再在本地派生）在内存里建好词汇表与
+// 反向引用索引，之后整个进程按产物的 artifact_sha256 复用。索引里只有词汇与引用边，
+// 不含节点内容——读节点始终由 oks_info 透传给服务。它不写工作区、也不进模型上下文。
 //
 // **插件在工作区里不写任何东西**：没有计划文件、没有缓存产物。每次执行的 SQL、bindings、
 // 行数与耗时写进宿主日志（ctx.logger），工作区保持干净。
 //
 // **代码里不写任何"地图长什么样"的假设**（有哪些种类、入口、字段、格式、路由、分页）：
 // 那些是服务自己的声明，由 agent 按 key 自主探索。唯一的例外是服务自己声明的消费契约
-// ——发现入口与派生规则；检索层照它派生，对不上时直接报错，不静默降级。
+// ——发现契约（入口、key 模式、词汇表）；检索层照它派生，对不上时直接报错，不静默降级。
 //
 // 零依赖：直接注册原始工具定义，因此装在 profile 里或从工作区加载都不会有模块解析问题；
 // 查询用 Node 自带的 node:sqlite（只读打开）。parameters 只用受支持的 JSON Schema
@@ -633,26 +634,27 @@ function renderQuery(_args, value) {
 }
 
 // ── 检索层 ───────────────────────────────────────────────────────────────────
-// 派生规则来自服务自己声明的**发现契约**：`<domain>/discovery` 返回可见的 Dataset /
-// Relation 入口 key；消费方沿 `info` 的引用图（`node.links`，`Index` 另加
-// `detail.schemas`）走完整个图，再把节点派生成词汇表与引用边。物理字段与基础类型不进
-// 词汇表——它们的语义由维度与度量承载。任何一步对不上契约都直接报错，不静默降级。
+// 派生规则来自服务自己声明的**发现契约**：`<domain>/discovery` 返回 `revision`、入口
+// `roots`、每类 key 的 `key_patterns`，以及 `vocabulary`——哪些 kind 进词汇表、每类词条的
+// 归属字段（`owner`，既是 detail 字段名也是 key 模式里的占位符名）与必须非空的字段
+// （`require`）。消费方沿 `info` 的引用图（`node.links`，`Index` 另加 `detail.schemas`）
+// 走完整个图，再按 vocabulary 把节点派生成词汇表与引用边：不在 vocabulary 里的 kind
+// 不进词汇表，即使它有声明的 key 模式。任何一步对不上契约都直接报错。
 
 const SEARCH_BUDGET_CHARS = 5600;
 const REFERENCE_BUDGET_CHARS = 5600;
 const FACET_DATASET_CHARS = 300;
-// 工具面上的 kind 就是 key 前缀：与 agent 拼 key 时看到的字面一致（Type 而非 DataType）。
-const TERM_KINDS = ['Dataset', 'Dimension', 'Measure', 'Relation', 'Type', 'Value'];
 const REFERENCE_KINDS = ['Member', 'Traversable', 'Related'];
 
 const normalize = (text) => String(text).replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
 const tokenize = (text) => normalize(text).split(/[^0-9a-z\u4e00-\u9fff]+/).filter((token) => token !== '');
 const uniqueText = (values) => [...new Set(values.filter((value) => typeof value === 'string' && value !== ''))];
 
-/** 一个节点 → 一条词条。文本只取自节点自己声明的描述（summary/label/aliases、localized、terms）。 */
-function deriveTerm(node) {
+/** 一个节点 → 一条词条。成员资格、归属与文本一律来自发现契约与节点自己的声明：
+ *  `declaration` 是已确认包含该 kind 的那条 vocabulary 项。文本只取自节点自己声明的
+ *  描述（summary/label/aliases、localized、terms）。 */
+function deriveTerm(node, declaration) {
   const parts = node.key.split('/').map((part) => decodeURIComponent(part));
-  const kind = parts[0];
   const name = parts[parts.length - 1];
   const detail = node.detail ?? {};
   const description = node.description ?? {};
@@ -673,22 +675,20 @@ function deriveTerm(node) {
     ...terms.map((term) => term.description),
     aliasDoc,
   ]).join('\n');
-  const entry = { key: node.key, kind, name, doc, aliases };
-  if (kind === 'Dimension' || kind === 'Measure') entry.dataset = parts[1];
-  if (kind === 'Value') entry.typeId = parts[1];
-  // 关系的 naming 链是它两端的数据集，取自该节点自己声明的 from/to。
-  if (kind === 'Relation' && typeof detail.from_dataset === 'string' && typeof detail.to_dataset === 'string') {
-    entry.link = [detail.from_dataset, detail.to_dataset];
+  const entry = { kind: declaration.kind, name, doc, aliases, owner: null, ownerValue: null };
+  // 归属：声明了 owner 就取同名 detail 字段，输出行里也用这个字段名。
+  if (typeof declaration.owner === 'string' && detail[declaration.owner] != null) {
+    entry.owner = declaration.owner;
+    entry.ownerValue = detail[declaration.owner];
   }
   return entry;
 }
 
 /** 派生：词条 + 反向引用索引 + 已知 key 集合。断言保留自发现契约，走样时直接报错。
  *  这里只留下检索需要的东西；节点本身不保留——读节点始终由 oks_info 透传给服务。 */
-function deriveIndex(nodes) {
+function deriveIndex(nodes, contract) {
   const byKey = new Map(nodes.map((node) => [node.key, node]));
-  const revision = byKey.get('index')?.detail?.revision;
-  if (typeof revision !== 'string') throw new Error('dsh-oks: 知识入口 index 没有声明 revision');
+  const byKind = new Map(contract.vocabulary.map((item) => [item.kind, item]));
   const terms = [];
   const edges = new Map();
   for (const node of [...nodes].sort((left, right) => left.key.localeCompare(right.key, 'en'))) {
@@ -698,25 +698,28 @@ function deriveIndex(nodes) {
       const edge = `${node.key}|${link.key}|${link.type}`;
       if (!edges.has(edge)) edges.set(edge, { source: node.key, target: link.key, link: link.type });
     }
-    const kind = node.key.split('/')[0];
-    if (!TERM_KINDS.includes(kind)) continue;
-    // 基础类型（没有 storage 的 DataType）不是业务词条：它们由维度/度量承载。
-    if (kind === 'Type' && typeof node.detail?.storage !== 'string') continue;
-    terms.push(deriveTerm(node));
+    const declaration = byKind.get(node.key.split('/')[0]);
+    if (declaration === undefined) continue; // 不在词汇表里的 kind：有 key 模式也不是词条
+    if (declaration.require != null && (node.detail ?? {})[declaration.require] == null) continue;
+    terms.push(deriveTerm(node, declaration));
   }
   const linksByTarget = new Map();
   for (const edge of edges.values()) {
     if (!linksByTarget.has(edge.target)) linksByTarget.set(edge.target, []);
     linksByTarget.get(edge.target).push({ link: edge.link, source: edge.source });
   }
-  const kindCounts = TERM_KINDS
-    .map((kind) => [kind, terms.filter((term) => term.kind === kind).length])
+  const kindCounts = contract.vocabulary
+    .map((item) => [item.kind, terms.filter((term) => term.kind === item.kind).length])
     .filter(([, count]) => count > 0);
-  const datasets = terms.filter((term) => term.kind === 'Dataset').map((term) => term.name).sort();
+  const datasets = [...new Set(terms
+    .filter((term) => term.owner === 'dataset')
+    .map((term) => String(term.ownerValue)))].sort();
   return {
-    revision,
+    revision: contract.revision,
     terms,
     keys: new Set(byKey.keys()),
+    vocabKinds: contract.vocabulary.map((item) => item.kind),
+    patterns: new Map(contract.keyPatterns.map((item) => [item.kind, item.pattern])),
     links: [...edges.values()],
     linksByTarget,
     facets: {
@@ -724,6 +727,19 @@ function deriveIndex(nodes) {
       datasets: `${datasets.length} 个：${capLine(datasets.join(', '), FACET_DATASET_CHARS)}`,
     },
   };
+}
+
+/** 请求了不在词汇表里的 kind 时，把"可发现性"讲清楚：词汇表收录哪些、哪些只是有 key 模式。 */
+function kindError(index, kind, where) {
+  const available = index.vocabKinds.join(' / ');
+  const pattern = index.patterns.get(kind);
+  if (pattern === undefined) {
+    return new Error(`dsh-oks: ${where} 的 kind ${kind} 不存在：发现契约的 key 模式与词汇表里都没有它。`
+      + `词汇表收录的 kind：${available}。`);
+  }
+  return new Error(`dsh-oks: ${where} 的 kind ${kind} 不可检索：它有声明的 key 模式 ${pattern}，`
+    + `但不属这个产物的词汇表；这类 key 从节点自身的引用里得到（oks_info / oks_references）。`
+    + `词汇表收录的 kind：${available}。`);
 }
 
 /** 按发现契约爬完整个图并派生。首次检索时同步执行（同步阻塞，便于先跑通）。 */
@@ -735,7 +751,38 @@ async function buildRetrievalIndex(entry, sha, log) {
     throw new Error(`dsh-oks: ${domain}/discovery 失败：`
       + `${discovery?.diagnostics?.[0]?.message ?? '未知错误'}；检索需要这条路由。`);
   }
-  const roots = Array.isArray(discovery?.ok) ? discovery.ok : [];
+  const ok = discovery?.ok;
+  if (ok === null || typeof ok !== 'object' || Array.isArray(ok)) {
+    throw new Error(`dsh-oks: ${domain}/discovery 没有返回发现契约`
+      + '（ok 需要 {revision, roots, key_patterns, vocabulary}）。');
+  }
+  if (!Array.isArray(ok.roots)) {
+    throw new Error(`dsh-oks: ${domain}/discovery 没有声明入口 roots（发现契约的 roots 是入口 key 的数组）`);
+  }
+  if (!Array.isArray(ok.vocabulary)) {
+    throw new Error(`dsh-oks: ${domain}/discovery 没有声明 vocabulary`
+      + '（发现契约用 vocabulary 声明哪些 kind 进词汇表，以及每类词条的 owner 与 require）');
+  }
+  if (typeof ok.revision !== 'string' || ok.revision === '') {
+    throw new Error(`dsh-oks: ${domain}/discovery 没有声明 revision`);
+  }
+  for (const item of ok.vocabulary) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)
+      || typeof item.kind !== 'string' || item.kind === '') {
+      throw new Error(`dsh-oks: ${domain}/discovery 的 vocabulary 里有不合法的条目`
+        + '（每条需要 kind，可带 owner / require）');
+    }
+    for (const field of ['owner', 'require']) {
+      const value = item[field];
+      if (value !== undefined && value !== null && (typeof value !== 'string' || value === '')) {
+        throw new Error(`dsh-oks: ${domain}/discovery 的 vocabulary 里 ${item.kind} 的 ${field} 不是字段名`);
+      }
+    }
+  }
+  const keyPatterns = Array.isArray(ok.key_patterns)
+    ? ok.key_patterns.filter((item) => item !== null && typeof item === 'object' && typeof item.kind === 'string')
+    : [];
+  const roots = ok.roots;
   if (roots.length === 0) throw new Error(`dsh-oks: ${domain}/discovery 没有返回任何入口 key`);
   const pending = [...new Set(['index', ...roots])];
   const seen = new Set(pending);
@@ -762,24 +809,26 @@ async function buildRetrievalIndex(entry, sha, log) {
       }
     }
   }
-  const index = deriveIndex(nodes);
+  const index = deriveIndex(nodes, { revision: ok.revision, vocabulary: ok.vocabulary, keyPatterns });
   log(`[oks] discovery index · ${index.revision} · ${sha.slice(0, 12)} · `
     + `${nodes.length} 节点 · ${index.terms.length} 词条 · ${index.links.length} 引用 · ${Date.now() - started} ms`);
   return index;
 }
 
-/** 一条词条 → 检索结果行（不含 key：agent 按声明的 key 模式自己拼）。 */
+/** 一条词条 → 检索结果行（不含 key：agent 按声明的 key 模式自己拼）。
+ *  词条声明了 owner 时，行里用 owner 这个名字作字段。 */
 function termRow(term, field, score) {
   const row = { kind: term.kind, name: term.name, field, score };
-  if (term.dataset !== undefined) row.dataset = term.dataset;
-  if (term.typeId !== undefined) row.type_id = term.typeId;
-  if (term.link !== undefined) row.link = term.link;
+  if (term.owner !== null) row[term.owner] = term.ownerValue;
   return row;
 }
 
-const termOwner = (row) => (row.dataset !== undefined ? `[${row.dataset}]`
-  : row.type_id !== undefined ? `[${row.type_id}]`
-    : row.link !== undefined ? `[${row.link.join(' → ')}]` : '');
+// 行里除协议字段外至多一个字段——它是该词条的归属，字段名由词汇表声明。
+const ROW_FIELDS = new Set(['kind', 'name', 'field', 'score']);
+const termOwner = (row) => {
+  for (const [name, value] of Object.entries(row)) if (!ROW_FIELDS.has(name)) return `[${value}]`;
+  return '';
+};
 const termLine = (row) => {
   const owner = termOwner(row);
   return `${row.kind}  ${row.name}${owner === '' ? '' : `  ${owner}`}  ${row.field} ${row.score}`;
@@ -804,22 +853,19 @@ function searchIndex(index, args) {
   const kind = typeof args?.kind === 'string' && args.kind !== '' ? args.kind : null;
   const dataset = typeof args?.dataset === 'string' && args.dataset !== '' ? args.dataset : null;
   const skip = Number.isInteger(args?.skip) && args.skip > 0 ? args.skip : 0;
-  if (kind !== null && !TERM_KINDS.includes(kind)) {
-    throw new Error(`dsh-oks: kind 只能是 ${TERM_KINDS.join(' / ')}`);
-  }
+  if (kind !== null && !index.vocabKinds.includes(kind)) throw kindError(index, kind, 'oks_search');
   const tokens = tokenize(query);
   const matched = [];
   for (const term of index.terms) {
     if (kind !== null && term.kind !== kind) continue;
-    if (dataset !== null && term.dataset !== dataset) continue;
+    if (dataset !== null && !(term.owner === 'dataset' && String(term.ownerValue) === dataset)) continue;
     if (tokens.length === 0) { matched.push({ term, field: 'all', score: 0 }); continue; }
     const hit = matchTerm(term, tokens, query);
     if (hit !== null) matched.push({ term, ...hit });
   }
   matched.sort((left, right) => right.score - left.score
     || left.term.kind.localeCompare(right.term.kind, 'en')
-    || String(left.term.dataset ?? left.term.typeId ?? left.term.link?.join('/') ?? '')
-      .localeCompare(String(right.term.dataset ?? right.term.typeId ?? right.term.link?.join('/') ?? ''), 'en')
+    || String(left.term.ownerValue ?? '').localeCompare(String(right.term.ownerValue ?? ''), 'en')
     || left.term.name.localeCompare(right.term.name, 'en'));
   const total = matched.length;
   const page = matched.slice(skip);
@@ -846,9 +892,7 @@ function referencesOf(index, args) {
   if (link !== null && !REFERENCE_KINDS.includes(link)) {
     throw new Error(`dsh-oks: link 只能是 ${REFERENCE_KINDS.join(' / ')}`);
   }
-  if (kind !== null && !TERM_KINDS.includes(kind)) {
-    throw new Error(`dsh-oks: kind 只能是 ${TERM_KINDS.join(' / ')}`);
-  }
+  if (kind !== null && !index.vocabKinds.includes(kind)) throw kindError(index, kind, 'oks_references');
   if (!index.keys.has(key)) {
     throw new Error(`dsh-oks: ${key} 不是这个产物里的知识 key（用 oks_search 先找到 key）`);
   }
@@ -1109,8 +1153,8 @@ export function apply(ctx, config = {}) {
             type: 'string',
             description: 'Words to look for in a term\'s name, aliases or description. Matching is case-insensitive and splits camelCase and separators; every word must appear somewhere in the term. Omit it to list everything the filters allow.',
           },
-          kind: { type: 'string', enum: TERM_KINDS, description: 'Restrict to one kind of term.' },
-          dataset: { type: 'string', description: 'Restrict to terms whose owner dataset is this one (dimensions and measures declare one).' },
+          kind: { type: 'string', description: 'Restrict to one kind of term. The kinds that are discoverable are declared by the knowledge service of this workspace; a kind outside that declaration is rejected with the declared list.' },
+          dataset: { type: 'string', description: 'Restrict to terms whose declared owner "dataset" is this one.' },
           skip: { type: 'number', description: 'Start at this match (default 0). The response reports how many matches remain, so page with skip = start + matched.length.' },
         },
         additionalProperties: false,
@@ -1128,7 +1172,7 @@ export function apply(ctx, config = {}) {
     },
     {
       name: 'oks_references',
-      description: 'List what references a knowledge key, from the reference graph the plugin derives when the vocabulary is built. Each row names the reference kind and the referencing node\'s key, so you can read that node with oks_info or follow it further. Use it to see where a measure, dimension, type or dataset is used before you change how you address it.',
+      description: 'List what references a knowledge key, from the reference graph the plugin derives when the vocabulary is built. Each row names the reference kind and the referencing node\'s key, so you can read that node with oks_info or follow it further. Use it to see what depends on a term before you change how you address it.',
       parameters: {
         type: 'object',
         properties: {
@@ -1137,7 +1181,7 @@ export function apply(ctx, config = {}) {
             description: 'A knowledge key that exists in this artifact — composed from the declared key patterns, or taken verbatim from what a node returned.',
           },
           link: { type: 'string', enum: REFERENCE_KINDS, description: 'Restrict to one reference kind.' },
-          kind: { type: 'string', enum: TERM_KINDS, description: 'Restrict to referencing nodes of one kind.' },
+          kind: { type: 'string', description: 'Restrict to referencing nodes of one kind. The kinds that are discoverable are declared by the knowledge service of this workspace.' },
           skip: { type: 'number', description: 'Start at this reference (default 0).' },
         },
         required: ['key'],

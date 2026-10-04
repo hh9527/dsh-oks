@@ -340,7 +340,8 @@ console.log('=== 与发布物对比 ===');
     if (nodes !== report.nodes) throw new Error('派生节点数与发布物不一致');
     console.log(`  引用 ${links} = ${report.links} ${links === report.links ? '✓' : '✗'}`);
     if (links !== report.links) throw new Error('派生引用数与发布物不一致');
-    const groups = { Dataset: 'datasets', Dimension: 'dimensions', Measure: 'measures', Relation: 'rels', Type: 'types', Value: 'values' };
+    // 发布物的 counts 以组名记账，工具面以声明的 kind 名回答；这层对应关系只能在测试里手工列出。
+    const groups = { Dataset: 'datasets', Dimension: 'dimensions', Measure: 'measures', Relation: 'rels', Ty: 'types', Value: 'values', BusinessLink: 'business_links' };
     for (const [kind, group] of Object.entries(groups)) {
       if (report.counts?.[group] === undefined) continue;
       const total = (await call('oks_search', { kind })).value.total;
