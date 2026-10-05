@@ -325,9 +325,11 @@ const makeVaAskHarness = ({ agents = true, config = {}, stuck = false, stuckAfte
     rename: (session, title) => { sessionTitleCalls.push(['rename', session, title]); timeline.push({ kind: 'rename', title }); },
   };
   const titleService = sessionTitle === false ? undefined : sessionTitleStub;
+  const restrictions = [];
   const agentCtx = {
     get: (name) => (name === 'agentPresets' ? agentPresetsStub : undefined),
     systemPrompt: { section: (section) => { personaSections.push(section); }, getSectionOrder: () => 0 },
+    tools: { restrict: (filter) => { restrictions.push(filter); return () => {}; } },
   };
   const agentsService = agents ? {
     create: async (options) => {
@@ -421,7 +423,7 @@ const makeVaAskHarness = ({ agents = true, config = {}, stuck = false, stuckAfte
   }, config);
   disposers.push(...localDisposers);
   return {
-    tools, created, followups, registryCalls, composeCalls, personaSections, helperAppends,
+    tools, created, followups, registryCalls, composeCalls, personaSections, helperAppends, restrictions,
     sessions, snapshots, logs, timeline, sessionTitleCalls,
     cancelNext: () => { cancelNext = true; },
     foreignTurn: () => { foreignNext = true; },
@@ -469,6 +471,11 @@ console.log('=== va_ask：准备阶段（三步 + 预热收起 + 标记）===');
   ok('助手会话 id 带 session-va- 前缀', String(harness.created[0]?.sessionId).startsWith('session-va-'));
   ok('助手在创建时 join 了调用方的 preset（composeFrom 被调用一次）',
     harness.composeCalls.length === 1 && harness.composeCalls[0][1] === vaCallerCtx);
+  ok('助手的工具面被收成只剩 oks_vocabulary',
+    harness.restrictions.length === 1
+    && Array.isArray(harness.restrictions[0]?.allow)
+    && harness.restrictions[0].allow.length === 1
+    && harness.restrictions[0].allow[0] === 'oks_vocabulary');
   ok('助手被钉成只读、不问审批',
     harness.helperAppends[0]?.some((item) => item.type === 'sandbox/mode' && item.data.mode === 'read-only')
     && harness.helperAppends[0]?.some((item) => item.type === 'approval/policy' && item.data.policy === 'never'));
