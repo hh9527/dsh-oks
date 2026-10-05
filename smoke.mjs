@@ -66,7 +66,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['oks_search', 'oks_vocabulary', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'time_now', 'time_calc', 'va_ask'];
+const EXPECTED_TOOLS = ['oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'time_now', 'time_calc', 'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -91,14 +91,6 @@ const call = async (name, args, cwd = DEV_ROOT) => {
   const tool = registered.get(name);
   if (!tool) throw new Error(`tool ${name} was not registered`);
   const value = await tool.execute(args, { signal: new AbortController().signal, ...sessionFor(cwd) });
-  return { value, text: tool.output.render(args, value).map((block) => block.text ?? '').join('') };
-};
-// 词汇表出口只服务词汇助手：这段用助手形状的会话调它。
-const helperSession = { id: 'session-va-smoke', meta: { cwd: DEV_ROOT } };
-const callHelper = async (name, args) => {
-  const tool = registered.get(name);
-  if (!tool) throw new Error(`tool ${name} was not registered`);
-  const value = await tool.execute(args, { signal: new AbortController().signal, agent: { session: helperSession } });
   return { value, text: tool.output.render(args, value).map((block) => block.text ?? '').join('') };
 };
 const foundOf = (value) => value?.trace?.[0]?.response?.ok?.Document?.Found;
@@ -250,7 +242,7 @@ console.log('=== 时间辅助工具 ===');
 }
 
 // ── 词汇助手（va）：准备阶段、标记与咨询语义 ────────────────────────────────
-// 插件自己建一个顶层助手 agent（preset、工作区、模型都继承调用方），三步装配好（读词表 →
+// 插件自己建一个顶层助手 agent（preset、工作区、模型都继承调用方），两步装配好（喂一条词表提示词 →
 // 工作方法 → 预热问题），此后每次咨询把标记之后的问答从**模型可见表面**收进一个固定文本的
 // 标记节点。这一段用假 ctx + 假 agents 服务驱动真实的 va_ask：会话桩按 harness 的规则维护
 // surface.nodes 与 eventAt，所以收起范围、sourceEventSeqs、标记推进都能逐项检查。
@@ -260,6 +252,18 @@ const ok = (label, condition) => {
   passed += 1;
   console.log(`  ✓ ${label}`);
 };
+
+console.log('=== 检索层：并发的首次检索只派生一次索引 ===');
+{
+  const [left, right] = await Promise.all([
+    call('oks_search', { query: 'packet' }),
+    call('oks_search', { query: 'loss' }),
+  ]);
+  ok('并发两次首次检索只派生一次索引',
+    logs.filter((line) => line.includes('discovery index')).length === 1);
+  ok('两个并发调用都拿到了结果', left.text.length > 0 && right.text.length > 0);
+}
+
 
 const VA_MARKER_TEXT = '（上文问答已收起）';
 /** 与 harness 同形状的一条消息（id 由角色 + 文本铸出，source 按角色给）。 */
@@ -458,7 +462,7 @@ ok('描述非空', typeof vaAskTool.description === 'string' && vaAskTool.descri
   ok('渲染：被中断过时附一行说明', /被中断过/.test(render({ answer: 'x', interrupted: true })));
 }
 
-console.log('=== va_ask：准备阶段（三步 + 预热收起 + 标记）===');
+console.log('=== va_ask：准备阶段（一条词表提示词 + 收起 + 标记）===');
 {
   const harness = makeVaAskHarness();
   const tool = harness.tools.get('va_ask');
@@ -471,11 +475,12 @@ console.log('=== va_ask：准备阶段（三步 + 预热收起 + 标记）===');
   ok('助手会话 id 带 session-va- 前缀', String(harness.created[0]?.sessionId).startsWith('session-va-'));
   ok('助手在创建时 join 了调用方的 preset（composeFrom 被调用一次）',
     harness.composeCalls.length === 1 && harness.composeCalls[0][1] === vaCallerCtx);
-  ok('助手的工具面被收成只剩 oks_vocabulary',
+  ok('默认给助手 off 档（关掉思考：它的活儿不需要）',
+    harness.created[0]?.agentOptions?.reasoningEffort === 'off');
+  ok('助手的工具面被收成空的（它一个工具都不需要）',
     harness.restrictions.length === 1
     && Array.isArray(harness.restrictions[0]?.allow)
-    && harness.restrictions[0].allow.length === 1
-    && harness.restrictions[0].allow[0] === 'oks_vocabulary');
+    && harness.restrictions[0].allow.length === 0);
   ok('助手被钉成只读、不问审批',
     harness.helperAppends[0]?.some((item) => item.type === 'sandbox/mode' && item.data.mode === 'read-only')
     && harness.helperAppends[0]?.some((item) => item.type === 'approval/policy' && item.data.policy === 'never'));
@@ -496,14 +501,14 @@ console.log('=== va_ask：准备阶段（三步 + 预热收起 + 标记）===');
   const firstPromptAt = harness.timeline.findIndex((step) => step.kind === 'followup');
   ok('标题设置发生在第一条提示词之前', titleAt !== -1 && firstPromptAt !== -1 && titleAt < firstPromptAt);
 
-  // 准备阶段三步：① 读词表（要求用 oks_vocabulary）② 工作方法 ③ 握手问题（默认问条数）。
-  ok('第一条提示词让助手用 oks_vocabulary 读词表', /oks_vocabulary/.test(harness.followups[0] ?? ''));
-  ok('第二条提示词交代工作方法、结尾只回"准备好了"',
-    /等价或相近/.test(harness.followups[1] ?? '') && /准备好了/.test(harness.followups[1] ?? ''));
-  ok('第二条提示词只要求它回"准备好了"', /准备好了/.test(harness.followups[1] ?? ''));
-  ok('第三条 followup 是默认握手问题（问条数、要求不要检索）',
-    /握手：/.test(harness.followups[2] ?? '') && /多少条/.test(harness.followups[2] ?? '')
-    && /不要检索/.test(harness.followups[2] ?? ''));
+  // 准备阶段两步：① 一条提示词（角色与读法 + 整份词表 + 回答方法）② 握手问题（默认问条数）。
+  const feed = harness.followups[0] ?? '';
+  ok('第一条提示词就是整份词表（角色 + 词条 + 方法，一条消息）',
+    /# 你的任务/.test(feed) && /接近的词条/.test(feed) && /准备好了/.test(feed)
+    && Buffer.byteLength(feed, 'utf8') > 20000);
+  ok('词条以固定的一行一条格式喂进去（含 owner / aliases 段）',
+    feed.split('\n').filter((line) => /^\S+ · \S+/.test(line)).length > 20);
+  ok('装配只发一条消息（那条词表提示词）', harness.followups.length === 2);
   ok('返回的 helper 是那个助手会话', first.helper === harness.created[0].sessionId);
   ok('返回的 answer 含这个说法', String(first.answer).includes('丢包'));
   // 装配完先归档一次（就绪到第一次被咨询之间不该在活跃列表里），咨询时先恢复、最后再归档。
@@ -516,29 +521,29 @@ console.log('=== va_ask：准备阶段（三步 + 预热收起 + 标记）===');
   const rendered = tool.output.render({ query: '丢包' }, first).map((block) => block.text ?? '').join('');
   ok('工具结果渲染出回答文本', /丢包/.test(rendered));
 
-  // 预热那条消息落在助手的会话上，答完立刻收起：回答被收进一个固定文本的标记节点。
+  // 那条词表提示词就是标记：它的回答（"准备好了"）立刻被收进一个固定文本的标记节点。
   const session = harness.sessions[0];
   const warmup = session.entries.find((event) => event.type === 'user/message'
-    && messageText(event.data) === harness.followups[2]);
-  ok('预热问题真的落到了助手的会话表面', warmup !== undefined);
+    && messageText(event.data) === harness.followups[0]);
+  ok('词表提示词真的落到了助手的会话表面', warmup !== undefined);
   const warmupAnswer = session.entries.find((event) => event.seq > warmup.seq && event.type === 'assistant/message');
   const firstCollapse = collapseEvents(session)[0];
-  ok('预热答完发生了一次收起，范围从回答起', firstCollapse !== undefined
+  ok('提示词答完发生了一次收起，范围从回答起', firstCollapse !== undefined
     && firstCollapse.surfaceOp.startSeq === warmupAnswer.seq
     && firstCollapse.sourceEventSeqs.includes(warmupAnswer.seq));
   ok('收起后的标记是一条固定文本的用户消息', firstCollapse?.type === 'user/message'
     && messageText(firstCollapse.data) === VA_MARKER_TEXT);
-  ok('预热那条回答不在 surface.nodes 里了', !surfaceHas(session, warmupAnswer.seq));
+  ok('那句「准备好了」不在 surface.nodes 里了', !surfaceHas(session, warmupAnswer.seq));
   ok('表面里有一条文本为（上文问答已收起）的 user/message',
     session.surface.nodes.some((seq) => {
       const event = session.eventAt(seq);
       return event?.type === 'user/message' && messageText(event.data) === VA_MARKER_TEXT;
     }));
-  // 收起后标记挪到刚插入的标记节点；判据是 `seq > markerSeq`，所以标记之前那条预热消息留在原地，
+  // 收起后标记挪到刚插入的标记节点；判据是 `seq > markerSeq`，所以标记之前那条握手消息留在原地，
   // 收起的起点是它之后的回答。
   const markerSeq = Number(/标记 seq (\d+)/.exec(harness.logs.join('\n'))?.[1] ?? -1);
   ok('日志里的标记 seq 就是收起后插入的标记节点', markerSeq === firstCollapse?.seq);
-  ok('收起的起点紧跟在预热消息之后', firstCollapse?.surfaceOp.startSeq === warmupAnswer.seq
+  ok('收起的起点紧跟在提示词之后', firstCollapse?.surfaceOp.startSeq === warmupAnswer.seq
     && warmup.seq < firstCollapse.seq);
 
   // 一次咨询之后：我们的消息与回答都从表面收起，末尾是标记节点。
@@ -568,7 +573,7 @@ console.log('=== va_ask：第二次咨询复用助手 + 冻结前缀 ===');
   const second = await tool.execute({ query: '端口压力' }, vaExec());
   ok('第一次回答含第一个说法', String(first.answer).includes('丢包'));
   ok('第二次咨询复用同一个助手', harness.created.length === 1);
-  ok('第五条 followup 是第二个说法', harness.followups[4] === '端口压力');
+  ok('第三条 followup 是第二个说法', harness.followups[2] === '端口压力');
   ok('第二次回答含第二个说法', String(second.answer).includes('端口压力'));
   const session = harness.sessions[0];
   const snapshotOf = (text) => harness.snapshots.filter((item) => item.text === text).at(-1);
@@ -576,7 +581,8 @@ console.log('=== va_ask：第二次咨询复用助手 + 冻结前缀 ===');
   const prefixSecond = markerPrefix(session, snapshotOf('端口压力')?.nodes);
   ok('两次提问前的冻结前缀一致（到标记节点为止）',
     prefixFirst.length > 0 && prefixSecond.startsWith(prefixFirst));
-  ok('冻结前缀里含读词表 / 方法 / 标记', /oks_vocabulary|读/.test(prefixFirst) && prefixFirst.includes(VA_MARKER_TEXT));
+  ok('冻结前缀里含喂进去的词表 / 方法 / 标记',
+    /# 你的任务/.test(prefixFirst) && /准备好了/.test(prefixFirst) && prefixFirst.includes(VA_MARKER_TEXT));
 }
 
 console.log('=== va_ask：有回合在飞时不收（status 辅助判据）===');
@@ -632,7 +638,7 @@ console.log('=== va_ask：并发（不同说法 → 装配一次 + 排队咨询�
   ]);
   ok('并发两次只装配一个助手', harness.created.length === 1);
   ok('两次都拿到回答', /丢包/.test(first?.answer ?? '') && /端口压力/.test(second?.answer ?? ''));
-  ok('两次咨询按到达顺序排队', harness.followups.slice(3).join(',') === '丢包,端口压力');
+  ok('两次咨询按到达顺序排队', harness.followups.slice(1).join(',') === '丢包,端口压力');
   ok('每条咨询结束后都归档（外加装配完那一次）',
     harness.registryCalls.filter((call) => call[0] === 'archiveSession').length === harness.created.length + 2);
 }
@@ -691,7 +697,7 @@ console.log('=== va_ask：还有没被回答的发送时不收（pending 主判�
 {
   // 前 3 条（准备阶段）正常收场，之后所有发送都卡住：先跑的两条并发咨询都超时，
   // 第二条在提问前试收时看到前一条的 pending 还是 1，于是跳过——这就是计数语义。
-  const harness = makeVaAskHarness({ config: { vaAskTimeoutMs: 5 }, stuckAfter: 3 });
+  const harness = makeVaAskHarness({ config: { vaAskTimeoutMs: 5 }, stuckAfter: 1 });
   const tool = harness.tools.get('va_ask');
   const [first, second] = await Promise.all([
     refusalOf(() => tool.execute({ query: '丢包' }, vaExec())),
@@ -723,11 +729,17 @@ console.log('=== va_ask：调用方没有 cwd ===');
   ok('没有 cwd 时不会去建助手', harness.created.length === 0);
 }
 
-console.log('=== va_ask：握手问题可被 config 覆盖 ===');
+console.log('=== va_ask：推理档位可配（默认 low）===');
 {
-  const harness = makeVaAskHarness({ config: { vaWarmup: '端口利用率' } });
-  await harness.tools.get('va_ask').execute({ query: '丢包' }, vaExec());
-  ok('第三条 followup 用配置里的握手问题', harness.followups[2] === '端口利用率');
+  const asked = makeVaAskHarness({ config: { vaReasoningEffort: 'medium' } });
+  await asked.tools.get('va_ask').execute({ query: '丢包' }, vaExec());
+  ok('配了就透传配置里的档位', asked.created[0]?.agentOptions?.reasoningEffort === 'medium');
+
+  const inherit = makeVaAskHarness({ config: { vaReasoningEffort: 'inherit' } });
+  await inherit.tools.get('va_ask').execute({ query: '丢包' }, vaExec());
+  ok('写 inherit 就不传档位（跟着部署默认走）',
+    inherit.created[0]?.agentOptions !== undefined
+    && !Object.hasOwn(inherit.created[0].agentOptions, 'reasoningEffort'));
 }
 
 console.log('=== va_ask：拒绝的调用 ===');
@@ -853,17 +865,6 @@ console.log('=== 惰性初始化：single flight 的机制 ===');
   ok('下一次调用会重新触发', attempts === 2 && second === 'boom');
 }
 
-console.log('=== 检索层：并发的首次检索只派生一次索引 ===');
-{
-  const [left, right] = await Promise.all([
-    call('oks_search', { query: 'packet' }),
-    call('oks_search', { query: 'loss' }),
-  ]);
-  ok('并发两次首次检索只派生一次索引',
-    logs.filter((line) => line.includes('discovery index')).length === 1);
-  ok('两个并发调用都拿到了结果', left.text.length > 0 && right.text.length > 0);
-}
-
 console.log('=== 发现协议（不假设形状，只跟随服务给出的 key）===');
 const seenKeys = new Set();
 const trail = [];
@@ -975,81 +976,6 @@ let seed = null;
   const zero = await call('oks_search', { query: 'zzz-no-such-term-zzz' });
   console.log(`  0 命中给出 facet: ${zero.value.total === 0 && /可用的 kind/.test(zero.text) ? '✓' : '✗'}`);
   if (zero.value.total !== 0) throw new Error('不存在的词不该有命中');
-}
-
-console.log('=== oks_vocabulary（整份词汇分页，交给词汇助手）===');
-{
-  let refused = null;
-  try { await call('oks_vocabulary', {}); } catch (cause) { refused = String(cause?.message ?? cause); }
-  ok('工作会话调 oks_vocabulary 被拒', /只交给词汇助手/.test(refused ?? ''));
-}
-{
-  const first = await callHelper('oks_vocabulary', {});
-  console.log(`  共 ${first.value.total} 条 · 首页 ${first.value.entries.length} 条 · more=${first.value.more}`);
-  // 与检索出口共用同一份索引：总数必须等于空查询的命中数
-  const searched = (await call('oks_search', {})).value.total;
-  console.log(`  总数 = 检索全部命中 ${searched}: ${first.value.total === searched ? '✓' : '✗'}`);
-  if (first.value.total !== searched) throw new Error('词汇出口与检索出口的词条总数不一致');
-  // 条目形状：kind/name/aliases/doc 齐全；doc 截到 200 字符（超长补省略号）；owner 字段是字符串
-  const shape = first.value.entries.every((entry) => typeof entry.kind === 'string' && entry.kind !== ''
-    && typeof entry.name === 'string' && entry.name !== ''
-    && Array.isArray(entry.aliases) && entry.aliases.every((alias) => typeof alias === 'string')
-    && typeof entry.doc === 'string' && entry.doc.length <= 201
-    && Object.entries(entry).every(([name, value]) => ['kind', 'name', 'aliases', 'doc'].includes(name)
-      || typeof value === 'string'));
-  console.log(`  条目形状（含省略号前的 200 字符上限）: ${shape ? '✓' : '✗'}`);
-  if (!shape) throw new Error('词汇出口的条目形状不对');
-  const ownerValue = (entry) => entry.dataset ?? entry.ty ?? entry.hub ?? null;
-  // 渲染里的词条行要完整：用同一条规则重放最后一条的行，必须逐字出现在渲染里
-  const lineOf = (entry) => {
-    const parts = [entry.kind, entry.name];
-    const owner = ownerValue(entry);
-    if (owner !== null) parts.push(`[${owner}]`);
-    parts.push(...entry.aliases);
-    return parts.join(' · ');
-  };
-  const whole = first.value.entries.every((entry) => first.text.includes(lineOf(entry)));
-  console.log(`  渲染里每条都是完整的行（不截半条）: ${whole ? '✓' : '✗'}`);
-  if (!whole) throw new Error('渲染截断了词条行');
-  // 翻页走到底：不重不漏，每页都在预算内，skip 回显
-  const seen = new Set();
-  let duplicate = false;
-  let pages = 0;
-  let maxBytes = 0;
-  let truncatedDoc = false;
-  let cursor = first;
-  for (;;) {
-    pages += 1;
-    maxBytes = Math.max(maxBytes, Buffer.byteLength(cursor.text, 'utf8'));
-    for (const entry of cursor.value.entries) {
-      if (entry.doc.length > 200) truncatedDoc = true;
-      const id = JSON.stringify([entry.kind, entry.name, ownerValue(entry)]);
-      if (seen.has(id)) duplicate = true;
-      seen.add(id);
-    }
-    if (cursor.value.more === null) break;
-    const skip = cursor.value.start + cursor.value.entries.length;
-    const next = await callHelper('oks_vocabulary', { skip });
-    if (next.value.start !== skip) throw new Error(`skip 没有被回显：${next.value.start} ≠ ${skip}`);
-    if (next.value.entries.length === 0) throw new Error(`skip=${skip} 空页却有剩余 ${cursor.value.more}`);
-    cursor = next;
-  }
-  const complete = seen.size === first.value.total && !duplicate;
-  console.log(`  ${pages} 页走到底：${seen.size}/${first.value.total} 条不重不漏: ${complete ? '✓' : '✗'}`);
-  if (!complete) throw new Error('词汇出口翻页有重复或遗漏');
-  console.log(`  每页渲染 ≤ 6000 字节（最大 ${maxBytes}）: ${maxBytes <= 6000 ? '✓' : '✗'}`);
-  if (maxBytes > 6000) throw new Error('词汇出口的渲染超过页预算');
-  console.log(`  超长 doc 被截到 200 字符: ${truncatedDoc ? '✓' : '✗'}`);
-  if (!truncatedDoc) throw new Error('词表里有超长说明，应当被截断');
-  const again = await callHelper('oks_vocabulary', {});
-  const stable = JSON.stringify(again.value) === JSON.stringify(first.value);
-  console.log(`  同参数逐字可复现: ${stable ? '✓' : '✗'}`);
-  if (!stable) throw new Error('同参数两次结果不同');
-  const beyond = await callHelper('oks_vocabulary', { skip: first.value.total });
-  const tailEmpty = beyond.value.entries.length === 0 && beyond.value.more === null
-    && beyond.value.start === first.value.total;
-  console.log(`  skip 越过末尾：空页、more=null、start 回显: ${tailEmpty ? '✓' : '✗'}`);
-  if (!tailEmpty) throw new Error('越过末尾时应当给空页');
 }
 
 // 与服务发布物对比：派生结果必须与同一份产物的发布物逐项相同（存在发布物才比）

@@ -3,18 +3,18 @@
 // （{"domain":"...","artifact":"...wasm","dataFile":"...sqlite"}）。
 // 工作区是会话属性，所以一份插件能服务任意多工作区。
 //
-// 七个工具：oks_search（按名词/说法在词汇表里找到 key）、
+// 八个工具：oks_search（按名词/说法在词汇表里找到 key）、
 // oks_references（按 key 反向找到引用它的节点）、
-// oks_vocabulary（把整份词汇按 key 顺序分页交出，交给词汇助手做说法对照）、
 // oks_info（按服务给出的不透明 key 读节点，入口是 key "index"）、
 // oks_check_intent（只校验结构化 Intent，只回诊断）、
 // oks_query（校验后**只读查询**数据文件，回结果；SQL/bindings 只在这一条路径上出现）。
 // 外加两个与模型无关的辅助工具：time_now（当前时刻的各种标准表示）、
 // time_calc（日历代数：加减 / 对齐到日历边界 / 换时区）——服务不读时钟，相对时间
 // 必须在提交前换成绝对边界；这两个工具只做标准表示，不解释任何领域格式。
-// 第七个是 va_ask：咨询一个**词汇助手**——插件自己建（顶层 agent，同工作区、同 preset）、
-// 自己喂（角色与读法 → 回答方法 → 预热问题）、自己收（每次拿到回答后把问答从模型可见表面
-// 收回到标记点）；助手每轮只看到「词汇 + 方法 + 标记 + 当前这个问题」，会话日志保持 append-only。
+// 第八个是 va_ask：咨询一个**词汇助手**——插件自己建（顶层 agent，同工作区、同 preset）、
+// 自己喂（**把整份词表渲染成一条提示词**，加上角色与回答方法）、自己收（每次拿到回答后把问答
+// 从模型可见表面收回到标记点）；助手没有任何工具，每轮只看到「词汇 + 方法 + 标记 + 当前这个问题」，
+// 会话日志保持 append-only。
 //
 // 词汇表与引用图：第一次用到检索时（三个检索出口都用这一份），插件按服务声明的**发现契约**
 // （`<domain>/discovery` 声明 revision、入口 roots、每类 key 的 key 模式，以及哪些 kind 进
@@ -53,9 +53,9 @@ export function apply(ctx, config = {}) {
   const timeContext = createTimeContext({ ctx, log });
   timeContext.install();
 
-  const va = createVaRuntime({ ctx, log, config });
-
   const knowledge = createKnowledge({ ctx, log, config });
+
+  const va = createVaRuntime({ ctx, log, config, knowledge });
 
   const definitions = createTools({ knowledge, va, timeContext, log, config });
   for (const definition of definitions) {
