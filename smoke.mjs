@@ -12,7 +12,8 @@
 import { apply } from './index.js';
 import { applyOps, encode, parseMoment } from './time.js';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { relative, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { join, relative, resolve } from 'node:path';
 
 const DEV_ROOT = process.env.OKS_WORKSPACE ?? process.cwd();
 const SCRATCH = `${DEV_ROOT}/.oks-smoke`;
@@ -25,6 +26,22 @@ const disposers = [];
 const skillsRegistered = [];
 const events = new Map();
 const logs = [];
+// 插件可能在同一事件上注册多个监听器，桩必须按事件名把**全部**监听器收下来；触发时按注册顺序
+// 走 cordis 的 waterfall：每个监听器拿到 next 继续，最外层监听器的返回值就是这一步的决策。
+const listen = (map, name, listener) => {
+  const list = map.get(name) ?? [];
+  list.push(listener);
+  map.set(name, list);
+  return () => {
+    const rest = (map.get(name) ?? []).filter((item) => item !== listener);
+    if (rest.length > 0) map.set(name, rest); else map.delete(name);
+  };
+};
+const listenersOf = (map, name) => map.get(name) ?? [];
+const waterfall = (listeners, payload, terminal) => {
+  const at = (index) => async () => (index >= listeners.length ? terminal() : listeners[index](payload, at(index + 1)));
+  return at(0)();
+};
 const ctx = {
   logger: { info: (message) => { logs.push(message); console.error(`[log] ${message}`); } },
   // 技能服务是可选的：插件能拿到就注册，拿不到就静默降级。
@@ -41,18 +58,26 @@ const ctx = {
     const dispose = fn();
     if (typeof dispose === 'function') disposers.push(dispose);
   },
-  // 插件按规范监听 agent/pre-step 以取得上下文时区；桩把监听器记下来，测试里手动触发。
-  on: (name, listener) => { events.set(name, listener); return () => events.delete(name); },
+  // 插件按规范监听 agent/pre-step 以取得上下文时区；桩把监听器全部记下来，测试里手动触发。
+  on: (name, listener) => listen(events, name, listener),
 };
 
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'time_now', 'time_calc'];
+const EXPECTED_TOOLS = ['oks_search', 'oks_vocabulary', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'time_now', 'time_calc', 'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
   if (!toolNames.includes(name)) throw new Error(`missing tool: ${name}（实际 ${toolNames.join(', ')}）`);
+}
+{
+  const described = EXPECTED_TOOLS.every((name) => {
+    const description = registered.get(name)?.description;
+    return typeof description === 'string' && description.length > 0;
+  });
+  console.log(`  每个工具都有非空描述: ${described ? '✓' : '✗'}`);
+  if (!described) throw new Error('有工具的描述为空');
 }
 
 // exec 模拟 harness 传进来的 ToolRunContext：工作区从会话头里取，不由调用方给。
@@ -67,18 +92,34 @@ const call = async (name, args, cwd = DEV_ROOT) => {
   const value = await tool.execute(args, { signal: new AbortController().signal, ...sessionFor(cwd) });
   return { value, text: tool.output.render(args, value).map((block) => block.text ?? '').join('') };
 };
+// 词汇表出口只服务词汇助手：这段用助手形状的会话调它。
+const helperSession = { id: 'session-va-smoke', meta: { cwd: DEV_ROOT } };
+const callHelper = async (name, args) => {
+  const tool = registered.get(name);
+  if (!tool) throw new Error(`tool ${name} was not registered`);
+  const value = await tool.execute(args, { signal: new AbortController().signal, agent: { session: helperSession } });
+  return { value, text: tool.output.render(args, value).map((block) => block.text ?? '').join('') };
+};
 const foundOf = (value) => value?.trace?.[0]?.response?.ok?.Document?.Found;
-const buildCtx = (config) => {
+// 每个实例一套独立的假 ctx：工具表、事件表（按名字收全部监听器）、日志。disposer 统一在最后收尾。
+const makeHarness = (config = {}) => {
   const tools = new Map();
-  const events = new Map();
+  const harnessEvents = new Map();
+  const harnessLogs = [];
+  const localDisposers = [];
   apply({
-    logger: { info: () => {} },
+    logger: { info: (message) => harnessLogs.push(message) },
     get: () => undefined,
-    tools: { register: (tool) => { tools.set(tool.name, tool); return () => {}; } },
-    effect: (fn) => { const d = fn(); if (typeof d === 'function') disposers.push(d); },
-    on: (name, listener) => { events.set(name, listener); return () => {}; },
+    tools: { register: (tool) => { tools.set(tool.name, tool); return () => tools.delete(tool.name); } },
+    effect: (fn) => { const d = fn(); if (typeof d === 'function') localDisposers.push(d); },
+    on: (name, listener) => listen(harnessEvents, name, listener),
   }, config);
-  return { tools, events };
+  disposers.push(...localDisposers);
+  return { tools, events: harnessEvents, logs: harnessLogs, disposers: localDisposers };
+};
+const buildCtx = (config) => {
+  const harness = makeHarness(config);
+  return { tools: harness.tools, events: harness.events, logs: harness.logs };
 };
 // 只有 oks_info / oks_check_intent / oks_query 需要工作区；时间工具不需要。
 const NOWHERE = `${SCRATCH}/nowhere`;
@@ -103,9 +144,9 @@ console.log('=== 时间辅助工具 ===');
 {
   const Z = 'Asia/Shanghai';
   const firePreStep = (cwd, messages) => {
-    const listener = events.get('agent/pre-step');
-    if (listener === undefined) throw new Error('插件没有监听 agent/pre-step');
-    return listener({ agent: { session: sessionFor(cwd).agent.session }, messages }, async () => ({ kind: 'enter' }));
+    const list = listenersOf(events, 'agent/pre-step');
+    if (list.length === 0) throw new Error('插件没有监听 agent/pre-step');
+    return waterfall(list, { agent: { session: sessionFor(cwd).agent.session }, messages }, async () => ({ kind: 'enter' }));
   };
   // 先让上下文带上浏览器时区，后面的日历运算都用它
   await firePreStep(NOWHERE, [{ source: { kind: 'user', rpcId: 'r1', clientTimeZone: Z } }]);
@@ -181,7 +222,7 @@ console.log('=== 时间辅助工具 ===');
   {
     const { tools, events: built } = buildCtx({ timeZone: 'UTC' });
     const session = { meta: { cwd: NOWHERE } };
-    await built.get('agent/pre-step')({
+    await waterfall(listenersOf(built, 'agent/pre-step'), {
       agent: { session },
       messages: [{ source: { kind: 'user', rpcId: 'r1', clientTimeZone: Z } }],
     }, async () => ({ kind: 'enter' }));
@@ -207,7 +248,570 @@ console.log('=== 时间辅助工具 ===');
   }
 }
 
-// ── 发现协议：从 index 出发，只跟随节点给出的 key ────────────────────────────
+// ── 词汇助手（va）：准备阶段、标记与咨询语义 ────────────────────────────────
+// 插件自己建一个顶层助手 agent（preset、工作区、模型都继承调用方），三步装配好（读词表 →
+// 工作方法 → 预热问题），此后每次咨询把标记之后的问答从**模型可见表面**收进一个固定文本的
+// 标记节点。这一段用假 ctx + 假 agents 服务驱动真实的 va_ask：会话桩按 harness 的规则维护
+// surface.nodes 与 eventAt，所以收起范围、sourceEventSeqs、标记推进都能逐项检查。
+let passed = 0;
+const ok = (label, condition) => {
+  if (!condition) throw new Error('✗ ' + label);
+  passed += 1;
+  console.log(`  ✓ ${label}`);
+};
+
+const VA_MARKER_TEXT = '（上文问答已收起）';
+/** 与 harness 同形状的一条消息（id 由角色 + 文本铸出，source 按角色给）。 */
+const message = (role, text, extra = {}) => ({
+  id: `${role}-${text}`,
+  role,
+  content: [{ type: 'text', text }],
+  source: { kind: role === 'system' ? 'system-prompt' : role === 'tool' ? 'tool' : role === 'assistant' ? 'model' : 'user' },
+  ...extra,
+});
+/** 从一个 user/message 的 data 或一个带 message 包封的事件 data 里取纯文本。 */
+const messageText = (data) => {
+  const content = Array.isArray(data?.content) ? data.content
+    : Array.isArray(data?.message?.content) ? data.message.content : [];
+  return content.filter((block) => block?.type === 'text').map((block) => String(block.text ?? '')).join('');
+};
+/** surface.nodes → 模型可见的消息行（非消息事件不参与渲染）。 */
+const renderSurface = (session, nodes = session.surface.nodes) => nodes.map((seq) => {
+  const event = session.eventAt(seq);
+  if (event?.type === 'user/message') return `user:${messageText(event.data)}`;
+  if (event?.type === 'assistant/message') return `assistant:${messageText(event.data?.message)}`;
+  if (event?.type === 'system/message' || event?.type === 'developer/message') return `system:${messageText(event.data?.message)}`;
+  return null;
+}).filter((line) => line !== null);
+/** 到最后一个标记节点为止的可见前缀（冻结前缀缓存要保的就是这一段）。 */
+const markerPrefix = (session, nodes = session.surface.nodes) => {
+  const lines = renderSurface(session, nodes);
+  const at = lines.lastIndexOf(`user:${VA_MARKER_TEXT}`);
+  return lines.slice(0, at + 1).join('\n');
+};
+const collapseEvents = (session) => session.entries.filter((event) => event.surfaceOp?.op === 'replace');
+const surfaceHas = (session, seq) => session.surface.nodes.includes(seq);
+
+// va_ask 的假 agents 服务：create 装配出一个假助手，会话真的维护 surface.nodes / eventAt；followup
+// 同步落 user/message → assistant/message → turn/end，于是 va_ask 的第一次轮询就看见回合结束。
+// 开关把下一条 turn/end 换成 cancelled（`cancelNext`）、把某条消息之前的回合变成外来的
+// （`foreignTurn`）、让第 N 条之后的发送收不到 turn/end（`stuck` / `stuckAfter`）、或在某个说法的
+// 回合中间播一条有内容的系统消息（`systemAfter`）。
+// 每条 followup 之前记一份表面快照（nodes），用来检查"提问前"模型看到的前缀。
+const makeVaAskHarness = ({ agents = true, config = {}, stuck = false, stuckAfter = null, systemAfter = null, sessionTitle = true } = {}) => {
+  // stuck 从第一条就卡；stuckAfter=N 表示前 N 条正常收场、第 N+1 条起卡住。
+  let stuckFrom = stuck === true ? 0 : (stuckAfter ?? Number.POSITIVE_INFINITY);
+  const tools = new Map();
+  const eventBus = new Map();
+  const logs = [];
+  const localDisposers = [];
+  const created = [];
+  const followups = [];
+  const registryCalls = [];
+  const snapshots = [];
+  const sessions = [];
+  const createdAgents = [];
+  const helperAppends = [];
+  const timeline = []; // rename 与 followup 按真实发生顺序记下来，验证标题先于第一条提示词
+  let cancelNext = false;
+  let foreignNext = false;
+  const composeCalls = [];
+  const agentPresetsStub = { composeFrom: (target, source) => { composeCalls.push([target, source]); } };
+  const personaSections = [];
+  const sessionTitleCalls = [];
+  const sessionTitleStub = {
+    get: (session) => { sessionTitleCalls.push(['get', session]); return { title: '上个月丢包排查' }; },
+    rename: (session, title) => { sessionTitleCalls.push(['rename', session, title]); timeline.push({ kind: 'rename', title }); },
+  };
+  const titleService = sessionTitle === false ? undefined : sessionTitleStub;
+  const agentCtx = {
+    get: (name) => (name === 'agentPresets' ? agentPresetsStub : undefined),
+    systemPrompt: { section: (section) => { personaSections.push(section); }, getSectionOrder: () => 0 },
+  };
+  const agentsService = agents ? {
+    create: async (options) => {
+      created.push(options);
+      const entries = [];
+      const sessionAppends = [];
+      const session = {
+        id: options.sessionId,
+        header: { cwd: options.meta?.cwd },
+        surface: { nodes: [] },
+        entries,
+        get seq() { return entries.length; },
+        snapshotEvents: () => entries,
+        eventAt: (seq) => entries[seq],
+        append(type, data, options2) {
+          const event = { type, seq: entries.length, data, ...(options2 ?? {}) };
+          entries.push(event);
+          sessionAppends.push({ type, data });
+          const op = options2?.surfaceOp;
+          if (op !== undefined && typeof op === 'object' && op.op === 'replace') {
+            const { startSeq, endSeq } = op;
+            for (let at = this.surface.nodes.length - 1; at >= 0; at -= 1) {
+              const seq = this.surface.nodes[at];
+              if (seq >= startSeq && seq <= endSeq) this.surface.nodes.splice(at, 1);
+            }
+            this.surface.nodes.push(event.seq);
+          } else {
+            this.surface.nodes.push(event.seq);
+          }
+          return event;
+        },
+      };
+      sessions.push(session);
+      helperAppends.push(sessionAppends);
+      options.setup?.(agentCtx, { session });
+      const agent = {
+        status: 'idle',
+        session,
+        followup(message) {
+          const text = messageText(message);
+          followups.push(text);
+          timeline.push({ kind: 'followup', text });
+          snapshots.push({ text, nodes: [...session.surface.nodes] });
+          if (foreignNext) {
+            foreignNext = false;
+            session.append('assistant/message', {
+              message: { id: `foreign-${entries.length}`, role: 'assistant', content: [{ type: 'text', text: '上一个回合的回答，别当成这次的' }] },
+              interrupted: false,
+            }, { surfaceOp: 'append' });
+            session.append('turn/end', { reason: { kind: 'completed' } });
+          }
+          session.append('user/message', message, { surfaceOp: 'append' });
+          if (text === systemAfter) {
+            // 回合中间播一条有内容的系统消息：收起必须绕过它、分成多段，而不是把它一起收掉。
+            session.append('system/message', {
+              turn: followups.length,
+              step: 1,
+              message: { id: `sys-${followups.length}`, role: 'system', content: [{ type: 'text', text: '补充指令' }] },
+            }, { surfaceOp: 'append' });
+          }
+          if (followups.length > stuckFrom) return; // 只落消息，永不结束这一轮（模拟卡住的回合）
+          if (cancelNext) {
+            cancelNext = false;
+            session.append('turn/end', { reason: { kind: 'cancelled' } });
+            return;
+          }
+          session.append('assistant/message', {
+            message: { id: `a-${followups.length}`, role: 'assistant', content: [{ type: 'text', text: `第 ${followups.length} 轮回答：${text}` }] },
+            interrupted: false,
+          }, { surfaceOp: 'append' });
+          session.append('turn/end', { reason: { kind: 'completed' } });
+        },
+      };
+      createdAgents.push(agent);
+      return { agent };
+    },
+  } : undefined;
+  const registry = {
+    unarchiveSession: async (sessionId) => { registryCalls.push(['unarchiveSession', sessionId]); },
+    archiveSession: async (sessionId, options) => { registryCalls.push(['archiveSession', sessionId, options]); },
+  };
+  apply({
+    logger: { info: (message) => logs.push(message) },
+    get: (name) => (name === 'agents' ? agentsService
+      : name === 'workspaceRegistry' ? registry
+      : name === 'sessionTitle' ? titleService
+      : undefined),
+    tools: { register: (tool) => { tools.set(tool.name, tool); return () => tools.delete(tool.name); } },
+    effect: (fn) => { const dispose = fn(); if (typeof dispose === 'function') localDisposers.push(dispose); },
+    on: (name, listener) => listen(eventBus, name, listener),
+  }, config);
+  disposers.push(...localDisposers);
+  return {
+    tools, created, followups, registryCalls, composeCalls, personaSections, helperAppends,
+    sessions, snapshots, logs, timeline, sessionTitleCalls,
+    cancelNext: () => { cancelNext = true; },
+    foreignTurn: () => { foreignNext = true; },
+    unstick: () => { stuckFrom = Number.POSITIVE_INFINITY; },
+    setStatus: (status) => { for (const agent of createdAgents) agent.status = status; },
+  };
+};
+const refusalOf = async (run) => {
+  try { await run(); return null; } catch (cause) { return String(cause?.message ?? cause); }
+};
+
+// 调用方是普通会话：id 不以 session-va- 开头、有 cwd，options 带 provider/model。
+const vaCaller = { id: 'session-main-1', header: { cwd: DEV_ROOT } };
+const callerPresets = { composedPreset: () => 'oks' };
+const vaCallerCtx = { get: (name) => (name === 'agentPresets' ? callerPresets : undefined) };
+const vaExec = (session = vaCaller) => ({
+  signal: new AbortController().signal,
+  agent: { session, ctx: vaCallerCtx, options: { provider: 'test-provider', model: 'test-model' } },
+});
+
+console.log('=== va_ask（词汇助手咨询）：注册与渲染 ===');
+const vaAskTool = registered.get('va_ask');
+ok('注册了 va_ask', vaAskTool !== undefined);
+ok('参数必填 query 且不收多余字段', Array.isArray(vaAskTool.parameters?.required)
+  && vaAskTool.parameters.required.includes('query')
+  && vaAskTool.parameters?.additionalProperties === false);
+ok('描述非空', typeof vaAskTool.description === 'string' && vaAskTool.description.length > 0);
+{
+  const render = (value) => vaAskTool.output.render({}, value)[0].text;
+  ok('渲染：给出回答文本', render({ answer: 'x', interrupted: false }).includes('x'));
+  ok('渲染：没有文本时说清楚', /没有给出文本回答/.test(render({ answer: '', interrupted: false })));
+  ok('渲染：被中断过时附一行说明', /被中断过/.test(render({ answer: 'x', interrupted: true })));
+}
+
+console.log('=== va_ask：准备阶段（三步 + 预热收起 + 标记）===');
+{
+  const harness = makeVaAskHarness();
+  const tool = harness.tools.get('va_ask');
+  const first = await tool.execute({ query: '丢包' }, vaExec());
+
+  // 装配的形状：preset / cwd / 模型继承调用方，人设与权限被插件显式钉住。
+  ok('create 只调用一次', harness.created.length === 1);
+  ok('装配用 preset oks、cwd 取调用方会话头', harness.created[0]?.meta?.agentPreset === 'oks'
+    && harness.created[0]?.meta?.cwd === DEV_ROOT);
+  ok('助手会话 id 带 session-va- 前缀', String(harness.created[0]?.sessionId).startsWith('session-va-'));
+  ok('助手在创建时 join 了调用方的 preset（composeFrom 被调用一次）',
+    harness.composeCalls.length === 1 && harness.composeCalls[0][1] === vaCallerCtx);
+  ok('助手被钉成只读、不问审批',
+    harness.helperAppends[0]?.some((item) => item.type === 'sandbox/mode' && item.data.mode === 'read-only')
+    && harness.helperAppends[0]?.some((item) => item.type === 'approval/policy' && item.data.policy === 'never'));
+  ok('助手换上自己的人设（遮蔽 deployment:persona-prefix）',
+    harness.personaSections.length === 1
+    && harness.personaSections[0].name === 'deployment:persona-prefix'
+    && /词汇助手/.test(harness.personaSections[0].text ?? ''));
+  ok('provider / model 继承调用方', harness.created[0]?.agentOptions?.provider === 'test-provider'
+    && harness.created[0]?.agentOptions?.model === 'test-model');
+
+  // 助手会话在日志级标题服务上有一个"一眼认得出是内部会话"的标题，并且带上调用方标题。
+  const renames = harness.sessionTitleCalls.filter((call) => call[0] === 'rename');
+  ok('助手会话被改过一次标题', renames.length === 1 && renames[0][1] === harness.sessions[0]);
+  ok('标题以"词汇助手（内部）"开头并带上调用方标题',
+    String(renames[0]?.[2] ?? '').startsWith('词汇助手（内部）')
+    && String(renames[0]?.[2] ?? '').includes('上个月丢包排查'));
+  const titleAt = harness.timeline.findIndex((step) => step.kind === 'rename');
+  const firstPromptAt = harness.timeline.findIndex((step) => step.kind === 'followup');
+  ok('标题设置发生在第一条提示词之前', titleAt !== -1 && firstPromptAt !== -1 && titleAt < firstPromptAt);
+
+  // 准备阶段三步：① 读词表（要求用 oks_vocabulary）② 工作方法 ③ 配置里的预热问题。
+  ok('第一条提示词让助手用 oks_vocabulary 读词表', /oks_vocabulary/.test(harness.followups[0] ?? ''));
+  ok('第二条提示词交代工作方法、结尾只回"准备好了"',
+    /等价或相近/.test(harness.followups[1] ?? '') && /准备好了/.test(harness.followups[1] ?? ''));
+  ok('第二条提示词只要求它回"准备好了"', /准备好了/.test(harness.followups[1] ?? ''));
+  ok('第三条 followup 就是配置里的预热问题', harness.followups[2] === '预热');
+  ok('返回的 helper 是那个助手会话', first.helper === harness.created[0].sessionId);
+  ok('返回的 answer 含这个说法', String(first.answer).includes('丢包'));
+  // 装配完先归档一次（就绪到第一次被咨询之间不该在活跃列表里），咨询时先恢复、最后再归档。
+  const registryOps = harness.registryCalls.map((call) => call[0]);
+  ok('先 unarchive 再 archive，且归档时停掉活跃度',
+    registryOps.includes('unarchiveSession')
+    && registryOps.lastIndexOf('archiveSession') > registryOps.indexOf('unarchiveSession')
+    && harness.registryCalls.filter((call) => call[0] === 'archiveSession').every((call) => call[1] === harness.created[0].sessionId
+      && call[2]?.stopActivity === true));
+  const rendered = tool.output.render({ query: '丢包' }, first).map((block) => block.text ?? '').join('');
+  ok('工具结果渲染出回答文本', /丢包/.test(rendered));
+
+  // 预热那条消息落在助手的会话上，答完立刻收起：回答被收进一个固定文本的标记节点。
+  const session = harness.sessions[0];
+  const warmup = session.entries.find((event) => event.type === 'user/message' && messageText(event.data) === '预热');
+  ok('预热问题真的落到了助手的会话表面', warmup !== undefined);
+  const warmupAnswer = session.entries.find((event) => event.seq > warmup.seq && event.type === 'assistant/message');
+  const firstCollapse = collapseEvents(session)[0];
+  ok('预热答完发生了一次收起，范围从回答起', firstCollapse !== undefined
+    && firstCollapse.surfaceOp.startSeq === warmupAnswer.seq
+    && firstCollapse.sourceEventSeqs.includes(warmupAnswer.seq));
+  ok('收起后的标记是一条固定文本的用户消息', firstCollapse?.type === 'user/message'
+    && messageText(firstCollapse.data) === VA_MARKER_TEXT);
+  ok('预热那条回答不在 surface.nodes 里了', !surfaceHas(session, warmupAnswer.seq));
+  ok('表面里有一条文本为（上文问答已收起）的 user/message',
+    session.surface.nodes.some((seq) => {
+      const event = session.eventAt(seq);
+      return event?.type === 'user/message' && messageText(event.data) === VA_MARKER_TEXT;
+    }));
+  // 收起后标记挪到刚插入的标记节点；判据是 `seq > markerSeq`，所以标记之前那条预热消息留在原地，
+  // 收起的起点是它之后的回答。
+  const markerSeq = Number(/标记 seq (\d+)/.exec(harness.logs.join('\n'))?.[1] ?? -1);
+  ok('日志里的标记 seq 就是收起后插入的标记节点', markerSeq === firstCollapse?.seq);
+  ok('收起的起点紧跟在预热消息之后', firstCollapse?.surfaceOp.startSeq === warmupAnswer.seq
+    && warmup.seq < firstCollapse.seq);
+
+  // 一次咨询之后：我们的消息与回答都从表面收起，末尾是标记节点。
+  const query = session.entries.find((event) => event.type === 'user/message' && messageText(event.data) === '丢包');
+  const answer = session.entries.find((event) => event.seq > query.seq && event.type === 'assistant/message');
+  ok('一次 va_ask 之后问答都不在 surface.nodes 里', !surfaceHas(session, query.seq) && !surfaceHas(session, answer.seq));
+  const lastNode = session.eventAt(session.surface.nodes.at(-1));
+  ok('表面末尾是标记节点', lastNode?.type === 'user/message' && messageText(lastNode.data) === VA_MARKER_TEXT);
+  ok('日志一条不少（问答原样保留）', session.entries.some((event) => event.seq === query.seq)
+    && session.entries.some((event) => event.seq === answer.seq));
+}
+
+console.log('=== va_ask：没有 sessionTitle 服务时装配照常 ===');
+{
+  const harness = makeVaAskHarness({ sessionTitle: false });
+  const tool = harness.tools.get('va_ask');
+  const first = await tool.execute({ query: '丢包' }, vaExec());
+  ok('没有 sessionTitle 服务也能装配并回答', /丢包/.test(first?.answer ?? ''));
+  ok('写了一条 no-sessionTitle 日志', harness.logs.some((line) => /no sessionTitle service/.test(line)));
+}
+
+console.log('=== va_ask：第二次咨询复用助手 + 冻结前缀 ===');
+{
+  const harness = makeVaAskHarness();
+  const tool = harness.tools.get('va_ask');
+  const first = await tool.execute({ query: '丢包' }, vaExec());
+  const second = await tool.execute({ query: '端口压力' }, vaExec());
+  ok('第一次回答含第一个说法', String(first.answer).includes('丢包'));
+  ok('第二次咨询复用同一个助手', harness.created.length === 1);
+  ok('第五条 followup 是第二个说法', harness.followups[4] === '端口压力');
+  ok('第二次回答含第二个说法', String(second.answer).includes('端口压力'));
+  const session = harness.sessions[0];
+  const snapshotOf = (text) => harness.snapshots.filter((item) => item.text === text).at(-1);
+  const prefixFirst = markerPrefix(session, snapshotOf('丢包')?.nodes);
+  const prefixSecond = markerPrefix(session, snapshotOf('端口压力')?.nodes);
+  ok('两次提问前的冻结前缀一致（到标记节点为止）',
+    prefixFirst.length > 0 && prefixSecond.startsWith(prefixFirst));
+  ok('冻结前缀里含读词表 / 方法 / 标记', /oks_vocabulary|读/.test(prefixFirst) && prefixFirst.includes(VA_MARKER_TEXT));
+}
+
+console.log('=== va_ask：有回合在飞时不收（status 辅助判据）===');
+{
+  const harness = makeVaAskHarness();
+  const tool = harness.tools.get('va_ask');
+  await tool.execute({ query: '丢包' }, vaExec());
+  const session = harness.sessions[0];
+  const beforeRunning = collapseEvents(session).length;
+  harness.setStatus('running');
+  const running = await tool.execute({ query: '端口压力' }, vaExec());
+  ok('有回合在飞时这次回答后没有新增收起事件', collapseEvents(session).length === beforeRunning);
+  ok('在飞期间回答照常拿回来', String(running.answer).includes('端口压力'));
+  const runningQuery = session.entries.find((event) => event.type === 'user/message' && messageText(event.data) === '端口压力');
+  ok('在飞期间那条问答仍在表面上', surfaceHas(session, runningQuery.seq));
+
+  harness.setStatus('idle');
+  const beforeIdle = collapseEvents(session).length;
+  await tool.execute({ query: '时延' }, vaExec());
+  const caughtUp = collapseEvents(session).slice(beforeIdle);
+  const delayQuery = session.entries.find((event) => event.type === 'user/message' && messageText(event.data) === '时延');
+  ok('恢复 idle 后下一次提问之前把上一轮问答收了',
+    caughtUp.some((event) => event.sourceEventSeqs.includes(runningQuery.seq) && event.seq < delayQuery.seq));
+}
+
+console.log('=== va_ask：回合中间的系统消息留在原地（分段收起）===');
+{
+  const harness = makeVaAskHarness({ systemAfter: '丢包' });
+  const tool = harness.tools.get('va_ask');
+  await tool.execute({ query: '丢包' }, vaExec());
+  const session = harness.sessions[0];
+  const systemEvent = session.entries.find((event) => event.type === 'system/message');
+  const query = session.entries.find((event) => event.type === 'user/message' && messageText(event.data) === '丢包');
+  const answer = session.entries.find((event) => event.seq > systemEvent.seq && event.type === 'assistant/message');
+  const post = collapseEvents(session).filter((event) => event.sourceEventSeqs.includes(query.seq)
+    || event.sourceEventSeqs.includes(answer.seq));
+  ok('系统消息夹在中间时，这一次收起分成两段', post.length === 2
+    && post[0].surfaceOp.endSeq === query.seq
+    && post[1].surfaceOp.startSeq === answer.seq);
+  ok('非空系统消息仍在表面上', surfaceHas(session, systemEvent.seq));
+  ok('两段各自换成标记节点，系统消息没有被任何收起遮蔽',
+    session.surface.nodes.includes(post[0]?.seq) && session.surface.nodes.includes(post[1]?.seq)
+    && collapseEvents(session).every((event) => !event.sourceEventSeqs.includes(systemEvent.seq)));
+}
+
+console.log('=== va_ask：并发（不同说法 → 装配一次 + 排队咨询）===');
+{
+  const harness = makeVaAskHarness();
+  const tool = harness.tools.get('va_ask');
+  const [first, second] = await Promise.all([
+    tool.execute({ query: '丢包' }, vaExec()),
+    tool.execute({ query: '端口压力' }, vaExec()),
+  ]);
+  ok('并发两次只装配一个助手', harness.created.length === 1);
+  ok('两次都拿到回答', /丢包/.test(first?.answer ?? '') && /端口压力/.test(second?.answer ?? ''));
+  ok('两次咨询按到达顺序排队', harness.followups.slice(3).join(',') === '丢包,端口压力');
+  ok('每条咨询结束后都归档（外加装配完那一次）',
+    harness.registryCalls.filter((call) => call[0] === 'archiveSession').length === harness.created.length + 2);
+}
+
+console.log('=== va_ask：并发（同一个说法 → single flight）===');
+{
+  const harness = makeVaAskHarness();
+  const tool = harness.tools.get('va_ask');
+  const [first, second] = await Promise.all([
+    tool.execute({ query: '丢包' }, vaExec()),
+    tool.execute({ query: '丢包' }, vaExec()),
+  ]);
+  ok('同一个说法只装配一个助手', harness.created.length === 1);
+  ok('同一个说法只咨询一次', harness.followups.filter((text) => text === '丢包').length === 1);
+  ok('两个调用拿到同一个回答', first?.answer === second?.answer && /丢包/.test(first?.answer ?? ''));
+}
+
+console.log('=== va_ask：有外来回合在飞时，回答仍然是我们的 ===');
+{
+  const harness = makeVaAskHarness();
+  const tool = harness.tools.get('va_ask');
+  await tool.execute({ query: '丢包' }, vaExec());
+  harness.foreignTurn();
+  const second = await tool.execute({ query: '端口压力' }, vaExec());
+  ok('外来回合的回答不会被当成本次的', /端口压力/.test(second?.answer ?? '')
+    && !/上一个回合的回答/.test(second?.answer ?? ''));
+}
+
+console.log('=== va_ask：装配失败后的状态 ===');
+{
+  const harness = makeVaAskHarness();
+  const tool = harness.tools.get('va_ask');
+  harness.cancelNext(); // 第一条提示词那一轮以 cancelled 收场
+  const failed = await refusalOf(() => tool.execute({ query: '丢包' }, vaExec()));
+  ok('装配失败明确报错', /没有装配起来/.test(failed ?? ''));
+  ok('装配失败会把那条助手会话归档',
+    harness.registryCalls.some((call) => call[0] === 'archiveSession' && call[1] === harness.created[0]?.sessionId));
+  await tool.execute({ query: '丢包' }, vaExec());
+  ok('装配失败不会把坏的助手留在表里（下次重建）', harness.created.length === 2);
+}
+
+console.log('=== va_ask：回合卡住超时 → 丢掉助手重建，且不收起 ===');
+{
+  const harness = makeVaAskHarness({ config: { vaAskTimeoutMs: 5 }, stuck: true });
+  const tool = harness.tools.get('va_ask');
+  const timedOut = await refusalOf(() => tool.execute({ query: '丢包' }, vaExec()));
+  ok('卡住的回合会超时报错', /没有结束|没有落到/.test(timedOut ?? ''));
+  ok('卡住的装配没有产生任何收起事件', collapseEvents(harness.sessions[0]).length === 0);
+  harness.unstick();
+  const second = await tool.execute({ query: '端口压力' }, vaExec());
+  ok('超时后助手记录被丢掉，下次重建', harness.created.length === 2);
+  ok('重建后的回答是我们的', /端口压力/.test(second?.answer ?? ''));
+}
+
+console.log('=== va_ask：还有没被回答的发送时不收（pending 主判据）===');
+{
+  // 前 3 条（准备阶段）正常收场，之后所有发送都卡住：先跑的两条并发咨询都超时，
+  // 第二条在提问前试收时看到前一条的 pending 还是 1，于是跳过——这就是计数语义。
+  const harness = makeVaAskHarness({ config: { vaAskTimeoutMs: 5 }, stuckAfter: 3 });
+  const tool = harness.tools.get('va_ask');
+  const [first, second] = await Promise.all([
+    refusalOf(() => tool.execute({ query: '丢包' }, vaExec())),
+    refusalOf(() => tool.execute({ query: '端口压力' }, vaExec())),
+  ]);
+  ok('两条卡住的咨询都报错', /没有结束|没有落到/.test(first ?? '') && /没有结束|没有落到/.test(second ?? ''));
+  ok('pending 不为 0 时写下跳过收起的日志',
+    harness.logs.some((line) => /rewind skipped · 还有 1 条没被回答的发送/.test(line)));
+  const session = harness.sessions[0];
+  ok('卡住期间没有发生新的收起事件', collapseEvents(session).length === 1);
+  const stuckSeqs = session.entries
+    .filter((event) => event.type === 'user/message' && ['丢包', '端口压力'].includes(messageText(event.data)))
+    .map((event) => event.seq);
+  ok('卡住的那两条问答都留在表面上', stuckSeqs.every((seq) => surfaceHas(session, seq)));
+  ok('卡住的那两条问答没有被任何收起事件遮蔽',
+    collapseEvents(session).every((event) => !event.sourceEventSeqs.some((seq) => stuckSeqs.includes(seq))));
+  harness.unstick();
+  const rebuilt = await tool.execute({ query: '时延' }, vaExec());
+  ok('卡住后助手被丢掉，下次重建', harness.created.length === 2);
+  ok('重建后的回答是我们的', /时延/.test(rebuilt?.answer ?? ''));
+}
+
+console.log('=== va_ask：调用方没有 cwd ===');
+{
+  const harness = makeVaAskHarness();
+  const noCwd = await refusalOf(() => harness.tools.get('va_ask').execute({ query: '丢包' },
+    { signal: new AbortController().signal, agent: { session: { id: 'session-main-2' }, ctx: vaCallerCtx, options: {} } }));
+  ok('调用方没有 cwd 时早失败', /没有 cwd/.test(noCwd ?? ''));
+  ok('没有 cwd 时不会去建助手', harness.created.length === 0);
+}
+
+console.log('=== va_ask：拒绝的调用 ===');
+{
+  const harness = makeVaAskHarness();
+  const tool = harness.tools.get('va_ask');
+  const empty = await refusalOf(() => tool.execute({ query: '   ' }, vaExec()));
+  ok('空 query 明确报错', /需要一个说法/.test(empty ?? ''));
+  const self = await refusalOf(() => tool.execute({ query: '丢包' }, vaExec({ id: 'session-va-xxx', header: { cwd: DEV_ROOT } })));
+  ok('词汇助手不咨询自己', /不咨询自己/.test(self ?? ''));
+  ok('被拒绝的调用没有起助手', harness.created.length === 0);
+  const bare = makeVaAskHarness({ agents: false });
+  const noAgents = await refusalOf(() => bare.tools.get('va_ask').execute({ query: '丢包' }, vaExec()));
+  ok('没有 agent 注册表时明确报错', /agent 注册表/.test(noAgents ?? ''));
+}
+
+// ── surface replace 的真会话契约 ────────────────────────────────────────────
+// 假桩只能证明调用形状；这一段拿 harness 自己的 @deepseek-ai/dsh-session 建一个真会话，验证
+// 插件收起所依赖的 surface replace 真的把问答从 deriveMessages() 里收起、日志一条不少、标记
+// 节点在模型那边只有一行固定文本，漏掉遮蔽节点的替换会被平台拒绝。找不到那个包就跳过，不算错。
+const findSessionPackage = () => {
+  if (process.env.DSH_SESSION_PACKAGE !== undefined) {
+    return existsSync(join(process.env.DSH_SESSION_PACKAGE, 'lib/index.js')) ? process.env.DSH_SESSION_PACKAGE : null;
+  }
+  // pnpm 的 dlx store：<dlx>/<run>/<run>/node_modules/.pnpm/@deepseek-ai+dsh-session@…/node_modules/…
+  const roots = [join(homedir(), '.cache/pnpm/dlx')];
+  const seen = new Set();
+  const visit = (dir, depth) => {
+    if (depth > 3 || seen.has(dir) || !existsSync(dir)) return null;
+    seen.add(dir);
+    const pnpm = join(dir, 'node_modules/.pnpm');
+    if (existsSync(pnpm)) {
+      for (const entry of readdirSync(pnpm)) {
+        if (!entry.startsWith('@deepseek-ai+dsh-session@')) continue;
+        const candidate = join(pnpm, entry, 'node_modules/@deepseek-ai/dsh-session');
+        if (existsSync(join(candidate, 'lib/index.js'))) return candidate;
+      }
+    }
+    for (const child of readdirSync(dir)) {
+      const found = visit(join(dir, child), depth + 1);
+      if (found !== null) return found;
+    }
+    return null;
+  };
+  for (const root of roots) {
+    const found = visit(root, 0);
+    if (found !== null) return found;
+  }
+  return null;
+};
+
+const sessionPackage = findSessionPackage();
+if (sessionPackage === null) {
+  console.log('=== surface replace 真会话语义：跳过（没找到 @deepseek-ai/dsh-session，可用 DSH_SESSION_PACKAGE 指定）===');
+} else {
+  console.log(`=== surface replace 真会话语义（${sessionPackage.replace(homedir(), '~')}）===`);
+  const { Session, SessionId, deriveEventMessage } = await import(`${sessionPackage}/lib/index.js`);
+  const session = Session.create(SessionId('va-smoke'));
+  const system = message('system', 'S');
+  const user = (text) => message('user', text);
+  session.append('system/message', { turn: 1, step: 1, message: system }, { surfaceOp: 'append' });
+  session.append('user/message', user('读词表'), { surfaceOp: 'append' });
+  const question = session.append('user/message', user('问题一'), { surfaceOp: 'append' });
+  const answer = session.append('assistant/message', {
+    turn: 2,
+    step: 1,
+    message: message('assistant', '答一'),
+    stream: [],
+  }, { surfaceOp: 'append' });
+
+  const visibleBefore = session.deriveMessages().map((item) => item.content?.[0]?.text);
+  ok('收起之前模型看得到问答', visibleBefore.includes('问题一') && visibleBefore.includes('答一'));
+  const nodesBefore = session.surface.nodes.length;
+
+  const replacement = session.append('user/message', user(VA_MARKER_TEXT), {
+    surfaceOp: { op: 'replace', startSeq: question.seq, endSeq: answer.seq },
+    sourceEventSeqs: [question.seq, answer.seq],
+  });
+  const nodesAfter = session.surface.nodes.length;
+  ok(`表面节点数从 ${nodesBefore} 收到 ${nodesAfter}`, nodesAfter === nodesBefore - 1);
+  const visibleAfter = session.deriveMessages().map((item) => item.content?.[0]?.text);
+  ok('收起之后模型看不到问答', !visibleAfter.includes('问题一') && !visibleAfter.includes('答一'));
+  ok('边界之前的内容还在（系统提示与读词表）', visibleAfter.includes('S') && visibleAfter.includes('读词表'));
+  const logSeqs = session.snapshotEvents().map((event) => event.seq);
+  ok('日志里问答原样保留', logSeqs.includes(question.seq) && logSeqs.includes(answer.seq));
+  ok('替换节点记录了被遮蔽的节点', Array.isArray(replacement.sourceEventSeqs)
+    && replacement.sourceEventSeqs.includes(question.seq) && replacement.sourceEventSeqs.includes(answer.seq));
+  const markerMessage = deriveEventMessage(replacement);
+  ok('标记节点在模型那边只有一行固定文本',
+    markerMessage?.content?.length === 1 && markerMessage.content[0].text === VA_MARKER_TEXT);
+  ok('会话仍然可以继续追加', session.append('user/message', user('问题二'), { surfaceOp: 'append' }).seq > replacement.seq);
+
+  let refused = false;
+  try {
+    session.append('system/message', { turn: 4, step: 1, message: message('system', '') }, {
+      surfaceOp: { op: 'replace', startSeq: question.seq, endSeq: question.seq },
+      sourceEventSeqs: [question.seq + 1],
+    });
+  } catch { refused = true; }
+  ok('平台自己会拒绝漏掉遮蔽节点的替换', refused);
+}
+
 console.log('=== 发现协议（不假设形状，只跟随服务给出的 key）===');
 const seenKeys = new Set();
 const trail = [];
@@ -319,6 +923,81 @@ let seed = null;
   const zero = await call('oks_search', { query: 'zzz-no-such-term-zzz' });
   console.log(`  0 命中给出 facet: ${zero.value.total === 0 && /可用的 kind/.test(zero.text) ? '✓' : '✗'}`);
   if (zero.value.total !== 0) throw new Error('不存在的词不该有命中');
+}
+
+console.log('=== oks_vocabulary（整份词汇分页，交给词汇助手）===');
+{
+  let refused = null;
+  try { await call('oks_vocabulary', {}); } catch (cause) { refused = String(cause?.message ?? cause); }
+  ok('工作会话调 oks_vocabulary 被拒', /只交给词汇助手/.test(refused ?? ''));
+}
+{
+  const first = await callHelper('oks_vocabulary', {});
+  console.log(`  共 ${first.value.total} 条 · 首页 ${first.value.entries.length} 条 · more=${first.value.more}`);
+  // 与检索出口共用同一份索引：总数必须等于空查询的命中数
+  const searched = (await call('oks_search', {})).value.total;
+  console.log(`  总数 = 检索全部命中 ${searched}: ${first.value.total === searched ? '✓' : '✗'}`);
+  if (first.value.total !== searched) throw new Error('词汇出口与检索出口的词条总数不一致');
+  // 条目形状：kind/name/aliases/doc 齐全；doc 截到 200 字符（超长补省略号）；owner 字段是字符串
+  const shape = first.value.entries.every((entry) => typeof entry.kind === 'string' && entry.kind !== ''
+    && typeof entry.name === 'string' && entry.name !== ''
+    && Array.isArray(entry.aliases) && entry.aliases.every((alias) => typeof alias === 'string')
+    && typeof entry.doc === 'string' && entry.doc.length <= 201
+    && Object.entries(entry).every(([name, value]) => ['kind', 'name', 'aliases', 'doc'].includes(name)
+      || typeof value === 'string'));
+  console.log(`  条目形状（含省略号前的 200 字符上限）: ${shape ? '✓' : '✗'}`);
+  if (!shape) throw new Error('词汇出口的条目形状不对');
+  const ownerValue = (entry) => entry.dataset ?? entry.ty ?? entry.hub ?? null;
+  // 渲染里的词条行要完整：用同一条规则重放最后一条的行，必须逐字出现在渲染里
+  const lineOf = (entry) => {
+    const parts = [entry.kind, entry.name];
+    const owner = ownerValue(entry);
+    if (owner !== null) parts.push(`[${owner}]`);
+    parts.push(...entry.aliases);
+    return parts.join(' · ');
+  };
+  const whole = first.value.entries.every((entry) => first.text.includes(lineOf(entry)));
+  console.log(`  渲染里每条都是完整的行（不截半条）: ${whole ? '✓' : '✗'}`);
+  if (!whole) throw new Error('渲染截断了词条行');
+  // 翻页走到底：不重不漏，每页都在预算内，skip 回显
+  const seen = new Set();
+  let duplicate = false;
+  let pages = 0;
+  let maxBytes = 0;
+  let truncatedDoc = false;
+  let cursor = first;
+  for (;;) {
+    pages += 1;
+    maxBytes = Math.max(maxBytes, Buffer.byteLength(cursor.text, 'utf8'));
+    for (const entry of cursor.value.entries) {
+      if (entry.doc.length > 200) truncatedDoc = true;
+      const id = JSON.stringify([entry.kind, entry.name, ownerValue(entry)]);
+      if (seen.has(id)) duplicate = true;
+      seen.add(id);
+    }
+    if (cursor.value.more === null) break;
+    const skip = cursor.value.start + cursor.value.entries.length;
+    const next = await callHelper('oks_vocabulary', { skip });
+    if (next.value.start !== skip) throw new Error(`skip 没有被回显：${next.value.start} ≠ ${skip}`);
+    if (next.value.entries.length === 0) throw new Error(`skip=${skip} 空页却有剩余 ${cursor.value.more}`);
+    cursor = next;
+  }
+  const complete = seen.size === first.value.total && !duplicate;
+  console.log(`  ${pages} 页走到底：${seen.size}/${first.value.total} 条不重不漏: ${complete ? '✓' : '✗'}`);
+  if (!complete) throw new Error('词汇出口翻页有重复或遗漏');
+  console.log(`  每页渲染 ≤ 6000 字节（最大 ${maxBytes}）: ${maxBytes <= 6000 ? '✓' : '✗'}`);
+  if (maxBytes > 6000) throw new Error('词汇出口的渲染超过页预算');
+  console.log(`  超长 doc 被截到 200 字符: ${truncatedDoc ? '✓' : '✗'}`);
+  if (!truncatedDoc) throw new Error('词表里有超长说明，应当被截断');
+  const again = await callHelper('oks_vocabulary', {});
+  const stable = JSON.stringify(again.value) === JSON.stringify(first.value);
+  console.log(`  同参数逐字可复现: ${stable ? '✓' : '✗'}`);
+  if (!stable) throw new Error('同参数两次结果不同');
+  const beyond = await callHelper('oks_vocabulary', { skip: first.value.total });
+  const tailEmpty = beyond.value.entries.length === 0 && beyond.value.more === null
+    && beyond.value.start === first.value.total;
+  console.log(`  skip 越过末尾：空页、more=null、start 回显: ${tailEmpty ? '✓' : '✗'}`);
+  if (!tailEmpty) throw new Error('越过末尾时应当给空页');
 }
 
 // 与服务发布物对比：派生结果必须与同一份产物的发布物逐项相同（存在发布物才比）
@@ -579,4 +1258,6 @@ console.log('=== 查询超时 + 复活（queryTimeoutMs=1）===');
 
 for (const dispose of disposers.reverse()) dispose();
 rmSync(SCRATCH, { recursive: true, force: true });
+// 走到这里说明没有一条 ✗（any failure throws above）；N 是 ok() 断言的条数。
+console.log(`\n✓ ${passed} / ✗ 0`);
 console.error('disposed cleanly');
