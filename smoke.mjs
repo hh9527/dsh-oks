@@ -488,12 +488,14 @@ console.log('=== va_ask：准备阶段（三步 + 预热收起 + 标记）===');
   const firstPromptAt = harness.timeline.findIndex((step) => step.kind === 'followup');
   ok('标题设置发生在第一条提示词之前', titleAt !== -1 && firstPromptAt !== -1 && titleAt < firstPromptAt);
 
-  // 准备阶段三步：① 读词表（要求用 oks_vocabulary）② 工作方法 ③ 配置里的预热问题。
+  // 准备阶段三步：① 读词表（要求用 oks_vocabulary）② 工作方法 ③ 握手问题（默认问条数）。
   ok('第一条提示词让助手用 oks_vocabulary 读词表', /oks_vocabulary/.test(harness.followups[0] ?? ''));
   ok('第二条提示词交代工作方法、结尾只回"准备好了"',
     /等价或相近/.test(harness.followups[1] ?? '') && /准备好了/.test(harness.followups[1] ?? ''));
   ok('第二条提示词只要求它回"准备好了"', /准备好了/.test(harness.followups[1] ?? ''));
-  ok('第三条 followup 就是配置里的预热问题', harness.followups[2] === '预热');
+  ok('第三条 followup 是默认握手问题（问条数、要求不要检索）',
+    /握手：/.test(harness.followups[2] ?? '') && /多少条/.test(harness.followups[2] ?? '')
+    && /不要检索/.test(harness.followups[2] ?? ''));
   ok('返回的 helper 是那个助手会话', first.helper === harness.created[0].sessionId);
   ok('返回的 answer 含这个说法', String(first.answer).includes('丢包'));
   // 装配完先归档一次（就绪到第一次被咨询之间不该在活跃列表里），咨询时先恢复、最后再归档。
@@ -508,7 +510,8 @@ console.log('=== va_ask：准备阶段（三步 + 预热收起 + 标记）===');
 
   // 预热那条消息落在助手的会话上，答完立刻收起：回答被收进一个固定文本的标记节点。
   const session = harness.sessions[0];
-  const warmup = session.entries.find((event) => event.type === 'user/message' && messageText(event.data) === '预热');
+  const warmup = session.entries.find((event) => event.type === 'user/message'
+    && messageText(event.data) === harness.followups[2]);
   ok('预热问题真的落到了助手的会话表面', warmup !== undefined);
   const warmupAnswer = session.entries.find((event) => event.seq > warmup.seq && event.type === 'assistant/message');
   const firstCollapse = collapseEvents(session)[0];
@@ -710,6 +713,13 @@ console.log('=== va_ask：调用方没有 cwd ===');
     { signal: new AbortController().signal, agent: { session: { id: 'session-main-2' }, ctx: vaCallerCtx, options: {} } }));
   ok('调用方没有 cwd 时早失败', /没有 cwd/.test(noCwd ?? ''));
   ok('没有 cwd 时不会去建助手', harness.created.length === 0);
+}
+
+console.log('=== va_ask：握手问题可被 config 覆盖 ===');
+{
+  const harness = makeVaAskHarness({ config: { vaWarmup: '端口利用率' } });
+  await harness.tools.get('va_ask').execute({ query: '丢包' }, vaExec());
+  ok('第三条 followup 用配置里的握手问题', harness.followups[2] === '端口利用率');
 }
 
 console.log('=== va_ask：拒绝的调用 ===');
