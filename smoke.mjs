@@ -11,6 +11,7 @@
 //   OKS_WORKSPACE=/path/to/workspace node smoke.mjs
 import { apply } from './index.js';
 import { applyOps, encode, parseMoment } from './lib/time.js';
+import { singleFlight } from './lib/single-flight.js';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
@@ -820,6 +821,40 @@ if (sessionPackage === null) {
     });
   } catch { refused = true; }
   ok('平台自己会拒绝漏掉遮蔽节点的替换', refused);
+}
+
+console.log('=== 惰性初始化：single flight 的机制 ===');
+{
+  const inflight = new Map();
+  let started = 0;
+  let release = null;
+  const gate = new Promise((done) => { release = done; });
+  const start = async () => { started += 1; await gate; return 'index'; };
+  const both = Promise.all([singleFlight(inflight, 'k', start), singleFlight(inflight, 'k', start)]);
+  ok('并发两次只触发一次初始化', started === 1);
+  release();
+  ok('两个调用拿到同一个结果', (await both).every((value) => value === 'index'));
+  ok('落地后从表里撤掉（下一次可以重新触发）', inflight.size === 0);
+
+  const failing = new Map();
+  let attempts = 0;
+  const boom = async () => { attempts += 1; throw new Error('boom'); };
+  const first = await singleFlight(failing, 'k', boom).catch((cause) => String(cause.message));
+  ok('初始化抛错时把错误交给调用者', first === 'boom');
+  ok('失败不留缓存', failing.size === 0);
+  const second = await singleFlight(failing, 'k', boom).catch((cause) => String(cause.message));
+  ok('下一次调用会重新触发', attempts === 2 && second === 'boom');
+}
+
+console.log('=== 检索层：并发的首次检索只派生一次索引 ===');
+{
+  const [left, right] = await Promise.all([
+    call('oks_search', { query: 'packet' }),
+    call('oks_search', { query: 'loss' }),
+  ]);
+  ok('并发两次首次检索只派生一次索引',
+    logs.filter((line) => line.includes('discovery index')).length === 1);
+  ok('两个并发调用都拿到了结果', left.text.length > 0 && right.text.length > 0);
 }
 
 console.log('=== 发现协议（不假设形状，只跟随服务给出的 key）===');
