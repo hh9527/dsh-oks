@@ -10,7 +10,7 @@
 //   cd /path/to/workspace && node /path/to/dsh-oks/smoke.mjs
 //   OKS_WORKSPACE=/path/to/workspace node smoke.mjs
 import { apply } from './index.js';
-import { applyOps, encode, parseMoment } from './time.js';
+import { applyOps, encode, parseMoment } from './lib/time.js';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
