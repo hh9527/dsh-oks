@@ -1,4 +1,4 @@
-// 本地冒烟测试：用假的 cordis ctx 加载插件，直接调用各工具的真实实现，不安装进 profile。
+// 本地冒烟测试（TS 脚本，不纳入 tsc 检查）：用假的 cordis ctx 加载插件，直接调用各工具的真实实现，不安装进 profile。
 // 其中两个与模型无关的时间工具（time_now / time_calc）不需要工作区，也在这里单测。
 // 插件行**什么都不配**——领域、模型、数据文件全部来自工作区，正是要验证的那一点。
 //
@@ -7,8 +7,8 @@
 // 不会让这份测试失效；这也正是"代码里不写形状假设"这条原则的自我验证。
 //
 // 被测工作区默认取**当前目录**（必须有 oks.json，否则明确报错），也可用环境变量指定：
-//   cd /path/to/workspace && node /path/to/dsh-oks/smoke.mjs
-//   OKS_WORKSPACE=/path/to/workspace node smoke.mjs
+//   cd /path/to/workspace && node /path/to/dsh-oks/smoke.ts
+//   OKS_WORKSPACE=/path/to/workspace node smoke.ts
 import { apply } from './index.mjs';
 import { applyOps, encode, parseMoment } from './src/time.ts';
 import { singleFlight } from './src/single-flight.ts';

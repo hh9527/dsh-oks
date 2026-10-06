@@ -29,5 +29,5 @@ agent 按 key 自主探索；工具描述与渲染都不做形状分类。代码
 输出里不该出现 ✗：
 
 ```sh
-cd /path/to/workspace && node /path/to/dsh-oks/smoke.mjs
+cd /path/to/workspace && node /path/to/dsh-oks/smoke.ts
 ```

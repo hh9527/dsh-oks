@@ -22,7 +22,7 @@
   "scripts": {
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
-    "test": "node smoke.mjs",
+    "test": "node smoke.ts",
     "check": "pnpm run typecheck && pnpm run build && pnpm run test"
   },
   "dsh": {

@@ -200,14 +200,17 @@ pnpm run check        # 上面两步 + 冒烟
 ```
 
 构建用 [tsdown](https://tsdown.dev)（rolldown 系，和 DSH 自己 node 侧包的产物一致）。Node ≥ 22
-能直接跑 `.ts`，所以冒烟里对 `src/time.ts` 这类纯函数的单测不需要先构建；被测的插件本体仍然从
-`index.mjs` 导入（测的就是要发布的那份产物）。
+能直接跑 `.ts`，所以 `smoke.ts` 不用先构建就能跑（它自己对 `src/time.ts` 这类纯函数的单测也是直接
+导入源码）；被测的插件本体则从 `index.mjs` 导入——**测的就是最终制品**。
+
+`smoke.ts` 是 JS 风格的测试脚本（自造假宿主、动态导入），**不纳入 `tsc` 检查**：要纳入需要先给它
+写一套假宿主的类型（约 200 处隐式 any），那是另一件事。
 
 ## 本地冒烟测试（不安装）
 
 ```sh
-cd /path/to/workspace && node /path/to/dsh-oks/smoke.mjs   # 被测工作区 = 当前目录
-OKS_WORKSPACE=/path/to/ws node smoke.mjs              # 或者显式指定
+cd /path/to/workspace && node /path/to/dsh-oks/smoke.ts   # 被测工作区 = 当前目录
+OKS_WORKSPACE=/path/to/ws node smoke.ts              # 或者显式指定
 ```
 
 被测工作区必须是**已经声明了 `oks.json`** 的那个目录（要跑查询还需要 `dataFile`）。
