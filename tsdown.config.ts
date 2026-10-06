@@ -9,9 +9,10 @@ export default defineConfig({
   target: 'node22',
   outDir: '.',
   clean: false,
-  dts: false, // 私有插件：只被 DSH 加载，没人把它当库 import，不需要 .d.mts
+  // 私有插件：只被 DSH 加载，没人把它当库 import，所以不产出类型声明（dts）
+  dts: false,
   hash: false,
   minify: false,
   unbundle: false,
-  outExtensions: () => ({ js: '.mjs', dts: '.d.mts' }),
+  outExtensions: () => ({ js: '.mjs' }),
 });
