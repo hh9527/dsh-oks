@@ -242,11 +242,12 @@ console.log('=== 时间辅助工具 ===');
   }
 }
 
-// ── 词汇助手（va）：准备阶段、标记与咨询语义 ────────────────────────────────
-// 插件自己建一个顶层助手 agent（preset、工作区、模型都继承调用方），两步装配好（喂一条词表提示词 →
-// 工作方法 → 预热问题），此后每次咨询把标记之后的问答从**模型可见表面**收进一个固定文本的
-// 标记节点。这一段用假 ctx + 假 agents 服务驱动真实的 va_ask：会话桩按 harness 的规则维护
-// surface.nodes 与 eventAt，所以收起范围、sourceEventSeqs、标记推进都能逐项检查。
+// ── 词汇助手（va）：装配、标记与咨询语义 ────────────────────────────────────
+// 插件自己建一个顶层助手 agent（preset、工作区、模型都继承调用方），装配时把整份词表与专属人设
+// 放进它的**系统提示词**（不发任何消息、助手零工具），此后每次咨询只发一个说法，拿到回答后把
+// 锚点之后的问答从**模型可见表面**收进一个固定文本的标记节点。这一段用假 ctx + 假 agents 服务
+// 驱动真实的 va_ask：会话桩按 harness 的规则维护 surface.nodes 与 eventAt，所以收起范围、
+// sourceEventSeqs、标记推进都能逐项检查。
 let passed = 0;
 const ok = (label, condition) => {
   if (!condition) throw new Error('✗ ' + label);
@@ -483,7 +484,7 @@ ok('描述非空', typeof vaAskTool.description === 'string' && vaAskTool.descri
   ok('渲染：被中断过时附一行说明', /被中断过/.test(render({ answer: 'x', interrupted: true })));
 }
 
-console.log('=== va_ask：准备阶段（一条词表提示词 + 收起 + 标记）===');
+console.log('=== va_ask：装配（词表进系统提示词、零工具）与咨询（收起 + 标记）===');
 {
   const harness = makeVaAskHarness();
   const tool = harness.tools.get('va_ask');
@@ -751,7 +752,7 @@ console.log('=== va_ask：调用方没有 cwd ===');
   ok('没有 cwd 时不会去建助手', harness.created.length === 0);
 }
 
-console.log('=== va_ask：推理档位可配（默认 low）===');
+console.log('=== va_ask：推理档位可配（默认 off）===');
 {
   const asked = makeVaAskHarness({ config: { vaReasoningEffort: 'medium' } });
   await asked.tools.get('va_ask').execute({ query: '丢包' }, vaExec());
