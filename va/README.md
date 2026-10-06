@@ -50,3 +50,8 @@ profile 里给插件配置 `vaReasoningEffort`（档位 id 由模型适配器定
   用户消息；万一那一刻有回合在飞，就留到下一次提问之前补收。助手每轮只看到「词汇 + 工作方法 +
   标记 + 当前这个问题」，会话日志保持 append-only，标记节点用 `sourceEventSeqs` 记录遮蔽范围。
 - 检索层缓存在进程内按 artifact sha 共享：助手与主 agent 用同一份词汇表与反向引用图。
+
+## 验收
+
+机制面由 `smoke.ts` 覆盖（装配、收起、并发、超时、拒绝）；**回答得好不好**要真模型跑一次才知道，
+那份手工题目与逐条判据在 [`acceptance.md`](acceptance.md)。
