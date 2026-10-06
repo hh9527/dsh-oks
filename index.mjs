@@ -801,8 +801,6 @@ function renderReferences(_args, value) {
 		text: `${lines.join("\n")}\n`
 	}];
 }
-/** oks_vocabulary 的模型可见渲染：概况 + 一行一条。归属带方括号（与检索出口同一套写法），
-*  aliases 全给；没有 aliases 时才附 doc 行——那时它是唯一能区分这条词条的文本。 */
 
 //#endregion
 //#region src/single-flight.ts
