@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { singleFlight } from './single-flight.js';
-import { renderWholeVocabulary } from './retrieval.js';
+import { singleFlight } from './single-flight.ts';
+import { renderWholeVocabulary } from './retrieval.ts';
+import { errorText, isRecord } from './host.ts';
+import type { AgentLike, LogFn, PluginContext, RenderBlock, SessionLike, SessionMessage } from './host.ts';
+import type { PluginConfig } from './config.ts';
+import type { Knowledge } from './knowledge.ts';
 
 // ── 词汇助手（va）的工作台 ────────────────────────────────────────────────────
 // 准备阶段一步：**一条提示词**（`va/prompt.md`，词表插在它的占位符处）→ 它回"准备好了"。
@@ -32,17 +36,45 @@ const VA_PERSONA = '你是这个词表的词汇助手：提问者给一个说法
   + '你回答这份词表里有哪些等价或相近的表达、各差在哪一维。词表由你读进来，只读不改；'
   + '你不回答业务问题，也不碰文件。';
 
-/** 词汇助手自己的两条提示词。装配时由插件直接发出去——不经过人，也不经过主 agent。 */
-function readVaPrompt(name) {
+/** 助手的推理档位取值：模型适配器定义档位 id，插件只透传（'inherit' 表示跟着默认走）。 */
+type VaReasoningEffort = string | undefined;
+
+/** 一次咨询的结果：`va_ask` 渲染读到的值。 */
+export interface AskResult {
+  helper: string;
+  answer: string;
+  interrupted: boolean;
+}
+
+/** 一次在飞的助手装配。markerSeq 在装配落地时写入；取用前一定已经写过。 */
+interface VaHelper {
+  sessionId: string;
+  agent: AgentLike;
+  pending: number;
+  markerSeq: number;
+}
+
+/** 边界不明的失败（取消 / 超时 / 回合没结束）用的错误：带一个"助手可能不干净"的标记。 */
+interface VaDirtyError extends Error {
+  vaDirty?: boolean;
+}
+
+export interface VaRuntime {
+  ask(caller: AgentLike, key: string, query: string, signal?: AbortSignal): Promise<AskResult>;
+}
+
+/** 词汇助手自己的两条提示词。装配时由插件直接发出去——不经过人，也不经过主 agent。
+ *  产物的 va/ 与 index.mjs 同在包根，所以是 `./va/`。 */
+function readVaPrompt(name: string): string {
   try {
-    return readFileSync(new URL(`../va/${name}`, import.meta.url), 'utf8').trim();
+    return readFileSync(new URL(`./va/${name}`, import.meta.url), 'utf8').trim();
   } catch (cause) {
-    throw new Error(`dsh-oks: 读不到词汇助手的提示词 va/${name}：${cause?.message ?? cause}`);
+    throw new Error(`dsh-oks: 读不到词汇助手的提示词 va/${name}：${errorText(cause)}`);
   }
 }
 
 /** 收起之后替它们出面的标记节点。文本固定，所以它出现在哪一轮都不影响冻结前缀的缓存。 */
-const vaMarker = () => ({
+const vaMarker = (): SessionMessage => ({
   id: randomUUID(),
   role: 'user',
   content: [{ type: 'text', text: VA_MARKER_TEXT }],
@@ -50,8 +82,8 @@ const vaMarker = () => ({
 });
 
 /** `va_ask` 的模型可见渲染：把助手的回答原样交出。 */
-export function renderAsk(_args, value) {
-  const lines = [];
+export function renderAsk(_args: unknown, value: AskResult | null | undefined): RenderBlock[] {
+  const lines: string[] = [];
   if (typeof value?.answer === 'string' && value.answer.length > 0) lines.push(value.answer);
   else lines.push('（词汇助手这一轮没有给出文本回答。）');
   if (value?.interrupted === true) lines.push('', '注意：这一轮被中断过，上面的回答可能不完整。');
@@ -64,32 +96,38 @@ export function renderAsk(_args, value) {
 // **归档**状态（分组界面不列、模型步被归档门挡住），只在被咨询时 unarchive。
 export const VA_HELPER_PREFIX = 'session-va-';
 
-export function createVaRuntime({ ctx, log, config, knowledge }) {
+export function createVaRuntime({ ctx, log, config, knowledge }: {
+  ctx: PluginContext;
+  log: LogFn;
+  config: PluginConfig | undefined;
+  knowledge: Knowledge;
+}): VaRuntime {
   const vaPreset = typeof config?.vaPreset === 'string' && config.vaPreset.length > 0 ? config.vaPreset : 'oks';
-  const vaBudgetMs = Number.isFinite(config?.vaAskTimeoutMs) && config.vaAskTimeoutMs > 0
-    ? config.vaAskTimeoutMs
+  const askedBudget = config?.vaAskTimeoutMs;
+  const vaBudgetMs = typeof askedBudget === 'number' && Number.isFinite(askedBudget) && askedBudget > 0
+    ? askedBudget
     : 600000;
   // 助手的推理档位：**默认 'off'**（deepseek 这套的取值是 off / low / high / max，off 即关掉思考）。
   // 它的活儿是"从封闭集合里挑字符串、标注出处"——格式已经锁死，判断也只剩取舍；而实测一次咨询
   // 的时间 ≈ 输出 token × 3.9 ms，其中一半以上是看不见的思考。想跟着部署/模型默认走就写
   // `vaReasoningEffort: inherit`；想留一点思考就写 `low`。档位 id 由模型适配器定义，插件只透传。
-  const vaReasoningEffort = (() => {
+  const vaReasoningEffort: VaReasoningEffort = (() => {
     const asked = config?.vaReasoningEffort;
     if (typeof asked === 'string' && asked.trim() === 'inherit') return undefined;
     if (typeof asked === 'string' && asked.trim().length > 0) return asked.trim();
     return 'off';
   })();
-  const vaHelpers = new Map(); // 调用方 session id -> { sessionId, agent }
+  const vaHelpers = new Map<string, VaHelper>(); // 调用方 session id -> { sessionId, agent }
   // 模型可能在一个 step 里并行发两个 va_ask，所以三处都要合并：
   //  1) 装配按调用方 single flight——并发调用共享同一次在飞的装配，不会建出两个助手；
   //  2) 同一个说法的并发咨询也合并成一次，两边拿同一个回答；
   //  3) 不同说法才排队——一个助手会话一次只能答一个问题，混在一起会把 turn/end 认错。
-  const vaFlights = new Map(); // 调用方 session id -> 正在装配的 promise
-  const vaAskFlights = new Map(); // `${调用方}\0${说法}` -> 正在咨询的 promise
-  const vaHelperChain = new Map(); // 助手 session id -> 咨询队列的尾（已吞掉拒绝）
+  const vaFlights = new Map<string, Promise<VaHelper>>(); // 调用方 session id -> 正在装配的 promise
+  const vaAskFlights = new Map<string, Promise<AskResult>>(); // `${调用方}\0${说法}` -> 正在咨询的 promise
+  const vaHelperChain = new Map<string, Promise<void>>(); // 助手 session id -> 咨询队列的尾（已吞掉拒绝）
 
   /** 把一次咨询挂到某个键的队尾；前一条失败不影响后一条。 */
-  const vaSerialOn = (map, key, task) => {
+  const vaSerialOn = <T>(map: Map<string, Promise<void>>, key: string, task: () => Promise<T>): Promise<T> => {
     const previous = map.get(key) ?? Promise.resolve();
     const run = previous.then(task, task);
     const tail = run.then(() => {}, () => {});
@@ -100,7 +138,7 @@ export function createVaRuntime({ ctx, log, config, knowledge }) {
 
   /** 一次在飞的操作：后来者共享同一个 promise；落地后从表里撤掉。 */
   /** 插件自己写给助手的一条用户消息。 */
-  const vaMessage = (text) => ({
+  const vaMessage = (text: string): SessionMessage => ({
     id: randomUUID(),
     role: 'user',
     content: [{ type: 'text', text }],
@@ -109,15 +147,21 @@ export function createVaRuntime({ ctx, log, config, knowledge }) {
 
   /** 边界不明的失败（取消 / 超时 / 回合没结束）：助手可能停在一个还在飞的回合上，
    *  用这个标记把它记下来，调用处据此把它丢掉、下次重建——否则后续咨询会排在那个回合后面一直等。 */
-  const vaUnknownBoundary = (message) => {
-    const error = new Error(message);
+  const vaUnknownBoundary = (message: string): VaDirtyError => {
+    const error: VaDirtyError = new Error(message);
     error.vaDirty = true;
     return error;
   };
 
   /** 等**我们那条消息**真正落到助手的会话表面上，返回它的 seq。
    *  助手在忙时消息要排到下一个回合，所以不能拿"发之前"的位置当边界。 */
-  const vaWaitMessage = async (session, messageId, signal, budgetMs, what) => {
+  const vaWaitMessage = async (
+    session: SessionLike,
+    messageId: string,
+    signal: AbortSignal | undefined,
+    budgetMs: number,
+    what: string,
+  ): Promise<number> => {
     const deadline = Date.now() + budgetMs;
     for (;;) {
       if (signal?.aborted === true) throw vaUnknownBoundary('va_ask 被取消');
@@ -132,7 +176,13 @@ export function createVaRuntime({ ctx, log, config, knowledge }) {
   };
 
   /** 等 afterSeq 之后的第一个回合结束。不用 `whenIdle()`——刚 followup 时驱动还没起来，它会立刻返回。 */
-  const vaWaitTurnEndAfter = async (session, afterSeq, signal, budgetMs, what) => {
+  const vaWaitTurnEndAfter = async (
+    session: SessionLike,
+    afterSeq: number,
+    signal: AbortSignal | undefined,
+    budgetMs: number,
+    what: string,
+  ): Promise<{ kind?: string }> => {
     const deadline = Date.now() + budgetMs;
     for (;;) {
       if (signal?.aborted === true) throw vaUnknownBoundary('va_ask 被取消');
@@ -148,7 +198,7 @@ export function createVaRuntime({ ctx, log, config, knowledge }) {
   };
 
   /** 回合必须以 completed 收场——否则读词表读到一半、或回答是残的，都不能当成功。 */
-  const vaRequireCompleted = (reason, what) => {
+  const vaRequireCompleted = (reason: { kind?: string } | null | undefined, what: string): void => {
     if (reason?.kind !== undefined && reason.kind !== 'completed') {
       throw new Error(`dsh-oks: ${what}没有正常结束（${reason.kind}）。`);
     }
@@ -157,7 +207,13 @@ export function createVaRuntime({ ctx, log, config, knowledge }) {
   /** 发一条消息给助手并等它把那一轮跑完；返回我们这条消息落在哪个 seq。
    *  每发一条 `helper.pending += 1`，**观察到回合结束**才减回去——这是"没有未回应发送"的唯一依据：
    *  公开的 `agent.status` 在有投递排队时可能仍是 `idle`，拿它当依据会把还在等回答的问题收掉。 */
-  const vaSendAndWait = async (helper, message, signal, budgetMs, what) => {
+  const vaSendAndWait = async (
+    helper: VaHelper,
+    message: SessionMessage,
+    signal: AbortSignal | undefined,
+    budgetMs: number,
+    what: string,
+  ): Promise<{ sentSeq: number; reason: { kind?: string } }> => {
     const session = helper.agent.session;
     helper.pending += 1;
     helper.agent.followup(message);
@@ -168,7 +224,7 @@ export function createVaRuntime({ ctx, log, config, knowledge }) {
   };
 
   /** 从会话日志里取 sinceSeq 之后最后一条助手文本。 */
-  const vaAnswerSince = (session, sinceSeq) => {
+  const vaAnswerSince = (session: SessionLike, sinceSeq: number): { text: string; interrupted: boolean } => {
     const events = session.snapshotEvents();
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const event = events[index];
@@ -188,21 +244,27 @@ export function createVaRuntime({ ctx, log, config, knowledge }) {
 
   /** 把 upToSeq 之后的表面节点收进一个标记节点——这就是 rewind。
    *  有内容的系统消息留在原地（折叠只走连续的非系统节点段），别把宿主的提示词收掉。 */
-  const vaCollapse = (session, upToSeq) => {
+  const vaCollapse = (session: SessionLike, upToSeq: number): {
+    shadowed: number;
+    runs: number;
+    startSeq: number;
+    endSeq: number;
+    markerSeq: number;
+  } | null => {
     const nodes = session.surface?.nodes ?? [];
     const start = nodes.findIndex((seq) => seq > upToSeq);
     if (start === -1) return null;
     const after = nodes.slice(start);
     if (after.some((seq) => seq <= upToSeq)) return null;
-    const isLiveSystem = (seq) => {
+    const isLiveSystem = (seq: number): boolean => {
       const event = typeof session.eventAt === 'function' ? session.eventAt(seq) : undefined;
       if (event?.type !== 'system/message') return false;
       const content = event.data?.message?.content;
       return Array.isArray(content)
         && content.some((block) => block?.type === 'text' && String(block.text ?? '').length > 0);
     };
-    const runs = [];
-    let run = [];
+    const runs: number[][] = [];
+    let run: number[] = [];
     for (const seq of after) {
       if (isLiveSystem(seq)) {
         if (run.length > 0) runs.push(run);
@@ -232,7 +294,7 @@ export function createVaRuntime({ ctx, log, config, knowledge }) {
 
   /** 助手手里没有未回应的发送（`pending === 0`）、也没有在飞的回合时，收起一次；
    *  条件不满足就等下一次（提问之前还会再试一次）。 */
-  const vaTryRewind = (helper) => {
+  const vaTryRewind = (helper: VaHelper): boolean => {
     try {
       if (helper?.pending !== 0) {
         // 只有 vaSendAndWait 会发消息、也只会在这里减回去；这个日志让计数漂移可见（漂移会静默停掉收起）。
@@ -248,38 +310,39 @@ export function createVaRuntime({ ctx, log, config, knowledge }) {
       }
       return true;
     } catch (cause) {
-      log('[oks] rewind failed: ' + String(cause?.message ?? cause));
+      log('[oks] rewind failed: ' + errorText(cause));
       return false;
     }
   };
 
-  const vaArchive = async (sessionId) => {
+  const vaArchive = async (sessionId: string): Promise<void> => {
     const registry = ctx.get('workspaceRegistry');
     if (typeof registry?.archiveSession !== 'function') return;
     try {
       await registry.archiveSession(sessionId, { stopActivity: true });
     } catch (cause) {
-      log('[oks] cannot archive the vocabulary helper: ' + String(cause?.message ?? cause));
+      log('[oks] cannot archive the vocabulary helper: ' + errorText(cause));
     }
   };
 
-  const vaUnarchive = async (sessionId) => {
+  const vaUnarchive = async (sessionId: string): Promise<void> => {
     const registry = ctx.get('workspaceRegistry');
     if (typeof registry?.unarchiveSession !== 'function') return;
     try {
       await registry.unarchiveSession(sessionId);
     } catch (cause) {
-      log('[oks] cannot unarchive the vocabulary helper: ' + String(cause?.message ?? cause));
+      log('[oks] cannot unarchive the vocabulary helper: ' + errorText(cause));
     }
   };
 
   /** 调用方的助手：没有就建一个顶层 agent，装配好（读词表 → 收方法 → 落边界）。
    *  并发调用共享这一次装配（single flight），不会各建一个。 */
-  const vaEnsureHelper = (caller, key, signal) => singleFlight(vaFlights, key, async () => {
+  const vaEnsureHelper = (caller: AgentLike, key: string, signal: AbortSignal | undefined): Promise<VaHelper> =>
+    singleFlight(vaFlights, key, async () => {
     const existing = vaHelpers.get(key);
     if (existing !== undefined) return existing;
     const agents = ctx.get('agents');
-    if (typeof agents?.create !== 'function') {
+    if (agents === undefined || typeof agents.create !== 'function') {
       throw new Error('dsh-oks: 这个组合里没有 agent 注册表（ctx.agents），va_ask 起不了词汇助手。');
     }
     const sessionId = `${VA_HELPER_PREFIX}${randomUUID()}`;
@@ -306,12 +369,12 @@ export function createVaRuntime({ ctx, log, config, knowledge }) {
       },
       setup(agentCtx, agent) {
         const service = agentCtx.get?.('agentPresets');
-        if (typeof service?.composeFrom !== 'function') {
+        if (service === undefined || typeof service.composeFrom !== 'function') {
           throw new Error('dsh-oks: 这个组合里没有 agentPresets 服务，没法把 preset 拼进词汇助手，它会是个空 agent。');
         }
         service.composeFrom(agentCtx, caller.ctx);
         const prompt = agentCtx.systemPrompt;
-        if (typeof prompt?.section !== 'function') {
+        if (!prompt || typeof prompt.section !== 'function') {
           throw new Error('dsh-oks: 这个组合里没有 systemPrompt 服务，换不上词汇助手自己的人设。');
         }
         prompt.section({
@@ -334,7 +397,9 @@ export function createVaRuntime({ ctx, log, config, knowledge }) {
       },
       signal,
     });
-    const helper = { sessionId, agent: handle.agent, pending: 0 };
+    // 装配顺序与原来一致：先登记 pending 占位，落地后再写 markerSeq；这里断言形状，
+    // 让取用方不必到处判 undefined（markerSeq 只在设置之后才被读）。
+    const helper = { sessionId, agent: handle.agent, pending: 0 } as VaHelper;
     vaHelpers.set(key, helper);
     const session = helper.agent.session;
     // 给助手会话写一个**日志级**标题（`session/title` 只进日志，不进模型表面）：归档列表里一眼
@@ -370,14 +435,14 @@ export function createVaRuntime({ ctx, log, config, knowledge }) {
     } catch (cause) {
       vaHelpers.delete(key);
       void vaArchive(sessionId);
-      throw new Error(`dsh-oks: 词汇助手没有装配起来：${cause?.message ?? cause}`);
+      throw new Error(`dsh-oks: 词汇助手没有装配起来：${errorText(cause)}`);
     }
     log(`[oks] vocabulary helper ready · ${sessionId} · 标记 seq ${helper.markerSeq}`);
     return helper;
   });
 
   /** 一次咨询：归档状态先恢复 → 把说法交给它 → 等它静止 → 取它这一轮的回答。 */
-  const vaConsult = async (helper, query, signal) => {
+  const vaConsult = async (helper: VaHelper, query: string, signal: AbortSignal | undefined): Promise<AskResult> => {
     await vaUnarchive(helper.sessionId);
     vaTryRewind(helper); // 上一次没来得及收的，提问之前补上
     const session = helper.agent.session;
@@ -397,7 +462,12 @@ export function createVaRuntime({ ctx, log, config, knowledge }) {
     for (const helper of vaHelpers.values()) void vaArchive(helper.sessionId);
   });
 
-  const ask = async (caller, key, query, signal) => {
+  const ask = async (
+    caller: AgentLike,
+    key: string,
+    query: string,
+    signal: AbortSignal | undefined,
+  ): Promise<AskResult> => {
     const helper = await vaEnsureHelper(caller, key, signal);
     try {
       return await singleFlight(vaAskFlights, `${key}\u0000${query}`, () =>
@@ -407,10 +477,10 @@ export function createVaRuntime({ ctx, log, config, knowledge }) {
           return result;
         }));
     } catch (error) {
-      if (error?.vaDirty === true) {
+      if (isRecord(error) && error.vaDirty === true) {
         vaHelpers.delete(key);
         void vaArchive(helper.sessionId);
-        log('[oks] vocabulary helper dropped (boundary unknown): ' + String(error?.message ?? error));
+        log('[oks] vocabulary helper dropped (boundary unknown): ' + errorText(error));
       }
       throw error;
     }

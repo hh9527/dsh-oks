@@ -1,30 +1,119 @@
-import { applyOps, encode, parseMoment, resolveZone } from './time.js';
-import { capLine } from './text.js';
-import { OBJECT_OUTPUT, renderCheck, renderJson, renderQuery, renderValue, withoutQueries } from './response.js';
-import { REFERENCE_KINDS, referencesOf, renderReferences, renderSearch, searchIndex } from './retrieval.js';
-import { renderAsk, VA_HELPER_PREFIX } from './va.js';
+import { applyOps, encode, parseMoment, resolveZone } from './time.ts';
+import type { ContextTimeZone, TimeState } from './time.ts';
+import { capLine } from './text.ts';
+import { OBJECT_OUTPUT, renderCheck, renderJson, renderQuery, renderValue, withoutQueries } from './response.ts';
+import type { Row } from './response.ts';
+import { REFERENCE_KINDS, referencesOf, renderReferences, renderSearch, searchIndex } from './retrieval.ts';
+import type { ReferencesArgs, SearchArgs } from './retrieval.ts';
+import { renderAsk, VA_HELPER_PREFIX } from './va.ts';
+import type { VaRuntime } from './va.ts';
+import type { Knowledge, WorkspaceEntry } from './knowledge.ts';
+import type { TimeContext } from './time-context.ts';
+import type { PluginConfig } from './config.ts';
+import { isArray } from './host.ts';
+import { errorText } from './host.ts';
+import type { DiagnosticEntry, LogFn, ServiceResponse, ToolDefinition, ToolExec, TraceStep } from './host.ts';
 
-export function createTools({ knowledge, va, timeContext, log, config }) {
+/** oks_info 的入参。 */
+interface InfoArgs {
+  key?: unknown;
+}
+
+/** oks_check_intent / oks_query 的入参。 */
+interface IntentArgs {
+  intents?: unknown[];
+}
+
+/** 两个时间工具的入参。 */
+interface TimeArgs {
+  timeZone?: string;
+  base?: unknown;
+  operations?: unknown;
+}
+
+/** va_ask 的入参。 */
+interface AskArgs {
+  query?: string;
+}
+
+/** 一批 Intent 的服务响应，加上它映射回原批次的下标。 */
+interface Batch {
+  response: ServiceResponse;
+  intents: unknown[];
+  indexes: number[];
+}
+
+interface Subset {
+  indexes: number[];
+  accepted: boolean;
+}
+
+interface LoweredBatch {
+  method: string;
+  trace: TraceStep[];
+  response: ServiceResponse;
+  diagnostics: DiagnosticEntry[];
+  batch: Batch | null;
+  subset: Subset | null;
+}
+
+/** oks_query 的一条结果：SQL/bindings 与取回的行（失败时 rows 为 null，error 有文本）。 */
+interface QueryAnswerResult {
+  index: number;
+  sql: string;
+  bindings: unknown[];
+  rows: Row[] | null;
+  truncated: boolean;
+  error: string | null;
+  ms: number;
+}
+
+/** oks_query 的返回值（渲染层读它的一个视图）。 */
+interface QueryAnswer {
+  trace: TraceStep[];
+  intents: unknown[];
+  accepted: boolean;
+  diagnostics: DiagnosticEntry[];
+  results: QueryAnswerResult[];
+  dataFile: string | null;
+  window: { start: string; endExclusive: string } | null;
+  queryMaxRows: number;
+}
+
+export function createTools({ knowledge, va, timeContext, log, config }: {
+  knowledge: Knowledge;
+  va: VaRuntime;
+  timeContext: TimeContext;
+  log: LogFn;
+  config: PluginConfig | undefined;
+}): ToolDefinition[] {
   /** 降一批 Intent。服务只在整批通过时才回 queries，所以被拒批次里没有报 Error 的子集
    *  会再提交一次——这样"5 个里坏了 1 个"仍能拿到其余 4 个的执行物。 */
-  const lowerBatch = async (entry, intents, signal) => {
+  const lowerBatch = async (
+    entry: WorkspaceEntry,
+    intents: unknown[],
+    signal: AbortSignal | undefined,
+  ): Promise<LoweredBatch> => {
     const method = `${entry.settings.domain}/transform`;
-    const trace = [];
-    const response = await entry.runner.send(method, { intents }, signal);
+    const trace: TraceStep[] = [];
+    // ensureWorkspace 返回前一定装配好宿主；这里按这个约定断言。
+    const runner = entry.runner!;
+    const response = await runner.send(method, { intents }, signal);
     trace.push({ method, request: { intents }, response });
-    const diagnostics = Array.isArray(response?.ok?.diagnostics) ? response.ok.diagnostics : [];
+    const rawDiagnostics = response?.ok?.diagnostics;
+    const diagnostics: DiagnosticEntry[] = Array.isArray(rawDiagnostics) ? rawDiagnostics : [];
     const errors = new Set(diagnostics
       .filter((item) => item?.diagnostic?.severity === 'Error')
       .map((item) => item.index));
-    let batch = null;
-    let subset = null;
+    let batch: Batch | null = null;
+    let subset: Subset | null = null;
     if (response?.ok?.accepted === true && Array.isArray(response?.ok?.queries)) {
       batch = { response, intents, indexes: intents.map((_intent, index) => index) };
     } else if (entry.settings.retryAcceptedSubset !== false) {
       const indexes = intents.map((_intent, index) => index).filter((index) => !errors.has(index));
       if (indexes.length > 0 && indexes.length < intents.length) {
         const subsetIntents = indexes.map((index) => intents[index]);
-        const retry = await entry.runner.send(method, { intents: subsetIntents }, signal);
+        const retry = await runner.send(method, { intents: subsetIntents }, signal);
         trace.push({ method, request: { intents: subsetIntents }, response: retry, note: '仅未报 Error 的子集，再降一次' });
         const passed = retry?.ok?.accepted === true && Array.isArray(retry?.ok?.queries);
         subset = { indexes, accepted: passed };
@@ -34,7 +123,11 @@ export function createTools({ knowledge, va, timeContext, log, config }) {
     return { method, trace, response, diagnostics, batch, subset };
   };
 
-  const arityError = (method, intents, toolName) => ({
+  const arityError = (method: string, intents: unknown[], toolName: string): {
+    trace: TraceStep[];
+    intents: unknown[];
+    diagnostics: DiagnosticEntry[];
+  } => ({
     trace: [{
       method,
       request: { intents },
@@ -44,11 +137,17 @@ export function createTools({ knowledge, va, timeContext, log, config }) {
     diagnostics: [{ index: 0, diagnostic: { severity: 'Error', message: `${toolName} requires one to five independent Intents` } }],
   });
 
+  /** 上下文时区：会话不在（或没记过）时按缺失处理，与原写法 `zones.get(exec?.agent?.session)` 一致。 */
+  const contextZone = (exec: ToolExec | undefined): ContextTimeZone | undefined => {
+    const session = exec?.agent?.session;
+    return session === undefined ? undefined : timeContext.zones.get(session);
+  };
+
   // 工具描述在注册时写死，此时还不知道任何工作区，所以文本里不出现领域名。
   // 设计约束：**这里也不写任何"地图长什么样"的假设**。工具描述只说协议（怎么打交道）
   // 与呈现（收到什么就原样给什么）；具体有哪些种类、入口、字段、格式、路由、分页，
   // 一律由服务自己的声明回答——模型换了形状，这里一行都不用改。
-  const definitions = [
+  const definitions: ToolDefinition[] = [
     {
       name: 'oks_info',
       description: 'Read one knowledge node of this workspace\'s knowledge service by its opaque string key. Start with key "index" — the one key you may supply from memory; it tells you where to go next. From there, follow the keys the service returns, whatever shape it declares, and copy each key verbatim: never construct, split or decode one. Use only the canonical IDs the service declares when writing Intents; display names and physical column names are not substitutes.',
@@ -64,7 +163,7 @@ export function createTools({ knowledge, va, timeContext, log, config }) {
         additionalProperties: false,
       },
       output: { schema: OBJECT_OUTPUT, render: renderJson },
-      async execute(args, exec) {
+      async execute(args: InfoArgs, exec: ToolExec) {
         const entry = knowledge.ensureWorkspace(exec);
         const method = `${entry.settings.domain}/info`;
         const request = args?.key !== undefined && args?.key !== null ? { key: args.key } : null;
@@ -77,7 +176,8 @@ export function createTools({ knowledge, va, timeContext, log, config }) {
             }],
           };
         }
-        const response = await entry.runner.send(method, request, exec?.signal);
+        const runner = entry.runner!;
+        const response = await runner.send(method, request, exec?.signal);
         return { trace: [{ method, request, response }] };
       },
     },
@@ -98,7 +198,7 @@ export function createTools({ knowledge, va, timeContext, log, config }) {
         additionalProperties: false,
       },
       output: { schema: OBJECT_OUTPUT, render: renderSearch },
-      async execute(args, exec) {
+      async execute(args: SearchArgs, exec: ToolExec) {
         const entry = knowledge.ensureWorkspace(exec);
         const index = await knowledge.ensureIndex(entry);
         const result = searchIndex(index, args);
@@ -126,7 +226,7 @@ export function createTools({ knowledge, va, timeContext, log, config }) {
         additionalProperties: false,
       },
       output: { schema: OBJECT_OUTPUT, render: renderReferences },
-      async execute(args, exec) {
+      async execute(args: ReferencesArgs, exec: ToolExec) {
         const entry = knowledge.ensureWorkspace(exec);
         const index = await knowledge.ensureIndex(entry);
         const result = referencesOf(index, args);
@@ -151,19 +251,20 @@ export function createTools({ knowledge, va, timeContext, log, config }) {
         additionalProperties: false,
       },
       output: { schema: OBJECT_OUTPUT, render: renderCheck },
-      async execute(args, exec) {
+      async execute(args: IntentArgs, exec: ToolExec) {
         const entry = knowledge.ensureWorkspace(exec);
         const intents = Array.isArray(args?.intents) ? args.intents : [];
         const method = `${entry.settings.domain}/transform`;
         if (intents.length < 1 || intents.length > 5) return arityError(method, intents, 'oks_check_intent');
         const { trace, response, diagnostics, batch, subset } = await lowerBatch(entry, intents, exec?.signal);
+        const queries = batch?.response?.ok?.queries;
         return {
           trace: trace.map((step) => ({ ...step, response: withoutQueries(step.response) })),
           intents,
           accepted: response?.ok?.accepted === true,
           diagnostics,
           subset,
-          queryCount: Array.isArray(batch?.response?.ok?.queries) ? batch.response.ok.queries.length : 0,
+          queryCount: Array.isArray(queries) ? queries.length : 0,
         };
       },
     },
@@ -183,7 +284,7 @@ export function createTools({ knowledge, va, timeContext, log, config }) {
         additionalProperties: false,
       },
       output: { schema: OBJECT_OUTPUT, render: renderQuery },
-      async execute(args, exec) {
+      async execute(args: IntentArgs, exec: ToolExec) {
         const entry = knowledge.ensureWorkspace(exec);
         const intents = Array.isArray(args?.intents) ? args.intents : [];
         const method = `${entry.settings.domain}/transform`;
@@ -191,7 +292,7 @@ export function createTools({ knowledge, va, timeContext, log, config }) {
           return { ...arityError(method, intents, 'oks_query'), results: [], dataFile: entry.settings.dataFile ?? null };
         }
         const { trace, response, diagnostics, batch } = await lowerBatch(entry, intents, exec?.signal);
-        const answers = {
+        const answers: QueryAnswer = {
           trace,
           intents,
           accepted: response?.ok?.accepted === true,
@@ -210,7 +311,7 @@ export function createTools({ knowledge, va, timeContext, log, config }) {
           const query = queries[at];
           const index = batch.indexes[at] ?? at;
           const sql = String(query?.sql ?? '');
-          const bindings = Array.isArray(query?.bindings) ? query.bindings : [];
+          const bindings: unknown[] = isArray(query?.bindings) ? query.bindings : [];
           const started = Date.now();
           try {
             const outcome = await executor.send(sql, bindings, exec?.signal);
@@ -224,7 +325,7 @@ export function createTools({ knowledge, va, timeContext, log, config }) {
               + ` · bindings=${capLine(JSON.stringify(bindings), 200)}`);
           } catch (cause) {
             const ms = Date.now() - started;
-            const message = String(cause?.message ?? cause);
+            const message = errorText(cause);
             answers.results.push({ index, sql, bindings, rows: null, truncated: false, error: message, ms });
             log(`[oks] query intent#${index + 1} failed after ${ms} ms: ${message}`);
           }
@@ -246,8 +347,8 @@ export function createTools({ knowledge, va, timeContext, log, config }) {
         additionalProperties: false,
       },
       output: { schema: OBJECT_OUTPUT, render: renderValue },
-      async execute(args, exec) {
-        const { zone, source } = resolveZone(args?.timeZone, timeContext.zones.get(exec?.agent?.session));
+      async execute(args: TimeArgs, exec: ToolExec) {
+        const { zone, source } = resolveZone(args?.timeZone, contextZone(exec));
         return { timeZone: zone, timeZoneSource: source, ...encode(Date.now(), zone) };
       },
     },
@@ -274,10 +375,11 @@ export function createTools({ knowledge, va, timeContext, log, config }) {
         additionalProperties: false,
       },
       output: { schema: OBJECT_OUTPUT, render: renderValue },
-      async execute(args, exec) {
-        const { zone, source } = resolveZone(args?.timeZone, timeContext.zones.get(exec?.agent?.session));
+      async execute(args: TimeArgs, exec: ToolExec) {
+        const { zone, source } = resolveZone(args?.timeZone, contextZone(exec));
         const base = parseMoment(args?.base, zone);
-        const result = applyOps({ epochMillis: base, zone }, args?.operations);
+        const state: TimeState = { epochMillis: base, zone };
+        const result = applyOps(state, args?.operations);
         return {
           timeZone: result.zone,
           timeZoneSource: source,
@@ -302,15 +404,15 @@ export function createTools({ knowledge, va, timeContext, log, config }) {
         additionalProperties: false,
       },
       output: { schema: OBJECT_OUTPUT, render: renderAsk },
-      async execute(args, exec) {
+      async execute(args: AskArgs, exec: ToolExec) {
         const query = typeof args?.query === 'string' ? args.query.trim() : '';
         if (query.length === 0) throw new Error('dsh-oks: va_ask 需要一个说法（query）。');
         const caller = exec?.agent;
-        if (typeof caller?.session?.id === 'string' && caller.session.id.startsWith(VA_HELPER_PREFIX)) {
+        const key = caller?.session?.id;
+        if (typeof key === 'string' && key.startsWith(VA_HELPER_PREFIX)) {
           throw new Error('dsh-oks: 词汇助手不咨询自己。');
         }
-        const key = caller?.session?.id;
-        if (typeof key !== 'string' || key.length === 0) {
+        if (caller === undefined || typeof key !== 'string' || key.length === 0) {
           throw new Error('dsh-oks: 无法确定调用方会话，va_ask 需要它来记住词汇助手。');
         }
         return va.ask(caller, key, query, exec?.signal);

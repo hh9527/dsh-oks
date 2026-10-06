@@ -1,4 +1,8 @@
-import { capLine, normalize, oneLineText, tokenize, uniqueText } from './text.js';
+import { capLine, normalize, oneLineText, tokenize, uniqueText } from './text.ts';
+import { isArray, isRecord, isKnowledgeNode } from './host.ts';
+import type { KnowledgeNode, LogFn, NodeDescription, NodeDetail, RenderBlock } from './host.ts';
+import type { Settings } from './config.ts';
+import type { Runner } from './runners.ts';
 
 // ── 检索层 ───────────────────────────────────────────────────────────────────
 // 派生规则来自服务自己声明的**发现契约**：`<domain>/discovery` 返回 `revision`、入口
@@ -17,14 +21,105 @@ const VOCABULARY_DOC_CHARS = 200;
 const FACET_DATASET_CHARS = 300;
 export const REFERENCE_KINDS = ['Member', 'Traversable', 'Related'];
 
+/** 一条词条：检索与词汇表出口共用的最小面。 */
+export interface Term {
+  key: string;
+  kind: string;
+  name: string;
+  doc: string;
+  aliases: string[];
+  owner: string | null;
+  ownerValue: unknown;
+}
+
+/** 发现契约里的一条 vocabulary 声明。 */
+export interface VocabularyItem {
+  kind: string;
+  owner?: string | null;
+  require?: string | null;
+}
+
+/** 发现契约里的一条 key 模式声明。 */
+export interface KeyPattern {
+  kind: string;
+  pattern?: unknown;
+}
+
+/** 反向引用索引里的一条引用边。 */
+export interface ReferenceEdge {
+  source: string;
+  target: string;
+  link: string;
+}
+
+/** 指向某个 key 的一条入边。 */
+export interface IncomingReference {
+  link: string;
+  source: string;
+}
+
+/** 内存里的检索层：词汇表 + 反向引用索引 + 已知 key 集合。 */
+export interface RetrievalIndex {
+  revision: string;
+  terms: Term[];
+  keys: Set<string>;
+  vocabKinds: string[];
+  patterns: Map<string, unknown>;
+  links: ReferenceEdge[];
+  linksByTarget: Map<string, IncomingReference[]>;
+  facets: { kinds: string; datasets: string };
+}
+
+/** 派生检索层需要的两处：设置（domain）与 wasm 宿主。 */
+export interface IndexWorkspace {
+  settings: Settings;
+  runner: Runner | null;
+}
+
+export interface SearchArgs {
+  query?: string;
+  kind?: string;
+  dataset?: string;
+  skip?: number;
+}
+
+export interface ReferencesArgs {
+  key?: string;
+  link?: string;
+  kind?: string;
+  skip?: number;
+}
+
+export interface SearchResult {
+  start: number;
+  total: number;
+  more: number | null;
+  matched: Array<Record<string, unknown>>;
+  facets: { kinds: string; datasets: string };
+}
+
+export interface ReferencesResult {
+  key: string;
+  start: number;
+  total: number;
+  more: number | null;
+  references: IncomingReference[];
+}
+
+interface Match {
+  term: Term;
+  field: string;
+  score: number;
+}
+
 /** 一个节点 → 一条词条。成员资格、归属与文本一律来自发现契约与节点自己的声明：
  *  `declaration` 是已确认包含该 kind 的那条 vocabulary 项。文本只取自节点自己声明的
  *  描述（summary/label/aliases、localized、terms）。 */
-function deriveTerm(node, declaration) {
+function deriveTerm(node: KnowledgeNode, declaration: VocabularyItem): Term {
   const parts = node.key.split('/').map((part) => decodeURIComponent(part));
   const name = parts[parts.length - 1];
-  const detail = node.detail ?? {};
-  const description = node.description ?? {};
+  const detail: NodeDetail = node.detail ?? {};
+  const description: NodeDescription = node.description ?? {};
   const localized = [...(description.localized ?? []), ...(detail.localized ?? [])];
   const terms = description.terms ?? [];
   const aliases = uniqueText([
@@ -43,7 +138,7 @@ function deriveTerm(node, declaration) {
     aliasDoc,
   ]).join('\n');
   // `key` 只为确定顺序（词汇表出口按它排序）；检索出口不回 key，由 agent 按声明模式自己拼。
-  const entry = { key: node.key, kind: declaration.kind, name, doc, aliases, owner: null, ownerValue: null };
+  const entry: Term = { key: node.key, kind: declaration.kind, name, doc, aliases, owner: null, ownerValue: null };
   // 归属：声明了 owner 就取同名 detail 字段，输出行里也用这个字段名。
   if (typeof declaration.owner === 'string' && detail[declaration.owner] != null) {
     entry.owner = declaration.owner;
@@ -54,11 +149,15 @@ function deriveTerm(node, declaration) {
 
 /** 派生：词条 + 反向引用索引 + 已知 key 集合。断言保留自发现契约，走样时直接报错。
  *  这里只留下检索需要的东西；节点本身不保留——读节点始终由 oks_info 透传给服务。 */
-function deriveIndex(nodes, contract) {
-  const byKey = new Map(nodes.map((node) => [node.key, node]));
-  const byKind = new Map(contract.vocabulary.map((item) => [item.kind, item]));
-  const terms = [];
-  const edges = new Map();
+function deriveIndex(nodes: KnowledgeNode[], contract: {
+  revision: string;
+  vocabulary: VocabularyItem[];
+  keyPatterns: KeyPattern[];
+}): RetrievalIndex {
+  const byKey = new Map<string, KnowledgeNode>(nodes.map((node) => [node.key, node]));
+  const byKind = new Map<string, VocabularyItem>(contract.vocabulary.map((item) => [item.kind, item]));
+  const terms: Term[] = [];
+  const edges = new Map<string, ReferenceEdge>();
   for (const node of [...nodes].sort((left, right) => left.key.localeCompare(right.key, 'en'))) {
     for (const link of node.links) {
       if (!byKey.has(link.key)) throw new Error(`dsh-oks: 知识引用无法解析 ${node.key} → ${link.key}`);
@@ -68,16 +167,18 @@ function deriveIndex(nodes, contract) {
     }
     const declaration = byKind.get(node.key.split('/')[0]);
     if (declaration === undefined) continue; // 不在词汇表里的 kind：有 key 模式也不是词条
-    if (declaration.require != null && (node.detail ?? {})[declaration.require] == null) continue;
+    const required = declaration.require;
+    if (required != null && (node.detail ?? {})[required] == null) continue;
     terms.push(deriveTerm(node, declaration));
   }
-  const linksByTarget = new Map();
+  const linksByTarget = new Map<string, IncomingReference[]>();
   for (const edge of edges.values()) {
-    if (!linksByTarget.has(edge.target)) linksByTarget.set(edge.target, []);
-    linksByTarget.get(edge.target).push({ link: edge.link, source: edge.source });
+    const incoming = linksByTarget.get(edge.target);
+    if (incoming === undefined) linksByTarget.set(edge.target, [{ link: edge.link, source: edge.source }]);
+    else incoming.push({ link: edge.link, source: edge.source });
   }
   const kindCounts = contract.vocabulary
-    .map((item) => [item.kind, terms.filter((term) => term.kind === item.kind).length])
+    .map((item): [string, number] => [item.kind, terms.filter((term) => term.kind === item.kind).length])
     .filter(([, count]) => count > 0);
   const datasets = [...new Set(terms
     .filter((term) => term.owner === 'dataset')
@@ -87,7 +188,7 @@ function deriveIndex(nodes, contract) {
     terms,
     keys: new Set(byKey.keys()),
     vocabKinds: contract.vocabulary.map((item) => item.kind),
-    patterns: new Map(contract.keyPatterns.map((item) => [item.kind, item.pattern])),
+    patterns: new Map(contract.keyPatterns.map((item): [string, unknown] => [item.kind, item.pattern])),
     links: [...edges.values()],
     linksByTarget,
     facets: {
@@ -98,7 +199,7 @@ function deriveIndex(nodes, contract) {
 }
 
 /** 请求了不在词汇表里的 kind 时，把"可发现性"讲清楚：词汇表收录哪些、哪些只是有 key 模式。 */
-function kindError(index, kind, where) {
+function kindError(index: RetrievalIndex, kind: string, where: string): Error {
   const available = index.vocabKinds.join(' / ');
   const pattern = index.patterns.get(kind);
   if (pattern === undefined) {
@@ -111,10 +212,12 @@ function kindError(index, kind, where) {
 }
 
 /** 按发现契约爬完整个图并派生。首次检索时同步执行（同步阻塞，便于先跑通）。 */
-export async function buildRetrievalIndex(entry, sha, log) {
+export async function buildRetrievalIndex(entry: IndexWorkspace, sha: string, log: LogFn): Promise<RetrievalIndex> {
   const started = Date.now();
   const { domain } = entry.settings;
-  const discovery = await entry.runner.send(`${domain}/discovery`, {});
+  // ensureWorkspace 返回前一定装配好宿主；这里按这个约定断言。
+  const runner = entry.runner!;
+  const discovery = await runner.send(`${domain}/discovery`, {});
   if (discovery?.error === true) {
     throw new Error(`dsh-oks: ${domain}/discovery 失败：`
       + `${discovery?.diagnostics?.[0]?.message ?? '未知错误'}；检索需要这条路由。`);
@@ -124,41 +227,50 @@ export async function buildRetrievalIndex(entry, sha, log) {
     throw new Error(`dsh-oks: ${domain}/discovery 没有返回发现契约`
       + '（ok 需要 {revision, roots, key_patterns, vocabulary}）。');
   }
-  if (!Array.isArray(ok.roots)) {
+  const rawRoots = ok.roots;
+  if (!isArray(rawRoots)) {
     throw new Error(`dsh-oks: ${domain}/discovery 没有声明入口 roots（发现契约的 roots 是入口 key 的数组）`);
   }
-  if (!Array.isArray(ok.vocabulary)) {
+  const rawVocabulary = ok.vocabulary;
+  if (!isArray(rawVocabulary)) {
     throw new Error(`dsh-oks: ${domain}/discovery 没有声明 vocabulary`
       + '（发现契约用 vocabulary 声明哪些 kind 进词汇表，以及每类词条的 owner 与 require）');
   }
-  if (typeof ok.revision !== 'string' || ok.revision === '') {
+  const revision = ok.revision;
+  if (typeof revision !== 'string' || revision === '') {
     throw new Error(`dsh-oks: ${domain}/discovery 没有声明 revision`);
   }
-  for (const item of ok.vocabulary) {
-    if (item === null || typeof item !== 'object' || Array.isArray(item)
-      || typeof item.kind !== 'string' || item.kind === '') {
+  const vocabulary: VocabularyItem[] = [];
+  for (const item of rawVocabulary) {
+    if (!isRecord(item) || typeof item.kind !== 'string' || item.kind === '') {
       throw new Error(`dsh-oks: ${domain}/discovery 的 vocabulary 里有不合法的条目`
         + '（每条需要 kind，可带 owner / require）');
     }
-    for (const field of ['owner', 'require']) {
+    for (const field of ['owner', 'require'] as const) {
       const value = item[field];
       if (value !== undefined && value !== null && (typeof value !== 'string' || value === '')) {
         throw new Error(`dsh-oks: ${domain}/discovery 的 vocabulary 里 ${item.kind} 的 ${field} 不是字段名`);
       }
     }
+    vocabulary.push({
+      kind: item.kind,
+      owner: typeof item.owner === 'string' ? item.owner : null,
+      require: typeof item.require === 'string' ? item.require : null,
+    });
   }
-  const keyPatterns = Array.isArray(ok.key_patterns)
-    ? ok.key_patterns.filter((item) => item !== null && typeof item === 'object' && typeof item.kind === 'string')
+  const keyPatterns = isArray(ok.key_patterns)
+    ? ok.key_patterns.filter((item): item is KeyPattern => isRecord(item) && typeof item.kind === 'string')
     : [];
-  const roots = ok.roots;
+  const roots = rawRoots;
   if (roots.length === 0) throw new Error(`dsh-oks: ${domain}/discovery 没有返回任何入口 key`);
-  const pending = [...new Set(['index', ...roots])];
-  const seen = new Set(pending);
-  const nodes = [];
+  const pending = [...new Set<unknown>(['index', ...roots])];
+  const seen = new Set<unknown>(pending);
+  const nodes: KnowledgeNode[] = [];
   for (const key of pending) {
-    const response = await entry.runner.send(`${domain}/info`, { key });
-    const node = response?.ok?.Document?.Found;
-    if (node?.key !== key || !Array.isArray(node.links)) {
+    const response = await runner.send(`${domain}/info`, { key });
+    const document = response?.ok?.Document;
+    const node = document === null || typeof document !== 'object' ? undefined : document.Found;
+    if (!isKnowledgeNode(node) || node.key !== key) {
       throw new Error(`dsh-oks: 无法解析知识 key ${key}（发现契约要求每个入口都能取到节点）`);
     }
     nodes.push(node);
@@ -168,8 +280,9 @@ export async function buildRetrievalIndex(entry, sha, log) {
         pending.push(link.key);
       }
     }
-    if (node.type === 'Index' && Array.isArray(node.detail?.schemas)) {
-      for (const schema of node.detail.schemas) {
+    const schemas = node.detail?.schemas;
+    if (node.type === 'Index' && isArray(schemas)) {
+      for (const schema of schemas) {
         if (typeof schema === 'string' && !seen.has(schema)) {
           seen.add(schema);
           pending.push(schema);
@@ -177,7 +290,7 @@ export async function buildRetrievalIndex(entry, sha, log) {
       }
     }
   }
-  const index = deriveIndex(nodes, { revision: ok.revision, vocabulary: ok.vocabulary, keyPatterns });
+  const index = deriveIndex(nodes, { revision, vocabulary, keyPatterns });
   log(`[oks] discovery index · ${index.revision} · ${sha.slice(0, 12)} · `
     + `${nodes.length} 节点 · ${index.terms.length} 词条 · ${index.links.length} 引用 · ${Date.now() - started} ms`);
   return index;
@@ -185,25 +298,25 @@ export async function buildRetrievalIndex(entry, sha, log) {
 
 /** 一条词条 → 检索结果行（不含 key：agent 按声明的 key 模式自己拼）。
  *  词条声明了 owner 时，行里用 owner 这个名字作字段。 */
-function termRow(term, field, score) {
-  const row = { kind: term.kind, name: term.name, field, score };
+function termRow(term: Term, field: string, score: number): Record<string, unknown> {
+  const row: Record<string, unknown> = { kind: term.kind, name: term.name, field, score };
   if (term.owner !== null) row[term.owner] = term.ownerValue;
   return row;
 }
 
 // 行里除协议字段外至多一个字段——它是该词条的归属，字段名由词汇表声明。
 const ROW_FIELDS = new Set(['kind', 'name', 'field', 'score']);
-const termOwner = (row) => {
+const termOwner = (row: Record<string, unknown>): string => {
   for (const [name, value] of Object.entries(row)) if (!ROW_FIELDS.has(name)) return `[${value}]`;
   return '';
 };
-const termLine = (row) => {
+const termLine = (row: Record<string, unknown>): string => {
   const owner = termOwner(row);
   return `${row.kind}  ${row.name}${owner === '' ? '' : `  ${owner}`}  ${row.field} ${row.score}`;
 };
 
 /** 匹配：对 name / aliases / doc 做模糊匹配（AND 全部查询词），报出命中的那一类。 */
-function matchTerm(term, tokens, query) {
+function matchTerm(term: Term, tokens: string[], query: string): { field: string; score: number } | null {
   const name = normalize(term.name);
   const aliasText = normalize(term.aliases.join(' '));
   const docText = normalize(term.doc);
@@ -216,14 +329,15 @@ function matchTerm(term, tokens, query) {
 }
 
 /** 检索：过滤 → 稳定排序 → 按字节装页。`skip` 是分页起点，`more` 是剩余条数。 */
-export function searchIndex(index, args) {
+export function searchIndex(index: RetrievalIndex, args: SearchArgs | null | undefined): SearchResult {
   const query = normalize(args?.query ?? '').trim();
   const kind = typeof args?.kind === 'string' && args.kind !== '' ? args.kind : null;
   const dataset = typeof args?.dataset === 'string' && args.dataset !== '' ? args.dataset : null;
-  const skip = Number.isInteger(args?.skip) && args.skip > 0 ? args.skip : 0;
+  const skipValue = args?.skip;
+  const skip = typeof skipValue === 'number' && Number.isInteger(skipValue) && skipValue > 0 ? skipValue : 0;
   if (kind !== null && !index.vocabKinds.includes(kind)) throw kindError(index, kind, 'oks_search');
   const tokens = tokenize(query);
-  const matched = [];
+  const matched: Match[] = [];
   for (const term of index.terms) {
     if (kind !== null && term.kind !== kind) continue;
     if (dataset !== null && !(term.owner === 'dataset' && String(term.ownerValue) === dataset)) continue;
@@ -237,7 +351,7 @@ export function searchIndex(index, args) {
     || left.term.name.localeCompare(right.term.name, 'en'));
   const total = matched.length;
   const page = matched.slice(skip);
-  const rows = [];
+  const rows: Array<Record<string, unknown>> = [];
   let used = 0;
   for (const item of page) {
     const row = termRow(item.term, item.field, item.score);
@@ -251,12 +365,13 @@ export function searchIndex(index, args) {
 }
 
 /** 反向引用：`skip` 分页；未知 key 直接报错（区别于"没有任何引用"）。 */
-export function referencesOf(index, args) {
+export function referencesOf(index: RetrievalIndex, args: ReferencesArgs | null | undefined): ReferencesResult {
   const key = typeof args?.key === 'string' && args.key !== '' ? args.key : null;
   if (key === null) throw new Error('dsh-oks: oks_references 需要 key');
   const link = typeof args?.link === 'string' && args.link !== '' ? args.link : null;
   const kind = typeof args?.kind === 'string' && args.kind !== '' ? args.kind : null;
-  const skip = Number.isInteger(args?.skip) && args.skip > 0 ? args.skip : 0;
+  const skipValue = args?.skip;
+  const skip = typeof skipValue === 'number' && Number.isInteger(skipValue) && skipValue > 0 ? skipValue : 0;
   if (link !== null && !REFERENCE_KINDS.includes(link)) {
     throw new Error(`dsh-oks: link 只能是 ${REFERENCE_KINDS.join(' / ')}`);
   }
@@ -270,7 +385,7 @@ export function referencesOf(index, args) {
     .sort((left, right) => left.link.localeCompare(right.link, 'en') || left.source.localeCompare(right.source, 'en'));
   const total = all.length;
   const page = all.slice(skip);
-  const rows = [];
+  const rows: IncomingReference[] = [];
   let used = 0;
   for (const reference of page) {
     const line = `${reference.link}  ${reference.source}`;
@@ -282,10 +397,19 @@ export function referencesOf(index, args) {
   return { key, start: skip, total, more: remaining > 0 ? remaining : null, references: rows };
 }
 
+/** 词汇表出口的一条：kind / name / aliases / doc，声明了 owner 就带 owner 字段。 */
+interface VocabularyEntry {
+  kind: string;
+  name: string;
+  aliases: string[];
+  doc: string;
+  [key: string]: unknown;
+}
+
 /** 一条词条 → 词汇表出口的一条：kind / name / aliases / doc，声明了 owner 就带 owner 字段。
  *  aliases 全给（它是这个出口的主要价值）；doc 是给"区分同名词条"用的，截到 DOC_CHARS。 */
-function vocabularyEntry(term) {
-  const entry = {
+function vocabularyEntry(term: Term): VocabularyEntry {
+  const entry: VocabularyEntry = {
     kind: term.kind,
     name: term.name,
     aliases: term.aliases,
@@ -297,14 +421,14 @@ function vocabularyEntry(term) {
 
 // 词条里除协议字段外至多一个字段——它是该词条的归属，字段名由词汇表声明。
 const VOCABULARY_FIELDS = new Set(['kind', 'name', 'aliases', 'doc']);
-const vocabularyOwner = (entry) => {
+const vocabularyOwner = (entry: VocabularyEntry): string => {
   for (const [name, value] of Object.entries(entry)) if (!VOCABULARY_FIELDS.has(name)) return `[${value}]`;
   return '';
 };
 
 /** 词条行：` · ` 连接的 kind / name / [owner] / 全部 aliases。aliases 为空时 doc 是唯一能
  *  区分它的文本，再附一行。装页与渲染用的是同一份行，所以"整条截止"不会截到半条。 */
-function vocabularyEntryLines(entry) {
+function vocabularyEntryLines(entry: VocabularyEntry): string[] {
   const parts = [entry.kind, entry.name];
   const owner = vocabularyOwner(entry);
   if (owner !== '') parts.push(owner);
@@ -318,12 +442,12 @@ function vocabularyEntryLines(entry) {
  *  与检索不同，这里不筛不排：用途是把整份词汇原样交给词汇助手，而不是在工作会话里筛着看。 */
 /** 整份词汇一次性渲染：一行一条、无页眉页脚。插件把它作为**一条消息**喂进助手的上下文，
  *  所以这里没有分页、没有游标、也没有"下一页"——模型不做任何搬运。 */
-export function renderWholeVocabulary(index) {
+export function renderWholeVocabulary(index: RetrievalIndex): string {
   const sorted = [...index.terms].sort((left, right) => left.key.localeCompare(right.key, 'en'));
   return sorted.map((term) => vocabularyEntryLines(vocabularyEntry(term)).join('\n')).join('\n');
 }
 
-export function renderSearch(_args, value) {
+export function renderSearch(_args: unknown, value: SearchResult): RenderBlock[] {
   const lines = [`命中 ${value.total} · 从 ${value.start} 起显示 ${value.matched.length} 条`
     + `${value.more === null ? '（已到底）' : ` · 还有 ${value.more}`}`];
   if (value.matched.length === 0) {
@@ -337,7 +461,7 @@ export function renderSearch(_args, value) {
 }
 
 /** oks_references 的模型可见渲染：谁引用了这个 key（`link` 是引用种类）。 */
-export function renderReferences(_args, value) {
+export function renderReferences(_args: unknown, value: ReferencesResult): RenderBlock[] {
   const lines = [`引用 ${value.key} 的共 ${value.total} 条 · 从 ${value.start} 起显示 ${value.references.length} 条`
     + `${value.more === null ? '（已到底）' : ` · 还有 ${value.more}`}`];
   if (value.references.length === 0) lines.push('', '没有任何节点引用它。');

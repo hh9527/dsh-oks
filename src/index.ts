@@ -33,17 +33,20 @@
 // 查询用 Node 自带的 node:sqlite（只读打开）。parameters 只用受支持的 JSON Schema
 // 关键字子集，数量校验放在 execute 里。
 
-import { createKnowledge } from './lib/knowledge.js';
-import { createTimeContext } from './lib/time-context.js';
-import { createTools } from './lib/tools.js';
-import { createVaRuntime } from './lib/va.js';
+import { createKnowledge } from './knowledge.ts';
+import { createTimeContext } from './time-context.ts';
+import { createTools } from './tools.ts';
+import { createVaRuntime } from './va.ts';
+import type { LogFn, PluginContext } from './host.ts';
+import type { PluginConfig } from './config.ts';
 
 export const inject = ['tools'];
 
-export function apply(ctx, config = {}) {
-  const log = (message) => {
+export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
+  const log: LogFn = (message) => {
     try {
-      if (ctx.logger?.info) ctx.logger.info(message);
+      const logger = ctx.logger;
+      if (logger?.info) logger.info(message);
       else console.error(message);
     } catch {
       console.error(message);

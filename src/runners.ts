@@ -1,7 +1,57 @@
 import { Worker } from 'node:worker_threads';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { hasSnapshot } from './config.js';
+import { hasSnapshot } from './config.ts';
+import type { Settings } from './config.ts';
+import { errorText, isRecord } from './host.ts';
+import type { LogFn, ServiceResponse } from './host.ts';
+
+/** 数据目录清单（若在）：数据窗口与来源 revision。 */
+export interface DataManifest {
+  window: { start: string; endExclusive: string } | null;
+  revision: string | null;
+}
+
+/** wasm 宿主：接口只有 { send(method, input, signal), dispose() }。 */
+export interface Runner {
+  send(method: string, input: unknown, signal?: AbortSignal): Promise<ServiceResponse>;
+  dispose(): void;
+}
+
+/** 只读执行器取回的一页。 */
+export interface QueryOutcome {
+  rows: Array<Record<string, unknown>>;
+  truncated: boolean;
+}
+
+/** 只读查询执行器：接口是 { send(sql, bindings, signal), dispose() }。 */
+export interface Executor {
+  send(sql: string, bindings: unknown[], signal?: AbortSignal): Promise<QueryOutcome>;
+  dispose(): void;
+}
+
+/** worker 回包：ready / 应答 / 错误三种。 */
+interface RunnerReply {
+  kind?: string;
+  restored?: number;
+  id: number;
+  response: ServiceResponse;
+  error?: string;
+}
+
+interface ExecutorReply {
+  kind?: string;
+  id: number;
+  rows: Array<Record<string, unknown>>;
+  truncated: boolean;
+  error?: string;
+}
+
+interface Pending<T> {
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+  timer: NodeJS.Timeout;
+}
 
 // 宿主 worker 的源码，eval 内联，插件因此保持单文件。
 // 放 worker 是为了能强杀：死循环只能靠超时 terminate() 兜住。
@@ -98,12 +148,12 @@ export const WORKER_SOURCE = [
 
 /** 宿主：wasm 在进程内 worker 里，超时 terminate 并复活。
  *  接口只有 { send(method, input, signal), dispose() }。 */
-export function createWorkerRunner(config, log) {
-  const pending = new Map();
-  let worker = null;
+export function createWorkerRunner(config: Settings, log: LogFn): Runner {
+  const pending = new Map<number, Pending<ServiceResponse>>();
+  let worker: Worker | null = null;
   let nextId = 1;
 
-  const failAll = (error) => {
+  const failAll = (error: unknown): void => {
     for (const [, entry] of pending) {
       clearTimeout(entry.timer);
       entry.reject(error);
@@ -111,13 +161,13 @@ export function createWorkerRunner(config, log) {
     pending.clear();
   };
 
-  const spawn = () => {
+  const spawn = (): Worker => {
     const created = new Worker(WORKER_SOURCE, {
       eval: true,
       workerData: { artifact: config.artifact },
     });
     // 初始化失败（或之后崩溃）都当作这一代的死亡；下一次 send 会重新拉起。
-    created.on('message', (message) => {
+    created.on('message', (message: RunnerReply) => {
       if (message?.kind === 'ready') { log(`[oks] worker ready (globals restored: ${message.restored})`); return; }
       const entry = pending.get(message?.id);
       if (entry === undefined) return;
@@ -128,8 +178,8 @@ export function createWorkerRunner(config, log) {
     });
     // 只有**当前这一代**的死亡才能影响排队请求：被超时 terminate 的旧代，它的 exit
     // 事件会晚到，而那时 worker 已经指向新一代了——不设这道门槛就会误杀新一代的请求。
-    created.on('error', (cause) => {
-      log(`[oks] worker error: ${cause?.message ?? cause}`);
+    created.on('error', (cause: Error) => {
+      log(`[oks] worker error: ${errorText(cause)}`);
       if (worker !== created) return;
       worker = null;
       failAll(cause);
@@ -144,10 +194,12 @@ export function createWorkerRunner(config, log) {
     return created;
   };
 
-  const send = (method, input, signal) => new Promise((resolve, reject) => {
+  const send = (method: string, input: unknown, signal?: AbortSignal): Promise<ServiceResponse> =>
+    new Promise<ServiceResponse>((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('aborted')); return; }
     const line = JSON.stringify({ method, input });
-    if (worker === null) spawn();
+    let target = worker;
+    if (target === null) target = spawn();
     const id = nextId; nextId += 1;
     const timer = setTimeout(() => {
       // 到点终止整个 worker 代。
@@ -157,9 +209,9 @@ export function createWorkerRunner(config, log) {
       reject(new Error(`wasm request timed out after ${config.requestTimeoutMs} ms (worker terminated)`));
     }, config.requestTimeoutMs);
     pending.set(id, { resolve, reject, timer });
-    worker.postMessage({ id, line });
-  }).catch((cause) => {
-    log(`[oks] worker request failed: ${cause?.message ?? cause}`);
+    target.postMessage({ id, line });
+  }).catch((cause: unknown) => {
+    log(`[oks] worker request failed: ${errorText(cause)}`);
     throw cause;
   });
 
@@ -173,7 +225,7 @@ export function createWorkerRunner(config, log) {
 }
 
 /** 当前只支持快照产物：产物必须带 `telora.snapshot` 段，Node 内置引擎直接导入它。 */
-export function createRunner(config, log) {
+export function createRunner(config: Settings, log: LogFn): Runner {
   if (!hasSnapshot(config.artifact)) {
     throw new Error(
       `dsh-oks: artifact ${config.artifact} 里没有 telora.snapshot 段。`
@@ -217,12 +269,12 @@ export const EXECUTOR_SOURCE = [
 
 /** 只读查询执行器：一个数据文件一个 worker，超时 terminate 并复活。
  *  接口是 { send(sql, bindings, signal), dispose() }。 */
-export function createExecutor(config, log) {
-  const pending = new Map();
-  let worker = null;
+export function createExecutor(config: Settings, log: LogFn): Executor {
+  const pending = new Map<number, Pending<QueryOutcome>>();
+  let worker: Worker | null = null;
   let nextId = 1;
 
-  const failAll = (error) => {
+  const failAll = (error: unknown): void => {
     for (const [, entry] of pending) {
       clearTimeout(entry.timer);
       entry.reject(error);
@@ -230,12 +282,12 @@ export function createExecutor(config, log) {
     pending.clear();
   };
 
-  const spawn = () => {
+  const spawn = (): Worker => {
     const created = new Worker(EXECUTOR_SOURCE, {
       eval: true,
       workerData: { dataFile: config.dataFile },
     });
-    created.on('message', (message) => {
+    created.on('message', (message: ExecutorReply) => {
       if (message?.kind === 'ready') { log(`[oks] executor ready (read-only ${config.dataFile})`); return; }
       const entry = pending.get(message?.id);
       if (entry === undefined) return;
@@ -245,8 +297,8 @@ export function createExecutor(config, log) {
       else entry.resolve({ rows: message.rows, truncated: message.truncated });
     });
     // 同模型宿主：晚到的旧代 exit 不能影响新一代的排队请求。
-    created.on('error', (cause) => {
-      log(`[oks] executor error: ${cause?.message ?? cause}`);
+    created.on('error', (cause: Error) => {
+      log(`[oks] executor error: ${errorText(cause)}`);
       if (worker !== created) return;
       worker = null;
       failAll(cause);
@@ -261,9 +313,11 @@ export function createExecutor(config, log) {
     return created;
   };
 
-  const send = (sql, bindings, signal) => new Promise((resolve, reject) => {
+  const send = (sql: string, bindings: unknown[], signal?: AbortSignal): Promise<QueryOutcome> =>
+    new Promise<QueryOutcome>((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('aborted')); return; }
-    if (worker === null) spawn();
+    let target = worker;
+    if (target === null) target = spawn();
     const id = nextId; nextId += 1;
     const timer = setTimeout(() => {
       pending.delete(id);
@@ -272,7 +326,7 @@ export function createExecutor(config, log) {
       reject(new Error(`query timed out after ${config.queryTimeoutMs} ms (executor terminated)`));
     }, config.queryTimeoutMs);
     pending.set(id, { resolve, reject, timer });
-    worker.postMessage({ id, sql, bindings, maxRows: config.queryMaxRows });
+    target.postMessage({ id, sql, bindings, maxRows: config.queryMaxRows });
   });
 
   const dispose = () => {
@@ -286,16 +340,23 @@ export function createExecutor(config, log) {
 
 /** 数据目录里的清单（若在）：只取两处声明——数据窗口与来源 revision。
  *  两处都按"有就用、没有就算了"处理，缺字段不影响查询。 */
-export function readDataManifest(dataFile) {
+export function readDataManifest(dataFile: string): DataManifest | null {
   try {
-    const manifest = JSON.parse(readFileSync(join(dirname(dataFile), 'manifest.json'), 'utf8'));
+    const manifest: unknown = JSON.parse(readFileSync(join(dirname(dataFile), 'manifest.json'), 'utf8'));
     if (manifest === null || typeof manifest !== 'object') return null;
-    const window = manifest.window;
-    const hasWindow = window !== null && typeof window === 'object'
-      && typeof window.start === 'string' && typeof window.endExclusive === 'string';
+    // JSON 结果当字典读——原写法就是 typeof === 'object'，数组也走得通。
+    const source = manifest as Record<string, unknown>;
+    let windowValue: DataManifest['window'] = null;
+    if (isRecord(source.window)) {
+      const start = source.window.start;
+      const endExclusive = source.window.endExclusive;
+      if (typeof start === 'string' && typeof endExclusive === 'string') {
+        windowValue = { start, endExclusive };
+      }
+    }
     return {
-      window: hasWindow ? { start: window.start, endExclusive: window.endExclusive } : null,
-      revision: typeof manifest.revision === 'string' ? manifest.revision : null,
+      window: windowValue,
+      revision: typeof source.revision === 'string' ? source.revision : null,
     };
   } catch {
     return null;

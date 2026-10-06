@@ -15,7 +15,62 @@
 //      调用方也可以显式覆盖；两者都没有时报错，让 agent 按规范的策略去问用户
 //      （mixed / missing → ask the user）。
 
-const PARTS = { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', weekday: 'short', hourCycle: 'h23' };
+import { isArray, isRecord } from './host.ts';
+import type { ContextMessageLike } from './host.ts';
+
+/** 上下文时区：按插件规范从**当轮用户消息**推导出的四态。 */
+export type ContextTimeZone =
+  | { kind: 'resolved'; timeZone: string }
+  | { kind: 'mixed'; timeZones: string[] }
+  | { kind: 'missing' }
+  | { kind: 'invalid'; timeZone: string };
+
+/** 时区来源：调用方显式给的，还是本次请求上下文带的。 */
+export interface ResolvedZone {
+  zone: string;
+  source: string;
+}
+
+/** 一个时刻在一个时区里的日历字段。 */
+export interface LocalParts {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+  weekday: string;
+  weekdayIndex: number;
+}
+
+/** 一个时刻的完整标准表示。 */
+export interface EncodedInstant {
+  epochMillis: number;
+  epochSeconds: number;
+  zone: string;
+  offsetMinutes: number;
+  offset: string;
+  utc: { text: string; rfc3339: string; date: string };
+  local: { text: string; rfc3339: string; date: string; weekday: string; weekdayIndex: number };
+  isoWeek: { weekYear: number; week: number; weekday: number };
+}
+
+/** applyOps 的状态：当前时刻 + 当前时区。 */
+export interface TimeState {
+  epochMillis: number;
+  zone: string;
+}
+
+/** 一条日历运算。字段按 op 取用，多给的字段忽略。 */
+export interface TimeOperation {
+  op?: string;
+  unit?: string;
+  amount?: number;
+  zone?: string;
+  weekStartsOn?: number;
+}
+
+const PARTS: Intl.DateTimeFormatOptions = { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', weekday: 'short', hourCycle: 'h23' };
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 /** 规范里的 IANA 形态：UTC 或 Area/Location。 */
@@ -27,11 +82,11 @@ const IANA_TIME_ZONE = /^[A-Za-z][A-Za-z0-9_+.-]*(?:\/[A-Za-z0-9_+.-]+)+$/;
  * 返回 {kind:"resolved",timeZone} | {kind:"mixed",timeZones} | {kind:"missing"} | {kind:"invalid",...}。
  * 规范里不合法是抛错；这里降级成可报告的态，让工具能给出"去问用户"的指引而不是打断回合。
  */
-function deriveContextTimeZone(messages) {
-  const zones = new Set();
-  for (const message of Array.isArray(messages) ? messages : []) {
-    const source = message?.source;
-    if (source?.kind !== 'user' || typeof source.rpcId !== 'string') continue;
+function deriveContextTimeZone(messages: unknown): ContextTimeZone {
+  const zones = new Set<string>();
+  for (const message of isArray(messages) ? messages : []) {
+    const source = isRecord(message) ? message.source : undefined;
+    if (!isRecord(source) || source.kind !== 'user' || typeof source.rpcId !== 'string') continue;
     const value = source.clientTimeZone;
     if (typeof value !== 'string') continue;
     if (value !== 'UTC' && !IANA_TIME_ZONE.test(value)) return { kind: 'invalid', timeZone: value };
@@ -51,7 +106,7 @@ function deriveContextTimeZone(messages) {
 }
 
 /** 校验并规范化 IANA 时区名；不合法就明确报错，不静默回退。 */
-function assertZone(zone) {
+function assertZone(zone: unknown): string {
   if (typeof zone !== 'string' || zone.length === 0) throw new Error('time zone must be a non-empty IANA name');
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: zone });
@@ -66,17 +121,16 @@ function assertZone(zone) {
  * 来源要一起报出去，便于在回答里写明口径。
  * 两者都没有时明确报错，并要求向用户澄清——这样"今天""上周"这类边界始终落在用户所在的时区里。
  */
-function resolveZone(requested, context) {
+function resolveZone(requested: unknown, context: ContextTimeZone | undefined): ResolvedZone {
   if (typeof requested === 'string' && requested.length > 0) {
     return { zone: assertZone(requested), source: 'argument' };
   }
-  const kind = context?.kind;
-  if (kind === 'resolved') return { zone: assertZone(context.timeZone), source: 'context' };
-  if (kind === 'mixed') {
+  if (context?.kind === 'resolved') return { zone: assertZone(context.timeZone), source: 'context' };
+  if (context?.kind === 'mixed') {
     throw new Error('dsh-oks: 本次请求带进来的浏览器时区不一致（' + context.timeZones.join(', ')
       + '）。按规范应向用户澄清用哪个时区，或显式传 timeZone。');
   }
-  if (kind === 'invalid') {
+  if (context?.kind === 'invalid') {
     throw new Error('dsh-oks: 本次请求带的浏览器时区不合法（' + String(context.timeZone)
       + '）。请向用户确认时区，或显式传 timeZone。');
   }
@@ -84,12 +138,12 @@ function resolveZone(requested, context) {
     + '或让请求带上浏览器时区——上下文时区按插件规范从用户消息读取。');
 }
 
-const pad = (value, width = 2) => String(value).padStart(width, '0');
+const pad = (value: unknown, width = 2): string => String(value).padStart(width, '0');
 
 /** 该时刻在给定时区里的日历字段。 */
-function localParts(epochMillis, zone) {
+function localParts(epochMillis: number, zone: string): LocalParts {
   const parts = new Intl.DateTimeFormat('en-US', { timeZone: zone, ...PARTS }).formatToParts(new Date(epochMillis));
-  const get = (type) => parts.find((part) => part.type === type)?.value ?? '';
+  const get = (type: string): string => parts.find((part) => part.type === type)?.value ?? '';
   const weekday = get('weekday');
   const index = WEEKDAYS.indexOf(weekday);
   return {
@@ -105,28 +159,29 @@ function localParts(epochMillis, zone) {
 }
 
 /** 该时刻在给定时区的 UTC 偏移（分钟）。 */
-function offsetMinutes(epochMillis, zone) {
+function offsetMinutes(epochMillis: number, zone: string): number {
   const p = localParts(epochMillis, zone);
   const asUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
   return Math.round((asUtc - Math.floor(epochMillis / 1000) * 1000) / 60000);
 }
 
-function offsetText(minutes) {
+function offsetText(minutes: number): string {
   const sign = minutes < 0 ? '-' : '+';
   const abs = Math.abs(minutes);
   return `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
 
 /** 本地日历字段（当作 UTC 毫秒）→ 真实时刻。两趟修正，DST 也能落在一个有效时刻上。 */
-function fromLocal(localMillis, zone) {
+function fromLocal(localMillis: number, zone: string): number {
   const guess = localMillis - offsetMinutes(localMillis, zone) * 60000;
   return localMillis - offsetMinutes(guess, zone) * 60000;
 }
 
-const localMillisOf = (epochMillis, zone) => epochMillis + offsetMinutes(epochMillis, zone) * 60000;
+const localMillisOf = (epochMillis: number, zone: string): number =>
+  epochMillis + offsetMinutes(epochMillis, zone) * 60000;
 
 /** ISO-8601 周序号（周一起算），用于"第几周"这类表述。 */
-function isoWeek(year, month, day) {
+function isoWeek(year: number, month: number, day: number): { weekYear: number; week: number; weekday: number } {
   const date = new Date(Date.UTC(year, month - 1, day));
   const weekday = date.getUTCDay() || 7;
   date.setUTCDate(date.getUTCDate() + 4 - weekday);
@@ -139,7 +194,7 @@ function isoWeek(year, month, day) {
 }
 
 /** 一个时刻的完整表示：调用方据此挑选知识服务声明的那种形式。 */
-function encode(epochMillis, zone) {
+function encode(epochMillis: number, zone: string): EncodedInstant {
   if (!Number.isFinite(epochMillis)) throw new Error(`not a finite instant: ${epochMillis}`);
   const p = localParts(epochMillis, zone);
   const offset = offsetMinutes(epochMillis, zone);
@@ -171,7 +226,7 @@ function encode(epochMillis, zone) {
 }
 
 /** 解析调用方给的"某个时刻"：字符串按自身语法判定，不合语法就报错。 */
-function parseMoment(value, zone) {
+function parseMoment(value: unknown, zone: string): number {
   if (value === undefined || value === null || value === 'now') return Date.now();
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) throw new Error(`not a finite instant: ${value}`);
@@ -197,7 +252,7 @@ function parseMoment(value, zone) {
 const UNITS = new Set(['year', 'quarter', 'month', 'week', 'day', 'hour', 'minute', 'second']);
 const SNAPS = new Set(['year', 'quarter', 'month', 'week', 'day']);
 
-function addCalendar(localMillis, unit, amount) {
+function addCalendar(localMillis: number, unit: string, amount: number): number {
   const at = new Date(localMillis);
   const year = at.getUTCFullYear();
   const month = at.getUTCMonth();
@@ -218,7 +273,7 @@ function addCalendar(localMillis, unit, amount) {
   return at.getTime();
 }
 
-function floorCalendar(localMillis, unit, weekStartsOn) {
+function floorCalendar(localMillis: number, unit: string, weekStartsOn: number): number {
   const at = new Date(localMillis);
   const year = at.getUTCFullYear();
   const month = at.getUTCMonth();
@@ -242,19 +297,19 @@ function floorCalendar(localMillis, unit, weekStartsOn) {
  *   {op:"ceil",  unit, weekStartsOn?}         向上取整（已对齐则不动）
  *   {op:"convert", zone}                      换时区（时刻不变）
  */
-function applyOps(state, operations) {
+function applyOps(state: TimeState, operations: unknown): { epochMillis: number; zone: string; applied: string[] } {
   let { epochMillis, zone } = state;
-  const applied = [];
-  for (const raw of Array.isArray(operations) ? operations : []) {
-    const op = String(raw?.op ?? '');
+  const applied: string[] = [];
+  for (const raw of isArray(operations) ? operations : []) {
+    const op = String(isRecord(raw) ? raw.op ?? '' : '');
     if (op === 'convert') {
-      zone = assertZone(String(raw?.zone ?? ''));
+      zone = assertZone(String(isRecord(raw) ? raw.zone ?? '' : ''));
       applied.push(`convert → ${zone}`);
       continue;
     }
     if (op === 'add') {
-      const unit = String(raw?.unit ?? '');
-      const amount = Number(raw?.amount);
+      const unit = String(isRecord(raw) ? raw.unit ?? '' : '');
+      const amount = Number(isRecord(raw) ? raw.amount : undefined);
       if (!UNITS.has(unit)) throw new Error(`add needs a unit in ${[...UNITS].join('/')}`);
       if (!Number.isFinite(amount)) throw new Error('add needs a finite numeric amount');
       if (unit === 'hour' || unit === 'minute' || unit === 'second') {
@@ -269,11 +324,11 @@ function applyOps(state, operations) {
       continue;
     }
     if (op === 'floor' || op === 'ceil') {
-      const unit = String(raw?.unit ?? '');
+      const unit = String(isRecord(raw) ? raw.unit ?? '' : '');
       if (!SNAPS.has(unit)) throw new Error(`${op} needs a unit in ${[...SNAPS].join('/')}`);
-      const weekStartsOn = Number.isInteger(raw?.weekStartsOn) && raw.weekStartsOn >= 1 && raw.weekStartsOn <= 7
-        ? raw.weekStartsOn
-        : 1;
+      const requested = isRecord(raw) ? raw.weekStartsOn : undefined;
+      const rawWeekStartsOn = Number.isInteger(requested) ? Number(requested) : 0;
+      const weekStartsOn = rawWeekStartsOn >= 1 && rawWeekStartsOn <= 7 ? rawWeekStartsOn : 1;
       const local = localMillisOf(epochMillis, zone);
       const floored = floorCalendar(local, unit, weekStartsOn);
       let target = floored;

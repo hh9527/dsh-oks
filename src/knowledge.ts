@@ -1,40 +1,73 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { readSkillContent, resolveSettings, SKILL, workspaceRootFor } from './config.js';
-import { createExecutor, createRunner, readDataManifest } from './runners.js';
-import { buildRetrievalIndex } from './retrieval.js';
-import { singleFlight } from './single-flight.js';
+import { readSkillContent, resolveSettings, SKILL, workspaceRootFor } from './config.ts';
+import type { PluginConfig, Settings } from './config.ts';
+import { createExecutor, createRunner, readDataManifest } from './runners.ts';
+import type { DataManifest, Executor, Runner } from './runners.ts';
+import { buildRetrievalIndex } from './retrieval.ts';
+import type { RetrievalIndex } from './retrieval.ts';
+import { singleFlight } from './single-flight.ts';
+import { errorText } from './host.ts';
+import type { LogFn, PluginContext, SkillsService, WorkspaceProbe } from './host.ts';
 
 /** 进程级的检索层缓存：artifact sha256 -> 词汇表 + 反向引用索引。
  *  词汇助手是另一个 agent 作用域里的实例，它和主 agent 共用这一份，不重爬引用图。 */
-const INDEX_BY_ARTIFACT = new Map();
+const INDEX_BY_ARTIFACT = new Map<string, RetrievalIndex>();
 
-export function createKnowledge({ ctx, log, config }) {
+/** 一个工作区的运行环境：设置 + wasm 宿主 + 惰性建立的检索层。
+ *  runner 在 ensureWorkspace 返回前一定装配好；取用方按这个约定断言非空。 */
+export interface WorkspaceEntry {
+  root: string;
+  from: string;
+  settings: Settings;
+  runner: Runner | null;
+  index: RetrievalIndex | null;
+}
+
+/** 一个数据文件一个执行器，外加它目录里的清单（若有）。 */
+export interface ExecutorEntry {
+  executor: Executor;
+  manifest: DataManifest | null;
+}
+
+export interface Knowledge {
+  ensureWorkspace(exec: WorkspaceProbe | undefined): WorkspaceEntry;
+  ensureIndex(entry: WorkspaceEntry): Promise<RetrievalIndex>;
+  executorFor(settings: Settings): ExecutorEntry;
+  dispose(): void;
+}
+
+export function createKnowledge({ ctx, log, config }: {
+  ctx: PluginContext;
+  log: LogFn;
+  config: PluginConfig | undefined;
+}): Knowledge {
   // 插件不认识模型：设置与 wasm 宿主都在**第一次用到某个工作区**时按那份 oks.json 惰性建立；
   // 一个进程里可以有任意多个工作区，互不影响。
-  const workspaces = new Map(); // root -> entry
+  const workspaces = new Map<string, WorkspaceEntry>(); // root -> entry
   // 执行器按**数据文件**持有：同一个数据文件被多个工作区声明时共享一个只读连接。
-  const executors = new Map(); // dataFile -> { executor, manifest }
+  const executors = new Map<string, ExecutorEntry>(); // dataFile -> { executor, manifest }
 
-  const executorFor = (settings) => {
-    if (typeof settings.dataFile !== 'string' || settings.dataFile.length === 0) {
+  const executorFor = (settings: Settings): ExecutorEntry => {
+    const dataFile = settings.dataFile;
+    if (typeof dataFile !== 'string' || dataFile.length === 0) {
       throw new Error(
         `dsh-oks: ${settings.workspaceFile} 没有声明 dataFile，oks_query 无处可查。`
         + '需要 {"dataFile":"<相对 oks.json 的 .sqlite 路径>"}；'
         + '只做校验可以用 oks_check_intent。',
       );
     }
-    const existing = executors.get(settings.dataFile);
+    const existing = executors.get(dataFile);
     if (existing !== undefined) return existing;
-    if (!existsSync(settings.dataFile)) {
+    if (!existsSync(dataFile)) {
       throw new Error(
-        `dsh-oks: ${settings.workspaceFile} 声明的 dataFile 不存在：${settings.dataFile}`,
+        `dsh-oks: ${settings.workspaceFile} 声明的 dataFile 不存在：${dataFile}`,
       );
     }
-    const manifest = readDataManifest(settings.dataFile);
-    const entry = { executor: createExecutor(settings, log), manifest };
-    executors.set(settings.dataFile, entry);
-    log(`[oks] read-only executor for ${settings.dataFile}`
+    const manifest = readDataManifest(dataFile);
+    const entry: ExecutorEntry = { executor: createExecutor(settings, log), manifest };
+    executors.set(dataFile, entry);
+    log(`[oks] read-only executor for ${dataFile}`
       + `${manifest?.revision ? ` · data revision=${manifest.revision}` : ''}`
       + `${manifest?.window ? ` · window=[${manifest.window.start}, ${manifest.window.endExclusive})` : ''}`);
     return entry;
@@ -42,29 +75,30 @@ export function createKnowledge({ ctx, log, config }) {
 
   // 技能服务是可选依赖（ctx.get 取），加载时它可能还没起来，所以第一次工具调用会再试一次。
   let skillRegistered = false;
-  const registerSkill = () => {
+  const registerSkill = (): boolean => {
     if (skillRegistered) return true;
-    let content;
+    let content: string;
     try {
       content = readSkillContent();
     } catch (cause) {
-      log(`[oks] skill body unreadable: ${cause?.message ?? cause}`);
+      log(`[oks] skill body unreadable: ${errorText(cause)}`);
       skillRegistered = true; // 部署缺文件，重试没有意义
       return true;
     }
-    let skills = null;
+    let found: SkillsService | null = null;
     try {
-      skills = ctx.get?.('skills') ?? null;
+      found = ctx.get?.('skills') ?? null;
     } catch {
-      skills = null;
+      found = null;
     }
-    if (typeof skills?.register !== 'function') return false;
+    const skills = found;
+    if (skills === null || typeof skills.register !== 'function') return false;
     try {
       ctx.effect(() => skills.register({ ...SKILL, content }));
       skillRegistered = true;
       log(`[oks] skill "${SKILL.name}" registered (runtime) · ${Buffer.byteLength(content, "utf8")} bytes`);
     } catch (cause) {
-      log(`[oks] cannot register skill "${SKILL.name}": ${cause?.message ?? cause}`);
+      log(`[oks] cannot register skill "${SKILL.name}": ${errorText(cause)}`);
       skillRegistered = true;
     }
     return skillRegistered;
@@ -72,13 +106,13 @@ export function createKnowledge({ ctx, log, config }) {
   registerSkill();
 
   /** 每个工具的入口动作：由**会话**定位工作区，再拿到（或惰性建立）它的运行环境。 */
-  const ensureWorkspace = (exec) => {
+  const ensureWorkspace = (exec: WorkspaceProbe | undefined): WorkspaceEntry => {
     registerSkill(); // 加载时技能服务若还没起来，这里补上（已注册则是空操作）
     const { root, from } = workspaceRootFor(exec);
     const existing = workspaces.get(root);
     if (existing !== undefined) return existing;
     const settings = resolveSettings(root, config);
-    const entry = {
+    const entry: WorkspaceEntry = {
       root,
       from,
       settings,
@@ -98,10 +132,10 @@ export function createKnowledge({ ctx, log, config }) {
   const indexes = INDEX_BY_ARTIFACT;
 
   // 正在进行的索引派生：并发的首次检索共享同一次初始化，不会各爬一遍引用图。
-  const indexFlights = new Map(); // artifact sha256 -> 在飞的 promise
+  const indexFlights = new Map<string, Promise<RetrievalIndex>>(); // artifact sha256 -> 在飞的 promise
 
   /** 惰性建立检索层：第一次检索时执行，之后按产物哈希复用；并发时 single flight。 */
-  const ensureIndex = async (entry) => {
+  const ensureIndex = async (entry: WorkspaceEntry): Promise<RetrievalIndex> => {
     if (entry.index !== null) return entry.index;
     const sha = createHash('sha256').update(readFileSync(entry.settings.artifact)).digest('hex');
     const shared = indexes.get(sha);
@@ -119,7 +153,7 @@ export function createKnowledge({ ctx, log, config }) {
   };
 
   // 卸载时把每个工作区的 wasm 宿主与每个数据文件的执行器都关掉。
-  const dispose = () => {
+  const dispose = (): void => {
     for (const entry of workspaces.values()) {
       try {
         entry.runner?.dispose();

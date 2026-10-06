@@ -1,5 +1,6 @@
 import { basename } from 'node:path';
-import { capLine } from './text.js';
+import { capLine } from './text.ts';
+import type { DiagnosticEntry, OkPayload, RenderBlock, ServiceResponse, TraceStep } from './host.ts';
 
 // 模型可见文本的预算：留在宿主 tool-result pruner 的阈值（8192 字符）以下，否则结果会被
 // 从**中间**截掉，反而同时丢掉 SQL 和一部分行。
@@ -12,12 +13,60 @@ const REQUEST_DISPLAY_CHARS = 300;
 
 export const OBJECT_OUTPUT = { type: 'object', additionalProperties: true };
 
-function summarize(response) {
+/** 一行结果 / 一条诊断之外的动态对象：字段名由服务或词汇表声明。 */
+export interface Row {
+  [key: string]: unknown;
+}
+
+/** oks_check_intent 渲染读到的值。 */
+export interface CheckValue {
+  trace?: readonly TraceStep[] | null;
+  intents?: readonly unknown[] | null;
+  diagnostics?: readonly DiagnosticEntry[] | null;
+  subset?: { indexes: number[]; accepted: boolean } | null;
+  queryCount?: number | null;
+}
+
+/** 渲染层看到的 oks_query 结果行（rows 只在没有 error 的结果上读，所以这里是非 null）。 */
+export interface QueryResult {
+  index: number;
+  sql: unknown;
+  bindings: unknown;
+  rows: Row[];
+  truncated: boolean;
+  error: unknown;
+  ms: number;
+}
+
+/** oks_query 渲染读到的值。 */
+export interface QueryValue {
+  trace?: readonly TraceStep[] | null;
+  intents?: readonly unknown[] | null;
+  diagnostics?: readonly DiagnosticEntry[] | null;
+  results?: readonly QueryResult[] | null;
+  dataFile: string;
+  queryMaxRows: number;
+  window?: { start: string; endExclusive: string } | null;
+}
+
+/** oks_info 渲染读到的值。 */
+export interface JsonValue {
+  trace?: readonly TraceStep[] | null;
+}
+
+/** 一张有预算的表：lines 之外还带 notes 时才算截断说明。 */
+interface Table {
+  lines: string[];
+  truncated: boolean;
+  notes?: string[];
+}
+
+function summarize(response: ServiceResponse | undefined): string {
   if (response?.error === true) {
     const count = Array.isArray(response.diagnostics) ? response.diagnostics.length : 0;
     return `error=true · ${count} diagnostic(s)`;
   }
-  const ok = response?.ok ?? {};
+  const ok: OkPayload = response?.ok ?? {};
   if (ok.Document !== undefined) {
     const document = ok.Document;
     if (typeof document === 'string') return `error=false · Document=${document}`;
@@ -37,7 +86,7 @@ function summarize(response) {
   }
   if (ok.accepted !== undefined) {
     // 批次级诊断：成功路径也可能带 Warning，所以要分别数 error / warning。
-    const diagnostics = Array.isArray(ok.diagnostics) ? ok.diagnostics : [];
+    const diagnostics: readonly DiagnosticEntry[] = Array.isArray(ok.diagnostics) ? ok.diagnostics : [];
     const errors = diagnostics.filter((item) => item?.diagnostic?.severity === 'Error').length;
     const warnings = diagnostics.filter((item) => item?.diagnostic?.severity === 'Warning').length;
     const parts = ['error=false', `accepted=${ok.accepted}`, `errors=${errors}`, `warnings=${warnings}`];
@@ -50,7 +99,7 @@ function summarize(response) {
 
 /** 校验路径的响应：**摘掉 queries**。SQL/bindings 只在 oks_query 的结果里出现，
  *  而轨迹里的响应会被工具卡与宿主日志留存，所以这里必须真的摘掉，不能只靠渲染不打印。 */
-export function withoutQueries(response) {
+export function withoutQueries(response: ServiceResponse): ServiceResponse {
   const ok = response?.ok;
   if (ok === null || typeof ok !== 'object') return response;
   const { queries: _queries, ...rest } = ok;
@@ -59,8 +108,8 @@ export function withoutQueries(response) {
 
 /** 过程轨迹：让工具卡自己呈现「发了什么、收回了什么」。
  *  请求回显只留一小段——Intent 批次可能很长，而写它的人正是读它的模型。 */
-function renderTrace(trace) {
-  const lines = [];
+function renderTrace(trace: readonly TraceStep[] | null | undefined): string[] {
+  const lines: string[] = [];
   for (const step of trace ?? []) {
     const note = step.note ? `  （${step.note}）` : '';
     lines.push(`▸ OKS ${step.method}${note}`);
@@ -71,20 +120,20 @@ function renderTrace(trace) {
 }
 
 /** 纯计算类工具（不经过 OKS）的渲染：直接给结构化结果。 */
-export function renderValue(_args, value) {
+export function renderValue(_args: unknown, value: unknown): RenderBlock[] {
   return [{ type: 'text', text: `${JSON.stringify(value, null, 2)}\n` }];
 }
 
 /** 渲染不做形状分类：同一套 JSON 通道对任何节点都成立。 */
-export function renderJson(_args, value) {
+export function renderJson(_args: unknown, value: JsonValue | null | undefined): RenderBlock[] {
   const lines = renderTrace(value?.trace);
   lines.push('', JSON.stringify(value?.trace?.[0]?.response ?? value, null, 2));
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 
 /** 诊断段：批次级诊断必须全列——成功的 Intent 也可能带 Warning。 */
-function diagnosticLines(diagnostics) {
-  const lines = [];
+function diagnosticLines(diagnostics: readonly DiagnosticEntry[] | null | undefined): string[] {
+  const lines: string[] = [];
   if (!Array.isArray(diagnostics) || diagnostics.length === 0) return lines;
   lines.push('', '诊断（批次级；成功的 Intent 也可能带 Warning）');
   for (const item of diagnostics) {
@@ -95,18 +144,20 @@ function diagnosticLines(diagnostics) {
   return lines;
 }
 
-const rejectedIndexes = (diagnostics) => [...new Set((diagnostics ?? [])
-  .filter((item) => item?.diagnostic?.severity === 'Error')
-  .map((item) => item.index))].sort((left, right) => left - right);
+const rejectedIndexes = (diagnostics: readonly DiagnosticEntry[] | null | undefined): number[] =>
+  [...new Set((diagnostics ?? [])
+    .filter((item) => item?.diagnostic?.severity === 'Error')
+    .map((item) => item.index))].sort((left, right) => left - right);
 
 /** oks_check_intent 的模型可见渲染：只有校验结论与诊断，**没有 SQL**。 */
-export function renderCheck(_args, value) {
+export function renderCheck(_args: unknown, value: CheckValue | null | undefined): RenderBlock[] {
   const lines = renderTrace(value?.trace);
   const intents = value?.intents ?? [];
   lines.push(...diagnosticLines(value?.diagnostics));
-  if (value?.subset) {
-    lines.push('', `再校验一次（把没有报 Error 的 ${value.subset.indexes.length} 个 Intent 单独提交）：`
-      + `${value.subset.accepted ? '通过' : '仍被拒'}`);
+  const subset = value?.subset;
+  if (subset) {
+    lines.push('', `再校验一次（把没有报 Error 的 ${subset.indexes.length} 个 Intent 单独提交）：`
+      + `${subset.accepted ? '通过' : '仍被拒'}`);
   }
   for (const index of rejectedIndexes(value?.diagnostics)) {
     lines.push('', `── intent #${index + 1} — 被拒绝 ──`);
@@ -121,11 +172,11 @@ export function renderCheck(_args, value) {
 }
 
 /** 一张有预算的表：列数、单元格长度、行数都受限，截断要写明。 */
-function renderTable(rows, budget) {
+function renderTable(rows: readonly Row[] | null | undefined, budget: number): Table {
   if (!Array.isArray(rows) || rows.length === 0) return { lines: ['结果：0 行'], truncated: false };
   const allColumns = Object.keys(rows[0] ?? {});
   const columns = allColumns.slice(0, RESULT_MAX_COLUMNS);
-  const cell = (value) => {
+  const cell = (value: unknown): string => {
     const text = value === null || value === undefined ? 'NULL'
       : typeof value === 'bigint' ? value.toString()
         : typeof value === 'object' ? JSON.stringify(value)
@@ -144,17 +195,18 @@ function renderTable(rows, budget) {
     used += line.length + 1;
     shown += 1;
   }
-  const notes = [];
+  const notes: string[] = [];
   if (allColumns.length > columns.length) notes.push(`只显示前 ${columns.length} 列（共 ${allColumns.length} 列）`);
   if (truncated) notes.push(`只显示前 ${shown} 行（共 ${rows.length} 行）`);
   return { lines, truncated, notes };
 }
 
 /** oks_query 的模型可见渲染：轨迹 → 诊断 → 每个结果的 SQL/bindings 与行。 */
-export function renderQuery(_args, value) {
+export function renderQuery(_args: unknown, value: QueryValue | null | undefined): RenderBlock[] {
   const lines = renderTrace(value?.trace);
   let used = lines.reduce((total, line) => total + line.length + 1, 0);
-  const push = (line) => { lines.push(line); used += line.length + 1; };
+  // 与原写法一致：只取第一个参数，多余参数（历史上用来传一句结论）不参与渲染。
+  const push = (line: string, ..._rest: string[]): void => { lines.push(line); used += line.length + 1; };
   for (const line of diagnosticLines(value?.diagnostics)) push(line);
 
   (value?.results ?? []).forEach((result, at) => {
@@ -163,11 +215,11 @@ export function renderQuery(_args, value) {
     push(`sql:      ${capLine(String(result.sql).replace(/\s+/g, ' '), SQL_DISPLAY_CHARS)}`);
     push(`bindings: ${capLine(JSON.stringify(result.bindings), BINDINGS_DISPLAY_CHARS)}`);
     if (result.error !== null && result.error !== undefined) {
-      push(`执行失败（数据文件 ${basename(value.dataFile)}）：${result.error}`);
+      push(`执行失败（数据文件 ${basename(value!.dataFile)}）：${result.error}`);
       return;
     }
     push(`执行：${result.rows.length} 行 · ${result.ms} ms`
-      + `${result.truncated ? `（已到行数上限 ${value.queryMaxRows}，结果还有更多）` : ''}`);
+      + `${result.truncated ? `（已到行数上限 ${value!.queryMaxRows}，结果还有更多）` : ''}`);
     const table = renderTable(result.rows, Math.max(240, RESULT_BUDGET_CHARS - used));
     for (const line of table.lines) push(line);
     for (const note of table.notes ?? []) push(`（${note}）`);

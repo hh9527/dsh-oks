@@ -5,14 +5,13 @@
   "type": "module",
   "description": "A Harness capability, not a wrapper for one model: whatever knowledge service (OKS) and data file a session's workspace declares in oks.json become five native tools — search / references / info / check_intent / query — turning a business question into rows read from that data file over a read-only connection. Search finds the keys of the vocabulary by name or description, references walks the reference graph backwards, and oks_info reads any node from the opaque key \"index\". va_ask consults a vocabulary helper the plugin owns (a top-level agent on the same preset and workspace, sharing the process-wide index, archived while idle): the plugin prepares it in one shot (a single prompt carrying role, the whole vocabulary and the working method, and that prompt is the rewind marker) and after every answer collapses the question-and-answer after that marker, so between questions the helper sees only vocabulary, method and the current question, while the session log stays append-only.",
   "exports": {
-    ".": "./index.js",
+    ".": "./index.mjs",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json"
   },
   "icon": "./icon.svg",
   "files": [
-    "index.js",
-    "lib",
+    "index.mjs",
     "skill.md",
     "cordis.patch.yml",
     "locale/*.json",
@@ -20,9 +19,20 @@
     "va",
     "README.md"
   ],
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "node smoke.mjs",
+    "check": "pnpm run typecheck && pnpm run build && pnpm run test"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "tsdown": "^0.23.0",
+    "typescript": "^7.0.2"
   }
 }

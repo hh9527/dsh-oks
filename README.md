@@ -28,7 +28,8 @@
 
 Node 按 URL 缓存 ESM 模块，所以：
 
-- 改 `index.js` / `time.js` / `skill.md` 后要**重启 web profile** 才加载新的模块代
+- 改 `src/` 下的源码后要重新 `pnpm run build`（产物是根目录的 `index.mjs`）；改
+  `index.mjs` / `skill.md` 后要**重启 web profile** 才加载新的模块代
   （`link:` 的好处是**不必重新安装**，重启即可；若用 `file:`，pnpm 会硬链接成拷贝，
   改源码不再生效）；
 - 改 profile 的 `cordis.patch.yml` 只会让 profile 重读**配置**。
@@ -100,7 +101,7 @@ key 模式，以及 `vocabulary`（哪些 kind 进词汇表、每类词条的归
 插件**自带**一份引导技能 `oks-query`：加载时通过 `ctx.skills.register()` 注册进 runtime 层，
 因此对**所有工作区**可见。
 
-- 正文是同目录的 `skill.md`（单一来源，元数据在 `index.js` 里）；
+- 正文是同目录的 `skill.md`（单一来源，元数据在 `src/index.ts` 里）；
 - runtime 的 rank 是 250，所以工作区自己的 `.dsh/skills`(100) 或 `.agents/skills`(200)
   **可以覆盖**它，用户级(400/500)覆盖不了——正好是"插件给默认引导、工作区可覆盖"；
 - 技能服务是**可选**依赖（用 `ctx.get` 取）：没有它时这些工具照常工作。
@@ -185,6 +186,22 @@ bin/telora -C <模型目录> build <模型名> --snapshot \
 装配就是那一条提示词，它的位置就是标记：此后每次拿到回答，插件都把标记之后的问答从
 模型可见表面收起——助手每轮只看到「词汇 + 工作方法 + 标记 + 当前这个问题」，而会话日志保持
 append-only，标记节点用 `sourceEventSeqs` 记下遮蔽范围。详见 [`va/`](va/README.md)。
+
+## 开发
+
+源码在 `src/`（TypeScript），构建产物是**包根的单一文件 `index.mjs`**——profile 里 `link:` 装的
+插件加载的就是它，所以**改完 `src/` 必须重新构建**：
+
+```sh
+pnpm install          # tsdown + typescript（只用于开发/构建）
+pnpm run typecheck    # tsc --noEmit，零报错
+pnpm run build        # tsdown → index.mjs（自包含，无相对导入）
+pnpm run check        # 上面两步 + 冒烟
+```
+
+构建用 [tsdown](https://tsdown.dev)（rolldown 系，和 DSH 自己 node 侧包的产物一致）。Node ≥ 22
+能直接跑 `.ts`，所以冒烟里对 `src/time.ts` 这类纯函数的单测不需要先构建；被测的插件本体仍然从
+`index.mjs` 导入（测的就是要发布的那份产物）。
 
 ## 本地冒烟测试（不安装）
 
