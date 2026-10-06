@@ -8,13 +8,13 @@ import type { Knowledge } from './knowledge.ts';
 import VA_PROMPT_TEXT from './va-prompt-tpl.md';
 
 // ── 词汇助手（va）的工作台 ────────────────────────────────────────────────────
-// 准备阶段一步：**一条提示词**（源码 `src/va-prompt-tpl.md`，词表插在它的占位符处）→ 它回"准备好了"。
-// **标记就是这条提示词**（记住它的 seq）：它之后的一切每轮都收回到这里，所以表面上永远
-// 不留"没被回答的问题"。词表是插件渲染好直接喂进去的，助手一个工具都没有——模型不搬运、
-// 不翻页、不检索、也不需要回答任何"读完了吗"的盘问。
+// 装配不产生任何回合：词表（`src/va-prompt-tpl.md` 的模板 + 整份词条）作为**系统提示词的一个
+// section** 注入助手的上下文，助手一个工具都没有——模型不搬运、不翻页、不检索，也没有"读完了吗"
+// 这个问题要回答。
 //
-// 此后每次咨询：插件把说法发过去、等到"我们那条消息"之后的回合结束、取回回答，然后把标记之后
-// 的表面节点收进一个标记节点（rewind）。所以助手每轮看到的都是「词汇 + 方法 + 标记 + 这个问题」。
+// 每个**说法**才是一次回合：插件把说法发过去、等到"我们那条消息"之后的回合结束、取回回答，
+// 然后把表面上的节点全部收进一个标记节点（rewind）。所以助手每次咨询看到的只有
+// 「系统提示词里的词表 + 一个标记 + 当前这个说法」——表面恒定，重放也确定。
 // 收起由插件主动做：拿到回答时助手是 idle，就顺手收；收不了（有回合在飞）就留到下一次提问之前补。
 //
 // 标记节点是一条**固定文本的用户消息**（与压缩用的形状相同）。这里不用空的 `system/message`：
@@ -24,6 +24,12 @@ import VA_PROMPT_TEXT from './va-prompt-tpl.md';
 // 记录自己遮蔽了哪些表面节点——审计与回放都不受影响，也没有任何前缀被复制。
 
 const VA_MARKER_TEXT = '（上文问答已收起）';
+/** 词表在助手**系统提示词**里的 section：名字与位置（人设 0 之后、平台策略 500 之前）。
+ *  `interpolate: false`——词表是逐字原文，不许被变量插值动过。 */
+const VA_VOCABULARY_SECTION = 'oks:vocabulary';
+const VA_VOCABULARY_SECTION_ORDER = 200;
+/** 表面起点：收起永远从 0 号节点之前开始算，所以"收掉全部、只留一个标记"是确定的。 */
+const VA_SURFACE_START = -1;
 /** `src/va-prompt-tpl.md` 里放词表的位置：插件在这行插入整份词汇。 */
 const VA_VOCABULARY_MARKER = '<!-- 词表 -->';
 
@@ -32,8 +38,8 @@ const VA_TITLE_PREFIX = '词汇助手（内部）';
 
 
 /** 助手的专属人设：否则它会继承调用方 preset 的人设——编码 agent 与业务问答 agent 都不对。 */
-const VA_PERSONA = '你是这个词表的词汇助手：提问者给一个说法（一个词、一个短语或一句话，中英不限），'
-  + '你回答这份词表里有哪些等价或相近的表达、各差在哪一维。词表由你读进来，只读不改；'
+const VA_PERSONA = '你是这份词表的词汇助手：提问者给一个说法（一个词、一个短语或一句话，中英不限），'
+  + '你回答词表里有哪些等价或相近的说法（逐字原文）。词表就在你的系统提示词里，只读不改；'
   + '你不回答业务问题，也不碰文件。';
 
 /** 助手的推理档位取值：模型适配器定义档位 id，插件只透传（'inherit' 表示跟着默认走）。 */
@@ -51,6 +57,10 @@ interface VaHelper {
   sessionId: string;
   agent: AgentLike;
   pending: number;
+  /** **不动的锚点**：表面起点之前（`VA_SURFACE_START`）。收起永远从它之后收，也就是"收掉全部"，
+   *  所以表面上恒定只剩一个标记。它一旦跟着新标记往后挪，旧标记就再也收不掉——会一行行堆起来。 */
+  anchorSeq: number;
+  /** 当前那个标记节点的 seq：只用来判断"除了它没有别的新节点"，不参与收起范围的计算。 */
   markerSeq: number;
 }
 
@@ -102,7 +112,7 @@ export function createVaRuntime({ ctx, log, config, knowledge }: {
     ? askedBudget
     : 600000;
   // 助手的推理档位：**默认 'off'**（deepseek 这套的取值是 off / low / high / max，off 即关掉思考）。
-  // 它的活儿是"从封闭集合里挑字符串、标注出处"——格式已经锁死，判断也只剩取舍；而实测一次咨询
+  // 它的活儿是"从封闭集合里挑字符串"——格式已经锁死，判断也只剩取舍；而实测一次咨询
   // 的时间 ≈ 输出 token × 3.9 ms，其中一半以上是看不见的思考。想跟着部署/模型默认走就写
   // `vaReasoningEffort: inherit`；想留一点思考就写 `low`。档位 id 由模型适配器定义，插件只透传。
   const vaReasoningEffort: VaReasoningEffort = (() => {
@@ -236,9 +246,12 @@ export function createVaRuntime({ ctx, log, config, knowledge }: {
     return { text: '', interrupted: false };
   };
 
-  /** 把 upToSeq 之后的表面节点收进一个标记节点——这就是 rewind。
-   *  有内容的系统消息留在原地（折叠只走连续的非系统节点段），别把宿主的提示词收掉。 */
-  const vaCollapse = (session: SessionLike, upToSeq: number): {
+  /** 把 anchorSeq 之后的表面节点收进一个标记节点——这就是 rewind。
+   *  有内容的系统消息留在原地（折叠只走连续的非系统节点段），别把宿主的提示词收掉；
+   *  系统提示词里的词表本来就不在表面上，天然不受影响。
+   *  `currentMarkerSeq` 是上一次收起留下的那个标记：只有它一个节点时说明没有新问答，直接跳过
+   *  （不白插一轮标记）；有新的东西时它跟新问答一起被收掉，所以表面上始终只有一个标记。 */
+  const vaCollapse = (session: SessionLike, anchorSeq: number, currentMarkerSeq: number): {
     shadowed: number;
     runs: number;
     startSeq: number;
@@ -246,10 +259,8 @@ export function createVaRuntime({ ctx, log, config, knowledge }: {
     markerSeq: number;
   } | null => {
     const nodes = session.surface?.nodes ?? [];
-    const start = nodes.findIndex((seq) => seq > upToSeq);
-    if (start === -1) return null;
-    const after = nodes.slice(start);
-    if (after.some((seq) => seq <= upToSeq)) return null;
+    const after = nodes.filter((seq) => seq > anchorSeq);
+    if (after.length === 0) return null;
     const isLiveSystem = (seq: number): boolean => {
       const event = typeof session.eventAt === 'function' ? session.eventAt(seq) : undefined;
       if (event?.type !== 'system/message') return false;
@@ -257,6 +268,12 @@ export function createVaRuntime({ ctx, log, config, knowledge }: {
       return Array.isArray(content)
         && content.some((block) => block?.type === 'text' && String(block.text ?? '').length > 0);
     };
+    // 只数**可收**的节点：系统提示词自己也是一条 surface 节点（平台给它的 surfaceOp 是 append），
+    // 它永远留在原地。所以"锚点之后只剩当前那个标记"要在排除它之后判断——否则每次提问前都会
+    // 把标记重写一遍（状态没错，但多一条收起事件、标记 seq 每次都变）。
+    const collapsible = after.filter((seq) => !isLiveSystem(seq));
+    if (collapsible.length === 0) return null;
+    if (collapsible.length === 1 && collapsible[0] === currentMarkerSeq) return null;
     const runs: number[][] = [];
     let run: number[] = [];
     for (const seq of after) {
@@ -296,9 +313,9 @@ export function createVaRuntime({ ctx, log, config, knowledge }: {
         return false;
       }
       if (helper?.agent?.status !== 'idle') return false;
-      const done = vaCollapse(helper.agent.session, helper.markerSeq);
+      const done = vaCollapse(helper.agent.session, helper.anchorSeq, helper.markerSeq);
       if (done !== null) {
-        // 标记往后挪到刚插入的那个节点：下一次没有新问答时，收起就是空操作，不会白插一轮标记。
+        // 只记下"当前标记是哪一个"，锚点不动——下次收起时它会被新问答一起收掉。
         helper.markerSeq = done.markerSeq;
         log(`[oks] rewind · 收起 ${done.shadowed} 个表面节点（${done.runs} 段，seq ${done.startSeq}-${done.endSeq} → 标记 ${done.markerSeq}）`);
       }
@@ -350,6 +367,19 @@ export function createVaRuntime({ ctx, log, config, knowledge }: {
     const presets = caller.ctx?.get?.('agentPresets');
     const composed = typeof presets?.composedPreset === 'function' ? presets.composedPreset(caller.ctx) : undefined;
     log(`[oks] vocabulary helper preset · ${typeof composed === 'string' && composed.length > 0 ? composed : `${vaPreset} (fallback)`}`);
+    let helper: VaHelper | undefined;
+    try {
+    // 词表在**建助手之前**就渲染好：它是助手的系统提示词内容，不是一次对话——所以没有
+    // "喂词表"那个回合，也没有"它读完了吗"这个问题。模型不搬运任何东西。
+    const entry = knowledge.ensureWorkspace({ agent: { session: caller.session } });
+    const index = await knowledge.ensureIndex(entry);
+    const vocabulary = renderWholeVocabulary(index);
+    const template = VA_PROMPT;
+    if (!template.includes(VA_VOCABULARY_MARKER)) {
+      throw new Error(`dsh-oks: src/va-prompt-tpl.md 里没有 ${VA_VOCABULARY_MARKER} 占位符，词表无处可插。`);
+    }
+    const feed = template.replace(VA_VOCABULARY_MARKER, vocabulary);
+    log(`[oks] vocabulary → helper system prompt · ${index.terms.length} 条 · ${Buffer.byteLength(feed, 'utf8')} 字节`);
     const handle = await agents.create({
       sessionId,
       meta: {
@@ -369,15 +399,23 @@ export function createVaRuntime({ ctx, log, config, knowledge }: {
         service.composeFrom(agentCtx, caller.ctx);
         const prompt = agentCtx.systemPrompt;
         if (!prompt || typeof prompt.section !== 'function') {
-          throw new Error('dsh-oks: 这个组合里没有 systemPrompt 服务，换不上词汇助手自己的人设。');
+          throw new Error('dsh-oks: 这个组合里没有 systemPrompt 服务，放不进词汇助手的词表与人设。');
         }
         prompt.section({
           name: 'deployment:persona-prefix',
           order: typeof prompt.getSectionOrder === 'function' ? prompt.getSectionOrder('DEPLOYMENT_PERSONA_PREFIX') : 0,
           text: VA_PERSONA,
         });
-        // 助手要做的事只有一件：拿着喂给它的整份词表做法说对照。词表是插件渲染好**直接作为
-        // 提示词**给它的，所以它一个工具都不需要——全都收掉（免得它去"核实"：实测它一旦能检索，
+        // 词表本身也进系统提示词：它是**内容**，不是一轮对话。`interpolate: false` 是因为词表
+        // 必须逐字送到模型面前，不许被任何变量插值动过。
+        prompt.section({
+          name: VA_VOCABULARY_SECTION,
+          order: VA_VOCABULARY_SECTION_ORDER,
+          text: feed,
+          interpolate: false,
+        });
+        // 助手要做的事只有一件：拿着系统提示词里的整份词表做法说对照。词表是插件渲染好**直接
+        // 写进它的系统提示词**的，所以它一个工具都不需要——全都收掉（免得它去"核实"：实测它一旦能检索，
         // 一次咨询就从 9 秒涨到 26 秒；而让它自己用工具读整份词表，还会按条数算术翻页漏读）。
         const tools = agentCtx.tools;
         if (typeof tools?.restrict !== 'function') {
@@ -391,9 +429,15 @@ export function createVaRuntime({ ctx, log, config, knowledge }: {
       },
       signal,
     });
-    // 装配顺序与原来一致：先登记 pending 占位，落地后再写 markerSeq；这里断言形状，
-    // 让取用方不必到处判 undefined（markerSeq 只在设置之后才被读）。
-    const helper = { sessionId, agent: handle.agent, pending: 0 } as VaHelper;
+    // 表面上还没有任何节点：锚点与"当前标记"都落在起点之前，所以第一次收起就是
+    // "收掉全部、留下一个标记"，此后每次咨询都回到同一个形状。
+    helper = {
+      sessionId,
+      agent: handle.agent,
+      pending: 0,
+      anchorSeq: VA_SURFACE_START,
+      markerSeq: VA_SURFACE_START,
+    };
     vaHelpers.set(key, helper);
     const session = helper.agent.session;
     // 给助手会话写一个**日志级**标题（`session/title` 只进日志，不进模型表面）：归档列表里一眼
@@ -406,32 +450,13 @@ export function createVaRuntime({ ctx, log, config, knowledge }: {
     } else {
       log('[oks] no sessionTitle service; the vocabulary helper stays untitled');
     }
-    try {
-      // 整份词表由插件渲染成一条消息：角色与读法 + 全部词条 + 回答方法。模型不搬运任何东西，
-      // 所以"读完没有"不需要问它——插件知道自己发了什么。
-      const entry = knowledge.ensureWorkspace({ agent: { session: caller.session } });
-      const index = await knowledge.ensureIndex(entry);
-      const vocabulary = renderWholeVocabulary(index);
-      const template = VA_PROMPT;
-      if (!template.includes(VA_VOCABULARY_MARKER)) {
-        throw new Error(`dsh-oks: src/va-prompt-tpl.md 里没有 ${VA_VOCABULARY_MARKER} 占位符，词表无处可插。`);
-      }
-      const feed = template.replace(VA_VOCABULARY_MARKER, vocabulary);
-      log(`[oks] vocabulary fed · ${index.terms.length} 条 · ${Buffer.byteLength(feed, 'utf8')} 字节 · 一条消息`);
-      const read = await vaSendAndWait(helper, vaMessage(feed), signal, vaBudgetMs, '词汇助手收词表');
-      vaRequireCompleted(read.reason, '词汇助手收词表');
-      // **标记就是这条提示词**：它之后的一切（那句"准备好了"、以及此后每轮的问答）都在拿到
-      // 回答后收回到这里。所以表面上永远不留"没被回答的问题"——助手每轮看到的只有
-      // 「词表与方法 + 标记 + 当前这个问题」。
-      helper.markerSeq = read.sentSeq;
-      vaTryRewind(helper);
-      await vaArchive(sessionId); // 装配完就归档：从"就绪"到"第一次被咨询"之间不该出现在活跃列表里
+    await vaArchive(sessionId); // 装配完就归档：从"就绪"到"第一次被咨询"之间不该出现在活跃列表里
     } catch (cause) {
-      vaHelpers.delete(key);
+      if (helper !== undefined) vaHelpers.delete(key);
       void vaArchive(sessionId);
       throw new Error(`dsh-oks: 词汇助手没有装配起来：${errorText(cause)}`);
     }
-    log(`[oks] vocabulary helper ready · ${sessionId} · 标记 seq ${helper.markerSeq}`);
+    log(`[oks] vocabulary helper ready · ${sessionId} · 词表在系统提示词里`);
     return helper;
   });
 

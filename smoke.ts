@@ -290,11 +290,7 @@ const renderSurface = (session, nodes = session.surface.nodes) => nodes.map((seq
   return null;
 }).filter((line) => line !== null);
 /** 到最后一个标记节点为止的可见前缀（冻结前缀缓存要保的就是这一段）。 */
-const markerPrefix = (session, nodes = session.surface.nodes) => {
-  const lines = renderSurface(session, nodes);
-  const at = lines.lastIndexOf(`user:${VA_MARKER_TEXT}`);
-  return lines.slice(0, at + 1).join('\n');
-};
+
 const collapseEvents = (session) => session.entries.filter((event) => event.surfaceOp?.op === 'replace');
 const surfaceHas = (session, seq) => session.surface.nodes.includes(seq);
 
@@ -304,7 +300,7 @@ const surfaceHas = (session, seq) => session.surface.nodes.includes(seq);
 // （`foreignTurn`）、让第 N 条之后的发送收不到 turn/end（`stuck` / `stuckAfter`）、或在某个说法的
 // 回合中间播一条有内容的系统消息（`systemAfter`）。
 // 每条 followup 之前记一份表面快照（nodes），用来检查"提问前"模型看到的前缀。
-const makeVaAskHarness = ({ agents = true, config = {}, stuck = false, stuckAfter = null, systemAfter = null, sessionTitle = true } = {}) => {
+const makeVaAskHarness = ({ agents = true, config = {}, stuck = false, stuckAfter = null, systemAfter = null, sessionTitle = true, createFailsOnce = false } = {}) => {
   // stuck 从第一条就卡；stuckAfter=N 表示前 N 条正常收场、第 N+1 条起卡住。
   let stuckFrom = stuck === true ? 0 : (stuckAfter ?? Number.POSITIVE_INFINITY);
   const tools = new Map();
@@ -324,6 +320,7 @@ const makeVaAskHarness = ({ agents = true, config = {}, stuck = false, stuckAfte
   const composeCalls = [];
   const agentPresetsStub = { composeFrom: (target, source) => { composeCalls.push([target, source]); } };
   const personaSections = [];
+  const promptSections = [];
   const sessionTitleCalls = [];
   const sessionTitleStub = {
     get: (session) => { sessionTitleCalls.push(['get', session]); return { title: '上个月丢包排查' }; },
@@ -333,12 +330,23 @@ const makeVaAskHarness = ({ agents = true, config = {}, stuck = false, stuckAfte
   const restrictions = [];
   const agentCtx = {
     get: (name) => (name === 'agentPresets' ? agentPresetsStub : undefined),
-    systemPrompt: { section: (section) => { personaSections.push(section); }, getSectionOrder: () => 0 },
+    systemPrompt: {
+      section: (section) => {
+        promptSections.push(section);
+        if (section.name === 'deployment:persona-prefix') personaSections.push(section);
+      },
+      getSectionOrder: () => 0,
+    },
     tools: { restrict: (filter) => { restrictions.push(filter); return () => {}; } },
   };
+  let failNextCreate = createFailsOnce;
   const agentsService = agents ? {
     create: async (options) => {
       created.push(options);
+      if (failNextCreate) {
+        failNextCreate = false;
+        throw new Error('create 失败（测试用）');
+      }
       const entries = [];
       const sessionAppends = [];
       const session = {
@@ -354,7 +362,11 @@ const makeVaAskHarness = ({ agents = true, config = {}, stuck = false, stuckAfte
           entries.push(event);
           sessionAppends.push({ type, data });
           const op = options2?.surfaceOp;
-          if (op !== undefined && typeof op === 'object' && op.op === 'replace') {
+          // 宿主的规则（@deepseek-ai/dsh-session）：`isSurfaceEvent = event.surfaceOp !== undefined`
+          // ——没有 surfaceOp 的事件只是日志事件，不进模型可见表面。这里必须照抄这条规则，
+          // 否则 sandbox/mode、approval/policy 这类元数据会被误当成表面节点。
+          if (op === undefined) return event;
+          if (typeof op === 'object' && op.op === 'replace') {
             const { startSeq, endSeq } = op;
             for (let at = this.surface.nodes.length - 1; at >= 0; at -= 1) {
               const seq = this.surface.nodes[at];
@@ -367,6 +379,14 @@ const makeVaAskHarness = ({ agents = true, config = {}, stuck = false, stuckAfte
           return event;
         },
       };
+      // 真实宿主会把装配好的系统提示词作为一条 `system/message`（surfaceOp: append）放进表面，
+      // 它和我们后面插入的标记一样，都是"不可收"的节点。假宿主照抄这一条，否则测不出
+      // "提问前那次收起应该跳过"。
+      session.append('system/message', {
+        turn: 0,
+        step: 0,
+        message: { id: `sys-prompt-${entries.length}`, role: 'system', content: [{ type: 'text', text: '（测试用）系统提示词' }] },
+      }, { surfaceOp: 'append' });
       sessions.push(session);
       helperAppends.push(sessionAppends);
       options.setup?.(agentCtx, { session });
@@ -428,7 +448,7 @@ const makeVaAskHarness = ({ agents = true, config = {}, stuck = false, stuckAfte
   }, config);
   disposers.push(...localDisposers);
   return {
-    tools, created, followups, registryCalls, composeCalls, personaSections, helperAppends, restrictions,
+    tools, created, followups, registryCalls, composeCalls, personaSections, promptSections, helperAppends, restrictions,
     sessions, snapshots, logs, timeline, sessionTitleCalls,
     cancelNext: () => { cancelNext = true; },
     foreignTurn: () => { foreignNext = true; },
@@ -500,16 +520,24 @@ console.log('=== va_ask：准备阶段（一条词表提示词 + 收起 + 标记
     && String(renames[0]?.[2] ?? '').includes('上个月丢包排查'));
   const titleAt = harness.timeline.findIndex((step) => step.kind === 'rename');
   const firstPromptAt = harness.timeline.findIndex((step) => step.kind === 'followup');
-  ok('标题设置发生在第一条提示词之前', titleAt !== -1 && firstPromptAt !== -1 && titleAt < firstPromptAt);
+  ok('标题设置发生在第一次提问之前', titleAt !== -1 && firstPromptAt !== -1 && titleAt < firstPromptAt);
 
-  // 准备阶段两步：① 一条提示词（角色与读法 + 整份词表 + 回答方法）② 握手问题（默认问条数）。
-  const feed = harness.followups[0] ?? '';
-  ok('第一条提示词就是整份词表（角色 + 词条 + 方法，一条消息）',
-    /# 你的任务/.test(feed) && /接近的词条/.test(feed) && /准备好了/.test(feed)
+  // 装配**不发任何消息**：词表（模板 + 整份词条）是助手**系统提示词**里的一个 section，
+  // 所以既没有"喂词表"那个回合，也没有"它读完的回执"。断言只盯机制，不盯提示词措辞。
+  const vocabSection = harness.promptSections.find((section) => section.name === 'oks:vocabulary');
+  const feed = String(vocabSection?.text ?? '');
+  const tpl = readFileSync(new URL('./src/va-prompt-tpl.md', import.meta.url), 'utf8');
+  const [tplHead = '', tplTail = ''] = tpl.split('<!-- 词表 -->');
+  // 模板以占位符收尾时，词表之后就没有别的正文了——两种形状都算对。
+  const tailProbe = tplTail.trim().slice(0, 30);
+  ok('词表是助手系统提示词里的一个 section（模板占位符处插入整份词条）',
+    vocabSection !== undefined
+    && feed.includes(tplHead.trim()) && (tailProbe === '' || feed.includes(tailProbe))
     && Buffer.byteLength(feed, 'utf8') > 20000);
-  ok('词条以固定的一行一条格式喂进去（含 owner / aliases 段）',
-    feed.split('\n').filter((line) => /^\S+ · \S+/.test(line)).length > 20);
-  ok('装配只发一条消息（那条词表提示词）', harness.followups.length === 2);
+  ok('词表 section 关掉变量插值（逐字原文）', vocabSection?.interpolate === false);
+  ok('词条以文档格式一行一条（"<key>" "<name>" [aliases] "<doc>"）',
+    feed.split('\n').filter((line) => /^".*" ".*" \[.*\] "/.test(line)).length > 20);
+  ok('装配不发消息：followup 只有那次提问', harness.followups.length === 1 && harness.followups[0] === '丢包');
   ok('返回的 helper 是那个助手会话', first.helper === harness.created[0].sessionId);
   ok('返回的 answer 含这个说法', String(first.answer).includes('丢包'));
   // 装配完先归档一次（就绪到第一次被咨询之间不该在活跃列表里），咨询时先恢复、最后再归档。
@@ -522,37 +550,24 @@ console.log('=== va_ask：准备阶段（一条词表提示词 + 收起 + 标记
   const rendered = tool.output.render({ query: '丢包' }, first).map((block) => block.text ?? '').join('');
   ok('工具结果渲染出回答文本', /丢包/.test(rendered));
 
-  // 那条词表提示词就是标记：它的回答（"准备好了"）立刻被收进一个固定文本的标记节点。
+  // 表面上没有"喂词表"的痕迹：第一次收起就是把 [提问, 回答] 收成一个标记。
   const session = harness.sessions[0];
-  const warmup = session.entries.find((event) => event.type === 'user/message'
-    && messageText(event.data) === harness.followups[0]);
-  ok('词表提示词真的落到了助手的会话表面', warmup !== undefined);
-  const warmupAnswer = session.entries.find((event) => event.seq > warmup.seq && event.type === 'assistant/message');
-  const firstCollapse = collapseEvents(session)[0];
-  ok('提示词答完发生了一次收起，范围从回答起', firstCollapse !== undefined
-    && firstCollapse.surfaceOp.startSeq === warmupAnswer.seq
-    && firstCollapse.sourceEventSeqs.includes(warmupAnswer.seq));
-  ok('收起后的标记是一条固定文本的用户消息', firstCollapse?.type === 'user/message'
-    && messageText(firstCollapse.data) === VA_MARKER_TEXT);
-  ok('那句「准备好了」不在 surface.nodes 里了', !surfaceHas(session, warmupAnswer.seq));
-  ok('表面里有一条文本为（上文问答已收起）的 user/message',
-    session.surface.nodes.some((seq) => {
-      const event = session.eventAt(seq);
-      return event?.type === 'user/message' && messageText(event.data) === VA_MARKER_TEXT;
-    }));
-  // 收起后标记挪到刚插入的标记节点；判据是 `seq > markerSeq`，所以标记之前那条握手消息留在原地，
-  // 收起的起点是它之后的回答。
-  const markerSeq = Number(/标记 seq (\d+)/.exec(harness.logs.join('\n'))?.[1] ?? -1);
-  ok('日志里的标记 seq 就是收起后插入的标记节点', markerSeq === firstCollapse?.seq);
-  ok('收起的起点紧跟在提示词之后', firstCollapse?.surfaceOp.startSeq === warmupAnswer.seq
-    && warmup.seq < firstCollapse.seq);
-
-  // 一次咨询之后：我们的消息与回答都从表面收起，末尾是标记节点。
   const query = session.entries.find((event) => event.type === 'user/message' && messageText(event.data) === '丢包');
   const answer = session.entries.find((event) => event.seq > query.seq && event.type === 'assistant/message');
-  ok('一次 va_ask 之后问答都不在 surface.nodes 里', !surfaceHas(session, query.seq) && !surfaceHas(session, answer.seq));
-  const lastNode = session.eventAt(session.surface.nodes.at(-1));
-  ok('表面末尾是标记节点', lastNode?.type === 'user/message' && messageText(lastNode.data) === VA_MARKER_TEXT);
+  const firstCollapse = collapseEvents(session)[0];
+  ok('一次咨询后收起的范围就是[提问, 回答]', firstCollapse !== undefined
+    && firstCollapse.surfaceOp.startSeq === query.seq
+    && firstCollapse.surfaceOp.endSeq === answer.seq
+    && firstCollapse.sourceEventSeqs.includes(query.seq)
+    && firstCollapse.sourceEventSeqs.includes(answer.seq));
+  ok('收起插入的标记是一条固定文本的用户消息', firstCollapse?.type === 'user/message'
+    && messageText(firstCollapse.data) === VA_MARKER_TEXT);
+  ok('咨询后问答都不在 surface.nodes 里', !surfaceHas(session, query.seq) && !surfaceHas(session, answer.seq));
+  const surfaceTexts = session.surface.nodes.map((seq) => messageText(session.eventAt(seq)?.data));
+  ok('咨询后表面上只剩系统提示词 + 一个标记（系统提示词没被收掉）',
+    session.surface.nodes.length === 2
+    && surfaceTexts.filter((text) => text === VA_MARKER_TEXT).length === 1
+    && surfaceTexts.some((text) => /（测试用）系统提示词/.test(text)));
   ok('日志一条不少（问答原样保留）', session.entries.some((event) => event.seq === query.seq)
     && session.entries.some((event) => event.seq === answer.seq));
 }
@@ -574,16 +589,23 @@ console.log('=== va_ask：第二次咨询复用助手 + 冻结前缀 ===');
   const second = await tool.execute({ query: '端口压力' }, vaExec());
   ok('第一次回答含第一个说法', String(first.answer).includes('丢包'));
   ok('第二次咨询复用同一个助手', harness.created.length === 1);
-  ok('第三条 followup 是第二个说法', harness.followups[2] === '端口压力');
+  ok('第二次 followup 是第二个说法', harness.followups[1] === '端口压力');
   ok('第二次回答含第二个说法', String(second.answer).includes('端口压力'));
   const session = harness.sessions[0];
   const snapshotOf = (text) => harness.snapshots.filter((item) => item.text === text).at(-1);
-  const prefixFirst = markerPrefix(session, snapshotOf('丢包')?.nodes);
-  const prefixSecond = markerPrefix(session, snapshotOf('端口压力')?.nodes);
-  ok('两次提问前的冻结前缀一致（到标记节点为止）',
-    prefixFirst.length > 0 && prefixSecond.startsWith(prefixFirst));
-  ok('冻结前缀里含喂进去的词表 / 方法 / 标记',
-    /# 你的任务/.test(prefixFirst) && /准备好了/.test(prefixFirst) && prefixFirst.includes(VA_MARKER_TEXT));
+  const textAt = (seq) => messageText(session.eventAt(seq)?.data);
+  const beforeFirst = snapshotOf('丢包')?.nodes ?? [];
+  const beforeSecond = snapshotOf('端口压力')?.nodes ?? [];
+  ok('第一次提问前表面上只有系统提示词（词表在系统提示词里，不在表面上）',
+    beforeFirst.length === 1 && /（测试用）系统提示词/.test(textAt(beforeFirst[0])));
+  ok('第二次提问前表面是系统提示词 + 一个标记',
+    beforeSecond.length === 2
+    && beforeSecond.filter((seq) => textAt(seq) === VA_MARKER_TEXT).length === 1);
+  // 收起若把锚点往后挪，每咨询一次表面上就多堆一个标记——这条就是盯它（曾经漏过）。
+  const visibleMarkers = session.surface.nodes.filter((seq) => textAt(seq) === VA_MARKER_TEXT);
+  ok('两次咨询之后可见表面上只有一个标记', visibleMarkers.length === 1);
+  // 系统提示词那条不可收，所以"提问前"那次收起必须是空操作——一共只该有两次收起（每次咨询一次）。
+  ok('两次咨询一共只发生两次收起（提问前那次跳过）', collapseEvents(session).length === 2);
 }
 
 console.log('=== va_ask：有回合在飞时不收（status 辅助判据）===');
@@ -639,7 +661,7 @@ console.log('=== va_ask：并发（不同说法 → 装配一次 + 排队咨询�
   ]);
   ok('并发两次只装配一个助手', harness.created.length === 1);
   ok('两次都拿到回答', /丢包/.test(first?.answer ?? '') && /端口压力/.test(second?.answer ?? ''));
-  ok('两次咨询按到达顺序排队', harness.followups.slice(1).join(',') === '丢包,端口压力');
+  ok('两次咨询按到达顺序排队', harness.followups.join(',') === '丢包,端口压力');
   ok('每条咨询结束后都归档（外加装配完那一次）',
     harness.registryCalls.filter((call) => call[0] === 'archiveSession').length === harness.created.length + 2);
 }
@@ -670,9 +692,8 @@ console.log('=== va_ask：有外来回合在飞时，回答仍然是我们的 ==
 
 console.log('=== va_ask：装配失败后的状态 ===');
 {
-  const harness = makeVaAskHarness();
+  const harness = makeVaAskHarness({ createFailsOnce: true });
   const tool = harness.tools.get('va_ask');
-  harness.cancelNext(); // 第一条提示词那一轮以 cancelled 收场
   const failed = await refusalOf(() => tool.execute({ query: '丢包' }, vaExec()));
   ok('装配失败明确报错', /没有装配起来/.test(failed ?? ''));
   ok('装配失败会把那条助手会话归档',
@@ -696,9 +717,9 @@ console.log('=== va_ask：回合卡住超时 → 丢掉助手重建，且不收�
 
 console.log('=== va_ask：还有没被回答的发送时不收（pending 主判据）===');
 {
-  // 前 3 条（准备阶段）正常收场，之后所有发送都卡住：先跑的两条并发咨询都超时，
+  // 所有发送都卡住（装配不发消息了，所以第一条 followup 就是提问）：先跑的两条并发咨询都超时，
   // 第二条在提问前试收时看到前一条的 pending 还是 1，于是跳过——这就是计数语义。
-  const harness = makeVaAskHarness({ config: { vaAskTimeoutMs: 5 }, stuckAfter: 1 });
+  const harness = makeVaAskHarness({ config: { vaAskTimeoutMs: 5 }, stuckAfter: 0 });
   const tool = harness.tools.get('va_ask');
   const [first, second] = await Promise.all([
     refusalOf(() => tool.execute({ query: '丢包' }, vaExec())),
@@ -708,7 +729,7 @@ console.log('=== va_ask：还有没被回答的发送时不收（pending 主判�
   ok('pending 不为 0 时写下跳过收起的日志',
     harness.logs.some((line) => /rewind skipped · 还有 1 条没被回答的发送/.test(line)));
   const session = harness.sessions[0];
-  ok('卡住期间没有发生新的收起事件', collapseEvents(session).length === 1);
+  ok('卡住期间没有发生任何收起事件', collapseEvents(session).length === 0);
   const stuckSeqs = session.entries
     .filter((event) => event.type === 'user/message' && ['丢包', '端口压力'].includes(messageText(event.data)))
     .map((event) => event.seq);

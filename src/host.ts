@@ -76,7 +76,7 @@ export interface WorkspaceRegistry {
 }
 
 export interface SystemPromptService {
-  section(options: { name: string; order: number; text: string }): void;
+  section(options: { name: string; order: number; text: string; interpolate?: boolean }): void;
   getSectionOrder(name: string): number;
 }
 

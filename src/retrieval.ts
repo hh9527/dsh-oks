@@ -16,8 +16,6 @@ const SEARCH_BUDGET_CHARS = 5600;
 const REFERENCE_BUDGET_CHARS = 5600;
 // 词汇表出口：整页（首行 + 词条行 + 页脚）的 UTF-8 字节数留在 6000 以内，装页时先扣掉
 // 首行与页脚的余量。按字节算是因为页里会有中文 alias/doc——同一个页在字符口径下只会更小。
-// 一条词条的说明最多给这么多字符：一页要装下尽量多的词条，doc 是补充不是主体。
-const VOCABULARY_DOC_CHARS = 200;
 const FACET_DATASET_CHARS = 300;
 export const REFERENCE_KINDS = ['Member', 'Traversable', 'Related'];
 
@@ -397,54 +395,17 @@ export function referencesOf(index: RetrievalIndex, args: ReferencesArgs | null 
   return { key, start: skip, total, more: remaining > 0 ? remaining : null, references: rows };
 }
 
-/** 词汇表出口的一条：kind / name / aliases / doc，声明了 owner 就带 owner 字段。 */
-interface VocabularyEntry {
-  kind: string;
-  name: string;
-  aliases: string[];
-  doc: string;
-  [key: string]: unknown;
-}
-
-/** 一条词条 → 词汇表出口的一条：kind / name / aliases / doc，声明了 owner 就带 owner 字段。
- *  aliases 全给（它是这个出口的主要价值）；doc 是给"区分同名词条"用的，截到 DOC_CHARS。 */
-function vocabularyEntry(term: Term): VocabularyEntry {
-  const entry: VocabularyEntry = {
-    kind: term.kind,
-    name: term.name,
-    aliases: term.aliases,
-    doc: capLine(oneLineText(term.doc), VOCABULARY_DOC_CHARS),
-  };
-  if (term.owner !== null) entry[term.owner] = term.ownerValue;
-  return entry;
-}
-
-// 词条里除协议字段外至多一个字段——它是该词条的归属，字段名由词汇表声明。
-const VOCABULARY_FIELDS = new Set(['kind', 'name', 'aliases', 'doc']);
-const vocabularyOwner = (entry: VocabularyEntry): string => {
-  for (const [name, value] of Object.entries(entry)) if (!VOCABULARY_FIELDS.has(name)) return `[${value}]`;
-  return '';
-};
-
-/** 词条行：` · ` 连接的 kind / name / [owner] / 全部 aliases。aliases 为空时 doc 是唯一能
- *  区分它的文本，再附一行。装页与渲染用的是同一份行，所以"整条截止"不会截到半条。 */
-function vocabularyEntryLines(entry: VocabularyEntry): string[] {
-  const parts = [entry.kind, entry.name];
-  const owner = vocabularyOwner(entry);
-  if (owner !== '') parts.push(owner);
-  parts.push(...entry.aliases);
-  const lines = [parts.join(' · ')];
-  if (entry.aliases.length === 0 && entry.doc !== '') lines.push(`    ${entry.doc}`);
-  return lines;
-}
-
-/** 整份词汇：按 key 排序（确定，翻页不重、不漏）→ 按字节装页（整条截止）。
- *  与检索不同，这里不筛不排：用途是把整份词汇原样交给词汇助手，而不是在工作会话里筛着看。 */
-/** 整份词汇一次性渲染：一行一条、无页眉页脚。插件把它作为**一条消息**喂进助手的上下文，
- *  所以这里没有分页、没有游标、也没有"下一页"——模型不做任何搬运。 */
+/** 整份词汇一次性渲染：按 key 升序、一行一条 `"<key>" "<name>" [<aliases>] "<doc>"`（每个字段
+ *  json 风格编码，aliases 是数组，doc 按词表原文给、只压成一行）。
+ *  插件把它作为**一条消息**喂进助手的上下文——没有页眉页脚、没有分页、没有游标，模型不做任何搬运。 */
 export function renderWholeVocabulary(index: RetrievalIndex): string {
   const sorted = [...index.terms].sort((left, right) => left.key.localeCompare(right.key, 'en'));
-  return sorted.map((term) => vocabularyEntryLines(vocabularyEntry(term)).join('\n')).join('\n');
+  return sorted.map((term) => [
+    JSON.stringify(term.key),
+    JSON.stringify(term.name),
+    JSON.stringify(term.aliases),
+    JSON.stringify(oneLineText(term.doc)),
+  ].join(' ')).join('\n');
 }
 
 export function renderSearch(_args: unknown, value: SearchResult): RenderBlock[] {
