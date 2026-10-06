@@ -9,12 +9,13 @@
 // 被测工作区默认取**当前目录**（必须有 oks.json，否则明确报错），也可用环境变量指定：
 //   cd /path/to/workspace && node /path/to/dsh-oks/smoke.ts
 //   OKS_WORKSPACE=/path/to/workspace node smoke.ts
-import { apply } from './index.mjs';
+import { apply } from './dist/index.mjs';
 import { applyOps, encode, parseMoment } from './src/time.ts';
 import { singleFlight } from './src/single-flight.ts';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const DEV_ROOT = process.env.OKS_WORKSPACE ?? process.cwd();
 const SCRATCH = `${DEV_ROOT}/.oks-smoke`;
@@ -121,14 +122,14 @@ mkdirSync(NOWHERE, { recursive: true });
 // ── 自带技能 ────────────────────────────────────────────────────────────────
 console.log('=== 自带技能（注册进 runtime 层，所有工作区可见）===');
 {
-  const body = readFileSync(new URL('./skill.md', import.meta.url), 'utf8');
+  const body = readFileSync(new URL('./src/skill.md', import.meta.url), 'utf8');
   const skill = skillsRegistered[0];
   console.log(`  注册次数 ${skillsRegistered.length} ${skillsRegistered.length === 1 ? '✓' : '✗'}`);
   if (skill === undefined) throw new Error('没有注册任何技能');
   console.log(`  name=${skill.name} · source=${skill.source} · ${Buffer.byteLength(skill.content, 'utf8')} 字节`);
   console.log(`  名字合法(kebab): ${/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(skill.name) ? '✓' : '✗'}`
     + ` · 描述非空: ${String(skill.description ?? '').length > 0 ? '✓' : '✗'}`);
-  console.log(`  正文 = skill.md 原文: ${skill.content === body ? '✓' : '✗'}`);
+  console.log(`  正文 = src/skill.md 原文: ${skill.content === body ? '✓' : '✗'}`);
   console.log(`  正文不含具体领域名: ${/\bic\b|icloud/i.test(skill.content) ? '✗' : '✓'}`);
 }
 
@@ -1232,6 +1233,40 @@ console.log('=== 查询超时 + 复活（queryTimeoutMs=1）===');
   };
   console.log(`  第 1 次: ${await attempt()}`);
   console.log(`  第 2 次: ${await attempt()}`);
+}
+
+// ── 自包含：产物单独一个文件就能用 ───────────────────────────────────────────
+// 提示词（src/skill.md / src/va-prompt-tpl.md）在构建期内联进产物，所以 dist/index.mjs **不需要任何旁文件**：
+// 这里把它单独复制到一个空目录（没有 va/、没有 skill.md、没有 node_modules）再加载。
+console.log('=== 自包含（把 dist/index.mjs 单独放进空目录）===');
+{
+  mkdirSync(SCRATCH, { recursive: true });
+  const alone = mkdtempSync(join(SCRATCH, 'alone-'));
+  try {
+    const copy = join(alone, 'index.mjs');
+    copyFileSync(new URL('./dist/index.mjs', import.meta.url), copy);
+    const mod = await import(pathToFileURL(copy).href);
+    const captured = [];
+    mod.apply({
+      logger: { info: () => {} },
+      get: (name) => (name === 'skills'
+        ? { register: (skill) => { captured.push(skill); return () => {}; } }
+        : undefined),
+      tools: { register: () => () => {} },
+      // effect 的回调必须真的执行：技能注册就在里面（收 dispose 即可）。
+      effect: (fn) => { const dispose = fn(); return typeof dispose === 'function' ? dispose : () => {}; },
+      on: () => () => {},
+    }, {});
+    ok('空目录里只放一个 dist/index.mjs 就能加载', typeof mod.apply === 'function' && captured.length === 1);
+    ok('技能正文来自内联（与 src/skill.md 逐字一致）',
+      captured[0]?.content === readFileSync(new URL('./src/skill.md', import.meta.url), 'utf8'));
+    const text = readFileSync(copy, 'utf8');
+    ok('助手提示词也内联在产物里（占位符在同一份源码里）',
+      text.includes('<!-- 词表 -->')
+      && readFileSync(new URL('./src/va-prompt-tpl.md', import.meta.url), 'utf8').includes('<!-- 词表 -->'));
+  } finally {
+    rmSync(alone, { recursive: true, force: true });
+  }
 }
 
 for (const dispose of disposers.reverse()) dispose();

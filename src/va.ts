@@ -1,14 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { singleFlight } from './single-flight.ts';
 import { renderWholeVocabulary } from './retrieval.ts';
 import { errorText, isRecord } from './host.ts';
 import type { AgentLike, LogFn, PluginContext, RenderBlock, SessionLike, SessionMessage } from './host.ts';
 import type { PluginConfig } from './config.ts';
 import type { Knowledge } from './knowledge.ts';
+import VA_PROMPT_TEXT from './va-prompt-tpl.md';
 
 // ── 词汇助手（va）的工作台 ────────────────────────────────────────────────────
-// 准备阶段一步：**一条提示词**（`va/prompt.md`，词表插在它的占位符处）→ 它回"准备好了"。
+// 准备阶段一步：**一条提示词**（源码 `src/va-prompt-tpl.md`，词表插在它的占位符处）→ 它回"准备好了"。
 // **标记就是这条提示词**（记住它的 seq）：它之后的一切每轮都收回到这里，所以表面上永远
 // 不留"没被回答的问题"。词表是插件渲染好直接喂进去的，助手一个工具都没有——模型不搬运、
 // 不翻页、不检索、也不需要回答任何"读完了吗"的盘问。
@@ -24,7 +24,7 @@ import type { Knowledge } from './knowledge.ts';
 // 记录自己遮蔽了哪些表面节点——审计与回放都不受影响，也没有任何前缀被复制。
 
 const VA_MARKER_TEXT = '（上文问答已收起）';
-/** `va/prompt.md` 里放词表的位置：插件在这行插入整份词汇。 */
+/** `src/va-prompt-tpl.md` 里放词表的位置：插件在这行插入整份词汇。 */
 const VA_VOCABULARY_MARKER = '<!-- 词表 -->';
 
 /** 助手会话的日志级标题前缀：归档列表里认得出、将来也按它找回。 */
@@ -63,15 +63,9 @@ export interface VaRuntime {
   ask(caller: AgentLike, key: string, query: string, signal?: AbortSignal): Promise<AskResult>;
 }
 
-/** 词汇助手自己的两条提示词。装配时由插件直接发出去——不经过人，也不经过主 agent。
- *  产物的 va/ 与 index.mjs 同在包根，所以是 `./va/`。 */
-function readVaPrompt(name: string): string {
-  try {
-    return readFileSync(new URL(`./va/${name}`, import.meta.url), 'utf8').trim();
-  } catch (cause) {
-    throw new Error(`dsh-oks: 读不到词汇助手的提示词 va/${name}：${errorText(cause)}`);
-  }
-}
+/** 词汇助手自己的提示词：源码 `src/va-prompt-tpl.md`，构建期内联；装配时由插件直接发出去，
+ *  不经过人，也不经过主 agent。 */
+const VA_PROMPT = VA_PROMPT_TEXT.trim();
 
 /** 收起之后替它们出面的标记节点。文本固定，所以它出现在哪一轮都不影响冻结前缀的缓存。 */
 const vaMarker = (): SessionMessage => ({
@@ -418,9 +412,9 @@ export function createVaRuntime({ ctx, log, config, knowledge }: {
       const entry = knowledge.ensureWorkspace({ agent: { session: caller.session } });
       const index = await knowledge.ensureIndex(entry);
       const vocabulary = renderWholeVocabulary(index);
-      const template = readVaPrompt('prompt.md');
+      const template = VA_PROMPT;
       if (!template.includes(VA_VOCABULARY_MARKER)) {
-        throw new Error(`dsh-oks: va/prompt.md 里没有 ${VA_VOCABULARY_MARKER} 占位符，词表无处可插。`);
+        throw new Error(`dsh-oks: src/va-prompt-tpl.md 里没有 ${VA_VOCABULARY_MARKER} 占位符，词表无处可插。`);
       }
       const feed = template.replace(VA_VOCABULARY_MARKER, vocabulary);
       log(`[oks] vocabulary fed · ${index.terms.length} 条 · ${Buffer.byteLength(feed, 'utf8')} 字节 · 一条消息`);

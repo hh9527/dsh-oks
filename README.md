@@ -28,8 +28,8 @@
 
 Node 按 URL 缓存 ESM 模块，所以：
 
-- 改 `src/` 下的源码后要重新 `pnpm run build`（产物是根目录的 `index.mjs`）；改
-  `index.mjs` / `skill.md` 后要**重启 web profile** 才加载新的模块代
+- 改 `src/` 下的源码后要重新 `pnpm run build`（产物是 `dist/index.mjs`）；改
+  `dist/index.mjs`（含 `src/skill.md`、`src/va-prompt-tpl.md` 两份提示词，构建期内联）后要**重启 web profile** 才加载新的模块代
   （`link:` 的好处是**不必重新安装**，重启即可；若用 `file:`，pnpm 会硬链接成拷贝，
   改源码不再生效）；
 - 改 profile 的 `cordis.patch.yml` 只会让 profile 重读**配置**。
@@ -101,7 +101,7 @@ key 模式，以及 `vocabulary`（哪些 kind 进词汇表、每类词条的归
 插件**自带**一份引导技能 `oks-query`：加载时通过 `ctx.skills.register()` 注册进 runtime 层，
 因此对**所有工作区**可见。
 
-- 正文是同目录的 `skill.md`（单一来源，元数据在 `src/index.ts` 里）；
+- 正文是 [`src/skill.md`](src/skill.md)、元数据与注册在 [`src/skill.ts`](src/skill.ts)（技能这个模块的两半，构建期内联进产物）；
 - runtime 的 rank 是 250，所以工作区自己的 `.dsh/skills`(100) 或 `.agents/skills`(200)
   **可以覆盖**它，用户级(400/500)覆盖不了——正好是"插件给默认引导、工作区可覆盖"；
 - 技能服务是**可选**依赖（用 `ctx.get` 取）：没有它时这些工具照常工作。
@@ -180,8 +180,8 @@ bin/telora -C <模型目录> build <模型名> --snapshot \
 ## 词汇助手（va）
 
 `va_ask` 把"说法对不上字面"这件事交给一个**常驻词汇助手**：
-插件自己建它（顶层 agent、preset `oks`、同工作区、共用同一份进程内索引）、自己把两份提示词
-（[`va/prompt.md`](va/prompt.md)，词表插在它的占位符处）喂进去，之后每次只发一个说法，
+插件自己建它（顶层 agent、preset `oks`、同工作区、共用同一份进程内索引）、自己把一条提示词
+（[`src/va-prompt-tpl.md`](src/va-prompt-tpl.md)，词表插在它的占位符处）喂进去，之后每次只发一个说法，
 把它的回答作为**工具结果**返回。它平时归档（分组界面不列、模型步被归档门挡住），咨询时临时恢复。
 装配就是那一条提示词，它的位置就是标记：此后每次拿到回答，插件都把标记之后的问答从
 模型可见表面收起——助手每轮只看到「词汇 + 工作方法 + 标记 + 当前这个问题」，而会话日志保持
@@ -189,19 +189,30 @@ append-only，标记节点用 `sourceEventSeqs` 记下遮蔽范围。详见 [`va
 
 ## 开发
 
-源码在 `src/`（TypeScript），构建产物是**包根的单一文件 `index.mjs`**——profile 里 `link:` 装的
-插件加载的就是它，所以**改完 `src/` 必须重新构建**：
+源码在 `src/`（TypeScript），构建产物是**单一文件 `dist/index.mjs`**——profile 里 `link:` 装的
+插件加载的就是它，所以**改完 `src/` 必须重新构建**（`dist/` 不进 git；`pnpm install` 会经 `prepare`
+自动构建一次，`pnpm run test` 也会先构建，忘了构建不会静默用到旧产物）：
 
 ```sh
 pnpm install          # tsdown + typescript（只用于开发/构建）
 pnpm run typecheck    # tsc --noEmit，零报错
-pnpm run build        # tsdown → index.mjs（自包含，无相对导入）
-pnpm run check        # 上面两步 + 冒烟
+pnpm run build        # tsdown → dist/index.mjs（自包含，无相对导入）
+pnpm run dev          # 同上，但 watch：改完立刻重建
+pnpm run check        # typecheck + build + 冒烟
 ```
+
+打出去的包只含运行时需要的：`dist/` + `cordis.patch.yml` + `icon.svg` + `locale/*.json`
+（`files` 就这么列的）——`src/`、`smoke.ts`、`va/` 这些都不进 npm。
+
+提示词是**普通源码模块**：`.md` 和 `.ts` 一样按功能/架构归属，不按文件类型分目录、也不单列一个
+"提示词"品类。现在 `src/` 还没有按功能拆目录，所以技能的正文是 `src/skill.md`、词汇助手的提示词是
+`src/va-prompt-tpl.md`（词表插在它的 `<!-- 词表 -->` 处）；将来某个功能拆成目录时，它就跟着那个功能走。
+它们在构建期由 `loader` 内联成字符串常量，所以**改提示词同样要重新构建**——产物因此不需要任何
+旁文件（运行时不读 `.md`）。
 
 构建用 [tsdown](https://tsdown.dev)（rolldown 系，和 DSH 自己 node 侧包的产物一致）。Node ≥ 22
 能直接跑 `.ts`，所以 `smoke.ts` 不用先构建就能跑（它自己对 `src/time.ts` 这类纯函数的单测也是直接
-导入源码）；被测的插件本体则从 `index.mjs` 导入——**测的就是最终制品**。
+导入源码）；被测的插件本体则从 `dist/index.mjs` 导入——**测的就是最终制品**。
 
 `smoke.ts` 是 JS 风格的测试脚本（自造假宿主、动态导入），**不纳入 `tsc` 检查**：要纳入需要先给它
 写一套假宿主的类型（约 200 处隐式 any），那是另一件事。
@@ -223,7 +234,7 @@ OKS_WORKSPACE=/path/to/ws node smoke.ts              # 或者显式指定
 **校验路径的渲染与结构化值里都不出现任何语句**、
 **查询路径真的返回行**（意图由服务声明的实体走出来，不是写死的）、`queryMaxRows` 触顶时的截断说明、
 缺 / 坏 `dataFile` 的报错（坏的那份要在结果里写明执行失败）、
-**插件不在工作区里写任何文件**、自带技能的注册（名字合法、描述非空、正文与 `skill.md` 逐字一致、
+**插件不在工作区里写任何文件**、自带技能的注册（名字合法、描述非空、正文与 `src/skill.md` 逐字一致、
 正文不含任何具体领域名）、第二个工作区按 `oks.json` 解析相对路径、无 `oks.json` 与**无 `telora.snapshot` 段**
 两种情况下都明确报错，以及模型请求与查询两侧 1 ms 上限下的超时强杀与复活。
 

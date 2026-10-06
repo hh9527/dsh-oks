@@ -134,19 +134,6 @@ export function resolveSettings(root: string, config: PluginConfig | undefined):
   return settings;
 }
 
-/** 自带的引导技能：注册进 ctx.skills 的 runtime 层，对所有工作区可见；正文在 skill.md。
- *  rank 250：工作区自己的 skill(100/200) 能覆盖它，用户级(400/500) 不能。 */
-export const SKILL = {
-  name: 'oks-query',
-  description: 'Use when a business question must be answered from domain data: discover the domain model with oks_info, validate structured intents with oks_check_intent, and get actual rows with oks_query. Resolve relative time into absolute boundaries first — time_now and time_calc do that without knowing any domain format.',
-  source: 'runtime',
-};
-
-/** skill.md 与产物同在包根（打包后 index.mjs 就在包根，所以是 `./skill.md`）。 */
-export function readSkillContent(): string {
-  return readFileSync(new URL('./skill.md', import.meta.url), 'utf8');
-}
-
 /** 产物里有没有可直接导入的服务快照。 */
 export function hasSnapshot(artifactPath: string): boolean {
   try {

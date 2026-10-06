@@ -1,14 +1,15 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { readSkillContent, resolveSettings, SKILL, workspaceRootFor } from './config.ts';
+import { resolveSettings, workspaceRootFor } from './config.ts';
 import type { PluginConfig, Settings } from './config.ts';
+import { createSkillRegistration } from './skill.ts';
 import { createExecutor, createRunner, readDataManifest } from './runners.ts';
 import type { DataManifest, Executor, Runner } from './runners.ts';
 import { buildRetrievalIndex } from './retrieval.ts';
 import type { RetrievalIndex } from './retrieval.ts';
 import { singleFlight } from './single-flight.ts';
 import { errorText } from './host.ts';
-import type { LogFn, PluginContext, SkillsService, WorkspaceProbe } from './host.ts';
+import type { LogFn, PluginContext, WorkspaceProbe } from './host.ts';
 
 /** 进程级的检索层缓存：artifact sha256 -> 词汇表 + 反向引用索引。
  *  词汇助手是另一个 agent 作用域里的实例，它和主 agent 共用这一份，不重爬引用图。 */
@@ -74,35 +75,7 @@ export function createKnowledge({ ctx, log, config }: {
   };
 
   // 技能服务是可选依赖（ctx.get 取），加载时它可能还没起来，所以第一次工具调用会再试一次。
-  let skillRegistered = false;
-  const registerSkill = (): boolean => {
-    if (skillRegistered) return true;
-    let content: string;
-    try {
-      content = readSkillContent();
-    } catch (cause) {
-      log(`[oks] skill body unreadable: ${errorText(cause)}`);
-      skillRegistered = true; // 部署缺文件，重试没有意义
-      return true;
-    }
-    let found: SkillsService | null = null;
-    try {
-      found = ctx.get?.('skills') ?? null;
-    } catch {
-      found = null;
-    }
-    const skills = found;
-    if (skills === null || typeof skills.register !== 'function') return false;
-    try {
-      ctx.effect(() => skills.register({ ...SKILL, content }));
-      skillRegistered = true;
-      log(`[oks] skill "${SKILL.name}" registered (runtime) · ${Buffer.byteLength(content, "utf8")} bytes`);
-    } catch (cause) {
-      log(`[oks] cannot register skill "${SKILL.name}": ${errorText(cause)}`);
-      skillRegistered = true;
-    }
-    return skillRegistered;
-  };
+  const registerSkill = createSkillRegistration(ctx, log);
   registerSkill();
 
   /** 每个工具的入口动作：由**会话**定位工作区，再拿到（或惰性建立）它的运行环境。 */
