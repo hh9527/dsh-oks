@@ -22,9 +22,11 @@
 
 ## 安装形态与迭代时的一个坑
 
-插件按 **bundle 安装**：profile 的 `dsh.profile.bundles` 里列出 `@local/dsh-oks`，
-依赖形式用 **`link:`**（`node_modules/@local/dsh-oks` 是指向本目录的符号链接）。
-这样插件页显示的是包名与 `locale/` 里的标题/描述，而不是一串路径。
+插件在 profile 里是一个 **`link:` 依赖**（`node_modules/@local/dsh-oks` 是指向本目录的
+符号链接）。挂载形态有两种：profile 的 `dsh.profile.bundles` 里列出 `@local/dsh-oks`
+（工具面在 profile 顶层），或只把它写进某个 preset 行的 `config.plugins`（工具面只在该
+preset 的作用域里，见「安装 / 卸载」）。bundle 形态下插件页显示的是包名与 `locale/`
+里的标题/描述，而不是一串路径。
 
 Node 按 URL 缓存 ESM 模块，所以：
 
@@ -172,10 +174,19 @@ bin/telora -C <模型目录> build <模型名> --snapshot \
 
 - **推荐**：在 Web 的「插件」页安装本目录，或命令行
   `dsh plugin --profile web add link:<本目录>`，再把 `@local/dsh-oks` 加进
-  profile `package.json` 的 `dsh.profile.bundles`（两处缺一不可）。
+  profile `package.json` 的 `dsh.profile.bundles`（两处缺一不可）。这条路上 `add` 会把
+  包升成 profile 的 bundle 层，本包自带的 `cordis.patch.yml`（一行顶层 `oks`）跟着生效。
+- **只把工具面放进 preset**：`dsh.profile.bundles` 里不列本包，改在一个 preset 行
+  （`@deepseek-ai/dsh-agent-preset`，`config.plugins` 里含 `"@local/dsh-oks"`）里挂载。
+  此时 `oks_*` / `time_*` / `va_ask` 只属于该 preset 的作用域，其它 preset 的会话没有
+  这些工具。`install-preset.sh` 一次配好这个形态——初始化 profile、写 `link:` 依赖、在
+  该 profile 里装链接、把 preset 追加进 `cordis.patch.yml`，可重复执行，直接跑就行：
+  `./install-preset.sh`（profile 默认取 `$DSH_PROFILE`，没有就 `web`；`--profile` /
+  `--dsh-home` 只作覆盖，见 `--help`）。
 - 用 `link:` 而不是 `file:`：前者是符号链接（改源码重启即生效），后者会被 pnpm
   硬链接成拷贝，插件页能显示但源码改动不再生效。
-- 卸载：从 `dsh.profile.bundles` 去掉包名并 `dsh plugin --profile web remove @local/dsh-oks`。
+- 卸载：从 `dsh.profile.bundles` 去掉包名并 `dsh plugin --profile web remove @local/dsh-oks`；
+  preset 形态先从 `cordis.patch.yml` 删掉那段 `preset-oks`，再执行同一条 `remove`。
 
 ## 词汇助手（va）
 
