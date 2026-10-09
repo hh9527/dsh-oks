@@ -81,8 +81,8 @@ export interface SystemPromptService {
 }
 
 /** 工具定义：宿主只按 name/description/parameters/output 注册，execute 由宿主调用。
- *  render / execute 的参数这里写成 never：定义方各自的具体签名都能装进来（逆变位置，
- *  never 可赋给任何参数类型），而插件自己从不调用它们。 */
+ *  render / presentationMeta / execute 的参数这里写成 never：定义方各自的具体签名都能装进来
+ *  （逆变位置，never 可赋给任何参数类型），而插件自己从不调用它们。 */
 export interface ToolDefinition {
   name: string;
   description: string;
@@ -90,6 +90,9 @@ export interface ToolDefinition {
   output: {
     schema: unknown;
     render: (args: never, value: never) => RenderBlock[];
+    /** 可选的宿主呈现记录（presentationMeta）：宿主把它投影进工具结果的 meta，与 render 的
+     *  内容分开传递——render 的内容进模型可见的工具消息，meta 不进模型上下文。 */
+    presentationMeta?: (args: never, value: never) => unknown;
   };
   execute(args: never, exec: ToolExec): Promise<unknown>;
 }

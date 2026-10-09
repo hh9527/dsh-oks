@@ -18,15 +18,17 @@ export interface Runner {
   dispose(): void;
 }
 
-/** 只读执行器取回的一页。 */
+/** 只读执行器取回的一页：行、是否截断，以及 SQL 元数据给的列名（空结果也有）。 */
 export interface QueryOutcome {
   rows: Array<Record<string, unknown>>;
   truncated: boolean;
+  columns: string[];
 }
 
-/** 只读查询执行器：接口是 { send(sql, bindings, signal), dispose() }。 */
+/** 只读查询执行器：接口是 { send(sql, bindings, signal, maxRows), dispose() }。
+ *  maxRows 由调用方按该 Intent 的 limit 给出（缺省才回落到 queryMaxRows）。 */
 export interface Executor {
-  send(sql: string, bindings: unknown[], signal?: AbortSignal): Promise<QueryOutcome>;
+  send(sql: string, bindings: unknown[], signal?: AbortSignal, maxRows?: number): Promise<QueryOutcome>;
   dispose(): void;
 }
 
@@ -44,6 +46,7 @@ interface ExecutorReply {
   id: number;
   rows: Array<Record<string, unknown>>;
   truncated: boolean;
+  columns?: string[];
   error?: string;
 }
 
@@ -249,18 +252,21 @@ export const EXECUTOR_SOURCE = [
   'function run(sql, bindings, maxRows) {',
   '  if (!READ_ONLY.test(sql)) throw new Error(\'only read-only SELECT/WITH statements are executed\');',
   '  if (db === null) open();',
+  '  const statement = db.prepare(sql);',
+  // 列名取自 SQL 元数据，空结果也能拿到（结果文件因此始终有列信息）。
+  '  const columns = typeof statement.columns === \'function\' ? statement.columns().map((column) => column.name) : [];',
   '  const rows = []; let truncated = false;',
-  '  for (const row of db.prepare(sql).iterate(...bindings)) {',
+  '  for (const row of statement.iterate(...bindings)) {',
   '    if (rows.length >= maxRows) { truncated = true; break; }',
   '    rows.push(row);',
   '  }',
-  '  return { rows: rows, truncated: truncated };',
+  '  return { rows: rows, truncated: truncated, columns: columns };',
   '}',
   "parentPort.postMessage({ kind: 'ready' });",
   "parentPort.on('message', (message) => {",
   '  try {',
   '    const result = run(message.sql, message.bindings || [], message.maxRows);',
-  "    parentPort.postMessage({ id: message.id, rows: result.rows, truncated: result.truncated });",
+  "    parentPort.postMessage({ id: message.id, rows: result.rows, truncated: result.truncated, columns: result.columns });",
   '  } catch (cause) {',
   "    parentPort.postMessage({ id: message.id, error: String((cause && cause.message) || cause) });",
   '  }',
@@ -294,7 +300,7 @@ export function createExecutor(config: Settings, log: LogFn): Executor {
       pending.delete(message.id);
       clearTimeout(entry.timer);
       if (message.error !== undefined) entry.reject(new Error(message.error));
-      else entry.resolve({ rows: message.rows, truncated: message.truncated });
+      else entry.resolve({ rows: message.rows, truncated: message.truncated, columns: message.columns ?? [] });
     });
     // 同模型宿主：晚到的旧代 exit 不能影响新一代的排队请求。
     created.on('error', (cause: Error) => {
@@ -313,7 +319,12 @@ export function createExecutor(config: Settings, log: LogFn): Executor {
     return created;
   };
 
-  const send = (sql: string, bindings: unknown[], signal?: AbortSignal): Promise<QueryOutcome> =>
+  const send = (
+    sql: string,
+    bindings: unknown[],
+    signal?: AbortSignal,
+    maxRows?: number,
+  ): Promise<QueryOutcome> =>
     new Promise<QueryOutcome>((resolve, reject) => {
     if (signal?.aborted) { reject(new Error('aborted')); return; }
     let target = worker;
@@ -326,7 +337,7 @@ export function createExecutor(config: Settings, log: LogFn): Executor {
       reject(new Error(`query timed out after ${config.queryTimeoutMs} ms (executor terminated)`));
     }, config.queryTimeoutMs);
     pending.set(id, { resolve, reject, timer });
-    target.postMessage({ id, sql, bindings, maxRows: config.queryMaxRows });
+    target.postMessage({ id, sql, bindings, maxRows: maxRows ?? config.queryMaxRows });
   });
 
   const dispose = () => {

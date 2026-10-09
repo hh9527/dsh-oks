@@ -1,7 +1,8 @@
 # dsh-oks
 
-把**某个领域的知识服务（OKS）**接进 DSH，成为五个原生工具 + 三个辅助工具 — 用于在 Harness Web 里
-**亲手体验**「业务问句 → 实际查询结果」这条链路。查询在**只读**连接上执行，插件不写任何文件。
+把**某个领域的知识服务（OKS）**接进 DSH，成为七个原生工具 + 三个辅助工具 — 用于在 Harness Web 里
+**亲手体验**「业务问句 → 实际查询结果」这条链路。查询在**只读**连接上执行；命中的结果写进工作区
+`.data/` 下的结果文件，**默认不进模型上下文**，要用时用 `oks_jaq_result` 在它上面做结构化查询取回。
 
 它是一项 **DSH 能力扩展，不是某个 OKS 的包装**：插件本身不认识任何模型。开放哪个模型、模型在哪、
 查哪份数据，一律由**会话所在工作区**根目录的 `oks.json` 声明，所以同一份插件、同一行配置
@@ -22,19 +23,23 @@
 
 ## 安装形态与迭代时的一个坑
 
-插件在 profile 里是一个 **`link:` 依赖**（`node_modules/@local/dsh-oks` 是指向本目录的
-符号链接）。挂载形态有两种：profile 的 `dsh.profile.bundles` 里列出 `@local/dsh-oks`
-（工具面在 profile 顶层），或只把它写进某个 preset 行的 `config.plugins`（工具面只在该
-preset 的作用域里，见「安装 / 卸载」）。bundle 形态下插件页显示的是包名与 `locale/`
-里的标题/描述，而不是一串路径。
+插件在 profile 里是一个 **`link:` 依赖**（`node_modules/@local/dsh-oks` 是指向本目录的符号链接）。
+它**只有 node 半边**（工具），所以**挂在 preset 里就行**：工具面只在该 preset 的作用域内生效，
+profile 顶层不必多一行。
+
+（这里曾评估过客户端半边——图表在浏览器里画成交互组件。但 `dsh-client-modules` 只扫描主 loader 的
+`entries()`，而 preset 内的插件由 `dsh-agent-preset-registry` 用独立的 `PresetTree` 装配，写在 preset
+里的 client 半边永远不会加载；要它生效只能把插件挂到 profile 顶层、污染所有会话。所以改成
+**服务端把图画成 SVG**：图落进工作区、由 agent 引用进回答，插件则留在 preset 里。细节与实测见
+`rfc/0001`。）
 
 Node 按 URL 缓存 ESM 模块，所以：
 
-- 改 `src/` 下的源码后要重新 `pnpm run build`（产物是 `dist/index.mjs`）；改
-  `dist/index.mjs`（含 `src/skill.md`、`src/va-prompt-tpl.md` 两份提示词，构建期内联）后要**重启 web profile** 才加载新的模块代
-  （`link:` 的好处是**不必重新安装**，重启即可；若用 `file:`，pnpm 会硬链接成拷贝，
+- 改 `src/` 下的源码后要重新 `pnpm run build`（产物是自包含的 `dist/index.mjs`，含
+  `src/skill.md`、`src/va-prompt-tpl.md` 两份构建期内联的提示词）；改完要**重启 profile**
+  才加载新的模块代（`link:` 的好处是**不必重新安装**，重启即可；若用 `file:`，pnpm 会硬链接成拷贝，
   改源码不再生效）；
-- 改 profile 的 `cordis.patch.yml` 只会让 profile 重读**配置**。
+- 改 profile 的 `cordis.patch.yml` 只会让 profile 重读**配置**（用户补丁层是热重载的）。
 
 ## 提供的能力
 
@@ -43,8 +48,10 @@ Node 按 URL 缓存 ESM 模块，所以：
 | `oks_search` | `{query?, kind?, dataset?, skip?}` | 按**名词/说法**在词汇表里找：回 `kind`、`name`、归属（字段名用词汇表声明的 `owner`）、命中位置（`name`/`alias`/`doc`）与分数，**不回 key**。没有 `limit`——页大小由插件按字节定，`more` 报出还剩多少条。0 命中时给出可用的 kind 与 dataset |
 | `oks_references` | `{key, link?, kind?, skip?}` | 按 key **反向**找引用它的节点：回引用种类与引用方的 key。用来回答"哪个维度用了这套值域""哪个数据集声明了这个度量" |
 | `oks_info` | `{key:"<不透明字符串>"}` | 按 key 读一个知识节点（每次都向服务要，插件不缓存节点）。**入口是 `key:"index"`**（唯一可以凭记忆给出的 key）；之后按返回内容给出的 key 逐级继续——怎么继续、到哪一层，节点自己的说明会回答。key 一律原样传递，**不要构造、切分或解码** |
-| `oks_check_intent` | `{intents:[1..5]}` | **只校验**：回 `accepted` 与批次级诊断。不回查询语句，也不碰数据——迭代 Intent 形状时用它 |
-| `oks_query` | `{intents:[1..5]}` | 校验后**只读执行**，回实际结果；每个结果的语句与参数一并给出（那是来源，不是待办） |
+| `oks_check_intent` | `{intents:{<名>:Intent}}` | **只校验**：按名字回结论，通过的项给出 `key`（该项 Intent 的标识，提交查询时原样带回）。每个 Intent 必须带顶层 `limit`（1..100）：它是 Intent 的一部分、也参与哈希。不回查询语句，也不碰数据——迭代 Intent 形状时用它 |
+| `oks_query` | `{intents:{<名>:{intent,key}}}` | 核 key 后**只读执行**：每个成功项写进 `<工作区>/.data/<名>-<key>-<at>.json`，回执只给 `dataSrc`、列信息与行数——**数据行与语句都不进这段对话**（数据按需读回，语句在执行记录与呈现记录里）；失败项按 `key_mismatch` / `rejected` / `query_error` / `save_error` 分别报告 |
+| `oks_jaq_result` | `{src, query}` | 在结果文件上做**结构化查询**：`query` 是作用在**行数组**上的 jaq（与 jq 兼容）表达式——`.[] \| select(.count > 100)`、`.[] \| {name, total}`、`sort_by(.total) \| reverse \| .[0:5]`。表达式决定取回什么，按需投影即可；结果文件的内部结构不进契约。`src` 限定在工作区 `.data/` 内 |
+| `oks_chart` | `{spec, src?, data?, name?, note?}` | 把图画成 **SVG 存进工作区**：`src` 与 `data` **恰好提供一个**——`src` 引用查询结果文件（来源固定标为「基于查询结果」），`data` 是你自填的对象行数组（「agent 自主填写」）。图元：横条、多序列折线（要看明细表，直接在回答里写 markdown 表格）。回执给出一行 `![标题](路径)`，agent 把它放进回答，图就显示在那里 |
 | `va_ask` | `{query}` | 咨询本会话的**词汇助手**：给一个说法（词/短语/一句话，中英不限），拿回词表里等价或相近的说法——回答是**一行一个字符串**，每个字符串都是词表原文。助手是插件自己建、自己收的**顶层 agent**（preset `oks`、与调用方同一工作区、共用同一份进程内索引），平时归档，被咨询时临时恢复。它给的是线索，检索口径仍由 `oks_search` / `oks_info` 决定。**整份词表由插件渲染成助手系统提示词里的一个 section**（模板 + 全部词条），助手一个工具都没有。装配**不发任何消息**；每个说法才是一次回合，拿到回答后插件把表面上的节点全部收进一个固定文本的标记，所以助手每次只看到「系统提示词里的词表 + 一个标记 + 当前这个说法」（会话日志保持 append-only，标记节点用 `sourceEventSeqs` 记下遮蔽范围）|
 | `time_now` | `{timeZone?}` | 当前时刻的**各种标准表示**（epoch 毫秒/秒、UTC 文本、RFC 3339、带偏移的本地文本、日期、ISO 周）+ 实际用的时区。服务不读时钟，所以相对时间必须在这里换成绝对边界 |
 | `time_calc` | `{base?, timeZone?, operations?}` | 日历代数：`add`（year/quarter/month/week/day/hour/minute/second）、`floor`/`ceil` 到日历边界（周默认周一起）、`convert` 换时区。日/周保持**本地墙钟**（跨 DST 的一天可能不是 24 小时），月/季/年**钳制**到当月最后一天。区间半开 `[start, end)` |
@@ -79,10 +86,10 @@ key 模式，以及 `vocabulary`（哪些 kind 进词汇表、每类词条的归
 ### 校验与查询为什么分开
 
 - **校验便宜且不碰数据**：`oks_check_intent` 只问"这批 Intent 服务收不收"，
-  所以它可以在没有 `dataFile` 的工作区里用，也不会因为数据文件坏了而失败。
-- **查询才给出语句**：`oks_query` 的结果里带 SQL 与 bindings，是**已执行事实的来源**——
-  便于核对口径、排查"结果为什么长这样"。校验路径上没有任何语句，
-  所以"只想看看会生成什么"这件事必须真的跑一次查询。
+  所以它可以在没有 `dataFile` 的工作区里用，也不会因为数据文件坏了而失败；
+  通过的项还会拿到 `key`——提交查询时原样带回，工具重算哈希核对，于是"执行的必须是校验过的那一项"。
+- **查询才给出语句与结果**：`oks_query` 的结果里带 SQL 与 bindings（**已执行事实的来源**），
+  并把命中的数据行写进结果文件；校验路径上没有任何语句，所以"只想看看会生成什么"必须真的跑一次查询。
 
 ### 查询是怎么跑的
 
@@ -90,13 +97,16 @@ key 模式，以及 `vocabulary`（哪些 kind 进词汇表、每类词条的归
   Node 自带的 `node:sqlite` 直接读 SQLite 文件，插件仍然零依赖。
 - **在 worker 里跑**：`node:sqlite` 是**同步 API**，一条慢查询会卡住宿主线程（GUI 一起卡）；
   放进 worker 之后，到点可以 `terminate()`。
-- **有上限**：默认最多取 `queryMaxRows`（200）行，模型可见文本整体控制在约 6000 字符以内
-  ——留在宿主 tool-result pruner 的阈值之下，否则结果会被从**中间**截掉，反而同时丢掉语句和行。
-  截断会明确写出来。
+- **行数由 Intent 的 `limit` 决定**：服务把它落到 SQL 的最终限行，插件完整保存这次 Intent 的结果
+  （执行器只用同一个数字做保险，不再另加 `queryMaxRows` 截断）。数据行都进了结果文件，所以
+  模型可见文本天然远在宿主 tool-result pruner 的阈值（8192 字符）之下。
+- **结果落盘**：每个成功项写一个 JSON 文件到 `<工作区>/.data/`，文件名 `<名>-<key>-<at>.json`，
+  内含原始 Intent、列信息（列名取自 SQL 元数据、类型按返回值观察，空结果记 unknown）、行数与完整数据行。
+  独占创建，重名报保存错误；写失败会清掉不完整的文件。按需取数由 `oks_jaq_result` 负责——`src` 限定在
+  `.data/` 内，并检查真实路径不越界。
 - **空的要说清楚**：结果为空时，若数据目录里有 `manifest.json`，插件会报出数据窗口
   （`[start, endExclusive)`），提示"可能是时间落在窗口之外"。
-- **留痕在宿主日志**：每次执行的语句、bindings、行数与耗时写进 `ctx.logger`
-  ——工作区里不落任何文件，但日志里有据可查。
+- **留痕在宿主日志**：每次执行的语句、bindings、行数与耗时写进 `ctx.logger`——日志里有据可查。
 
 ### 自带引导（技能与工具一起走）
 
@@ -135,7 +145,7 @@ key 模式，以及 `vocabulary`（哪些 kind 进词汇表、每类词条的归
 | `domain` / `artifact` / `dataFile` | 覆盖工作区声明（缺 `domain` 或 `artifact` 时报错并给出补法；缺 `dataFile` 时只有 `oks_query` 报错） |
 | `requestTimeoutMs` | 默认 60000，单次服务请求的墙钟上限（到点 terminate worker，下次请求再拉起） |
 | `queryTimeoutMs` | 默认 30000，单次只读查询的墙钟上限（同上，到点 terminate 执行器） |
-| `queryMaxRows` | 默认 200，单次查询取回的最大行数 |
+| `queryMaxRows` | 默认 200，**执行器**取回行数的保险上限。结果行数由 Intent 顶层的 `limit`（1..100）决定，正常路径用不到这一项 |
 | `retryAcceptedSubset` | 默认 true |
 
 时区来自本次请求的上下文（用户消息上的浏览器时区，或调用参数）；工作区来自会话头的 `cwd`。
@@ -201,20 +211,24 @@ bin/telora -C <模型目录> build <模型名> --snapshot \
 
 ## 开发
 
-源码在 `src/`（TypeScript），构建产物是**单一文件 `dist/index.mjs`**——profile 里 `link:` 装的
-插件加载的就是它，所以**改完 `src/` 必须重新构建**（`dist/` 不进 git；`pnpm install` 会经 `prepare`
-自动构建一次，`pnpm run test` 也会先构建，忘了构建不会静默用到旧产物）：
+源码在 `src/`（TypeScript），构建出**单一产物** `dist/index.mjs`（profile 里 `link:` 装的插件加载它）
+——所以**改完 `src/` 必须重新构建**（`dist/` 不进 git；`pnpm install` 会经 `prepare` 自动构建一次，
+`pnpm run test` 也会先构建，忘了构建不会静默用到旧产物）：
 
 ```sh
 pnpm install          # tsdown + typescript（只用于开发/构建）
 pnpm run typecheck    # tsc --noEmit，零报错
-pnpm run build        # tsdown → dist/index.mjs（自包含，无相对导入）
+pnpm run build        # tsdown → dist/index.mjs（自包含）
 pnpm run dev          # 同上，但 watch：改完立刻重建
 pnpm run check        # typecheck + build + 冒烟
 ```
 
+出图用的是 d3 的两个**纯计算**包（`d3-scale` 出比例尺与刻度、`d3-shape` 生成折线路径），它们不需要
+DOM，由 [tsdown.config.ts](tsdown.config.ts) 的 `deps.alwaysBundle` **打进产物**——`dist/index.mjs`
+因此依旧自包含（冒烟最后一段会把它单独放进空目录加载，专门验证这一点）。
+
 打出去的包只含运行时需要的：`dist/` + `cordis.patch.yml` + `icon.svg` + `locale/*.json`
-（`files` 就这么列的）——`src/`、`smoke.ts`、`va/` 这些都不进 npm。
+（`files` 就这么列的）——`src/`、`smoke.ts` 这些都不进 npm。
 
 提示词是**普通源码模块**：`.md` 和 `.ts` 一样按功能/架构归属，不按文件类型分目录、也不单列一个
 "提示词"品类。现在 `src/` 还没有按功能拆目录，所以技能的正文是 `src/skill.md`、词汇助手的提示词是
@@ -243,10 +257,12 @@ OKS_WORKSPACE=/path/to/ws node smoke.ts              # 或者显式指定
 `oks_search` 的过滤与 `skip` 翻页（不重不漏）、0 命中时的 facet、超容量时的整条截断与 `more`、
 整份词汇的渲染（条数与检索出口一致、一行一条 `<key> <name> <aliases> <doc>`、doc 截到 200 字符、
 任何词条都不截半条）、`oks_references` 的反向查询与未知 key 报错、
-**校验路径的渲染与结构化值里都不出现任何语句**、
-**查询路径真的返回行**（意图由服务声明的实体走出来，不是写死的）、`queryMaxRows` 触顶时的截断说明、
-缺 / 坏 `dataFile` 的报错（坏的那份要在结果里写明执行失败）、
-**插件不在工作区里写任何文件**、自带技能的注册（名字合法、描述非空、正文与 `src/skill.md` 逐字一致、
+**校验路径的渲染与结构化值里都不出现任何语句**、通过项带 32 位 key 而坏项不给 key、
+**查询路径真的执行并把结果落盘**（意图由服务声明的实体走出来，不是写死的；回执里没有数据行、
+结果文件里有，且带原始 Intent 与列信息）、**改了 Intent 复用别的 key 会被 `key_mismatch` 拒掉**、
+`queryMaxRows` 触顶时的截断说明、缺 / 坏 `dataFile` 的报错（坏的那份要在回执里写明执行失败）、
+**按需取数**（表达式作用在行数组上、求值器的报错原样带回、缺 `query` 与越界 `src` 的明确报错）、
+**插件只写 `.data/`**、自带技能的注册（名字合法、描述非空、正文与 `src/skill.md` 逐字一致、
 正文不含任何具体领域名）、第二个工作区按 `oks.json` 解析相对路径、无 `oks.json` 与**无 `telora.snapshot` 段**
 两种情况下都明确报错，以及模型请求与查询两侧 1 ms 上限下的超时强杀与复活。
 
@@ -259,11 +275,15 @@ OKS_WORKSPACE=/path/to/ws node smoke.ts              # 或者显式指定
 
 ## 实现备注
 
-- **零依赖**：直接注册原始工具定义（`ctx.tools.register()` 只校验 `output.schema`），
-  查询用 Node 自带的 `node:sqlite`，因此插件从 profile 或工作区加载都能正常工作。
+- **产物自包含**：直接注册原始工具定义（`ctx.tools.register()` 只校验 `output.schema`），
+  查询用 Node 自带的 `node:sqlite`；出图用 d3 的两个纯计算包（`d3-scale`、`d3-shape`），
+  构建时全部打进 `dist/index.mjs`，所以放空目录里也能加载。
 - `parameters` 只使用受支持的 JSON Schema 关键字子集：`type` / `oneOf` / `properties` /
   `required` / `additionalProperties` / `items` / `enum` / `const` 加注解关键字；
-  数量校验放在 `execute` 里。
+  批次形状、规模与名字校验，以及 key 的重新计算与比对，都放在 `execute` 里。
+- **`.data/` 是工作区里唯一的落点**：查询结果写成 `<名>-<key>-<at>.json`，图写成 `<名>-<at>.svg`
+  （同毫秒重名时依次加序号）。名字拒绝分隔符、控制字符与 `.`/`..`；读取时先按 `.data/` 前缀收窄，
+  再用真实路径复核，挡住符号链接逃逸；独占创建、失败清理。
 - 宿主是**进程内 worker**（`node:worker_threads` + 内置 WebAssembly）；当前只支持快照产物，
   产物没有 `telora.snapshot` 段时直接报错。
 - 执行器是**另一个 worker**：`node:sqlite` 同步，只有独立线程才能被超时强杀；

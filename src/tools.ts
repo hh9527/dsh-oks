@@ -1,7 +1,9 @@
 import { applyOps, encode, parseMoment, resolveZone } from './time.ts';
 import type { ContextTimeZone, TimeState } from './time.ts';
 import { capLine } from './text.ts';
-import { OBJECT_OUTPUT, renderCheck, renderJson, renderQuery, renderValue, withoutQueries } from './response.ts';
+import { runJaq } from './jaq.ts';
+import { renderChartSvg } from './svg.ts';
+import { OBJECT_OUTPUT, renderChart, renderCheck, renderJaq, renderJson, renderQuery, renderValue, withoutQueries } from './response.ts';
 import type { Row } from './response.ts';
 import { REFERENCE_KINDS, referencesOf, renderReferences, renderSearch, searchIndex } from './retrieval.ts';
 import type { ReferencesArgs, SearchArgs } from './retrieval.ts';
@@ -13,16 +15,236 @@ import type { PluginConfig } from './config.ts';
 import { isArray } from './host.ts';
 import { errorText } from './host.ts';
 import type { DiagnosticEntry, LogFn, ServiceResponse, ToolDefinition, ToolExec, TraceStep } from './host.ts';
+import { intentKey } from './key.ts';
+import { nameProblem, readResult, saveChartSvg, saveResult } from './results.ts';
+import type { ColumnInfo } from './results.ts';
 
 /** oks_info 的入参。 */
 interface InfoArgs {
   key?: unknown;
 }
 
-/** oks_check_intent / oks_query 的入参。 */
+/** oks_check_intent / oks_query 的入参：命名对象（名字 → Intent）。
+ *  query 路径的每项形如 {intent, key}，check 路径的值就是 Intent 本身。 */
 interface IntentArgs {
-  intents?: unknown[];
+  intents?: unknown;
 }
+
+/** 一项命名 Intent：名字用于回执对应、结果文件名与来源核对。 */
+interface NamedIntent {
+  name: string;
+  intent: unknown;
+  key: string | null;
+}
+
+/** 命名批次的解析结果：要么拿到有序的项，要么拿到一句可读的原因。 */
+type ParsedIntents = { items: NamedIntent[] } | { error: string };
+
+/** Intent 顶层 limit 的产品范围：必填，1..100。上限由插件来管，服务只负责执行。 */
+const INTENT_LIMIT_MIN = 1;
+const INTENT_LIMIT_MAX = 100;
+
+/** 校验一个 Intent 的顶层 limit；返回 null 表示合格。 */
+const limitProblem = (intent: unknown): string | null => {
+  if (intent === null || typeof intent !== 'object' || Array.isArray(intent)) {
+    return 'Intent 必须是一个对象，并在顶层声明 limit';
+  }
+  const limit = (intent as Record<string, unknown>).limit;
+  if (limit === undefined || limit === null) {
+    return `Intent 必须在顶层显式声明 limit（${INTENT_LIMIT_MIN} 到 ${INTENT_LIMIT_MAX} 的整数），它决定这次查询取多少行`;
+  }
+  if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < INTENT_LIMIT_MIN || limit > INTENT_LIMIT_MAX) {
+    return `limit 必须是 ${INTENT_LIMIT_MIN} 到 ${INTENT_LIMIT_MAX} 的整数，收到 ${JSON.stringify(limit)}`;
+  }
+  return null;
+};
+
+/** 取一个已通过校验的 Intent 的 limit。 */
+const limitOf = (intent: unknown): number | null => {
+  if (intent === null || typeof intent !== 'object' || Array.isArray(intent)) return null;
+  const limit = (intent as Record<string, unknown>).limit;
+  return typeof limit === 'number' && Number.isInteger(limit) ? limit : null;
+};
+
+/** oks_chart 的入参：图表规格 + 恰好一个数据路径（src 或 data）。 */
+interface ChartArgs {
+  spec?: unknown;
+  src?: unknown;
+  data?: unknown;
+  name?: unknown;
+  note?: unknown;
+}
+
+/** 校验后的图表规格（图元：横条 / 多序列折线）。
+ *  x 与 value 在这里是非空字符串：bar 与 line 都要求它们，校验不通过根本走不到画图。 */
+interface ChartSpec {
+  kind: 'bar' | 'line';
+  title: string | null;
+  x: string;
+  value: string;
+  series: string | null;
+  xType: 'number' | 'time' | null;
+  xLabel: string | null;
+  valueLabel: string | null;
+  unit: string | null;
+}
+
+/** oks_chart 的返回值（渲染与 presentationMeta 读它）。 */
+interface ChartAnswer {
+  ok: true;
+  kind: ChartSpec['kind'];
+  title: string | null;
+  source: 'query' | 'agent';
+  /** 查询结果文件（src 路径才有）。 */
+  src: string | null;
+  /** 落盘的 SVG，相对工作区根。 */
+  svgSrc: string;
+  /** 可以直接粘进回答的 markdown 引用。 */
+  markdown: string;
+  at: string;
+  note: string | null;
+  rowCount: number;
+  columns: string[];
+  spec: ChartSpec;
+  /** 只有 src 路径才有：结果文件里的原始 Intent，交给来源核对。 */
+  intent: unknown;
+}
+
+const CHART_KINDS = ['bar', 'line'] as const;
+/** data 路径的规模上限：更大的数据应当先查询、再用 src 引用结果文件。 */
+const CHART_DATA_MAX_ROWS = 1000;
+const CHART_DATA_MAX_BYTES = 256 * 1024;
+
+/** 校验图表规格；只做形状与必填，不解释领域含义。 */
+const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: string } => {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { error: 'oks_chart 需要 spec（对象）：kind 必填，bar 与 line 各有自己的字段' };
+  }
+  const record = raw as Record<string, unknown>;
+  const kind = record.kind;
+  if (typeof kind !== 'string' || !(CHART_KINDS as readonly string[]).includes(kind)) {
+    return { error: `spec.kind 必须是 ${CHART_KINDS.join(' / ')} 之一，收到 ${JSON.stringify(kind)}` };
+  }
+  const text = (name: string): string | null => {
+    const value = record[name];
+    return typeof value === 'string' && value.length > 0 ? value : null;
+  };
+  const spec: ChartSpec = {
+    kind: kind as ChartSpec['kind'],
+    title: text('title'),
+    x: text('x') ?? '',
+    value: text('value') ?? '',
+    series: text('series'),
+    xType: record.xType === 'number' || record.xType === 'time' ? record.xType : null,
+    xLabel: text('xLabel'),
+    valueLabel: text('valueLabel'),
+    unit: text('unit'),
+  };
+  if (spec.kind === 'bar' && (spec.x === '' || spec.value === '')) {
+    return { error: 'bar 需要 spec.x（类别列）与 spec.value（数值列）' };
+  }
+  if (spec.kind === 'line') {
+    if (spec.x === '' || spec.value === '') {
+      return { error: 'line 需要 spec.x（横轴列）与 spec.value（数值列）' };
+    }
+    if (spec.xType === null) return { error: 'line 需要 spec.xType：number 或 time' };
+  }
+  return { spec };
+};
+
+/** 校验 agent 自填的数据行：对象行数组，空数组有效。 */
+const parseChartData = (raw: unknown): { rows: Array<Record<string, unknown>> } | { error: string } => {
+  if (!Array.isArray(raw)) return { error: 'data 必须是对象行数组' };
+  if (raw.length > CHART_DATA_MAX_ROWS) {
+    return { error: `data 最多 ${CHART_DATA_MAX_ROWS} 行（收到 ${raw.length} 行）：要画更多请先查询，再用 src 引用结果文件` };
+  }
+  const rows: Array<Record<string, unknown>> = [];
+  for (const item of raw) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return { error: 'data 的每一行都必须是对象' };
+    rows.push(item as Record<string, unknown>);
+  }
+  const bytes = JSON.stringify(rows).length;
+  if (bytes > CHART_DATA_MAX_BYTES) {
+    return { error: `data 太大（${bytes} 字符 > ${CHART_DATA_MAX_BYTES}）：请先查询，再用 src 引用结果文件` };
+  }
+  return { rows };
+};
+
+/** 折线的前置检查：每行都要有横轴值、每个序列的横轴非递减、数值是有限数值或 null。
+ *  （渲染在客户端；这些是规格层面的错，要在工具里就挡掉。） */
+const lineProblem = (rows: readonly Record<string, unknown>[], spec: ChartSpec): string | null => {
+  const xColumn = spec.x;
+  const valueColumn = spec.value;
+  const lastX = new Map<string, number>();
+  for (const row of rows) {
+    const seriesKey = spec.series === null ? '' : String(row[spec.series] ?? '');
+    const rawX = row[xColumn];
+    if (rawX === null || rawX === undefined || rawX === '') {
+      return `横轴列 ${xColumn} 有空值：折线要求每行都有横轴值`;
+    }
+    const x = spec.xType === 'time' ? toEpochMillis(rawX) : Number(rawX);
+    if (x === null || !Number.isFinite(x)) {
+      return `横轴列 ${xColumn} 的值 ${JSON.stringify(rawX)} 不是有效的`
+        + `${spec.xType === 'time' ? '时间（RFC 3339 文本或 epoch 毫秒）' : '数值'}`;
+    }
+    const previous = lastX.get(seriesKey);
+    if (previous !== undefined && x < previous) {
+      return `横轴列 ${xColumn} 在序列 ${seriesKey === '' ? '(单序列)' : seriesKey} 里不是非递减的：`
+        + `${previous} 之后出现 ${x}`;
+    }
+    lastX.set(seriesKey, x);
+    const rawValue = row[valueColumn];
+    if (rawValue !== null && rawValue !== undefined && !Number.isFinite(Number(rawValue))) {
+      return `数值列 ${valueColumn} 的值 ${JSON.stringify(rawValue)} 既不是有限数值也不是 null`;
+    }
+  }
+  return null;
+};
+
+/** time 横轴的取值：epoch 毫秒原样用，RFC 3339 文本按 Date.parse 换算。 */
+const toEpochMillis = (value: unknown): number | null => {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
+};
+
+/** 解析命名批次：1..5 项的对象，名字要能当文件名前缀用。
+ *  同一个 JSON 对象里重复的成员名在解析阶段就已经丢了、工具看不到，所以这里只保证「看到的名字」
+ *  合法；批次内唯一由对象本身保证。 */
+const parseNamedIntents = (raw: unknown, withKey: boolean, toolName: string): ParsedIntents => {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { error: `${toolName} 需要 1 到 5 项命名 Intent：一个「名字 → Intent」的对象，例如 {"ports": {"op":"Graph",...}}` };
+  }
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (entries.length < 1 || entries.length > 5) {
+    return { error: `${toolName} 需要 1 到 5 项命名 Intent，收到 ${entries.length} 项` };
+  }
+  const items: NamedIntent[] = [];
+  for (const [name, value] of entries) {
+    const problem = nameProblem(name);
+    if (problem !== null) return { error: `${toolName} 的名字不合法（${JSON.stringify(name)}）：${problem}` };
+    let intent: unknown = value;
+    let key: string | null = null;
+    if (withKey) {
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+        return { error: `${toolName} 的 ${name} 需要 {intent, key}：key 由 oks_check_intent 给出` };
+      }
+      const record = value as Record<string, unknown>;
+      if (typeof record.key !== 'string' || record.key.length === 0) {
+        return { error: `${toolName} 的 ${name} 缺少 key：先用 oks_check_intent 校验并取得它，再原样传回` };
+      }
+      intent = record.intent;
+      key = record.key;
+    }
+    const limitIssue = limitProblem(intent);
+    if (limitIssue !== null) return { error: `${toolName} 的 ${name}：${limitIssue}` };
+    items.push({ name, intent, key });
+  }
+  return { items };
+};
 
 /** 两个时间工具的入参。 */
 interface TimeArgs {
@@ -31,16 +253,29 @@ interface TimeArgs {
   operations?: unknown;
 }
 
+/** oks_jaq_result 的入参：引用结果文件，并给出作用在行数组上的表达式。 */
+/** oks_jaq_result 的入参：引用结果文件，并给出作用在行数组上的表达式。 */
+interface JaqArgs {
+  src?: unknown;
+  query?: unknown;
+}
+
+/** jq 输出的字符上限：到点终止求值并标记截断（模型可见文本另有预算）。 */
+const JAQ_MAX_CHARS = 256 * 1024;
+
 /** va_ask 的入参。 */
 interface AskArgs {
   query?: string;
 }
 
-/** 一批 Intent 的服务响应，加上它映射回原批次的下标。 */
+/** 一批 Intent 的服务响应，加上它映射回命名批次的下标与名字。 */
 interface Batch {
   response: ServiceResponse;
   intents: unknown[];
+  /** 提交数组的下标 → 命名批次里的下标。 */
   indexes: number[];
+  /** 命名批次里的名字，与 indexes 同序。 */
+  names: string[];
 }
 
 interface Subset {
@@ -57,21 +292,31 @@ interface LoweredBatch {
   subset: Subset | null;
 }
 
-/** oks_query 的一条结果：SQL/bindings 与取回的行（失败时 rows 为 null，error 有文本）。 */
+/** oks_query 里一项的状态：保存成功，或四种失败之一。
+ *  key_mismatch 表示请求里的 key 与重算结果不符（Intent 被改过、或 key 抄错）。 */
+type QueryStatus = 'saved' | 'key_mismatch' | 'rejected' | 'query_error' | 'save_error';
+
+/** oks_query 的一项结果。成功项带 dataSrc；数据行只在结果文件里，不在模型可见面。 */
 interface QueryAnswerResult {
+  name: string;
+  /** 命名批次里的下标，渲染用它把回执与诊断对齐。 */
   index: number;
-  sql: string;
+  status: QueryStatus;
+  dataSrc: string | null;
+  columns: ColumnInfo[];
+  rowCount: number | null;
+  sql: string | null;
   bindings: unknown[];
-  rows: Row[] | null;
   truncated: boolean;
+  ms: number | null;
   error: string | null;
-  ms: number;
 }
 
-/** oks_query 的返回值（渲染层读它的一个视图）。 */
+/** oks_query 的返回值（渲染层与 presentationMeta 读它的一个视图）。 */
 interface QueryAnswer {
   trace: TraceStep[];
-  intents: unknown[];
+  /** 命名批次，保序；回执与 meta 只引用名字。 */
+  intents: Array<{ name: string; intent: unknown }>;
   accepted: boolean;
   diagnostics: DiagnosticEntry[];
   results: QueryAnswerResult[];
@@ -91,13 +336,16 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
    *  会再提交一次——这样"5 个里坏了 1 个"仍能拿到其余 4 个的执行物。 */
   const lowerBatch = async (
     entry: WorkspaceEntry,
-    intents: unknown[],
+    items: NamedIntent[],
     signal: AbortSignal | undefined,
   ): Promise<LoweredBatch> => {
     const method = `${entry.settings.domain}/transform`;
     const trace: TraceStep[] = [];
     // ensureWorkspace 返回前一定装配好宿主；这里按这个约定断言。
     const runner = entry.runner!;
+    // 服务只认 Intent 的数组；名字是插件自己的批次标识，不进协议。
+    const intents = items.map((item) => item.intent);
+    const names = items.map((item) => item.name);
     const response = await runner.send(method, { intents }, signal);
     trace.push({ method, request: { intents }, response });
     const rawDiagnostics = response?.ok?.diagnostics;
@@ -108,7 +356,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     let batch: Batch | null = null;
     let subset: Subset | null = null;
     if (response?.ok?.accepted === true && Array.isArray(response?.ok?.queries)) {
-      batch = { response, intents, indexes: intents.map((_intent, index) => index) };
+      batch = { response, intents, indexes: intents.map((_intent, index) => index), names };
     } else if (entry.settings.retryAcceptedSubset !== false) {
       const indexes = intents.map((_intent, index) => index).filter((index) => !errors.has(index));
       if (indexes.length > 0 && indexes.length < intents.length) {
@@ -117,24 +365,25 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         trace.push({ method, request: { intents: subsetIntents }, response: retry, note: '仅未报 Error 的子集，再降一次' });
         const passed = retry?.ok?.accepted === true && Array.isArray(retry?.ok?.queries);
         subset = { indexes, accepted: passed };
-        if (passed) batch = { response: retry, intents: subsetIntents, indexes };
+        if (passed) batch = { response: retry, intents: subsetIntents, indexes, names };
       }
     }
     return { method, trace, response, diagnostics, batch, subset };
   };
 
-  const arityError = (method: string, intents: unknown[], toolName: string): {
+  /** 批次本身不合法（形状、规模、名字、key）：不调服务，直接给一条批次级诊断。 */
+  const intentError = (method: string, message: string, items: NamedIntent[]): {
     trace: TraceStep[];
-    intents: unknown[];
+    intents: Array<{ name: string; intent: unknown }>;
     diagnostics: DiagnosticEntry[];
   } => ({
     trace: [{
       method,
-      request: { intents },
-      response: { error: true, diagnostics: [{ message: `${toolName} requires one to five independent Intents` }] },
+      request: { intents: items.map((item) => item.intent) },
+      response: { error: true, diagnostics: [{ message }] },
     }],
-    intents,
-    diagnostics: [{ index: 0, diagnostic: { severity: 'Error', message: `${toolName} requires one to five independent Intents` } }],
+    intents: items.map((item) => ({ name: item.name, intent: item.intent })),
+    diagnostics: [{ index: 0, diagnostic: { severity: 'Error', message } }],
   });
 
   /** 上下文时区：会话不在（或没记过）时按缺失处理，与原写法 `zones.get(exec?.agent?.session)` 一致。 */
@@ -237,14 +486,14 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_check_intent',
-      description: 'Validate one to five independent graph Intents against this workspace\'s knowledge model and report the diagnostics. Nothing is executed and no query text comes back — this is the cheap way to find out whether a batch is acceptable. All Intents are checked even if one fails, and the subset without Error diagnostics is checked again so a partially bad batch still tells you which members are good. On rejection, read the diagnostics and repair the Intent with its business meaning intact.',
+      description: 'Validate one to five named graph Intents against this workspace\'s knowledge model and report the result per name. Nothing is executed and no query text comes back — this is the cheap way to find out whether a batch is acceptable, and the names that pass come back with a `key` that oks_query then requires verbatim. All Intents are checked even if one fails, and the subset without Error diagnostics is checked again so a partially bad batch still tells you which members are good. On rejection, read the diagnostics and repair the Intent with its business meaning intact.',
       parameters: {
         type: 'object',
         properties: {
           intents: {
-            type: 'array',
-            description: 'One to five independent graph Intents, e.g. {"op":"Graph","root":"d","nodes":[{"id":"d","entity":"<dataset id>"}],"edges":[],"select":[],"count":"d"}. Closed Intent choices use the declared enum spelling in PascalCase (e.g. op "Graph", filter op "Eq", direction "Desc", row_grain "Root"); the entity is the declared dataset id, not the knowledge key. The service also declares the authoritative Intent syntax — read it from the knowledge nodes it points you to instead of relying on memory.',
-            items: { type: 'object', additionalProperties: true },
+            type: 'object',
+            description: 'One to five named graph Intents: an object mapping a batch name to one Intent, e.g. {"ports":{"op":"Graph","root":"d","nodes":[{"id":"d","entity":"<dataset id>"}],"edges":[],"select":[],"limit":100}}. The name labels the batch and becomes the result file name prefix, so it must be non-empty and free of path separators. Every Intent must declare a top-level limit — the integer 1..100 that decides how many rows this query returns; it is part of the Intent and is hashed with it. Closed Intent choices use the declared enum spelling in PascalCase (e.g. op "Graph", filter op "Eq", direction "Desc", row_grain "Root"); the entity is the declared dataset id, not the knowledge key. The service also declares the authoritative Intent syntax — read it from the knowledge nodes it points you to instead of relying on memory.',
+            additionalProperties: { type: 'object', additionalProperties: true },
           },
         },
         required: ['intents'],
@@ -253,14 +502,26 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       output: { schema: OBJECT_OUTPUT, render: renderCheck },
       async execute(args: IntentArgs, exec: ToolExec) {
         const entry = knowledge.ensureWorkspace(exec);
-        const intents = Array.isArray(args?.intents) ? args.intents : [];
         const method = `${entry.settings.domain}/transform`;
-        if (intents.length < 1 || intents.length > 5) return arityError(method, intents, 'oks_check_intent');
-        const { trace, response, diagnostics, batch, subset } = await lowerBatch(entry, intents, exec?.signal);
+        const parsed = parseNamedIntents(args?.intents, false, 'oks_check_intent');
+        if ('error' in parsed) {
+          return { ...intentError(method, parsed.error, []), results: [], subset: null, queryCount: 0 };
+        }
+        const items = parsed.items;
+        const { trace, response, diagnostics, batch, subset } = await lowerBatch(entry, items, exec?.signal);
         const queries = batch?.response?.ok?.queries;
+        // batch.indexes 是「命名批次」的下标（第一次提交的顺序就是命名顺序），所以直接对名。
+        const passed = new Set(batch === null ? [] : batch.indexes);
         return {
           trace: trace.map((step) => ({ ...step, response: withoutQueries(step.response) })),
-          intents,
+          intents: items.map((item) => ({ name: item.name, intent: item.intent })),
+          // 只有通过校验的项给 key：它是这一项 Intent 的一致性标识，query 必须原样带回来。
+          results: items.map((item, index) => ({
+            name: item.name,
+            accepted: passed.has(index),
+            key: passed.has(index) ? intentKey(item.intent) : null,
+            diagnostics: diagnostics.filter((entry2) => entry2.index === index),
+          })),
           accepted: response?.ok?.accepted === true,
           diagnostics,
           subset,
@@ -270,38 +531,104 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_query',
-      description: 'Answer a business question from this workspace\'s data: validate one to five independent graph Intents, then run the accepted ones as read-only queries against the data file the workspace declares, returning the rows together with the statement and bindings that produced them. A rejected Intent returns diagnostics instead of rows. Use oks_check_intent first when you only want to iterate on the Intent shape.',
+      description: 'Answer a business question from this workspace\'s data: validate one to five named graph Intents, then run the accepted ones as read-only queries against the data file the workspace declares. Each success is saved to a result file in the workspace (.data/) and the reply reports only its dataSrc, columns and rowCount — the rows stay out of this conversation until you take them with oks_jaq_result. A rejected Intent returns diagnostics instead of a dataSrc, and a name whose key does not match its Intent is refused before execution. Use oks_check_intent first to get the keys.',
       parameters: {
         type: 'object',
         properties: {
           intents: {
-            type: 'array',
-            description: 'One to five independent graph Intents, same shape as oks_check_intent accepts.',
-            items: { type: 'object', additionalProperties: true },
+            type: 'object',
+            description: 'One to five named graph Intents, each carrying the key oks_check_intent returned for exactly that Intent: {"ports":{"intent":{...,"limit":100},"key":"<opaque-key>"}}. The key is opaque — copy it verbatim, never edit or recompute it; the tool recomputes the hash and refuses a name whose key does not match its Intent. Keep the names you used in the check batch so the reply lines up. Editing the Intent (including its limit) invalidates the key: check again.',
+            additionalProperties: {
+              type: 'object',
+              properties: {
+                intent: { type: 'object', additionalProperties: true },
+                key: { type: 'string' },
+              },
+              required: ['intent', 'key'],
+              additionalProperties: false,
+            },
           },
         },
         required: ['intents'],
         additionalProperties: false,
       },
-      output: { schema: OBJECT_OUTPUT, render: renderQuery },
+      // 宿主呈现记录：Intent、SQL、bindings 与执行信息只进 meta；数据行留在结果文件里。
+      output: {
+        schema: OBJECT_OUTPUT,
+        render: renderQuery,
+        presentationMeta: (_args: unknown, value: QueryAnswer) => ({
+          version: 1,
+          kind: 'oks.query',
+          accepted: value.accepted,
+          dataFile: value.dataFile,
+          window: value.window,
+          queryMaxRows: value.queryMaxRows,
+          intents: value.intents,
+          diagnostics: value.diagnostics,
+          results: value.results.map((result) => ({
+            name: result.name,
+            status: result.status,
+            dataSrc: result.dataSrc,
+            columns: result.columns,
+            rowCount: result.rowCount,
+            sql: result.sql,
+            bindings: result.bindings,
+            truncated: result.truncated,
+            ms: result.ms,
+            error: result.error,
+          })),
+        }),
+      },
       async execute(args: IntentArgs, exec: ToolExec) {
         const entry = knowledge.ensureWorkspace(exec);
-        const intents = Array.isArray(args?.intents) ? args.intents : [];
         const method = `${entry.settings.domain}/transform`;
-        if (intents.length < 1 || intents.length > 5) {
-          return { ...arityError(method, intents, 'oks_query'), results: [], dataFile: entry.settings.dataFile ?? null };
-        }
-        const { trace, response, diagnostics, batch } = await lowerBatch(entry, intents, exec?.signal);
         const answers: QueryAnswer = {
-          trace,
-          intents,
-          accepted: response?.ok?.accepted === true,
-          diagnostics,
+          trace: [],
+          intents: [],
+          accepted: false,
+          diagnostics: [],
           results: [],
           dataFile: entry.settings.dataFile ?? null,
           window: null,
           queryMaxRows: entry.settings.queryMaxRows,
         };
+        const parsed = parseNamedIntents(args?.intents, true, 'oks_query');
+        if ('error' in parsed) {
+          const failure = intentError(method, parsed.error, []);
+          answers.trace = failure.trace;
+          answers.diagnostics = failure.diagnostics;
+          return answers;
+        }
+        const items = parsed.items;
+        answers.intents = items.map((item) => ({ name: item.name, intent: item.intent }));
+
+        // 先核 key：Intent 被改过、或 key 不是这一项的，直接拒掉、不执行。
+        const mismatched = new Set<number>();
+        items.forEach((item, index) => {
+          if (intentKey(item.intent) !== item.key) mismatched.add(index);
+        });
+
+        const { trace, response, diagnostics, batch } = await lowerBatch(entry, items, exec?.signal);
+        answers.trace = trace;
+        answers.accepted = response?.ok?.accepted === true;
+        answers.diagnostics = diagnostics;
+        const passed = new Set(batch === null ? [] : batch.indexes);
+        const results: QueryAnswerResult[] = items.map((item, index) => ({
+          name: item.name,
+          index,
+          status: mismatched.has(index) ? 'key_mismatch' : passed.has(index) ? 'query_error' : 'rejected',
+          dataSrc: null,
+          columns: [],
+          rowCount: null,
+          sql: null,
+          bindings: [],
+          truncated: false,
+          ms: null,
+          error: mismatched.has(index)
+            ? 'key 与这一项 Intent 的哈希不符：Intent 被改过，或 key 不是它。用 oks_check_intent 重新取得 key 再提交。'
+            : null,
+        }));
+        answers.results = results;
         if (batch === null) return answers;
 
         const { executor, manifest } = knowledge.executorFor(entry.settings);
@@ -310,27 +637,211 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         for (let at = 0; at < queries.length; at += 1) {
           const query = queries[at];
           const index = batch.indexes[at] ?? at;
+          const slot = results[index];
+          if (slot === undefined || slot.status === 'key_mismatch') continue;
           const sql = String(query?.sql ?? '');
           const bindings: unknown[] = isArray(query?.bindings) ? query.bindings : [];
+          slot.sql = sql;
+          slot.bindings = bindings;
+          const item = items[index]!;
           const started = Date.now();
+          let outcome;
           try {
-            const outcome = await executor.send(sql, bindings, exec?.signal);
-            const ms = Date.now() - started;
-            answers.results.push({
-              index, sql, bindings, rows: outcome.rows, truncated: outcome.truncated, error: null, ms,
+            // 行数由 Intent 自己的 limit 决定（服务已把它落到 SQL 的最终限行）；执行器这一层只用
+            // 同一个数字做保险，不再另加 queryMaxRows 截断——保存的是这次 Intent 的完整结果。
+            outcome = await executor.send(
+              sql, bindings, exec?.signal, limitOf(item.intent) ?? entry.settings.queryMaxRows,
+            );
+          } catch (cause) {
+            slot.status = 'query_error';
+            slot.ms = Date.now() - started;
+            slot.error = errorText(cause);
+            log(`[oks] query ${slot.name} failed after ${slot.ms} ms: ${slot.error}`);
+            continue;
+          }
+          slot.ms = Date.now() - started;
+          slot.truncated = outcome.truncated;
+          try {
+            // 只读执行成功就落盘：数据行只留在结果文件里，模型可见面只有引用。
+            const saved = saveResult({
+              root: entry.settings.workspaceRoot,
+              name: slot.name,
+              key: item.key ?? '',
+              intent: item.intent,
+              rows: outcome.rows,
+              sqlColumns: outcome.columns.length > 0 ? outcome.columns : Object.keys(outcome.rows[0] ?? {}),
             });
-            // 执行留痕进宿主日志：模型可见面之外唯一能查到"跑了什么"的地方。
-            log(`[oks] query intent#${index + 1} → ${outcome.rows.length}${outcome.truncated ? '+' : ''} row(s)`
-              + ` · ${ms} ms · sql=${capLine(sql.replace(/\s+/g, ' '), 200)}`
+            slot.status = 'saved';
+            slot.dataSrc = saved.dataSrc;
+            slot.columns = saved.columns;
+            slot.rowCount = saved.rowCount;
+            // 执行留痕进宿主日志：模型可见面之外唯一能查到「跑了什么」的地方。
+            log(`[oks] query ${slot.name} → ${saved.rowCount}${outcome.truncated ? '+' : ''} row(s)`
+              + ` · ${slot.ms} ms · ${saved.dataSrc}`
+              + ` · sql=${capLine(sql.replace(/\s+/g, ' '), 200)}`
               + ` · bindings=${capLine(JSON.stringify(bindings), 200)}`);
           } catch (cause) {
-            const ms = Date.now() - started;
-            const message = errorText(cause);
-            answers.results.push({ index, sql, bindings, rows: null, truncated: false, error: message, ms });
-            log(`[oks] query intent#${index + 1} failed after ${ms} ms: ${message}`);
+            // 数据已经查出来了，只是没保存成功：与执行失败分开报。
+            slot.status = 'save_error';
+            slot.error = errorText(cause);
+            log(`[oks] query ${slot.name} not saved: ${slot.error}`);
           }
         }
         return answers;
+      },
+    },
+    {
+      name: 'oks_jaq_result',
+      description: 'Query a saved query result with a jaq (jq-compatible) expression instead of reading the whole file back. src identifies the result file that oks_query returned; query is the expression, and its input is the array of row objects — write it as if those rows were the whole document, e.g. ".[] | select(.count > 100)", "map({name, total})", "sort_by(.total) | reverse | .[0:5]". The expression decides what comes back, so project narrowly when you only need a few fields: the file can hold as many rows as the limit you declared in the Intent. The reply reports how many rows went in, how many values came out, and the values themselves; an expression that fails to run comes back with the evaluator\'s own message.',
+      parameters: {
+        type: 'object',
+        properties: {
+          src: { type: 'string', description: 'A dataSrc returned by oks_query, copied verbatim — a workspace-relative path under .data/.' },
+          query: { type: 'string', description: 'A jaq/jq expression whose input is the array of row objects from that file.' },
+        },
+        required: ['src', 'query'],
+        additionalProperties: false,
+      },
+      output: { schema: OBJECT_OUTPUT, render: renderJaq },
+      async execute(args: JaqArgs, exec: ToolExec) {
+        const entry = knowledge.ensureWorkspace(exec);
+        const file = readResult(entry.settings.workspaceRoot, args?.src);
+        const query = typeof args?.query === 'string' ? args.query.trim() : '';
+        if (query === '') {
+          throw new Error('oks_jaq_result 需要 query：作用在行数组上的 jaq 表达式，例如 ".[] | select(.count > 100)"。');
+        }
+        const started = Date.now();
+        const outcome = await runJaq(query, {
+          input: file.rows,
+          // 求值沿用查询的超时约束：jaq 是纯函数，但表达式可以写得很 explosive。
+          timeoutMs: entry.settings.queryTimeoutMs,
+          maxChars: JAQ_MAX_CHARS,
+          signal: exec?.signal,
+        });
+        // jaq -c 一行一个值；不是 JSON 的行（例如原样输出的字符串）保留成字符串。
+        const result: unknown[] = [];
+        for (const line of outcome.text.split('\n')) {
+          if (line.trim() === '') continue;
+          try {
+            result.push(JSON.parse(line) as unknown);
+          } catch {
+            // jaq -c 一行一个 JSON 值；解析不了说明输出被动过，报出来而不是把残片当字符串塞给模型。
+            throw new Error(`jaq 输出里有一行不是 JSON 值：${capLine(line, 120)}`);
+          }
+        }
+        log(`[oks] jaq ${file.name} · 输入 ${file.rows.length} 行 → 产出 ${result.length} 个值`
+          + ` · ${Date.now() - started} ms · query=${capLine(query, 200)}`);
+        return {
+          src: String(args?.src),
+          name: file.name,
+          totalRows: file.rows.length,
+          returned: result.length,
+          truncated: outcome.truncated,
+          result,
+        };
+      },
+    },
+    {
+      name: 'oks_chart',
+      description: 'Draw a figure from either a saved query result or data you supply yourself, and save it as an SVG file. Give exactly one of src (a dataSrc returned by oks_query — the figure then reads that result file, and it is labelled "based on query results") or data (an array of row objects you fill in — labelled "filled in by the agent"). The receipt gives you a markdown line: put it verbatim into your answer and the figure shows up there. The rows themselves never enter this conversation, and the file stays in the workspace so you can reference it again. For a plain table, write a markdown table in your reply instead.',
+      parameters: {
+        type: 'object',
+        properties: {
+          spec: {
+            type: 'object',
+            description: 'Figure specification. kind is required: bar needs x (the category column) and value (the numeric column); line needs x, value and xType (number or time), plus an optional series column for several lines. title / xLabel / valueLabel / unit are display text you supply.',
+            properties: {
+              kind: { type: 'string', enum: ['bar', 'line'], description: 'Which figure to draw.' },
+              title: { type: 'string', description: 'Title shown above the figure.' },
+              x: { type: 'string', description: 'bar: the category column. line: the horizontal-axis column.' },
+              value: { type: 'string', description: 'The numeric column drawn as bar length or line height.' },
+              series: { type: 'string', description: 'line only: split into one line per distinct value of this column.' },
+              xType: { type: 'string', enum: ['number', 'time'], description: 'line only: how to read the x column. time accepts RFC 3339 text or epoch milliseconds.' },
+              xLabel: { type: 'string', description: 'Axis label for x (display text).' },
+              valueLabel: { type: 'string', description: 'Axis label for the value (display text).' },
+              unit: { type: 'string', description: 'Unit shown with the values (display text).' },
+            },
+            required: ['kind'],
+            additionalProperties: false,
+          },
+          src: { type: 'string', description: 'A dataSrc returned by oks_query, copied verbatim. Exactly one of src and data must be given.' },
+          data: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'Row objects you supply yourself (an empty array is valid). Exactly one of src and data must be given.' },
+          name: { type: 'string', description: 'Optional file-name prefix for the saved SVG; defaults to "chart". Same rules as a query batch name.' },
+          note: { type: 'string', description: 'Optional short note carried in the receipt — your own narration, kept apart from the system source label.' },
+        },
+        required: ['spec'],
+        additionalProperties: false,
+      },
+      output: { schema: OBJECT_OUTPUT, render: renderChart },
+      async execute(args: ChartArgs, exec: ToolExec) {
+        const entry = knowledge.ensureWorkspace(exec);
+        const parsedSpec = parseChartSpec(args?.spec);
+        if ('error' in parsedSpec) throw new Error(parsedSpec.error);
+        const spec = parsedSpec.spec;
+        const hasSrc = typeof args?.src === 'string' && args.src.length > 0;
+        const hasData = args?.data !== undefined && args?.data !== null;
+        if (hasSrc === hasData) {
+          throw new Error('oks_chart 需要 src 与 data 恰好提供一个：src 引用查询结果文件，data 是你要画的数据本身。');
+        }
+        let rows: Array<Record<string, unknown>>;
+        let columns: string[];
+        let intent: unknown = null;
+        let source: 'query' | 'agent';
+        if (hasSrc) {
+          // src 走与 oks_jaq_result 同一套读取与路径校验：只认工作区 .data/ 里的结果文件。
+          const file = readResult(entry.settings.workspaceRoot, args?.src);
+          rows = file.rows;
+          columns = file.columns.map((column) => column.name);
+          intent = file.intent;
+          source = 'query';
+        } else {
+          const parsedData = parseChartData(args?.data);
+          if ('error' in parsedData) throw new Error(parsedData.error);
+          rows = parsedData.rows;
+          columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+          source = 'agent';
+        }
+        const referenced = [spec.x, spec.value, spec.series]
+          .filter((name): name is string => name !== null);
+        // 空数据没有列可校验，也不该因此报错：空结果照样出一张空图。
+        const missing = rows.length === 0 ? [] : referenced.filter((name) => !columns.includes(name));
+        if (missing.length > 0) {
+          throw new Error(`这些列不在数据里：${missing.join(', ')}。可用的列：${columns.join(', ') || '(没有列)'}`);
+        }
+        if (spec.kind === 'line') {
+          const issue = lineProblem(rows, spec);
+          if (issue !== null) throw new Error(issue);
+        }
+        // 服务端出图：画成 SVG 落盘，并把「可以原样粘进回答」的那一行交给 agent。
+        // 来源标识画进图里——图离开这段对话也要能自证数据来自查询还是 agent 自填。
+        const svg = renderChartSvg(rows, {
+          ...spec,
+          sourceLabel: source === 'query' ? '基于查询结果' : 'agent 自主填写',
+        });
+        const saved = saveChartSvg({
+          root: entry.settings.workspaceRoot,
+          name: typeof args?.name === 'string' && args.name.length > 0 ? args.name : 'chart',
+          svg,
+        });
+        const alt = (spec.title ?? (source === 'query' ? '查询结果图' : '数据图')).replace(/[[\]]/g, '');
+        const markdown = `![${alt}](${saved.src})`;
+        const note = typeof args?.note === 'string' && args.note.length > 0 ? args.note : null;
+        log(`[oks] chart ${spec.kind} · source=${source} · ${rows.length} 行 → ${saved.src}`);
+        return {
+          ok: true as const,
+          kind: spec.kind,
+          title: spec.title,
+          source,
+          src: hasSrc ? String(args?.src) : null,
+          svgSrc: saved.src,
+          markdown,
+          at: saved.at,
+          note,
+          rowCount: rows.length,
+          columns,
+          spec,
+          intent,
+        };
       },
     },
     {

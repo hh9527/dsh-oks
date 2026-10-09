@@ -12,6 +12,7 @@
 import { apply } from './dist/index.mjs';
 import { applyOps, encode, parseMoment } from './src/time.ts';
 import { singleFlight } from './src/single-flight.ts';
+import { intentKey } from './src/key.ts';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
@@ -19,7 +20,7 @@ import { pathToFileURL } from 'node:url';
 
 const DEV_ROOT = process.env.OKS_WORKSPACE ?? process.cwd();
 const SCRATCH = `${DEV_ROOT}/.oks-smoke`;
-// 插件**不在工作区里写任何东西**，所以顶层清单在整场测试前后必须一致。
+// 插件只在工作区的 .data/ 里写查询结果，别处不碰；顶层清单因此只允许新增 .data/。
 const workspaceListing = () => readdirSync(DEV_ROOT).filter((name) => name !== '.oks-smoke').sort().join(',');
 const listingBefore = workspaceListing();
 
@@ -67,7 +68,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'time_now', 'time_calc', 'va_ask'];
+const EXPECTED_TOOLS = ['oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'oks_jaq_result', 'oks_chart', 'time_now', 'time_calc', 'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -92,7 +93,13 @@ const call = async (name, args, cwd = DEV_ROOT) => {
   const tool = registered.get(name);
   if (!tool) throw new Error(`tool ${name} was not registered`);
   const value = await tool.execute(args, { signal: new AbortController().signal, ...sessionFor(cwd) });
-  return { value, text: tool.output.render(args, value).map((block) => block.text ?? '').join('') };
+  const text = tool.output.render(args, value).map((block) => block.text ?? '').join('');
+  // 宿主还会把 presentationMeta 投影进工具结果的 meta（不进模型上下文）；这里照做一遍，
+  // 好让冒烟能断言「哪些东西只留在 meta 里」。
+  const meta = typeof tool.output.presentationMeta === 'function'
+    ? tool.output.presentationMeta(args, value)
+    : undefined;
+  return { value, text, meta };
 };
 const foundOf = (value) => value?.trace?.[0]?.response?.ok?.Document?.Found;
 // 每个实例一套独立的假 ctx：工具表、事件表（按名字收全部监听器）、日志。disposer 统一在最后收尾。
@@ -1062,15 +1069,29 @@ console.log('=== oks_references（按 key 反向找引用）===');
   if (!rejected) throw new Error('未知 key 应当报错，而不是回空');
 }
 
-const countIntents = [{ op: 'Graph', root: 'x', nodes: [{ id: 'x', entity: member.id }], edges: [], select: [], count: 'x' }];
-const brokenIntents = [{ op: 'Graph', root: 'x', nodes: [{ id: 'x', entity: 'no_such_entity_from_smoke' }], edges: [], select: [], count: 'x' }];
+// 命名批次：名字用于回执对应、结果文件名与来源核对。
+const countNamed = { count: { op: 'Graph', root: 'x', nodes: [{ id: 'x', entity: member.id }], edges: [], select: [], count: 'x', limit: 100 } };
+const brokenNamed = { broken: { op: 'Graph', root: 'x', nodes: [{ id: 'x', entity: 'no_such_entity_from_smoke' }], edges: [], select: [], count: 'x', limit: 100 } };
 
-// ── 校验路径：只回诊断，不回任何语句 ────────────────────────────────────────
-console.log('=== oks_check_intent（只校验）===');
+/** 先用 oks_check_intent 取 key，再拼成 oks_query 要的 {intent, key}。 */
+const withKeys = async (named, dir) => {
+  const checked = await call('oks_check_intent', { intents: named }, dir);
+  return Object.fromEntries(Object.entries(named).map(([name, intent]) => {
+    const item = (checked.value.results ?? []).find((result) => result.name === name);
+    if (item === undefined || typeof item.key !== 'string') throw new Error(`校验没有通过：${name}`);
+    return [name, { intent, key: item.key }];
+  }));
+};
+
+// ── 校验路径：只回诊断与 key，不回任何语句 ──────────────────────────────────
+console.log('=== oks_check_intent（只校验，通过项给 key）===');
 {
-  const accepted = await call('oks_check_intent', { intents: countIntents });
-  console.log(accepted.text.split('\n').filter((line) => /◂|校验结论/.test(line)).map((l) => `  ${l}`).join('\n'));
+  const accepted = await call('oks_check_intent', { intents: countNamed });
+  console.log(accepted.text.split('\n').filter((line) => /◂|key=|校验结论/.test(line)).map((l) => `  ${l}`).join('\n'));
   if (!/全部可用/.test(accepted.text)) throw new Error('有效批次应当判定为可用');
+  const item = (accepted.value.results ?? [])[0] ?? null;
+  console.log(`  通过项带 32 位 key: ${typeof item?.key === 'string' && item.key.length === 32 ? '✓' : '✗'}`);
+  if (typeof item?.key !== 'string' || item.key.length !== 32) throw new Error('通过校验的项应当给出 32 位 key');
   const leak = /select\s|sql:|bindings:/i.test(accepted.text);
   console.log(`  渲染里没有语句: ${leak ? '✗' : '✓'}`);
   if (leak) throw new Error('校验路径不应当出现语句');
@@ -1078,51 +1099,248 @@ console.log('=== oks_check_intent（只校验）===');
   console.log(`  结构化值里也没有 queries: ${/"queries"/.test(structured) ? '✗' : '✓'}`);
   if (/"queries"/.test(structured)) throw new Error('校验路径的结构化值里仍然带着 queries');
 
-  const partial = await call('oks_check_intent', { intents: [...countIntents, ...brokenIntents] });
+  const partial = await call('oks_check_intent', { intents: { ...countNamed, ...brokenNamed } });
   console.log(partial.text.split('\n').filter((line) => /◂|✕|再校验|校验结论/.test(line)).map((l) => `  ${l}`).join('\n').slice(0, 700));
   if (!/✕\s*Error/.test(partial.text)) throw new Error('坏 Intent 应当报 Error 诊断');
   if (!/再校验一次.*通过/.test(partial.text)) throw new Error('未报 Error 的子集应当被单独确认');
   if (!/被拒绝/.test(partial.text)) throw new Error('被拒的 Intent 应当单独列出');
+  const rows = partial.value.results ?? [];
+  const good = rows.find((row) => row.name === 'count');
+  const bad = rows.find((row) => row.name === 'broken');
+  console.log(`  好项给 key、坏项不给: ${typeof good?.key === 'string' && bad?.key === null ? '✓' : '✗'}`);
+  if (typeof good?.key !== 'string' || bad?.key !== null) throw new Error('只有通过校验的项才应当拿到 key');
 }
 
-// ── 查询路径：真的执行、真的返回行，并且带上来源语句 ────────────────────────
-console.log('=== oks_query（只读执行）===');
+// ── 查询路径：真的执行、结果落盘，模型可见面只留引用 ────────────────────────
+console.log('=== oks_query（只读执行 + 结果落盘）===');
 {
-  const answer = await call('oks_query', { intents: countIntents });
+  const answer = await call('oks_query', { intents: await withKeys(countNamed) });
   const first = answer.value.results?.[0] ?? null;
-  console.log(answer.text.split('\n').filter((line) => /◂|── 结果|执行：|^\|/.test(line)).map((l) => `  ${l}`).join('\n').slice(0, 700));
+  console.log(answer.text.split('\n').filter((line) => /◂|── |status:|dataSrc:|columns:|sql:/.test(line)).map((l) => `  ${l}`).join('\n').slice(0, 800));
   if (first === null) throw new Error('有效查询没有产生结果');
-  if (first.error !== null) throw new Error(`查询失败：${first.error}`);
-  console.log(`  行数 ${first.rows.length} · 渲染 ${answer.text.length} 字符（pruner 阈值 8192）`);
-  if (first.rows.length < 1) throw new Error('查询应当至少返回一行');
-  if (!/sql:/.test(answer.text) || !/执行：\d+ 行/.test(answer.text)) throw new Error('查询结果应当带上语句与执行摘要');
+  if (first.status !== 'saved') throw new Error(`查询没有保存成功：${first.status} ${first.error ?? ''}`);
+  console.log(`  行数 ${first.rowCount} · 渲染 ${answer.text.length} 字符（pruner 阈值 8192）`);
+  if (first.rowCount < 1) throw new Error('查询应当至少返回一行');
+  if (typeof first.dataSrc !== 'string' || !first.dataSrc.startsWith('.data/')) throw new Error('成功项应当返回 .data/ 下的 dataSrc');
+  if (/sql:/.test(answer.text) || !/status:\s+saved/.test(answer.text)) throw new Error('回执应当是结构（保存状态），语句不进模型可见文本');
+  const metaSql = answer.meta?.results?.[0]?.sql ?? null;
+  console.log(`  语句只留在呈现记录里（meta.sql ${typeof metaSql === 'string' ? `${metaSql.length} 字符` : '缺失'}）: ${typeof metaSql === 'string' && metaSql.length > 0 ? '✓' : '✗'}`);
+  if (typeof metaSql !== 'string' || metaSql.length === 0) throw new Error('语句应当留在 presentationMeta 里');
   if (answer.text.length >= 8192) throw new Error('模型可见文本超过了 pruner 阈值');
+  if (/^\|.*\|$/m.test(answer.text)) throw new Error('数据行不该出现在查询回执里（它们只在结果文件里）');
 
-  const rejected = await call('oks_query', { intents: brokenIntents });
-  console.log(rejected.text.split('\n').filter((line) => /◂|✕|被拒绝|没有/.test(line)).map((l) => `  ${l}`).join('\n').slice(0, 500));
-  if ((rejected.value.results ?? []).length !== 0) throw new Error('被拒批次不应产生结果');
-  if (!/被拒绝/.test(rejected.text)) throw new Error('被拒批次应当列出诊断');
+  const saved = JSON.parse(readFileSync(resolve(DEV_ROOT, first.dataSrc), 'utf8'));
+  console.log(`  结果文件 ${first.dataSrc}：${saved.rowCount} 行 · 列 ${saved.columns.map((column) => column.name).join(',')}`);
+  if (saved.rowCount !== first.rowCount) throw new Error('结果文件的行数与回执不一致');
+  if (!Array.isArray(saved.rows) || saved.rows.length !== first.rowCount) throw new Error('结果文件里没有完整数据行');
+  if (JSON.stringify(saved.intent) !== JSON.stringify(countNamed.count)) throw new Error('结果文件里应当带原始 Intent');
+  if (saved.columns.some((column) => !Array.isArray(column.types) || column.types.length === 0)) throw new Error('结果文件的列信息缺少类型');
+
+  // key 对得上（自算），但这个 Intent 本身被服务拒：这才是 rejected。
+  const rejected = await call('oks_query', { intents: { broken: { intent: brokenNamed.broken, key: intentKey(brokenNamed.broken) } } });
+  const rejectedFirst = rejected.value.results?.[0] ?? null;
+  console.log(rejected.text.split('\n').filter((line) => /◂|✕|被拒绝|status:/.test(line)).map((l) => `  ${l}`).join('\n').slice(0, 600));
+  console.log(`  被拒项 status=${rejectedFirst?.status} · dataSrc=${rejectedFirst?.dataSrc}`);
+  if (rejectedFirst?.status !== 'rejected' || rejectedFirst?.dataSrc !== null) throw new Error('被拒批次应当给出 rejected 且没有 dataSrc');
+
+  // key 与 Intent 不符：不执行，直接拒。
+  const mismatched = await call('oks_query', { intents: { count: { intent: countNamed.count, key: 'f'.repeat(32) } } });
+  const mismatchFirst = mismatched.value.results?.[0] ?? null;
+  console.log(`  改了 Intent 复用别的 key → status=${mismatchFirst?.status}`);
+  if (mismatchFirst?.status !== 'key_mismatch') throw new Error('key 与 Intent 不符时应当拒掉');
+  if (mismatchFirst?.sql !== null) throw new Error('key 不符的项不应被执行');
 }
 
-// ── 行数上限：换一个 queryMaxRows=2 的实例，看截断有没有说出来 ───────────────
-console.log('=== 行数上限与截断说明（queryMaxRows=2）===');
+// ── 结构化查询：表达式作用在行数组上，结果文件的内部结构不进契约 ────────────
+console.log('=== oks_jaq_result（用表达式取数）===');
+{
+  const answer = await call('oks_query', { intents: await withKeys(countNamed) });
+  const first = answer.value.results?.[0] ?? null;
+  const column = first.columns[0]?.name;
+  const numeric = first.columns.find((entry) => entry.types.includes('number'))?.name ?? column;
+
+  // 标量：断言表达式拿到的确实是行数组
+  const one = await call('oks_jaq_result', { src: first.dataSrc, query: `.[0].${column}` });
+  console.log(`  .[0].${column} → ${JSON.stringify(one.value.result)}（输入 ${one.value.totalRows} 行）`);
+  if (one.value.totalRows !== first.rowCount) throw new Error('回执应当报告输入的行数');
+  if (one.value.returned !== 1) throw new Error('标量表达式应当产出恰好一个值');
+
+  // 逐行投影：.[] 把行数组摊成流，每个元素产出一个对象
+  const projected = await call('oks_jaq_result', {
+    src: first.dataSrc,
+    query: `.[] | {${column}, ${numeric}}`,
+  });
+  const sample = projected.value.result?.[0] ?? null;
+  const keys = sample === null ? [] : Object.keys(sample);
+  console.log(`  map({${column}, ${numeric}}) → ${JSON.stringify(sample)}`);
+  const expectedKeys = [...new Set([column, numeric])];
+  if (keys.length !== expectedKeys.length || !expectedKeys.every((name) => keys.includes(name))) {
+    throw new Error('投影应当只产出选中的字段');
+  }
+  if (projected.value.returned !== first.rowCount) throw new Error('map 应当逐行产出一个值');
+
+  // 写法错误：把求值器自己的报错带回来，而不是一句笼统的"查询失败"
+  let evaluatorError = '';
+  try {
+    await call('oks_jaq_result', { src: first.dataSrc, query: '.[] |' });
+  } catch (cause) {
+    evaluatorError = String(cause?.message ?? cause);
+  }
+  console.log(`  表达式错误 → ${evaluatorError.split('\n')[0].slice(0, 96)}`);
+  if (!/jaq 表达式执行失败/.test(evaluatorError)) throw new Error('表达式语法错误应当明确报错');
+
+  let missingQuery = '';
+  try {
+    await call('oks_jaq_result', { src: first.dataSrc });
+  } catch (cause) {
+    missingQuery = String(cause?.message ?? cause);
+  }
+  console.log(`  缺 query 被拒: ${/需要 query/.test(missingQuery) ? '✓' : '✗'}`);
+  if (!/需要 query/.test(missingQuery)) throw new Error('缺 query 应当明确报错');
+
+  let outOfBounds = '';
+  try {
+    await call('oks_jaq_result', { src: '../oks.json', query: '.' });
+  } catch (cause) {
+    outOfBounds = String(cause?.message ?? cause);
+  }
+  console.log(`  越界的 src 被拒: ${/dataSrc/.test(outOfBounds) ? '✓' : '✗'}`);
+  if (!/dataSrc/.test(outOfBounds)) throw new Error('src 走出 .data/ 时必须报错');
+
+  // 输出到达上限：按行边界截断，绝不留下半个 JSON 值（否则残片会被当成结果）
+  const bulk = await call('oks_jaq_result', { src: first.dataSrc, query: 'range(1; 200000)' });
+  console.log(`  大输出：产出 ${bulk.value.returned} 个值 · truncated=${bulk.value.truncated}`);
+  if (bulk.value.truncated !== true) throw new Error('输出超上限时应当报告 truncated');
+  const fragments = bulk.value.result.filter((item) => typeof item !== 'number');
+  console.log(`  截断后每个值都完整: ${fragments.length === 0 ? '✓' : `✗ ${JSON.stringify(fragments.slice(0, 2))}`}`);
+  if (fragments.length > 0) throw new Error('截断不该留下半个值');
+}
+
+// ── 行数由 Intent 的 limit 决定：服务限行，插件完整保存（不再另有 queryMaxRows 截断）──
+console.log('=== Intent 的 limit 决定取回行数（limit=2）===');
 if (dimension === null) {
   console.log('  （跳过：发现协议没走到维度节点）');
 } else {
-  const { tools } = buildCtx({ queryMaxRows: 2 });
+  const { tools } = buildCtx({});
+  const named = {
+    rows: {
+      op: 'Graph', root: 'x', nodes: [{ id: 'x', entity: member.id }], edges: [],
+      select: [{ node: 'x', dimension: dimension.id }], limit: 2,
+    },
+  };
+  const exec = { signal: new AbortController().signal, ...sessionFor(DEV_ROOT) };
+  const checked = await tools.get('oks_check_intent').execute({ intents: named }, exec);
+  const key = (checked.results ?? [])[0]?.key ?? null;
+  const args = { intents: { rows: { intent: named.rows, key } } };
   const tool = tools.get('oks_query');
-  const intents = [{ op: 'Graph', root: 'x', nodes: [{ id: 'x', entity: member.id }], edges: [], select: [{ node: 'x', dimension: dimension.id }] }];
-  const value = await tool.execute({ intents }, { signal: new AbortController().signal, ...sessionFor(DEV_ROOT) });
-  const text = tool.output.render({ intents }, value).map((block) => block.text ?? '').join('');
+  const value = await tool.execute(args, exec);
+  const text = tool.output.render(args, value).map((block) => block.text ?? '').join('');
   const first = value.results?.[0] ?? null;
-  console.log(text.split('\n').filter((line) => /执行：|只显示/.test(line)).map((l) => `  ${l}`).join('\n'));
-  if (first === null || first.error !== null) throw new Error(`多行查询失败：${first?.error ?? '(无结果)'}`);
-  if (first.truncated) {
-    if (first.rows.length !== 2) throw new Error('截断时应当恰好取回上限行数');
-    if (!/已到行数上限 2|只显示前 2 行/.test(text)) throw new Error('截断必须在模型可见文本里写明');
-    console.log('  ✓ 取回行数等于上限，渲染里写明截断');
-  } else {
-    console.log(`  （跳过：这个数据集只有 ${first.rows.length} 行，未触及上限）`);
+  console.log(text.split('\n').filter((line) => /status:|dataSrc:/.test(line)).map((l) => `  ${l}`).join('\n'));
+  if (first === null || first.status !== 'saved') throw new Error(`多行查询失败：${first?.status ?? '(无结果)'} ${first?.error ?? ''}`);
+  console.log(`  limit=2 → 落盘 ${first.rowCount} 行`);
+  if (first.rowCount > 2) throw new Error('limit 应当在服务侧限行');
+  if (first.truncated) throw new Error('服务已按 limit 限行时，插件不该再报「还有更多」');
+  const savedFile = JSON.parse(readFileSync(resolve(DEV_ROOT, first.dataSrc), 'utf8'));
+  if (savedFile.rows.length !== first.rowCount) throw new Error('结果文件应当完整保存这次 Intent 的结果');
+}
+
+// ── 图表：服务端出 SVG、两条数据路径、回执给出可粘进回答的 markdown ─────────
+console.log('=== oks_chart（服务端出图）===');
+{
+  // data 路径：agent 自填数据，来源固定为「agent 自主填写」。
+  const inline = await call('oks_chart', {
+    spec: { kind: 'bar', title: '方案对比', x: 'label', value: 'value' },
+    data: [{ label: 'A', value: 3 }, { label: 'B', value: 5 }],
+    name: 'probe_inline',
+  });
+  console.log(inline.text.split('\n').filter(Boolean).map((line) => `  ${line}`).join('\n').slice(0, 520));
+  if (inline.value.ok !== true || inline.value.source !== 'agent') throw new Error('data 路径的来源应当是 agent 自主填写');
+  if (inline.value.rowCount !== 2) throw new Error('data 路径应当报告行数');
+  if (!/agent 自主填写/.test(inline.text)) throw new Error('回执应当标出来源');
+  // 图真的落成了 SVG
+  const inlineSvg = readFileSync(resolve(DEV_ROOT, inline.value.svgSrc), 'utf8');
+  console.log(`  落盘 ${inline.value.svgSrc}（${inlineSvg.length} 字符）: ${inlineSvg.startsWith('<svg') ? '✓' : '✗'}`);
+  if (!inlineSvg.startsWith('<svg')) throw new Error('产物应当是 SVG');
+  if (!inlineSvg.includes('方案对比')) throw new Error('SVG 里应当有标题');
+  // 回执给出的 markdown 指向同一个文件
+  const expectedMarkdown = `![方案对比](${inline.value.svgSrc})`;
+  if (inline.value.markdown !== expectedMarkdown) {
+    throw new Error(`回执应当给出指向该 SVG 的 markdown，收到 ${JSON.stringify(inline.value.markdown)}`);
+  }
+  console.log(`  回执给出的 markdown: ${inline.value.markdown}`);
+
+  // src 路径：引用查询结果文件，来源固定为「基于查询结果」，并从文件带出原始 Intent。
+  const answer = await call('oks_query', { intents: await withKeys(countNamed) });
+  const saved = (answer.value.results ?? [])[0] ?? null;
+  const firstColumn = saved.columns[0]?.name;
+  const numeric = saved.columns.find((entry) => entry.types.includes('number'))?.name ?? firstColumn;
+  const fromSrc = await call('oks_chart', {
+    spec: { kind: 'bar', x: firstColumn, value: numeric, title: '来自查询' },
+    src: saved.dataSrc,
+    note: '来源是查询结果文件',
+  });
+  if (fromSrc.value.ok !== true || fromSrc.value.source !== 'query') throw new Error('src 路径的来源应当是「基于查询结果」');
+  if (fromSrc.value.src !== saved.dataSrc) throw new Error('src 路径应当回带 dataSrc');
+  if (fromSrc.value.intent === null) throw new Error('src 路径应当从结果文件带出原始 Intent');
+  const fromSrcSvg = readFileSync(resolve(DEV_ROOT, fromSrc.value.svgSrc), 'utf8');
+  if (!fromSrcSvg.startsWith('<svg')) throw new Error('src 路径也应当落一份 SVG');
+  console.log(`  src 路径：${fromSrc.value.rowCount} 行 → ${fromSrc.value.svgSrc} · 带原始 Intent ✓`);
+  // 来源标识要画进图里：图离开这段对话也得能自证数据从哪来。
+  if (!inlineSvg.includes('agent 自主填写')) throw new Error('自主填写的图里应当有来源标识');
+  if (!fromSrcSvg.includes('基于查询结果')) throw new Error('查询结果的图里应当有来源标识');
+  console.log('  两张图的 SVG 里都有来源标识: ✓');
+
+  // 负值走 0 轴另一侧，并且换色，方向一眼可辨。
+  const signed = await call('oks_chart', {
+    spec: { kind: 'bar', title: '正负对照', x: 'label', value: 'value' },
+    data: [{ label: '正', value: 5 }, { label: '负', value: -3 }],
+    name: 'probe_signed',
+  });
+  const signedSvg = readFileSync(resolve(DEV_ROOT, signed.value.svgSrc), 'utf8');
+  console.log(`  正负对照：${signedSvg.includes('#c0567a') ? '负值用区分色 ✓' : '✗ 没有区分色'}`);
+  if (!signedSvg.includes('#c0567a')) throw new Error('负值应当用区分色绘制');
+
+  // 规格与图的校验：这些都要在画图之前被拒。
+  const failures = [
+    ['两个都缺', { spec: { kind: 'bar', x: 'a', value: 'b' } }],
+    ['两个都给', { spec: { kind: 'bar', x: 'a', value: 'b' }, src: saved.dataSrc, data: [{}] }],
+    ['未知 kind', { spec: { kind: 'pie' }, data: [{}] }],
+    ['table 退场', { spec: { kind: 'table' }, data: [{}] }],
+    ['列不存在', { spec: { kind: 'bar', x: 'nope', value: 'nope2' }, data: [{ a: 1 }] }],
+    ['bar 缺 value', { spec: { kind: 'bar', x: 'label' }, data: [{ label: 'A' }] }],
+    ['line 缺 xType', { spec: { kind: 'line', x: 'label', value: 'value' }, data: [{ label: 'A', value: 1 }] }],
+    ['图表名越界', { spec: { kind: 'bar', x: 'label', value: 'value' }, data: [{ label: 'A', value: 1 }], name: '../evil' }],
+  ];
+  for (const [label, args] of failures) {
+    let rejected = false;
+    let message = '';
+    try { await call('oks_chart', args); } catch (cause) { rejected = true; message = String(cause?.message ?? cause); }
+    console.log(`  ${String(label).padEnd(10)} → ${rejected ? '✓ 被拒' : '✗ 未拒'} ${message.slice(0, 64)}`);
+    if (!rejected) throw new Error(`oks_chart ${label} 应当被拒`);
+  }
+  const empty = await call('oks_chart', { spec: { kind: 'bar', x: 'label', value: 'value' }, data: [] });
+  console.log(`  空数组有效: ${empty.value.ok === true && empty.value.rowCount === 0 ? '✓' : '✗'}`);
+  if (empty.value.ok !== true) throw new Error('空数组应当是有效输入');
+}
+
+// ── limit 必填、范围 1..100：插件在调用服务之前就判定 ────────────────────────
+console.log('=== Intent 的 limit 必填且限于 1..100 ===');
+{
+  const base = { op: 'Graph', root: 'x', nodes: [{ id: 'x', entity: member.id }], edges: [], select: [] };
+  const cases = [
+    ['缺失', { ...base }],
+    ['null', { ...base, limit: null }],
+    ['非整数', { ...base, limit: 1.5 }],
+    ['0', { ...base, limit: 0 }],
+    ['101', { ...base, limit: 101 }],
+  ];
+  for (const [label, intent] of cases) {
+    const answer = await call('oks_check_intent', { intents: { x: intent } });
+    const message = (answer.value.diagnostics ?? [])[0]?.diagnostic?.message ?? '';
+    const rejected = /limit/.test(message);
+    console.log(`  ${String(label).padEnd(6)} → ${rejected ? '✓ 被拒' : '✗ 未拒'} ${message.slice(0, 76)}`);
+    if (!rejected) throw new Error(`limit ${label} 应当被拒`);
   }
 }
 
@@ -1139,10 +1357,10 @@ console.log('=== 第二个工作区（嵌套目录，路径都相对 oks.json）
   };
   if (typeof anchor.dataFile === 'string') entry.dataFile = relative(nested, resolve(DEV_ROOT, anchor.dataFile));
   writeFileSync(`${nested}/oks.json`, `${JSON.stringify(entry, null, 2)}\n`);
-  const nestedAnswer = await call('oks_query', { intents: countIntents }, nested);
+  const nestedAnswer = await call('oks_query', { intents: await withKeys(countNamed, nested) }, nested);
   const first = nestedAnswer.value.results?.[0] ?? null;
-  console.log(`  相对路径解析 → ${first === null ? '✗ 无结果' : `行数 ${first.rows.length} ✓`}`);
-  if (first === null || first.error !== null) throw new Error('嵌套工作区的相对路径没有解析对');
+  console.log(`  相对路径解析 → ${first === null ? '✗ 无结果' : `行数 ${first.rowCount} ✓`}`);
+  if (first === null || first.status !== 'saved') throw new Error('嵌套工作区的相对路径没有解析对');
 }
 
 // ── 第三个工作区：没有 dataFile → 查询报错，校验照常 ────────────────────────
@@ -1155,14 +1373,14 @@ console.log('=== 没有 dataFile 的工作区（只能校验）===');
     version: 1, domain: anchor.domain, artifact: relative(dir, resolve(DEV_ROOT, anchor.artifact)),
   }, null, 2)}\n`);
   try {
-    await call('oks_query', { intents: countIntents }, dir);
+    await call('oks_query', { intents: await withKeys(countNamed, dir) }, dir);
     console.log('  ✗ 没有 dataFile 却查成功了');
     throw new Error('没有 dataFile 时 oks_query 应当报错');
   } catch (cause) {
     if (!/没有声明 dataFile/.test(String(cause?.message ?? cause))) throw cause;
     console.log(`  ✓ oks_query 拒绝: ${String(cause.message).split('\n')[0].slice(0, 110)}`);
   }
-  const checked = await call('oks_check_intent', { intents: countIntents }, dir);
+  const checked = await call('oks_check_intent', { intents: countNamed }, dir);
   console.log(`  oks_check_intent 仍可用: ${/全部可用/.test(checked.text) ? '✓' : '✗'}`);
 }
 
@@ -1178,11 +1396,12 @@ console.log('=== 坏 dataFile（不是 SQLite）===');
     artifact: relative(dir, resolve(DEV_ROOT, anchor.artifact)),
     dataFile: 'junk.txt',
   }, null, 2)}\n`);
-  const failed = await call('oks_query', { intents: countIntents }, dir);
+  const failed = await call('oks_query', { intents: await withKeys(countNamed, dir) }, dir);
   const first = failed.value.results?.[0] ?? null;
   console.log(`  ${String(first?.error ?? '(没有错误)').slice(0, 120)}`);
-  console.log(`  渲染里写明执行失败: ${/执行失败/.test(failed.text) ? '✓' : '✗'}`);
-  if (!/执行失败/.test(failed.text)) throw new Error('坏数据文件必须在结果里写明');
+  console.log(`  渲染里写明执行失败: ${/status:\s+query_error/.test(failed.text) ? '✓' : '✗'}`);
+  if (!/status:\s+query_error/.test(failed.text)) throw new Error('坏数据文件必须在结果里写明');
+  if (first?.dataSrc !== null) throw new Error('执行失败不应留下 dataSrc');
 }
 
 // ── 没有 oks.json 的工作区：明确报错，不回落到别的模型 ─────────────────────
@@ -1215,14 +1434,23 @@ console.log('=== 非快照产物（只有 wasm 头，没有 telora.snapshot 段�
   }
 }
 
-// ── 插件不写工作区：整场测试前后顶层清单必须一致，且没有 .oks/plans ─────────
-console.log('=== 插件不在工作区里写任何东西 ===');
+// ── 插件只写工作区的 .data/（查询结果），别处不碰 ───────────────────────────
+console.log('=== 插件只写 .data/ 里的结果文件 ===');
 {
   const after = workspaceListing();
-  console.log(`  顶层清单未变: ${after === listingBefore ? '✓' : `✗ (${listingBefore} → ${after})`}`);
+  const before = new Set(listingBefore.split(',').filter(Boolean));
+  const added = after.split(',').filter(Boolean).filter((name) => !before.has(name));
+  console.log(`  顶层新增条目：${added.join(', ') || '(无)'}`);
+  if (added.some((name) => name !== '.data')) throw new Error(`插件创建了 .data/ 之外的东西：${added.join(', ')}`);
   console.log(`  没有 .oks/plans: ${existsSync(`${DEV_ROOT}/.oks`) ? '✗' : '✓'}`);
-  if (after !== listingBefore) throw new Error('插件在工作区里创建了文件');
   if (existsSync(`${DEV_ROOT}/.oks`)) throw new Error('计划文件目录不该存在');
+  if (existsSync(`${DEV_ROOT}/.data`)) {
+    const files = readdirSync(`${DEV_ROOT}/.data`);
+    // 这里现在有两类产物：查询结果（.json）与图表（.svg）。
+    const allProducts = files.length > 0 && files.every((name) => /\.(json|svg)$/.test(name));
+    console.log(`  .data/ 里 ${files.length} 个产物、都是 .json 或 .svg: ${allProducts ? '✓' : '✗'}`);
+    if (!allProducts) throw new Error('.data/ 里出现了结果与图之外的产物');
+  }
 }
 
 // ── 超时强杀：1 ms 上限，验证 worker 被终止而且不会把测试挂住 ───────────────
@@ -1248,10 +1476,20 @@ console.log('=== 查询超时 + 复活（queryTimeoutMs=1）===');
   const { tools } = buildCtx({ queryTimeoutMs: 1 });
   const tool = tools.get('oks_query');
   const attempt = async () => {
-    const value = await tool.execute({ intents: countIntents }, { signal: new AbortController().signal, ...sessionFor(DEV_ROOT) });
+    const checked = await tools.get('oks_check_intent').execute(
+      { intents: countNamed },
+      { signal: new AbortController().signal, ...sessionFor(DEV_ROOT) },
+    );
+    const key = (checked.results ?? [])[0]?.key ?? null;
+    const value = await tool.execute(
+      { intents: { count: { intent: countNamed.count, key } } },
+      { signal: new AbortController().signal, ...sessionFor(DEV_ROOT) },
+    );
     const first = value.results?.[0] ?? null;
     if (first === null) return '没有结果';
-    return first.error === null ? `ok（1 ms 内跑完，${first.rows.length} 行）` : `拒绝: ${first.error.slice(0, 70)}`;
+    return first.status === 'saved'
+      ? `ok（1 ms 内跑完，${first.rowCount} 行）`
+      : `拒绝: ${String(first.error ?? first.status).slice(0, 70)}`;
   };
   console.log(`  第 1 次: ${await attempt()}`);
   console.log(`  第 2 次: ${await attempt()}`);

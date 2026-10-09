@@ -1,5 +1,5 @@
 # 插入一行 Host 插件：把**工作区声明的**知识服务注册成 oks_search / oks_references /
-# oks_info / oks_check_intent / oks_query 五个工具，外加 time_now / time_calc
+# oks_info / oks_check_intent / oks_query / oks_jaq_result / oks_chart 七个工具，外加 time_now / time_calc
 # 两个与模型无关的时间辅助工具，以及 va_ask —— 插件自己装配、自己复用词汇助手。
 # 知识探索的入口是 oks_info 的 key "index"；这里不写任何形状假设。
 #
@@ -13,7 +13,11 @@
 #   （时区来自请求上下文或调用参数；工作区来自会话头 cwd；运行时取不到就报错）
 #
 # 宿主是 Node 自带的进程内 wasm worker，直接导入产物里的 telora.snapshot 段——
-# 当前只支持快照产物。查询由另一个 worker 用 node:sqlite **只读**执行；插件不写任何文件。
+# 当前只支持快照产物。查询由另一个 worker 用 node:sqlite **只读**执行；命中的结果写进
+# 工作区的 .data/（那是插件在工作区里唯一的落点），数据行默认不进模型上下文。
+#
+# 这一行只有 node 半边（工具），所以写进 agent preset 的 plugins 即可：工具面只在该 preset 的
+# 作用域内生效，profile 顶层不必多一行。图在服务端画成 SVG 落进工作区，由 agent 引用进回答。
 - insert:
     - id: oks
       name: '@local/dsh-oks'

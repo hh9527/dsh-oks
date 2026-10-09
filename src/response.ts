@@ -18,35 +18,65 @@ export interface Row {
   [key: string]: unknown;
 }
 
+/** 命名批次里的一项 Intent（渲染只用到名字与原文）。 */
+export interface NamedIntentView {
+  name: string;
+  intent: unknown;
+}
+
 /** oks_check_intent 渲染读到的值。 */
 export interface CheckValue {
   trace?: readonly TraceStep[] | null;
-  intents?: readonly unknown[] | null;
+  intents?: readonly NamedIntentView[] | null;
+  results?: ReadonlyArray<{
+    name: string;
+    accepted: boolean;
+    key: string | null;
+    diagnostics: readonly DiagnosticEntry[];
+  }> | null;
   diagnostics?: readonly DiagnosticEntry[] | null;
   subset?: { indexes: number[]; accepted: boolean } | null;
   queryCount?: number | null;
 }
 
-/** 渲染层看到的 oks_query 结果行（rows 只在没有 error 的结果上读，所以这里是非 null）。 */
+/** 渲染层看到的 oks_query 一项：只有结构，没有数据行。 */
 export interface QueryResult {
+  name: string;
   index: number;
+  status: string;
+  dataSrc: string | null;
+  columns: ReadonlyArray<{ name: string; types: string[]; nullable: boolean }>;
+  rowCount: number | null;
   sql: unknown;
   bindings: unknown;
-  rows: Row[];
   truncated: boolean;
+  ms: number | null;
   error: unknown;
-  ms: number;
 }
 
 /** oks_query 渲染读到的值。 */
 export interface QueryValue {
   trace?: readonly TraceStep[] | null;
-  intents?: readonly unknown[] | null;
+  intents?: readonly NamedIntentView[] | null;
   diagnostics?: readonly DiagnosticEntry[] | null;
   results?: readonly QueryResult[] | null;
   dataFile: string;
   queryMaxRows: number;
   window?: { start: string; endExclusive: string } | null;
+}
+
+/** oks_jaq_result 渲染读到的值。 */
+export interface JaqValue {
+  src: string;
+  name: string;
+  /** 输入的行数（结果文件里的全部行）。 */
+  totalRows: number;
+  /** 表达式产出的值个数。 */
+  returned: number;
+  /** 输出是否到达上限而被截断。 */
+  truncated: boolean;
+  /** 表达式产出的值（每个已经是一个 JSON 值）。 */
+  result: readonly unknown[];
 }
 
 /** oks_info 渲染读到的值。 */
@@ -149,47 +179,63 @@ const rejectedIndexes = (diagnostics: readonly DiagnosticEntry[] | null | undefi
     .filter((item) => item?.diagnostic?.severity === 'Error')
     .map((item) => item.index))].sort((left, right) => left - right);
 
-/** oks_check_intent 的模型可见渲染：只有校验结论与诊断，**没有 SQL**。 */
+/** oks_check_intent 的模型可见渲染：结论按名字给，通过项带 key，**没有 SQL**。 */
 export function renderCheck(_args: unknown, value: CheckValue | null | undefined): RenderBlock[] {
   const lines = renderTrace(value?.trace);
-  const intents = value?.intents ?? [];
+  const items = value?.intents ?? [];
+  const results = value?.results ?? [];
   lines.push(...diagnosticLines(value?.diagnostics));
   const subset = value?.subset;
   if (subset) {
     lines.push('', `再校验一次（把没有报 Error 的 ${subset.indexes.length} 个 Intent 单独提交）：`
       + `${subset.accepted ? '通过' : '仍被拒'}`);
   }
-  for (const index of rejectedIndexes(value?.diagnostics)) {
-    lines.push('', `── intent #${index + 1} — 被拒绝 ──`);
-    lines.push(`intent:   ${capLine(JSON.stringify(intents[index]), 600)}`);
+  const accepted = results.filter((result) => result.accepted);
+  if (accepted.length > 0) {
+    lines.push('', '通过校验的项（key 是这一项 Intent 的标识，提交查询时原样带回）：');
+    for (const result of accepted) lines.push(`  ${result.name}  key=${result.key}`);
   }
-  const passed = intents.length - rejectedIndexes(value?.diagnostics).length;
+  for (const result of results) {
+    if (result.accepted) continue;
+    const item = items.find((candidate) => candidate.name === result.name);
+    lines.push('', `── ${result.name} — 被拒绝 ──`);
+    lines.push(`intent:   ${capLine(JSON.stringify(item?.intent), 600)}`);
+    for (const diagnostic of result.diagnostics) {
+      lines.push(`诊断:     ${diagnostic?.diagnostic?.severity ?? '?'} — ${diagnostic?.diagnostic?.message ?? JSON.stringify(diagnostic)}`);
+    }
+  }
   const runnable = value?.queryCount ?? 0;
-  lines.push('', passed === intents.length
-    ? `校验结论：${intents.length} 个 Intent 全部可用（${runnable} 个查询可执行）。用 oks_query 提交同一批就能拿到结果。`
-    : `校验结论：${passed}/${intents.length} 可用（${runnable} 个查询可执行）。用 oks_info 按服务给出的 key 读它声明的词汇再修，保持业务含义不变。`);
+  lines.push('', results.length > 0 && accepted.length === results.length
+    ? `校验结论：${results.length} 个 Intent 全部可用（${runnable} 个查询可执行）。用 oks_query 带同一批名字与各自的 key 提交就能拿到结果。`
+    : `校验结论：${accepted.length}/${results.length} 可用（${runnable} 个查询可执行）。用 oks_info 按服务给出的 key 读它声明的词汇再修，保持业务含义不变。`);
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
+
+/** 一个单元格的文本：整表渲染与「按预算装页」共用，两边算出的长度必须一致。 */
+function cellText(value: unknown): string {
+  const text = value === null || value === undefined ? 'NULL'
+    : typeof value === 'bigint' ? value.toString()
+      : typeof value === 'object' ? JSON.stringify(value)
+        : String(value);
+  return (text.length > RESULT_MAX_CELL_CHARS ? `${text.slice(0, RESULT_MAX_CELL_CHARS)}…` : text)
+    .replace(/\|/g, '\\|').replace(/\n/g, ' ');
+}
+
+/** 一行表格的文本（整表与读取页共用）。 */
+const tableLine = (row: Row, columns: readonly string[]): string =>
+  `| ${columns.map((column) => cellText(row[column])).join(' | ')} |`;
 
 /** 一张有预算的表：列数、单元格长度、行数都受限，截断要写明。 */
 function renderTable(rows: readonly Row[] | null | undefined, budget: number): Table {
   if (!Array.isArray(rows) || rows.length === 0) return { lines: ['结果：0 行'], truncated: false };
   const allColumns = Object.keys(rows[0] ?? {});
   const columns = allColumns.slice(0, RESULT_MAX_COLUMNS);
-  const cell = (value: unknown): string => {
-    const text = value === null || value === undefined ? 'NULL'
-      : typeof value === 'bigint' ? value.toString()
-        : typeof value === 'object' ? JSON.stringify(value)
-          : String(value);
-    return (text.length > RESULT_MAX_CELL_CHARS ? `${text.slice(0, RESULT_MAX_CELL_CHARS)}…` : text)
-      .replace(/\|/g, '\\|').replace(/\n/g, ' ');
-  };
   const lines = [`| ${columns.join(' | ')} |`, `| ${columns.map(() => '---').join(' | ')} |`];
   let used = lines.reduce((total, line) => total + line.length + 1, 0);
   let shown = 0;
   let truncated = false;
   for (const row of rows) {
-    const line = `| ${columns.map((column) => cell(row[column])).join(' | ')} |`;
+    const line = tableLine(row, columns);
     if (used + line.length > budget) { truncated = true; break; }
     lines.push(line);
     used += line.length + 1;
@@ -201,43 +247,114 @@ function renderTable(rows: readonly Row[] | null | undefined, budget: number): T
   return { lines, truncated, notes };
 }
 
-/** oks_query 的模型可见渲染：轨迹 → 诊断 → 每个结果的 SQL/bindings 与行。 */
+/** oks_query 的模型可见渲染：轨迹 → 诊断 → 每项的**结构回执**（没有数据行，也没有语句）。
+ *  数据行只在结果文件里；SQL 与 bindings 只在宿主呈现记录（presentationMeta）与调用记录里，
+ *  不重复进这段对话。 */
 export function renderQuery(_args: unknown, value: QueryValue | null | undefined): RenderBlock[] {
   const lines = renderTrace(value?.trace);
-  let used = lines.reduce((total, line) => total + line.length + 1, 0);
-  // 与原写法一致：只取第一个参数，多余参数（历史上用来传一句结论）不参与渲染。
-  const push = (line: string, ..._rest: string[]): void => { lines.push(line); used += line.length + 1; };
-  for (const line of diagnosticLines(value?.diagnostics)) push(line);
-
-  (value?.results ?? []).forEach((result, at) => {
-    push('');
-    push(`── 结果 #${at + 1}（来自 intent #${result.index + 1}）──`);
-    push(`sql:      ${capLine(String(result.sql).replace(/\s+/g, ' '), SQL_DISPLAY_CHARS)}`);
-    push(`bindings: ${capLine(JSON.stringify(result.bindings), BINDINGS_DISPLAY_CHARS)}`);
+  for (const line of diagnosticLines(value?.diagnostics)) lines.push(line);
+  const items = value?.intents ?? [];
+  for (const result of value?.results ?? []) {
+    lines.push('', `── ${result.name}（intent #${result.index + 1}）──`);
+    if (result.status === 'saved') {
+      lines.push(`status:   saved · ${result.rowCount} 行 · ${result.ms} ms`
+        + `${result.truncated ? `（已到行数上限 ${value!.queryMaxRows}，结果还有更多）` : ''}`);
+      lines.push(`dataSrc:  ${result.dataSrc}`);
+      lines.push(`columns:  ${result.columns.map((column) => `${column.name}:${column.types.join('|')}`).join(', ')}`);
+      lines.push('（数据行与语句都不在回执里：数据按需用 oks_jaq_result 取，语句在执行记录里）');
+      if (result.rowCount === 0 && value?.window) {
+        lines.push(`提示：这份数据的窗口是 [${value.window.start}, ${value.window.endExclusive})，被过滤掉的可能是时间落在窗口之外。`);
+      }
+      continue;
+    }
     if (result.error !== null && result.error !== undefined) {
-      push(`执行失败（数据文件 ${basename(value!.dataFile)}）：${result.error}`);
-      return;
+      lines.push(`status:   ${result.status} — ${result.error}`);
+      continue;
     }
-    push(`执行：${result.rows.length} 行 · ${result.ms} ms`
-      + `${result.truncated ? `（已到行数上限 ${value!.queryMaxRows}，结果还有更多）` : ''}`);
-    const table = renderTable(result.rows, Math.max(240, RESULT_BUDGET_CHARS - used));
-    for (const line of table.lines) push(line);
-    for (const note of table.notes ?? []) push(`（${note}）`);
-    if (result.rows.length === 0 && value?.window) {
-      push(`提示：这份数据的窗口是 [${value.window.start}, ${value.window.endExclusive})，被过滤掉的可能是时间落在窗口之外。`);
+    lines.push(`status:   ${result.status}`);
+    if (result.status === 'rejected') {
+      const item = items.find((candidate) => candidate.name === result.name);
+      lines.push(`intent:   ${capLine(JSON.stringify(item?.intent), 600)}`);
     }
-  });
-
-  const rejected = rejectedIndexes(value?.diagnostics);
-  for (const index of rejected) {
-    push('');
-    push(`── intent #${index + 1} — 被拒绝 ──`);
-    push(`intent:   ${capLine(JSON.stringify((value?.intents ?? [])[index]), 600)}`);
   }
-  if ((value?.results ?? []).length === 0) {
-    push('', rejected.length === 0
-      ? '没有可执行的查询。'
-      : '没有任何 Intent 通过校验，所以没有执行。修 Intent 后再提交。');
+  const results = value?.results ?? [];
+  if (results.length === 0) {
+    lines.push('', '没有可执行的查询。');
+  } else if (results.every((result) => result.status !== 'saved')) {
+    lines.push('', '没有任何 Intent 执行成功。按上面的原因修好后再提交。');
+  }
+  return [{ type: 'text', text: `${lines.join('\n')}\n` }];
+}
+
+/** oks_chart 渲染读到的值。 */
+export interface ChartValue {
+  ok?: boolean;
+  kind?: string;
+  title?: string | null;
+  source?: string;
+  src?: string | null;
+  svgSrc?: string;
+  markdown?: string;
+  at?: string;
+  note?: string | null;
+  rowCount?: number;
+  columns?: readonly string[];
+}
+
+/** oks_chart 的模型可见回执：图已经落成 SVG，这里把「可以直接粘进回答的那一行」交给 agent。
+ *  回执本身不带数据行、也不带图。 */
+export function renderChart(_args: unknown, value: ChartValue | null | undefined): RenderBlock[] {
+  if (value?.ok !== true) return [{ type: 'text', text: '图表没有生成。\n' }];
+  const lines = [
+    `图表：${value.kind ?? '?'}${value.title === null || value.title === undefined ? '' : ` · ${value.title}`}`,
+    `来源：${value.source === 'query' ? '基于查询结果' : 'agent 自主填写'}`,
+    `数据：${value.rowCount ?? 0} 行 · 列 ${(value.columns ?? []).join(', ')}`,
+    `文件：${value.svgSrc ?? ''}`,
+  ];
+  if (value.src !== null && value.src !== undefined) lines.push(`来自：${value.src}`);
+  if (value.note !== null && value.note !== undefined) lines.push(`说明：${value.note}`);
+  lines.push(
+    '',
+    '把下面这一行原样放进你的回答，图就会显示在那里（不要改写路径）：',
+    '',
+    value.markdown ?? '',
+  );
+  return [{ type: 'text', text: `${lines.join('\n')}\n` }];
+}
+
+/** 一个值的一行紧凑渲染：字符串原样，其余交给 JSON。 */
+function compact(value: unknown): string {
+  if (value === null || value === undefined) return 'null';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'bigint') return value.toString();
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/** oks_jaq_result 的模型可见渲染：一条摘要 + 逐值紧凑渲染，整体落在文本预算内。
+ *  值本身是 agent 用表达式选出来的，所以这一页不需要再约定列与分页。 */
+export function renderJaq(_args: unknown, value: JaqValue | null | undefined): RenderBlock[] {
+  const result = value?.result ?? [];
+  const lines = [
+    `${value?.name ?? '结果'}：输入 ${value?.totalRows ?? 0} 行 · 表达式产出 ${value?.returned ?? 0} 个值`
+    + `${value?.truncated === true ? '（到达输出上限，已截断）' : ''}`,
+    `src:      ${value?.src ?? ''}`,
+  ];
+  let used = lines.reduce((sum, line) => sum + line.length + 1, 0);
+  let shown = 0;
+  for (const item of result) {
+    const text = compact(item);
+    if (used + text.length + 1 > RESULT_BUDGET_CHARS) break;
+    lines.push(text);
+    used += text.length + 1;
+    shown += 1;
+  }
+  if (result.length === 0) lines.push('（表达式没有产出值。）');
+  else if (shown < result.length) {
+    lines.push(`（还有 ${result.length - shown} 个值没放进这段回执：用更精确的表达式或投影缩小结果。）`);
   }
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
