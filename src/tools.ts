@@ -5,7 +5,7 @@ import { runJaq } from './jaq.ts';
 import { buildOption, CHART_WIDTH } from './chart/option.ts';
 import { renderEchartsSvg } from './chart/echarts.ts';
 import { buildFigureHtml, renderReportHtml } from './chart/report.ts';
-import type { LayoutOverrides } from './chart/shared.ts';
+import type { LayoutOverrides, StyleOverrides } from './chart/shared.ts';
 import { OBJECT_OUTPUT, renderChart, renderCheck, renderJaq, renderJson, renderQuery, renderValue, withoutQueries } from './response.ts';
 import type { Row } from './response.ts';
 import { REFERENCE_KINDS, referencesOf, renderReferences, renderSearch, searchIndex } from './retrieval.ts';
@@ -183,7 +183,7 @@ interface ChartArgs {
  *  column 另外要求作为分组维度的 series，line 与 area 还要求 xType。
  *  layout 是排版覆盖项（字号、高度、是否斜排标签），全部可选、缺省走默认规则。 */
 interface ChartSpec {
-  kind: 'bar' | 'line' | 'column' | 'pie' | 'area';
+  kind: 'bar' | 'line' | 'column' | 'pie' | 'area' | 'scatter';
   title: string | null;
   x: string;
   value: string;
@@ -192,6 +192,12 @@ interface ChartSpec {
   xLabel: string | null;
   valueLabel: string | null;
   unit: string | null;
+  /** 图元专属：column / area 的堆叠方式。 */
+  stack: 'total' | 'percent' | null;
+  /** 图元专属：scatter 的第三维（点大小）。 */
+  size: string | null;
+  /** 通用表达开关：排序、数值标签、配色。 */
+  style: StyleOverrides;
   layout: LayoutOverrides;
 }
 
@@ -252,10 +258,51 @@ interface ChartAnswer {
   intent: unknown;
 }
 
-const CHART_KINDS = ['bar', 'line', 'column', 'pie', 'area'] as const;
+const CHART_KINDS = ['bar', 'line', 'column', 'pie', 'area', 'scatter'] as const;
+/** column / area 的堆叠方式。 */
+const CHART_STACKS = ['total', 'percent'] as const;
+/** 类别排序：默认沿用数据顺序。 */
+const CHART_SORTS = ['none', 'desc', 'asc'] as const;
 /** data 路径的规模上限：更大的数据应当先查询、再用 src 引用结果文件。 */
 const CHART_DATA_MAX_ROWS = 1000;
 const CHART_DATA_MAX_BYTES = 256 * 1024;
+
+/** 解析并校验通用表达开关：每一项都可选，给了就必须在合理范围内。
+ *  越界的值画出来是废图，不如直接报错让 agent 重来。 */
+const parseStyle = (raw: unknown): { style: StyleOverrides } | { error: string } => {
+  if (raw === undefined || raw === null) return { style: {} };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { error: 'spec.style 必须是对象：sort / labels / colors 都可选' };
+  }
+  const record = raw as Record<string, unknown>;
+  const style: StyleOverrides = {};
+  if (record.sort !== undefined) {
+    if (!(CHART_SORTS as readonly unknown[]).includes(record.sort)) {
+      return { error: `spec.style.sort 必须是 ${CHART_SORTS.join(' / ')} 之一，收到 ${JSON.stringify(record.sort)}` };
+    }
+    style.sort = record.sort as StyleOverrides['sort'];
+  }
+  if (record.labels !== undefined) {
+    if (typeof record.labels !== 'boolean') {
+      return { error: `spec.style.labels 必须是 true 或 false，收到 ${JSON.stringify(record.labels)}` };
+    }
+    style.labels = record.labels;
+  }
+  if (record.colors !== undefined) {
+    if (!Array.isArray(record.colors) || record.colors.length === 0 || record.colors.length > 12) {
+      return { error: 'spec.style.colors 必须是 1–12 个颜色字符串的数组' };
+    }
+    for (const color of record.colors) {
+      if (typeof color !== 'string' || !/^#[0-9a-fA-F]{3,8}$/.test(color)) {
+        return { error: `spec.style.colors 只接受 #rrggbb 这类颜色值，收到 ${JSON.stringify(color)}` };
+      }
+    }
+    style.colors = record.colors as string[];
+  }
+  const unknown = Object.keys(record).filter((key) => !['sort', 'labels', 'colors'].includes(key));
+  if (unknown.length > 0) return { error: `spec.style 里不认识的项：${unknown.join(', ')}` };
+  return { style };
+};
 
 /** 校验图表规格；只做形状与必填，不解释领域含义。 */
 const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: string } => {
@@ -281,11 +328,33 @@ const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: string } =
     xLabel: text('xLabel'),
     valueLabel: text('valueLabel'),
     unit: text('unit'),
+    stack: null,
+    size: text('size'),
+    style: {},
     layout: {},
   };
   const parsedLayout = parseLayout(record.layout);
   if ('error' in parsedLayout) return { error: parsedLayout.error };
   spec.layout = parsedLayout.layout;
+  const parsedStyle = parseStyle(record.style);
+  if ('error' in parsedStyle) return { error: parsedStyle.error };
+  spec.style = parsedStyle.style;
+  // 图元专属字段：填给不支持的图元时直接报错，不静默忽略——agent 需要知道这个开关在这张图上没意义。
+  if (record.stack !== undefined && record.stack !== null) {
+    if (!(CHART_STACKS as readonly unknown[]).includes(record.stack)) {
+      return { error: `spec.stack 必须是 ${CHART_STACKS.join(' / ')} 之一，收到 ${JSON.stringify(record.stack)}` };
+    }
+    if (spec.kind !== 'column' && spec.kind !== 'area') {
+      return { error: `spec.stack 只对 column 与 area 有意义（${spec.kind} 用不上它）` };
+    }
+    spec.stack = record.stack as ChartSpec['stack'];
+  }
+  if (spec.size !== null && spec.kind !== 'scatter') {
+    return { error: `spec.size 只对 scatter 有意义（把这一列映射成点的大小，${spec.kind} 用不上它）` };
+  }
+  if (spec.kind === 'scatter' && (spec.x === '' || spec.value === '')) {
+    return { error: 'scatter 需要 spec.x 与 spec.value（两个数值列），可选 spec.size（点大小）' };
+  }
   if (spec.kind === 'bar' && (spec.x === '' || spec.value === '')) {
     return { error: 'bar 需要 spec.x（类别列）与 spec.value（数值列）' };
   }
@@ -914,17 +983,30 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         properties: {
           spec: {
             type: 'object',
-            description: 'Figure specification. kind is required: bar needs x (the category column) and value; column needs x, series (the grouping column: one bar per distinct value inside each category) and value — it draws grouped vertical bars; line needs x, value and xType (number or time), plus an optional series for several lines; area is a line with the region below it filled, and takes the same fields as line; pie needs x (the slice label column) and value, and only positive values are drawn. title / xLabel / valueLabel / unit are display text you supply.',
+            description: 'Figure specification. kind is required: bar needs x (the category column) and value; column needs x, series (the grouping column: one bar per distinct value inside each category) and value — it draws grouped vertical bars, or stacked ones when stack is given; line needs x, value and xType (number or time), plus an optional series for several lines; area is a line with the region below it filled, and takes the same fields as line (stack works here too); pie needs x (the slice label column) and value, and only positive values are drawn; scatter needs x and value (two numeric columns) and takes an optional size column for bubble charts. title / xLabel / valueLabel / unit are display text you supply.',
             properties: {
-              kind: { type: 'string', enum: ['bar', 'line', 'column', 'pie', 'area'], description: 'Which figure to draw.' },
+              kind: { type: 'string', enum: [...CHART_KINDS], description: 'Which figure to draw.' },
               title: { type: 'string', description: 'Title shown above the figure.' },
-              x: { type: 'string', description: 'bar / column: the category column. line / area: the horizontal-axis column. pie: the slice label column.' },
-              value: { type: 'string', description: 'The numeric column drawn as bar length, column height, line height, area height or slice size.' },
-              series: { type: 'string', description: 'line / area: one line (or area) per distinct value. column: required — one bar per distinct value, placed side by side inside each category.' },
+              x: { type: 'string', description: 'bar / column: the category column. line / area: the horizontal-axis column. pie: the slice label column. scatter: the numeric column drawn on the horizontal axis.' },
+              value: { type: 'string', description: 'The numeric column drawn as bar length, column height, line height, area height, slice size or the vertical position of a scatter point.' },
+              series: { type: 'string', description: 'line / area: one line (or area) per distinct value. column: required — one bar per distinct value, placed side by side inside each category (stacked when stack is given).' },
               xType: { type: 'string', enum: ['number', 'time'], description: 'line only: how to read the x column. time accepts RFC 3339 text or epoch milliseconds.' },
               xLabel: { type: 'string', description: 'Axis label for x (display text).' },
               valueLabel: { type: 'string', description: 'Axis label for the value (display text).' },
               unit: { type: 'string', description: 'Unit shown with the values (display text).' },
+              stack: { type: 'string', enum: [...CHART_STACKS], description: 'column / area only: "total" stacks the series on top of each other (so the total reads off the top), "percent" normalises each category to 100% so the mix is comparable. Omit to place them side by side (column) or overlay them (area).' },
+              size: { type: 'string', description: 'scatter only: a numeric column mapped to the marker size, turning the figure into a bubble chart.' },
+              style: {
+                type: 'object',
+                description: 'Optional expression overrides that apply to every figure kind. All fields optional.',
+                properties: {
+                  sort: { type: 'string', enum: [...CHART_SORTS], description: 'Category order. Default "none" keeps the order the rows came in — data often carries a meaningful order already (severity levels, for instance).' },
+                  labels: { type: 'boolean', description: 'Draw the value next to each bar, point or slice. Default false — turn it on when the reader needs exact numbers rather than the axis.' },
+                  colors: { type: 'array', items: { type: 'string' }, description: 'Override the palette with up to 12 #rrggbb values; they are used in order for the series (or slices).' },
+                },
+                required: [],
+                additionalProperties: false,
+              },
               layout: {
                 type: 'object',
                 description: 'Optional typography overrides — use these when the user is unhappy with the default proportions. All fields optional.',

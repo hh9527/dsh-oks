@@ -68,6 +68,17 @@ export const needsSlantedTicks = (categories: readonly string[]): boolean => {
   return widest > slot * 0.8;
 };
 
+/** agent 可以覆盖的表达开关（都放在 spec 里，全部可选）。
+ *  它们管"这份数据怎么表达"：排序、数值标签、配色。不填就走默认。 */
+export interface StyleOverrides {
+  /** 类别排序。默认沿用数据顺序——数据本身常常带着有意义的顺序（如告警等级的严重度）。 */
+  sort?: 'none' | 'desc' | 'asc';
+  /** 是否在图上标出数值。 */
+  labels?: boolean;
+  /** 覆盖色板；按序列（或扇区）依次取用。 */
+  colors?: string[];
+}
+
 /** agent 可以覆盖的排版参数（都放在 spec 里，全部可选）。
  *  不填就走默认规则——默认值本身也是"文字优先、宽度固定、高度按图元"那套。
  *  开放它们是为了让 agent 能按用户反馈当场调整，不必等插件改版。 */

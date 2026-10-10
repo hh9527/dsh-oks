@@ -7,7 +7,7 @@
  *  宽高必须在 init 时给定：SSR 模式下没有 DOM 可测量，echarts 不做自适应。
  */
 import * as echarts from 'echarts/core';
-import { BarChart, LineChart, PieChart } from 'echarts/charts';
+import { BarChart, LineChart, PieChart, ScatterChart } from 'echarts/charts';
 import { GraphicComponent, GridComponent, LegendComponent, TitleComponent, TooltipComponent } from 'echarts/components';
 import { SVGRenderer } from 'echarts/renderers';
 import type { EChartsCoreOption } from 'echarts/core';
@@ -18,6 +18,7 @@ echarts.use([
   BarChart,
   LineChart,
   PieChart,
+  ScatterChart,
   GraphicComponent,
   GridComponent,
   LegendComponent,
@@ -30,7 +31,13 @@ echarts.use([
 export const renderEchartsSvg = (option: EChartsCoreOption, width: number, height: number): string => {
   const chart = echarts.init(null, null, { renderer: 'svg', ssr: true, width, height });
   try {
-    chart.setOption(option);
+    // 关掉动画。这张图是静态产物，会被放进 <img> 或内联进报告——而 echarts 的 SSR 动画用的是
+    // CSS `transform`，它的优先级高于 SVG 的 `transform` 属性：散点的定位本来全靠
+    // `matrix(缩放, 平移)` 属性，动画一生效就被替换成 `scale(...)`，平移量丢失，所有点缩到
+    // 左上角原点附近叠在一起。渲染器忽略 @keyframes 所以看不出问题，浏览器里就露馅了
+    // （柱状图不受影响：它靠 x/y/width/height 属性定位，缩放不改变位置）。
+    // 关掉之后产物不再有 @keyframes，体积也小一截。
+    chart.setOption({ ...(option as Record<string, unknown>), animation: false });
     return chart.renderToSVGString();
   } finally {
     // 必须销毁：echarts 的动画定时器会拖住 Node 的事件循环。

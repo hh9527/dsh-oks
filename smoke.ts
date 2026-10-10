@@ -1264,6 +1264,12 @@ console.log('=== oks_chart（服务端出图）===');
   if (!inlineSvg.startsWith('<svg')) throw new Error('产物应当是 SVG');
   // 图里的文字是真 <text>（echarts 不把文字转成路径），标题则从回执字段核对。
   if (!inlineSvg.includes('<path')) throw new Error('SVG 里应当有图形');
+  // 产物必须是"没有任何动画的静态图"：浏览器会真的执行 SVG 里的 @keyframes，
+  // 而入场动画的起始态是 transform: scale(0,0) / opacity: 0，播完若不保持就看不见了。
+  if (inlineSvg.includes('@keyframes')) throw new Error('SVG 里不该有 @keyframes');
+  if (inlineSvg.includes('scale(0,0)') || inlineSvg.includes('opacity:0')) {
+    throw new Error('SVG 里不该有入场动画的起始态（opacity:0 / scale(0,0)）');
+  }
   if (inline.value.title !== '方案对比') throw new Error('回执应当带上标题');
   // 回执给出的 markdown 指向同一个文件
   const expectedMarkdown = `![方案对比](${inline.value.svgSrc})`;
@@ -1431,6 +1437,46 @@ console.log('=== oks_chart（服务端出图）===');
   // 根元素不该再带固定宽高——那样就不能随栏宽自适应了。
   if (/<svg class="chart"[^>]*\swidth=/i.test(reportHtml)) throw new Error('内联 SVG 不应保留固定宽度');
 
+  // 堆叠：column / area 的 stack 开关（绝对量与占比两种）。
+  const stackRows = [
+    { m: '1月', sev: '严重', n: 4 }, { m: '1月', sev: '重要', n: 8 },
+    { m: '2月', sev: '严重', n: 5 }, { m: '2月', sev: '重要', n: 10 },
+  ];
+  for (const [label, stack] of [['绝对量', 'total'], ['占比', 'percent']]) {
+    const stacked = await call('oks_chart', {
+      spec: { kind: 'column', x: 'm', series: 'sev', value: 'n', stack },
+      data: stackRows,
+      name: 'probe_stack_' + stack,
+    });
+    const svg = readFileSync(resolve(DEV_ROOT, stacked.value.svgSrc), 'utf8');
+    console.log(`  堆叠（${label}）：${(svg.match(/<path/g) ?? []).length} 个 path`);
+    if (!svg.includes('<path')) throw new Error(`堆叠（${label}）应当出图`);
+  }
+
+  // 散点：两个量的关系；给了 size 就是气泡。
+  const scatter = await call('oks_chart', {
+    spec: { kind: 'scatter', title: 'CPU vs 内存', x: 'cpu', value: 'mem', size: 'samples', valueLabel: '内存', unit: '%' },
+    data: [
+      { cpu: 74.4, mem: 88.8, samples: 720 },
+      { cpu: 40.4, mem: 48.4, samples: 120 },
+      { cpu: 10.4, mem: 22.4, samples: 24 },
+    ],
+    name: 'probe_scatter',
+  });
+  const scatterSvg = readFileSync(resolve(DEV_ROOT, scatter.value.svgSrc), 'utf8');
+  console.log(`  散点（带点大小）：${(scatterSvg.match(/<path/g) ?? []).length} 个 path`);
+  if (!scatterSvg.includes('<path')) throw new Error('散点应当出图');
+
+  // 通用表达开关：排序与配色。
+  const styled = await call('oks_chart', {
+    spec: { kind: 'bar', x: 'site', value: 'n', style: { sort: 'desc', labels: true, colors: ['#8a6ad0'] } },
+    data: [{ site: '甲', n: 1 }, { site: '乙', n: 9 }, { site: '丙', n: 5 }],
+    name: 'probe_style',
+  });
+  const styledSvg = readFileSync(resolve(DEV_ROOT, styled.value.svgSrc), 'utf8');
+  console.log(`  表达开关（排序 + 标签 + 配色）：${styledSvg.includes('#8a6ad0') ? '配色生效' : '✗ 配色没生效'}`);
+  if (!styledSvg.includes('#8a6ad0')) throw new Error('style.colors 应当覆盖色板');
+
   // markdown 子集的几个要点：白名单语法要渲染出来，子集之外的一律当文本。
   if (!reportHtml.includes('<ul>')) throw new Error('列表应当渲染成 ul');
   if (!reportHtml.includes('<blockquote>')) throw new Error('引用应当渲染成 blockquote');
@@ -1494,6 +1540,13 @@ console.log('=== oks_chart（服务端出图）===');
     ['layout 越界', { spec: { kind: 'bar', x: 'label', value: 'value', layout: { labelFont: 4 } }, data: [{ label: 'A', value: 1 }] }],
     ['layout 写错项', { spec: { kind: 'bar', x: 'label', value: 'value', layout: { nope: 1 } }, data: [{ label: 'A', value: 1 }] }],
     ['图表名越界', { spec: { kind: 'bar', x: 'label', value: 'value' }, data: [{ label: 'A', value: 1 }], name: '../evil' }],
+    // 图元专属字段填给别的图元要报错，不静默忽略。
+    ['stack 填给 bar', { spec: { kind: 'bar', x: 'label', value: 'value', stack: 'total' }, data: [{ label: 'A', value: 1 }] }],
+    ['size 填给 column', { spec: { kind: 'column', x: 'label', series: 's', value: 'value', size: 'n' }, data: [{ label: 'A', s: 'x', value: 1 }] }],
+    ['stack 取值非法', { spec: { kind: 'column', x: 'label', series: 's', value: 'value', stack: 'nope' }, data: [{ label: 'A', s: 'x', value: 1 }] }],
+    ['style.sort 非法', { spec: { kind: 'bar', x: 'label', value: 'value', style: { sort: 'nope' } }, data: [{ label: 'A', value: 1 }] }],
+    ['style.colors 非法', { spec: { kind: 'bar', x: 'label', value: 'value', style: { colors: ['red'] } }, data: [{ label: 'A', value: 1 }] }],
+    ['scatter 缺 value', { spec: { kind: 'scatter', x: 'a' }, data: [{ a: 1 }] }],
   ];
   for (const [label, args] of failures) {
     let rejected = false;

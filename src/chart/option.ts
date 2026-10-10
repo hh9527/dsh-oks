@@ -18,6 +18,7 @@ import {
   valueAxisLabel,
   type LayoutOverrides,
   type Row,
+  type StyleOverrides,
 } from './shared.ts';
 import type { EChartsCoreOption } from 'echarts/core';
 
@@ -31,9 +32,9 @@ export const plotHeight = (kind: string, categoryCount: number, labelFont: numbe
   return overrides.height ?? fallback;
 };
 
-/** 一次渲染要用的全部输入。 */
+/** 一次渲染要用的全部输入。字段分三层：语义（这份数据是什么）、表达开关（怎么表达）、排版。 */
 export interface OptionInput {
-  kind: 'bar' | 'column' | 'line' | 'pie' | 'area';
+  kind: 'bar' | 'column' | 'line' | 'pie' | 'area' | 'scatter';
   title: string | null;
   /** 系统来源标识（基于查询结果 / agent 自主填写），画在图内左下角。 */
   sourceLabel: string;
@@ -44,6 +45,12 @@ export interface OptionInput {
   xLabel: string | null;
   valueLabel: string | null;
   unit: string | null;
+  /** 图元专属：column / area 的堆叠方式。total 是绝对量、percent 是各组占比。 */
+  stack?: 'total' | 'percent' | null;
+  /** 图元专属：scatter 的第三维——把这一列的数值映射成点的大小。 */
+  size?: string | null;
+  /** 通用表达开关。 */
+  style?: StyleOverrides;
   layout?: LayoutOverrides;
 }
 
@@ -52,7 +59,8 @@ const axisName = (label: string | null, unit: string | null): string | undefined
   return unit === null ? label : `${label}（${unit}）`;
 };
 
-/** 把结果行按 x 归类，再按 series 分组；返回类别顺序与每个序列的取值。 */
+/** 把结果行按 x 归类，再按 series 分组；返回类别顺序与每个序列的取值。
+ *  类别顺序默认沿用数据——数据本身常带语义顺序（如告警等级的严重度）；有 style.sort 时按合计重排。 */
 const group = (
   rows: readonly Row[],
   spec: OptionInput,
@@ -70,7 +78,18 @@ const group = (
     const bucket = points.get(name);
     if (bucket !== undefined) bucket.set(toLabel(row[spec.x]), value);
   }
-  return { categories, seriesNames, points };
+
+  const order = spec.style?.sort;
+  if (order === undefined || order === 'none') return { categories, seriesNames, points };
+
+  // 一个类别上的合计才是排序该看的量：多序列时它决定先后，单序列时就是它自己。
+  const totalOf = (category: string): number => {
+    let sum = 0;
+    for (const bucket of points.values()) sum += bucket.get(category) ?? 0;
+    return sum;
+  };
+  const sorted = [...categories].sort((a, b) => (order === 'desc' ? totalOf(b) - totalOf(a) : totalOf(a) - totalOf(b)));
+  return { categories: sorted, seriesNames, points };
 };
 
 /** 来源标识：固定在图内左下角，由系统写，不由 agent 决定。 */
@@ -123,6 +142,72 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
     ? { top: spec.title === null ? 0 : 34, right: 0, itemWidth: 12, itemHeight: 10, textStyle: { fontSize: labelFont, color: '#1c2b3a' } }
     : undefined;
 
+  // 表达开关：色板可被覆盖，数值标签按需打开，堆叠只在 column / area 上有意义。
+  const palette = spec.style?.colors !== undefined && spec.style.colors.length > 0 ? spec.style.colors : SERIES_COLORS;
+  const pick = (index: number): string => palette[index % palette.length];
+  const showLabels = spec.style?.labels === true;
+  const stack = spec.kind === 'column' || spec.kind === 'area' ? spec.stack : undefined;
+
+  // 散点：两个量之间的关系。给了 size 就把第三维映射成点的大小（气泡图）。
+  if (spec.kind === 'scatter') {
+    const sizeColumn = spec.size ?? null;
+    const sizes = sizeColumn === null
+      ? []
+      : rows.map((row) => toNumber(row[sizeColumn])).filter((value): value is number => value !== null);
+    const sizeMin = sizes.length === 0 ? 0 : Math.min(...sizes);
+    const sizeMax = sizes.length === 0 ? 0 : Math.max(...sizes);
+    // 12–30 px：差别看得出来，又不至于让最大的点压住邻座（半径 15px 以内，轴留白放得下）。
+    const scaleSize = (value: number): number => (sizeMax === sizeMin ? 16 : 12 + ((value - sizeMin) / (sizeMax - sizeMin)) * 18);
+    const data = rows.flatMap((row) => {
+      const xValue = toNumber(row[spec.x]);
+      const yValue = toNumber(row[spec.value]);
+      if (xValue === null || yValue === null) return [];
+      if (sizeColumn === null) return [{ value: [xValue, yValue] as [number, number], symbolSize: 10 }];
+      const sizeValue = toNumber(row[sizeColumn]);
+      return [{
+        value: [xValue, yValue] as [number, number],
+        symbolSize: sizeValue === null ? 10 : scaleSize(sizeValue),
+        name: sizeValue === null ? '' : toLabel(row[sizeColumn]),
+      }];
+    });
+    if (data.length === 0) return { option: emptyOption(spec, layout), height };
+    const valueAxis = (name: string | undefined, gap: number, showSplit: boolean): unknown => ({
+      type: 'value',
+      name,
+      nameLocation: 'middle',
+      nameGap: gap,
+      // 散点的轴跟着数据范围走（scale: true）。默认的 scale: false 会强制从 0 起，
+      // 而 KPI 常常挤在很窄的区间里（CPU 40–74、内存 48–89）——那样点会全被压到一角。
+      // 留白要给够：点的半径最大 15px，留白小于它就等于把最外圈的点画到绘图区外
+      //（echarts 的散点默认不裁剪，会真的露在外面）。
+      scale: true,
+      boundaryGap: [0.12, 0.12],
+      nameTextStyle: { fontSize: labelFont, color: '#5b6b7c' },
+      axisLabel: { fontSize: labelFont, color: '#1c2b3a' },
+      axisLine: { show: false },
+      axisTick: { show: false },
+      splitLine: showSplit ? { lineStyle: { color: '#eef2f7' } } : { show: false },
+    });
+    return {
+      height,
+      option: {
+        title,
+        graphic: footnote(spec.sourceLabel, labelFont),
+        grid: { left: 64, right: 28, top: spec.title === null ? 20 : 52, bottom: 48, containLabel: false },
+        xAxis: { ...(valueAxis(axisName(spec.xLabel, null), 30, true) as object), axisLine: { show: true, lineStyle: { color: '#d8e0ea' } } },
+        yAxis: valueAxis(axisName(spec.valueLabel, spec.unit), 52, true),
+        series: [{
+          type: 'scatter',
+          data,
+          itemStyle: { color: pick(0), opacity: 0.75 },
+          label: showLabels
+            ? { show: true, position: 'right', fontSize: Math.max(9, labelFont - 2), color: '#5b6b7c', formatter: (params: { data: { name?: string } }) => params.data.name ?? '' }
+            : undefined,
+        }],
+      },
+    };
+  }
+
   // 饼图：单一序列，数据是"名称 + 数值"，配色按扇区轮转。
   if (spec.kind === 'pie') {
     const bucket = points.get(seriesNames[0]) ?? new Map<string, number>();
@@ -131,7 +216,7 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
       .map(([name, value], index) => ({
         name,
         value,
-        itemStyle: { color: SERIES_COLORS[index % SERIES_COLORS.length] },
+        itemStyle: { color: pick(index) },
       }));
     if (data.length === 0) return { option: emptyOption(spec, layout), height };
     return {
@@ -175,7 +260,11 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
     nameLocation: 'middle' as const,
     nameGap: 48,
     nameTextStyle: { fontSize: labelFont, color: '#5b6b7c' },
-    axisLabel: { fontSize: labelFont, color: '#1c2b3a' },
+    // 百分比堆叠时数据已经归一化到 100，轴上标成百分比。
+    axisLabel: stack === 'percent'
+      ? { fontSize: labelFont, color: '#1c2b3a', formatter: '{value}%' }
+      : { fontSize: labelFont, color: '#1c2b3a' },
+    ...(stack === 'percent' ? { max: 100 } : {}),
     // echarts 的 splitNumber 是"分割段数"，档数减一。
     splitNumber: Math.max(1, layout.tickCount - 1),
     axisLine: { show: false },
@@ -193,8 +282,16 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
 
   const series = seriesNames.map((name, index) => {
     const bucket = points.get(name) ?? new Map<string, number>();
-    const data = categories.map((category) => bucket.get(category) ?? null);
-    const color = SERIES_COLORS[index % SERIES_COLORS.length];
+    const raw = categories.map((category) => bucket.get(category) ?? null);
+    // 百分比堆叠：把每个类别上各序列的值归一化到 100，这样"构成"才可比。
+    const data = stack === 'percent'
+      ? categories.map((category, i) => {
+        const totals = seriesNames.reduce((sum, other) => sum + (points.get(other)?.get(category) ?? 0), 0);
+        const value = raw[i];
+        return value === null || totals === 0 ? null : Math.round((value / totals) * 1000) / 10;
+      })
+      : raw;
+    const color = pick(index);
     const base = {
       name: name === '' ? axisName(spec.valueLabel, spec.unit) ?? 'value' : name,
       data,
@@ -203,6 +300,11 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
         color: (params: { value: number | null }) => (params.value !== null && params.value < 0 ? NEGATIVE_COLOR : color),
       },
       connectNulls: false,
+      // 堆叠只在 column / area 上有意义：同一个 stack 名的序列会叠在一起。
+      stack: stack === undefined ? undefined : 'total',
+      label: showLabels
+        ? { show: true, fontSize: Math.max(9, labelFont - 2), color: '#3d4d5c', position: spec.kind === 'bar' ? 'right' as const : 'top' as const }
+        : undefined,
     };
     if (spec.kind === 'line' || spec.kind === 'area') {
       return {
@@ -212,10 +314,10 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
         symbol: 'circle',
         symbolSize: 6,
         lineStyle: { width: 2, color },
-        areaStyle: spec.kind === 'area' ? { color, opacity: 0.18 } : undefined,
+        areaStyle: spec.kind === 'area' ? { color, opacity: stack === undefined ? 0.18 : 0.7 } : undefined,
       };
     }
-    return { ...base, type: 'bar' as const, barMaxWidth: horizontal ? 18 : 28, barGap: '12%' };
+    return { ...base, type: 'bar' as const, barMaxWidth: horizontal ? 18 : 28, barGap: stack === undefined ? '12%' : '0%' };
   });
 
   const xAxis = horizontal ? measureAxis : (spec.kind === 'line' || spec.kind === 'area') && spec.xType === 'time'
