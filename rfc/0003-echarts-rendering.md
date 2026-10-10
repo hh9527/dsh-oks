@@ -1,12 +1,13 @@
 # RFC 0003：用 echarts 重建图表链路与报告
 
-- 状态：**探索立项**
+- 状态：**已完成**。实现在 `main` 上：图表与报告统一走 echarts，typst 那条线已移除；
+  验收见 <https://github.com/hh9527/dsh-oks/issues/3>。
 - 立项：<https://github.com/hh9527/dsh-oks/issues/3>
-- 分支：`explore/echarts-report`
+- 分支：`explore/echarts-report`（合入后已删除）
 - 创建日期：2026-10-10
-- 关系：**与 [`rfc/0002`](./0002-typst-rendering.md) 并行**。本文换掉"服务端怎么把数画成图"这一层
-  （typst → echarts SSR）并新增报告形态；`rfc/0002` 里仍然有效的是**契约与产物形态**
-  （`oks_chart` 的调用形状、来源标识、落盘与回执），以及 **PDF 那条线仍归 typst**。
+- 关系：**在渲染层上取代 [`rfc/0002`](./0002-typst-rendering.md)**（typst → echarts SSR），
+  并新增报告形态；`rfc/0002` 里仍然有效的是**契约与产物形态**
+  （`oks_chart` 的调用形状、来源标识、落盘与回执）。
 - 前置观察：`rfc/0001` 立项时说"图表的呈现规格与客户端渲染"，`rfc/0002` 推翻了它（改成服务端渲染）。
   本文重新采纳"**呈现规格**"这个立足点——因为 echarts 的输入正是 JSON option，**规格即渲染输入**。
 
