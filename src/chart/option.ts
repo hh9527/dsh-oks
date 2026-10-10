@@ -336,7 +336,8 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
     return { ...base, type: 'bar' as const, barMaxWidth: horizontal ? 18 : 28, barGap: stack === undefined ? '12%' : '0%' };
   });
 
-  const xAxis = horizontal ? measureAxis : (spec.kind === 'line' || spec.kind === 'area') && spec.xType === 'time'
+  // x 轴：横条图是数值轴（第二维度就挂在它旁边），其余是类别轴或时间轴。
+  const baseXAxis = horizontal ? measureAxis : (spec.kind === 'line' || spec.kind === 'area') && spec.xType === 'time'
     ? { ...categoryAxis, type: 'time' as const, data: undefined }
     : categoryAxis;
 
@@ -349,16 +350,17 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
     if (!firstRowByCategory.has(key)) firstRowByCategory.set(key, row);
   }
   const secondName = second === null ? null : axisName(second.label ?? second.value, second.unit ?? null) ?? second.value;
+  // 横条图的数值在 x 轴上：第二个度量与它的轴都要跟着换边（轴在上方，不从左边抢位置）。
   const secondAxis = second === null || secondName === null ? null : {
     ...measureAxis,
     name: secondName,
-    position: 'right' as const,
+    position: horizontal ? ('top' as const) : ('right' as const),
     splitLine: { show: false },
   };
   const secondSeries = second === null || secondName === null ? null : {
     type: 'line' as const,
     name: secondName,
-    yAxisIndex: 1,
+    ...(horizontal ? { xAxisIndex: 1 } : { yAxisIndex: 1 }),
     smooth: false,
     symbol: 'circle',
     symbolSize: 6,
@@ -379,18 +381,24 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
     symbol: 'none' as const,
     lineStyle: { color: '#c0567a', type: 'dashed' as const, width: 1.5 },
     label: { fontSize: labelFont, color: '#c0567a' },
-    data: spec.marks.map((mark) => ({
-      [mark.axis === 'x' ? 'xAxis' : 'yAxis']: mark.value,
-      label: { formatter: mark.label ?? String(mark.value) },
-    })),
+    // `axis` 说的是"画在哪根角色轴上"：默认 y 表示数值轴（阈值），x 表示类别轴。
+    // 横条图的数值轴是 x，所以要按图元的朝向换过来——否则阈值线会静默不画。
+    data: spec.marks.map((mark) => {
+      const onCategory = mark.axis === 'x';
+      const target = horizontal
+        ? (onCategory ? 'yAxis' : 'xAxis')
+        : (onCategory ? 'xAxis' : 'yAxis');
+      return { [target]: mark.value, label: { formatter: mark.label ?? String(mark.value) } };
+    }),
   };
 
   const allSeries: Record<string, unknown>[] = secondSeries === null ? [...series] : [...series, secondSeries];
   if (markLine !== undefined && allSeries.length > 0) allSeries[0].markLine = markLine;
 
-  const yAxis = secondAxis === null
-    ? (horizontal ? categoryAxis : measureAxis)
-    : [horizontal ? categoryAxis : measureAxis, secondAxis];
+  const yAxis = horizontal
+    ? categoryAxis
+    : (secondAxis === null ? measureAxis : [measureAxis, secondAxis]);
+  const xAxis = horizontal && secondAxis !== null ? [baseXAxis, secondAxis] : baseXAxis;
 
   return {
     height,

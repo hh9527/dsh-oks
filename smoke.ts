@@ -1498,6 +1498,26 @@ console.log('=== oks_chart（服务端出图）===');
   if (dashedCount < 2) throw new Error(`两条阈值线应当在图里，只找到 ${dashedCount} 条`);
   console.log('  阈值线：' + dashedCount + ' 条虚线，标签都在');
 
+  // 横条图：数值在 x 轴上，second 与 marks 都要跟着换边。
+  const barSecond = await call('oks_chart', {
+    spec: {
+      kind: 'bar', x: 'm', value: 'cpu', valueLabel: 'CPU 使用率', unit: '%',
+      second: { value: 'ports', label: '端口数', unit: '个' },
+      marks: [{ value: 50, label: '阈值 50%' }, { value: '3月', label: '重点', axis: 'x' }],
+    },
+    data: comboRows,
+    name: 'probe_bar_second',
+  });
+  const barSvg = readFileSync(resolve(DEV_ROOT, barSecond.value.svgSrc), 'utf8');
+  if (!barSvg.includes('端口数（个）')) throw new Error('横条图上的第二个度量应当有自己的轴');
+  if (!barSvg.includes('阈值 50%') || !barSvg.includes('重点')) throw new Error('横条图上的两条参考线标签都该在');
+  const barDashed = [...barSvg.matchAll(/<path d="M([\d.]+) ([\d.]+)L([\d.]+) ([\d.]+)"[^>]*stroke-dasharray/g)]
+    .map((m) => ({ x1: Number(m[1]), y1: Number(m[2]), x2: Number(m[3]), y2: Number(m[4]) }));
+  // 数值轴在 x 上：阈值是竖线；类别轴在 y 上：类别标记是横线。
+  if (!barDashed.some((d) => d.x1 === d.x2)) throw new Error('横条图上的阈值线应当是竖线（数值轴在 x）');
+  if (!barDashed.some((d) => d.y1 === d.y2)) throw new Error('横条图上的类别标记应当是横线');
+  console.log('  横条图：second 换到 x 轴，阈值竖线 + 类别横线都在');
+
   // 轴名里的单位不该拼两遍：agent 常把单位写进 valueLabel，同时又给 unit（真机反馈）。
   const dupUnit = await call('oks_chart', {
     spec: { kind: 'column', x: 'm', value: 'cpu', valueLabel: 'CPU 使用率 (%)', unit: '%' },
