@@ -1518,6 +1518,126 @@ console.log('=== oks_chart（服务端出图）===');
   if (!barDashed.some((d) => d.y1 === d.y2)) throw new Error('横条图上的类别标记应当是横线');
   console.log('  横条图：second 换到 x 轴，阈值竖线 + 类别横线都在');
 
+  // xType 不填时从数据推断。这条同时钉住"年份数字不能被当成 epoch 毫秒"——
+  // 那会把横轴画到 1970 年，而且图看起来还挺正常。
+  const inferredTime = await call('oks_chart', {
+    spec: { kind: 'line', x: 't', value: 'v' },
+    data: [{ t: '2026-01-01T00:00:00Z', v: 1 }, { t: '2026-01-02T00:00:00Z', v: 2 }, { t: '2026-01-03T00:00:00Z', v: 3 }],
+    name: 'probe_infer_time',
+  });
+  if (inferredTime.value.spec.xType !== 'time') throw new Error('时间文本应当被推断成 time');
+  const inferredNumber = await call('oks_chart', {
+    spec: { kind: 'line', x: 'y', value: 'v' },
+    data: [{ y: 2026, v: 1 }, { y: 2027, v: 2 }, { y: 2028, v: 3 }],
+    name: 'probe_infer_number',
+  });
+  if (inferredNumber.value.spec.xType !== 'number') {
+    throw new Error('年份数字应被推断成 number，而不是当作 epoch 毫秒');
+  }
+  const inferredCategory = await call('oks_chart', {
+    spec: { kind: 'line', x: 'k', value: 'v' },
+    data: [{ k: '甲', v: 1 }, { k: '乙', v: 2 }],
+    name: 'probe_infer_category',
+  });
+  if (inferredCategory.value.spec.xType !== null) throw new Error('文本类别应当留空（走类目轴）');
+  console.log('  横轴推断：时间文本→time · 年份数字→number · 文本类别→类目轴');
+
+  // 放错层时，报错要指出正确位置——agent 靠它自己纠正，比让它在两层之间猜好。
+  let misplacedMessage = '';
+  try {
+    await call('oks_chart', {
+      spec: { kind: 'column', x: 'label', value: 'value', layout: { labels: true } },
+      data: [{ label: 'A', value: 1 }],
+    });
+  } catch (cause) {
+    misplacedMessage = String((cause as { message?: string })?.message ?? cause);
+  }
+  if (!misplacedMessage.includes('spec.style')) {
+    throw new Error(`放错层的报错应当指出 labels 属于 spec.style，实际：${misplacedMessage}`);
+  }
+  console.log('  放错层：' + misplacedMessage.slice(0, 72));
+
+  // 百分比堆叠：顶部要有余量（否则 100% 那条线压在轴顶上，像图被截断），但刻度仍只到 100%。
+  const pctRows = Array.from({ length: 6 }, (_, i) => [
+    { m: 'M' + i, s: 'a', v: 60 + i },
+    { m: 'M' + i, s: 'b', v: 30 - i },
+    { m: 'M' + i, s: 'c', v: 10 },
+  ]).flat();
+  const pct = await call('oks_chart', {
+    spec: { kind: 'area', x: 'm', series: 's', value: 'v', stack: 'percent', valueLabel: '占比', unit: '%' },
+    data: pctRows,
+    name: 'probe_percent_headroom',
+  });
+  const pctSvg = readFileSync(resolve(DEV_ROOT, pct.value.svgSrc), 'utf8');
+  const pctTicks = [...pctSvg.matchAll(/<text[^>]*>([^<]{1,10})<\/text>/g)].map((m) => m[1].trim()).filter((t) => /%$/.test(t));
+  if (!pctTicks.includes('100%')) throw new Error('百分比堆叠的刻度应当到 100%');
+  if (pctTicks.some((t) => t !== '100%' && Number.parseInt(t, 10) > 100)) {
+    throw new Error(`留余量用的上限不该出现在刻度上，实际刻度：${JSON.stringify(pctTicks)}`);
+  }
+  console.log('  百分比堆叠：刻度 ' + JSON.stringify(pctTicks) + '（上限被隐掉，顶部留了余量）');
+  // 描边要比填充深一档：同色叠同色时，堆叠最上层那条外缘线会整个消失
+  //（层与层之间因为有别的颜色垫着还看得出来，所以只有最上面那条出问题）。
+  const strokeColors = [...new Set([...pctSvg.matchAll(/stroke="(#[0-9a-fA-F]{6})"[^>]*stroke-width="2"/g)].map((m) => m[1]))];
+  const fillColors = new Set([...pctSvg.matchAll(/fill="(#[0-9a-fA-F]{6})"/g)].map((m) => m[1]));
+  const sameColor = strokeColors.filter((color) => fillColors.has(color));
+  if (sameColor.length > 0) {
+    throw new Error(`描边不该与填充同色（同色等于看不见），发现：${JSON.stringify(sameColor)}`);
+  }
+  console.log('  描边与填充不同色：' + JSON.stringify(strokeColors));
+  // 时间轴 + stack='percent'：归一化不能被时间轴分支覆盖。这条曾经让总和线一路爬出绘图区，
+  // 真机上看起来就是"图被截断了"——比数值错更难发现，因为图还画得出来。
+  const timePctRows = ['a', 'b', 'c'].flatMap((s2, j) =>
+    Array.from({ length: 6 }, (_, i) => ({
+      t: `2024-${String(i + 1).padStart(2, '0')}-01T00:00:00Z`, s: s2, v: 20 + i * 5 + j * 3,
+    })));
+  const timePct = await call('oks_chart', {
+    spec: { kind: 'area', x: 't', series: 's', value: 'v', xType: 'time', stack: 'percent', valueLabel: '占比', unit: '%' },
+    data: timePctRows,
+    name: 'probe_time_percent',
+  });
+  const timePctSvg = readFileSync(resolve(DEV_ROOT, timePct.value.svgSrc), 'utf8');
+  // 总和线 = 最后一条系列的描边；归一化生效时它应当是一条平线（y 的极差极小）。
+  const sumTags = [...timePctSvg.matchAll(/<path[^>]*>/g)].map((m) => m[0])
+    .filter((t) => t.includes('stroke-width="2"') && /stroke="(#[0-9a-fA-F]{6})"/.test(t) && /d="M[0-9.]+ /.test(t) && !/d="M0 /.test(t));
+  const last = sumTags[sumTags.length - 1];
+  const sumYs = last === undefined ? [] : [...(/d="([^"]+)"/.exec(last)[1]).matchAll(/[0-9.]+ (-?[0-9.]+)/g)].map((m) => Number(m[1]));
+  const spread = sumYs.length === 0 ? Infinity : Math.max(...sumYs) - Math.min(...sumYs);
+  if (spread > 3) {
+    throw new Error(`时间轴上的百分比堆叠应当归一化（总和线接近水平），实际 y 极差 ${spread.toFixed(1)}px`);
+  }
+  console.log(`  时间轴 + percent：总和线 y 极差 ${spread.toFixed(1)}px（归一化生效）`);
+
+
+
+  // 直方图：一列数值分箱。histogram 不需要 x，列校验也不该因此报"列不存在"。
+  const manyRows = Array.from({ length: 60 }, (_, i) => ({ v: 10 + (i % 3) * 30 + i * 0.001, s: i % 2 ? 'p' : 'q' }));
+  const hist = await call('oks_chart', {
+    spec: { kind: 'histogram', value: 'v', valueLabel: '设备数', unit: '台', bins: 6, title: '取值分布' },
+    data: manyRows,
+    name: 'probe_hist',
+  });
+  const histSvg = readFileSync(resolve(DEV_ROOT, hist.value.svgSrc), 'utf8');
+  const histLabels = [...histSvg.matchAll(/<text[^>]*>([^<]{1,20})<\/text>/g)].map((m) => m[1].trim());
+  if (!histSvg.includes('设备数')) throw new Error('直方图的数值轴该有名字');
+  if (!histLabels.some((t) => t.includes('–'))) throw new Error('直方图的横轴该是分箱区间');
+  console.log('  直方图：' + histLabels.filter((t) => t.includes('–')).length + ' 个箱');
+
+  // 箱线图：按类别算四分位与离群点。
+  const boxRows = [
+    ...[12, 18, 22, 30, 45, 51, 60].map((v) => ({ site: '甲', v })),
+    ...[20, 26, 31, 38, 52, 58, 70].map((v) => ({ site: '乙', v })),
+    { site: '甲', v: 200 },
+  ];
+  const box = await call('oks_chart', {
+    spec: { kind: 'box', x: 'site', value: 'v', valueLabel: '响应时间', unit: 'ms', title: '响应时间分布' },
+    data: boxRows,
+    name: 'probe_box',
+  });
+  const boxSvg = readFileSync(resolve(DEV_ROOT, box.value.svgSrc), 'utf8');
+  if (!boxSvg.includes('响应时间')) throw new Error('箱线图的数值轴该有名字');
+  if (!boxSvg.includes('甲') || !boxSvg.includes('乙')) throw new Error('箱线图每个类别一个箱');
+  console.log('  箱线图：两个类别都在');
+
   // 轴名里的单位不该拼两遍：agent 常把单位写进 valueLabel，同时又给 unit（真机反馈）。
   const dupUnit = await call('oks_chart', {
     spec: { kind: 'column', x: 'm', value: 'cpu', valueLabel: 'CPU 使用率 (%)', unit: '%' },
@@ -1617,9 +1737,7 @@ console.log('=== oks_chart（服务端出图）===');
     ['table 退场', { spec: { kind: 'table' }, data: [{}] }],
     ['列不存在', { spec: { kind: 'bar', x: 'nope', value: 'nope2' }, data: [{ a: 1 }] }],
     ['bar 缺 value', { spec: { kind: 'bar', x: 'label' }, data: [{ label: 'A' }] }],
-    ['line 缺 xType', { spec: { kind: 'line', x: 'label', value: 'value' }, data: [{ label: 'A', value: 1 }] }],
     ['pie 缺 value', { spec: { kind: 'pie', x: 'label' }, data: [{ label: 'A' }] }],
-    ['area 缺 xType', { spec: { kind: 'area', x: 'label', value: 'value' }, data: [{ label: 1, value: 1 }] }],
     ['layout 越界', { spec: { kind: 'bar', x: 'label', value: 'value', layout: { labelFont: 4 } }, data: [{ label: 'A', value: 1 }] }],
     ['layout 写错项', { spec: { kind: 'bar', x: 'label', value: 'value', layout: { nope: 1 } }, data: [{ label: 'A', value: 1 }] }],
     ['图表名越界', { spec: { kind: 'bar', x: 'label', value: 'value' }, data: [{ label: 'A', value: 1 }], name: '../evil' }],
@@ -1630,6 +1748,10 @@ console.log('=== oks_chart（服务端出图）===');
     ['style.sort 非法', { spec: { kind: 'bar', x: 'label', value: 'value', style: { sort: 'nope' } }, data: [{ label: 'A', value: 1 }] }],
     ['style.colors 非法', { spec: { kind: 'bar', x: 'label', value: 'value', style: { colors: ['red'] } }, data: [{ label: 'A', value: 1 }] }],
     ['scatter 缺 value', { spec: { kind: 'scatter', x: 'a' }, data: [{ a: 1 }] }],
+    ['histogram 缺 value', { spec: { kind: 'histogram' }, data: [{ a: 1 }] }],
+    ['box 缺 x', { spec: { kind: 'box', value: 'v' }, data: [{ v: 1 }] }],
+    ['bins 填给 column', { spec: { kind: 'column', x: 'label', value: 'value', bins: 5 }, data: [{ label: 'A', value: 1 }] }],
+    ['bins 越界', { spec: { kind: 'histogram', value: 'value', bins: 999 }, data: [{ value: 1 }] }],
     ['second 填给 pie', { spec: { kind: 'pie', x: 'label', value: 'value', second: { value: 'n' } }, data: [{ label: 'A', value: 1, n: 2 }] }],
     ['second 缺 value', { spec: { kind: 'column', x: 'label', series: 's', value: 'value', second: { label: 'x' } }, data: [{ label: 'A', s: 'p', value: 1 }] }],
     ['second.kind 非 line', { spec: { kind: 'column', x: 'label', series: 's', value: 'value', second: { value: 'n', kind: 'bar' } }, data: [{ label: 'A', s: 'p', value: 1, n: 2 }] }],

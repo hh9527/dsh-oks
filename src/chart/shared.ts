@@ -5,6 +5,11 @@
 
 export type Row = Record<string, unknown>;
 
+/** 全部图元。清单只此一份：schema 的枚举、规格的类型、渲染的分支都从这里取，
+ *  否则加一个图元要改三处，漏掉一处就是"工具收下了、渲染认不得"（或反过来）。 */
+export const CHART_KINDS = ['bar', 'line', 'column', 'pie', 'area', 'scatter', 'histogram', 'box'] as const;
+export type ChartKind = (typeof CHART_KINDS)[number];
+
 /** 色板：同一个序列在不同图元里颜色保持一致。 */
 export const SERIES_COLORS = ['#5a8cf0', '#e0803a', '#4aa96c', '#c0567a', '#8a6ad0'];
 
@@ -149,6 +154,43 @@ export const resolveLayout = (options: {
   slantTicks: options.overrides.slantTicks ?? needsSlantedTicks(options.categories),
   tickCount: options.overrides.tickCount ?? DEFAULT_TICK_COUNT,
 });
+
+/** 把颜色调暗一档，用于折线 / 面积的描边。
+ *
+ *  描边和填充同色时等于没有描边——层与层之间因为有别的颜色垫在下面还看得出来，
+ *  但**最上面那条外缘线**是同色叠同色，直接消失，整张图看着像"缺了顶部的细节"。
+ */
+export const darken = (hex: string, amount = 0.26): string => {
+  const match = /^#([0-9a-fA-F]{6})$/.exec(hex);
+  if (match === null) return hex;
+  const value = Number.parseInt(match[1], 16);
+  const scale = (channel: number): number => Math.max(0, Math.round(channel * (1 - amount)));
+  const r = scale((value >> 16) & 0xff);
+  const g = scale((value >> 8) & 0xff);
+  const b = scale(value & 0xff);
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`;
+};
+
+/** 从一列值推断横轴怎么读。
+ *
+ *  只在"明确像时间"时才判成 time——年份数字（2026）绝不能被当成 epoch 毫秒，
+ *  那会把横轴画到 1970 年去，而且看起来还挺像一张图。
+ */
+export const inferXType = (values: readonly unknown[]): 'number' | 'time' | 'category' => {
+  const present = values.filter((value) => value !== null && value !== undefined && value !== '');
+  if (present.length === 0) return 'category';
+  // 文本：必须带日期与时间两部分的形状才算时间。
+  const looksLikeDateTime = (text: string): boolean =>
+    /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(text) || /^\d{4}\/\d{1,2}\/\d{1,2}/.test(text);
+  if (present.every((value) => typeof value === 'string' && looksLikeDateTime(value))) return 'time';
+  if (present.every((value) => typeof value === 'number' && Number.isFinite(value))) {
+    // epoch 毫秒：只认合理区间（2000-01-01 ~ 2100-01-01）。年份数字落不进这个区间。
+    const min = Date.UTC(2000, 0, 1);
+    const max = Date.UTC(2100, 0, 1);
+    return present.every((value) => (value as number) >= min && (value as number) <= max) ? 'time' : 'number';
+  }
+  return 'category';
+};
 
 /** 数值轴的说明：valueLabel 与 unit 合成。
  *  label 里已经带了单位就不再重复——agent 常把单位写进 label（"CPU 使用率 (%)"），

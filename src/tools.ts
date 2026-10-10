@@ -5,7 +5,8 @@ import { runJaq } from './jaq.ts';
 import { buildOption, CHART_WIDTH } from './chart/option.ts';
 import { renderEchartsSvg } from './chart/echarts.ts';
 import { buildFigureHtml, renderReportHtml } from './chart/report.ts';
-import type { LayoutOverrides, MarkLine, SecondMetric, StyleOverrides } from './chart/shared.ts';
+import { CHART_KINDS, inferXType } from './chart/shared.ts';
+import type { ChartKind, LayoutOverrides, MarkLine, SecondMetric, StyleOverrides } from './chart/shared.ts';
 import { OBJECT_OUTPUT, renderChart, renderCheck, renderJaq, renderJson, renderQuery, renderValue, withoutQueries } from './response.ts';
 import type { Row } from './response.ts';
 import { REFERENCE_KINDS, referencesOf, renderReferences, renderSearch, searchIndex } from './retrieval.ts';
@@ -153,6 +154,7 @@ const renderReportFigure = (
   const chartSpec = parsedChart.spec;
   const resolved = resolveChartRows({ src: json.src, data: json.data }, root, chartSpec);
   if ('error' in resolved) return { error: resolved.error };
+  applyInferredXType(chartSpec, resolved.rows);
   if (chartSpec.kind === 'line') {
     const issue = lineProblem(resolved.rows, chartSpec);
     if (issue !== null) return { error: issue };
@@ -181,7 +183,7 @@ interface ChartArgs {
  *  column 另外要求作为分组维度的 series，line 与 area 还要求 xType。
  *  layout 是排版覆盖项（字号、高度、是否斜排标签），全部可选、缺省走默认规则。 */
 interface ChartSpec {
-  kind: 'bar' | 'line' | 'column' | 'pie' | 'area' | 'scatter';
+  kind: ChartKind;
   title: string | null;
   x: string;
   value: string;
@@ -198,6 +200,8 @@ interface ChartSpec {
   second: SecondMetric | null;
   /** 参考线 / 阈值线。 */
   marks: MarkLine[];
+  /** 图元专属：histogram 的箱子数；不填按数据量选。 */
+  bins: number | null;
   /** 通用表达开关：排序、数值标签、配色。 */
   style: StyleOverrides;
   layout: LayoutOverrides;
@@ -235,7 +239,14 @@ const parseLayout = (raw: unknown): { layout: LayoutOverrides } | { error: strin
     layout.slantTicks = record.slantTicks;
   }
   const unknown = Object.keys(record).filter((key) => !['labelFont', 'titleFont', 'height', 'rowHeight', 'slantTicks', 'tickCount'].includes(key));
-  if (unknown.length > 0) return { error: `spec.layout 里不认识的项：${unknown.join(', ')}` };
+  if (unknown.length > 0) {
+    // agent 常把表达开关写进排版参数：直接告诉它该放哪，比让它再猜一次好。
+    const misplaced = unknown.filter((key) => EXPRESSION_KEYS.includes(key));
+    const where = misplaced.length > 0
+      ? `。${misplaced.join(' / ')} 属于 spec.style（表达开关）`
+      : '（layout 只管排版：labelFont / titleFont / height / rowHeight / slantTicks / tickCount）';
+    return { error: `spec.layout 里不认识的项：${unknown.join(', ')}${where}` };
+  }
   return { layout };
 };
 
@@ -260,7 +271,6 @@ interface ChartAnswer {
   intent: unknown;
 }
 
-const CHART_KINDS = ['bar', 'line', 'column', 'pie', 'area', 'scatter'] as const;
 /** column / area 的堆叠方式。 */
 const CHART_STACKS = ['total', 'percent'] as const;
 /** 类别排序：默认沿用数据顺序。 */
@@ -273,7 +283,8 @@ const CHART_DATA_MAX_BYTES = 256 * 1024;
  *  oks_chart 与报告里的 chart 块共用这一份，否则会出现"工具接受、报告里报错"的半边差异。 */
 const referencedColumns = (spec: ChartSpec): string[] =>
   [spec.x, spec.value, spec.series, spec.size, spec.second?.value ?? null]
-    .filter((name): name is string => name !== null);
+    // 空字符串表示"这个图元不需要这一项"（如 histogram 没有 x），不该被当成一个列名去核对。
+    .filter((name): name is string => typeof name === 'string' && name !== '');
 
 /** 数据里缺了哪些被引用的列。空数据没有列可校验，也不该因此报错——空结果照样出一张空图。 */
 const missingColumns = (spec: ChartSpec, columns: readonly string[], rowCount: number): string[] =>
@@ -340,6 +351,10 @@ const parseMarks = (raw: unknown, kind: string): { marks: MarkLine[] } | { error
   return { marks };
 };
 
+/** 两层的键名清单：agent 放错层时，报错要能指出正确的位置。 */
+const EXPRESSION_KEYS = ['sort', 'labels', 'colors', 'stack', 'size', 'bins', 'second', 'marks'];
+const LAYOUT_KEYS = ['labelFont', 'titleFont', 'height', 'rowHeight', 'slantTicks', 'tickCount'];
+
 /** 解析并校验通用表达开关：每一项都可选，给了就必须在合理范围内。
  *  越界的值画出来是废图，不如直接报错让 agent 重来。 */
 const parseStyle = (raw: unknown): { style: StyleOverrides } | { error: string } => {
@@ -373,7 +388,13 @@ const parseStyle = (raw: unknown): { style: StyleOverrides } | { error: string }
     style.colors = record.colors as string[];
   }
   const unknown = Object.keys(record).filter((key) => !['sort', 'labels', 'colors'].includes(key));
-  if (unknown.length > 0) return { error: `spec.style 里不认识的项：${unknown.join(', ')}` };
+  if (unknown.length > 0) {
+    const misplaced = unknown.filter((key) => LAYOUT_KEYS.includes(key));
+    const where = misplaced.length > 0
+      ? `。${misplaced.join(' / ')} 属于 spec.layout（排版参数）`
+      : '（style 只管表达：sort / labels / colors）';
+    return { error: `spec.style 里不认识的项：${unknown.join(', ')}${where}` };
+  }
   return { style };
 };
 
@@ -405,6 +426,7 @@ const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: string } =
     size: text('size'),
     second: null,
     marks: [],
+    bins: null,
     style: {},
     layout: {},
   };
@@ -430,8 +452,25 @@ const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: string } =
     }
     spec.stack = record.stack as ChartSpec['stack'];
   }
+  if (record.bins !== undefined && record.bins !== null) {
+    if (typeof record.bins !== 'number' || !Number.isInteger(record.bins) || record.bins < 1 || record.bins > 200) {
+      return { error: `spec.bins 必须是 1–200 的整数，收到 ${JSON.stringify(record.bins)}` };
+    }
+    if (spec.kind !== 'histogram') {
+      return { error: `spec.bins 只对 histogram 有意义（${spec.kind} 用不上它）` };
+    }
+    spec.bins = record.bins;
+  }
   if (spec.size !== null && spec.kind !== 'scatter') {
     return { error: `spec.size 只对 scatter 有意义（把这一列映射成点的大小，${spec.kind} 用不上它）` };
+  }
+  if (spec.kind === 'histogram' && spec.value === '') {
+    return { error: 'histogram 需要 spec.value（要统计分布的那一列数值）' };
+  }
+  if (spec.kind === 'box') {
+    if (spec.x === '' || spec.value === '') {
+      return { error: 'box 需要 spec.x（类别列）与 spec.value（数值列）' };
+    }
   }
   if (spec.kind === 'scatter' && (spec.x === '' || spec.value === '')) {
     return { error: 'scatter 需要 spec.x 与 spec.value（两个数值列），可选 spec.size（点大小）' };
@@ -450,17 +489,12 @@ const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: string } =
       return { error: 'pie 需要 spec.x（类别列）与 spec.value（数值列）' };
     }
   }
-  if (spec.kind === 'area') {
+  // line / area 的必填完全相同：同一个约束写两遍，改的时候就会只想起一处
+  //（这一波已经因此栽了三次）。合成一条。
+  if (spec.kind === 'line' || spec.kind === 'area') {
     if (spec.x === '' || spec.value === '') {
-      return { error: 'area 需要 spec.x（横轴列）与 spec.value（数值列）' };
+      return { error: `${spec.kind} 需要 spec.x（横轴列）与 spec.value（数值列）` };
     }
-    if (spec.xType === null) return { error: 'area 需要 spec.xType：number 或 time' };
-  }
-  if (spec.kind === 'line') {
-    if (spec.x === '' || spec.value === '') {
-      return { error: 'line 需要 spec.x（横轴列）与 spec.value（数值列）' };
-    }
-    if (spec.xType === null) return { error: 'line 需要 spec.xType：number 或 time' };
   }
   return { spec };
 };
@@ -485,9 +519,35 @@ const parseChartData = (raw: unknown): { rows: Array<Record<string, unknown>> } 
 
 /** 折线的前置检查：每行都要有横轴值、每个序列的横轴非递减、数值是有限数值或 null。
  *  （渲染在客户端；这些是规格层面的错，要在工具里就挡掉。） */
+/** 给没写 xType 的规格补上推断结果。
+ *
+ *  原来 line / area 必须显式写 xType，而 column / bar 不用——同一个概念一半要写一半不用写，
+ *  agent 每次都要踩一遍。现在改成"可选覆盖"：不写就从这一列的值推断。
+ *  返回值说明推断成了什么，好让它出现在回执里（猜错了 agent 看得见）。
+ */
+const applyInferredXType = (spec: ChartSpec, rows: readonly Record<string, unknown>[]): 'number' | 'time' | 'category' | null => {
+  if (spec.kind !== 'line' && spec.kind !== 'area') return null;
+  if (spec.xType !== null) return spec.xType;
+  const inferred = inferXType(rows.map((row) => row[spec.x]));
+  // 推断成类目时留空：渲染层见到 null 就走类目轴。
+  spec.xType = inferred === 'category' ? null : inferred;
+  return inferred;
+};
+
 const lineProblem = (rows: readonly Record<string, unknown>[], spec: ChartSpec): string | null => {
   const xColumn = spec.x;
   const valueColumn = spec.value;
+  // 类目轴（没给 xType，数据也不是数值 / 时间）：顺序由数据本身决定，
+  // 既不要求横轴是数值，也不要求递增——类目折线是常见形状。
+  if (spec.xType === null) {
+    for (const row of rows) {
+      const raw = row[xColumn];
+      if (raw === null || raw === undefined || raw === '') {
+        return `横轴列 ${xColumn} 有空值：折线要求每行都有横轴值`;
+      }
+    }
+    return null;
+  }
   const lastX = new Map<string, number>();
   for (const row of rows) {
     const seriesKey = spec.series === null ? '' : String(row[spec.series] ?? '');
@@ -1062,9 +1122,10 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         properties: {
           spec: {
             type: 'object',
-            description: 'Figure specification. kind is required: bar needs x (the category column) and value; column needs x and value — one bar per category, or grouped bars when series is given, or stacked ones when stack is given; line needs x, value and xType (number or time), plus an optional series for several lines; area is a line with the region below it filled, and takes the same fields as line (stack works here too); pie needs x (the slice label column) and value, and only positive values are drawn; scatter needs x and value (two numeric columns) and takes an optional size column for bubble charts. title / xLabel / valueLabel / unit are display text you supply.',
+            description: 'Figure specification. kind is required: bar needs x (the category column) and value; column needs x and value — one bar per category, or grouped bars when series is given, or stacked ones when stack is given; line needs x, value and xType (number or time), plus an optional series for several lines; area is a line with the region below it filled, and takes the same fields as line (stack works here too); pie needs x (the slice label column) and value, and only positive values are drawn; scatter needs x and value (two numeric columns) and takes an optional size column for bubble charts; histogram needs only value (one numeric column) and shows how those values are distributed; box needs x (the category) and value, and draws one box per category. title / xLabel / valueLabel / unit are display text you supply.',
             properties: {
               kind: { type: 'string', enum: [...CHART_KINDS], description: 'Which figure to draw.' },
+              bins: { type: 'number', description: 'histogram only: how many bins to cut the value range into. Omit to let it pick by sample count.' },
               title: { type: 'string', description: 'Title shown above the figure.' },
               x: { type: 'string', description: 'bar / column: the category column. line / area: the horizontal-axis column. pie: the slice label column. scatter: the numeric column drawn on the horizontal axis.' },
               value: { type: 'string', description: 'The numeric column drawn as bar length, column height, line height, area height, slice size or the vertical position of a scatter point.' },
@@ -1171,6 +1232,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         if (missing.length > 0) {
           throw new Error(`这些列不在数据里：${missing.join(', ')}。可用的列：${columns.join(', ') || '(没有列)'}`);
         }
+        const inferredXType = applyInferredXType(spec, rows);
         if (spec.kind === 'line') {
           const issue = lineProblem(rows, spec);
           if (issue !== null) throw new Error(issue);

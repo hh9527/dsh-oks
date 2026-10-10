@@ -7,7 +7,7 @@
  *  宽高必须在 init 时给定：SSR 模式下没有 DOM 可测量，echarts 不做自适应。
  */
 import * as echarts from 'echarts/core';
-import { BarChart, LineChart, PieChart, ScatterChart } from 'echarts/charts';
+import { BarChart, BoxplotChart, LineChart, PieChart, ScatterChart } from 'echarts/charts';
 import { GraphicComponent, GridComponent, LegendComponent, MarkLineComponent, TitleComponent, TooltipComponent } from 'echarts/components';
 import { SVGRenderer } from 'echarts/renderers';
 import type { EChartsCoreOption } from 'echarts/core';
@@ -17,6 +17,7 @@ import type { EChartsCoreOption } from 'echarts/core';
  *  （graphic 丢了来源标识、markLine 丢了参考线、ScatterChart 丢了整张图）。 */
 echarts.use([
   BarChart,
+  BoxplotChart,
   LineChart,
   PieChart,
   ScatterChart,

@@ -16,12 +16,15 @@ import {
   toLabel,
   toNumber,
   valueAxisLabel,
+  type ChartKind,
+  darken,
   type LayoutOverrides,
   type MarkLine,
   type Row,
   type SecondMetric,
   type StyleOverrides,
 } from './shared.ts';
+import { boxSummary, histogramBins } from './stats.ts';
 import type { EChartsCoreOption } from 'echarts/core';
 
 /** 图表的输出尺寸（px）。echarts 的 SSR 不做自适应，宽高必须在初始化时给定。 */
@@ -36,7 +39,7 @@ export const plotHeight = (kind: string, categoryCount: number, labelFont: numbe
 
 /** 一次渲染要用的全部输入。字段分三层：语义（这份数据是什么）、表达开关（怎么表达）、排版。 */
 export interface OptionInput {
-  kind: 'bar' | 'column' | 'line' | 'pie' | 'area' | 'scatter';
+  kind: ChartKind;
   title: string | null;
   /** 系统来源标识（基于查询结果 / agent 自主填写），画在图内左下角。 */
   sourceLabel: string;
@@ -55,6 +58,8 @@ export interface OptionInput {
   second?: SecondMetric | null;
   /** 参考线 / 阈值线。 */
   marks?: readonly MarkLine[];
+  /** 图元专属：histogram 的箱子数；不填按数据量选。 */
+  bins?: number | null;
   /** 通用表达开关。 */
   style?: StyleOverrides;
   layout?: LayoutOverrides;
@@ -105,6 +110,16 @@ const footnote = (sourceLabel: string, fontSize: number): unknown => ({
   style: { text: `来源：${sourceLabel}`, fontSize: Math.max(8, fontSize - 3), fill: '#8494a5' },
   silent: true,
 });
+
+/** 轴上的短数字：分箱边界常是 10.568414634146341 这种，按量级留三到四位有效数字。 */
+const short = (value: number): string => {
+  if (!Number.isFinite(value)) return String(value);
+  const abs = Math.abs(value);
+  if (abs === 0) return '0';
+  if (abs >= 1000 || abs < 0.01) return value.toExponential(2);
+  const digits = abs >= 100 ? 1 : abs >= 10 ? 2 : 3;
+  return String(Number(value.toFixed(digits)));
+};
 
 /** 没有可画的数据时，给一张只有标题与说明的图，而不是空白画布。 */
 const emptyOption = (spec: OptionInput, layout: ReturnType<typeof resolveLayout>): EChartsCoreOption => ({
@@ -274,9 +289,14 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
     nameTextStyle: { fontSize: labelFont, color: '#5b6b7c' },
     // 百分比堆叠时数据已经归一化到 100，轴上标成百分比。
     axisLabel: stack === 'percent'
-      ? { fontSize: labelFont, color: '#1c2b3a', formatter: '{value}%' }
+      // 上限是 110（给堆叠顶部留一成余量，否则那条 100% 的线会压在轴顶上像被截断），
+      // 但 110 这个刻度没有意义，隐掉它——读者看到的刻度仍是 0–100%。
+      ? { fontSize: labelFont, color: '#1c2b3a', formatter: '{value}%', showMaxLabel: false }
       : { fontSize: labelFont, color: '#1c2b3a' },
-    ...(stack === 'percent' ? { max: 100 } : {}),
+    // 百分比堆叠的总和恒为 100%，堆叠顶部因此是一条水平线。若轴正好停在 100，那条线就压在轴顶上，
+    // 看起来像"图被截断了"。放宽 max 会让那个怪数字直接变成刻度（108%、110%…），所以改用
+    // boundaryGap：值域向上扩一成，刻度仍收在 100%。
+    ...(stack === 'percent' ? { max: 110 } : {}),
     // 让上界至少盖住参考线。echarts 的 max 接受函数，入参是它自己算出的边界。
     ...(stack !== 'percent' && markMax !== null
       ? { max: (bounds: { max: number }) => Math.max(bounds.max, markMax) }
@@ -329,7 +349,8 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
         smooth: false,
         symbol: 'circle',
         symbolSize: 6,
-        lineStyle: { width: 2, color },
+        // 描边比填充深一档：同色叠同色时，最上面那条外缘线会整个消失。
+        lineStyle: { width: 2, color: darken(color) },
         areaStyle: spec.kind === 'area' ? { color, opacity: stack === undefined ? 0.18 : 0.7 } : undefined,
       };
     }
@@ -340,6 +361,97 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
   const baseXAxis = horizontal ? measureAxis : (spec.kind === 'line' || spec.kind === 'area') && spec.xType === 'time'
     ? { ...categoryAxis, type: 'time' as const, data: undefined }
     : categoryAxis;
+
+  // 直方图：一列数值先分箱再按箱画柱。散点表现不了"一组值怎么分布"（三档数据画出来就是三个点），
+  // 这类形状要的是直方图——先把箱子算出来，再交给柱。
+  if (spec.kind === 'histogram') {
+    const values = rows
+      .map((row) => toNumber(row[spec.value]))
+      .filter((value): value is number => value !== null);
+    const bins = histogramBins(values, spec.bins ?? undefined);
+    if (bins.length === 0) return { option: emptyOption(spec, layout), height };
+    // 轴标签用短数字：分箱边界常是 10.568414634146341 这种，直接写上去没法看。
+    const labels = bins.map((bin) => (bin.start === bin.end ? short(bin.start) : `${short(bin.start)}–${short(bin.end)}`));
+    return {
+      height,
+      option: {
+        title,
+        graphic: footnote(spec.sourceLabel, labelFont),
+        grid,
+        xAxis: {
+          ...categoryAxis,
+          data: labels,
+          name: axisName(spec.xLabel ?? spec.value, null),
+          axisLabel: {
+            fontSize: labelFont,
+            color: '#1c2b3a',
+            interval: 0,
+            // 箱标签本来就长，斜排比挤成一团好读。
+            rotate: needsSlantedTicks(labels) ? 45 : 0,
+          },
+        },
+        yAxis: { ...measureAxis, name: axisName(spec.valueLabel ?? '计数', spec.unit) },
+        series: [{
+          type: 'bar' as const,
+          name: axisName(spec.valueLabel ?? '计数', spec.unit) ?? '计数',
+          data: bins.map((bin) => bin.count),
+          itemStyle: { color: pick(0) },
+          barCategoryGap: '2%',
+          barMaxWidth: 40,
+          label: showLabels
+            ? { show: true, position: 'top' as const, fontSize: Math.max(9, labelFont - 2), color: '#3d4d5c' }
+            : undefined,
+        }],
+      },
+    };
+  }
+
+  // 箱线图：按类别看分布。四分位与离群点都由服务端算好（见 stats.ts），图里只负责画。
+  if (spec.kind === 'box') {
+    const byCategory = new Map<string, number[]>();
+    for (const row of rows) {
+      const value = toNumber(row[spec.value]);
+      if (value === null) continue;
+      const key = toLabel(row[spec.x]);
+      const bucket = byCategory.get(key);
+      if (bucket === undefined) byCategory.set(key, [value]);
+      else bucket.push(value);
+    }
+    const summaries = categories.map((category) => boxSummary(byCategory.get(category) ?? []));
+    if (summaries.every((summary) => summary === null)) return { option: emptyOption(spec, layout), height };
+    // 离群点单独画：echarts 的 boxplot 只画箱与须，不画点。
+    const outliers: [number, number][] = [];
+    summaries.forEach((summary, index) => {
+      for (const value of summary?.outliers ?? []) outliers.push([index, value]);
+    });
+    return {
+      height,
+      option: {
+        title,
+        graphic: footnote(spec.sourceLabel, labelFont),
+        grid,
+        xAxis: { ...categoryAxis, data: categories },
+        yAxis: measureAxis,
+        series: [
+          {
+            type: 'boxplot' as const,
+            name: axisName(spec.valueLabel, spec.unit) ?? 'value',
+            // echarts 的箱线数据是 [min, Q1, median, Q3, max]。
+            data: summaries.map((summary) => (summary === null ? null : [summary.min, summary.q1, summary.median, summary.q3, summary.max])),
+            itemStyle: { color: pick(0), borderColor: pick(0) },
+            boxWidth: ['20%', '45%'],
+          },
+          {
+            type: 'scatter' as const,
+            name: '离群点',
+            data: outliers,
+            symbolSize: 5,
+            itemStyle: { color: NEGATIVE_COLOR },
+          },
+        ],
+      },
+    };
+  }
 
   // 第二个度量：独立的右侧数值轴。它存在的前提就是"两个量纲差很远"，所以轴必须分开。
   // 取值按类别取第一行——有 series 时，第二维度不该随分组变化。
@@ -411,15 +523,18 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
       xAxis,
       yAxis,
       // 时间轴时数据要以 [时间, 值] 形式给出，echarts 才会按时间排布。
+      // 值必须取**已经算好的那一份**（stack: 'percent' 时它就是归一化结果）——回到原始行再取一次
+      // 会把归一化丢掉，堆叠的总和线于是一路爬出绘图区、看起来像"图被截断"。
       series: (spec.kind === 'line' || spec.kind === 'area') && spec.xType === 'time'
         ? allSeries.map((item, index) => {
           if (index >= series.length) return item;
-          const bucket = points.get(seriesNames[index]) ?? new Map<string, number>();
-          const rows2 = rows
-            .filter((row) => (spec.series === null ? true : toLabel(row[spec.series]) === seriesNames[index]))
-            .map((row) => [toLabel(row[spec.x]), toNumber(row[spec.value])] as [string, number | null])
-            .filter((pair) => pair[1] !== null);
-          return { ...item, data: rows2 };
+          const values = (item as { data?: (number | null)[] }).data ?? [];
+          return {
+            ...item,
+            data: categories
+              .map((category, i) => [category, values[i] ?? null] as [string, number | null])
+              .filter((pair) => pair[1] !== null),
+          };
         })
         : allSeries,
     },
