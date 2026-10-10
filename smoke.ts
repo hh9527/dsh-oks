@@ -1467,6 +1467,70 @@ console.log('=== oks_chart（服务端出图）===');
   console.log(`  散点（带点大小）：${(scatterSvg.match(/<path/g) ?? []).length} 个 path`);
   if (!scatterSvg.includes('<path')) throw new Error('散点应当出图');
 
+  // 组合图：第二个度量走独立的右侧数值轴。
+  const comboRows = [
+    { m: '1月', cpu: 36.9, ports: 526150 }, { m: '2月', cpu: 41.2, ports: 531200 },
+    { m: '3月', cpu: 43.4, ports: 540880 }, { m: '4月', cpu: 39.8, ports: 549310 },
+  ];
+  const combo = await call('oks_chart', {
+    spec: { kind: 'column', title: 'CPU 与端口数', x: 'm', value: 'cpu', valueLabel: 'CPU 使用率', unit: '%', second: { value: 'ports', label: '端口数', unit: '个' } },
+    data: comboRows,
+    name: 'probe_combo',
+  });
+  const comboSvg = readFileSync(resolve(DEV_ROOT, combo.value.svgSrc), 'utf8');
+  // 两个轴的名字都要在：右侧轴是第二维度的落地标志。
+  if (!comboSvg.includes('CPU 使用率')) throw new Error('组合图应当有左轴说明');
+  if (!comboSvg.includes('端口数（个）')) throw new Error('组合图应当有右侧数值轴');
+  console.log('  组合图：两个数值轴都在（' + (comboSvg.match(/<path/g) ?? []).length + ' 个 path）');
+
+  // 阈值线：值超出数据范围时，轴要撑开把它容纳进去（否则 echarts 直接不画）。
+  const threshold = await call('oks_chart', {
+    spec: { kind: 'column', x: 'm', value: 'cpu', valueLabel: 'CPU 使用率', unit: '%', marks: [{ value: 40, label: '基线 40%' }, { value: 55, label: '上限 55%' }] },
+    data: comboRows,
+    name: 'probe_marks',
+  });
+  const marksSvg = readFileSync(resolve(DEV_ROOT, threshold.value.svgSrc), 'utf8');
+  if (!marksSvg.includes('stroke-dasharray')) throw new Error('阈值线应当是虚线');
+  if (!marksSvg.includes('基线 40%') || !marksSvg.includes('上限 55%')) {
+    throw new Error('两条阈值线都应当画出来（超出数据范围的那条靠撑开的轴容纳）');
+  }
+  const dashedCount = (marksSvg.match(/stroke-dasharray/g) ?? []).length;
+  if (dashedCount < 2) throw new Error(`两条阈值线应当在图里，只找到 ${dashedCount} 条`);
+  console.log('  阈值线：' + dashedCount + ' 条虚线，标签都在');
+
+  // 轴名里的单位不该拼两遍：agent 常把单位写进 valueLabel，同时又给 unit（真机反馈）。
+  const dupUnit = await call('oks_chart', {
+    spec: { kind: 'column', x: 'm', value: 'cpu', valueLabel: 'CPU 使用率 (%)', unit: '%' },
+    data: comboRows,
+    name: 'probe_unit_once',
+  });
+  const dupSvg = readFileSync(resolve(DEV_ROOT, dupUnit.value.svgSrc), 'utf8');
+  if (!dupSvg.includes('CPU 使用率 (%)')) throw new Error('轴名应当保留 valueLabel');
+  if (dupSvg.includes('(%)（%）') || dupSvg.includes('(%)(%)')) {
+    throw new Error('valueLabel 里已带单位时不该再拼一次');
+  }
+  // 第二个度量同理：它的轴名走的也是同一条规则。
+  const secondUnit = await call('oks_chart', {
+    spec: { kind: 'column', x: 'm', value: 'cpu', second: { value: 'ports', label: '端口数 (个)', unit: '个' } },
+    data: comboRows,
+    name: 'probe_unit_second',
+  });
+  const secondSvg = readFileSync(resolve(DEV_ROOT, secondUnit.value.svgSrc), 'utf8');
+  if (secondSvg.includes('(个)（个）') || secondSvg.includes('(个)(个)')) {
+    throw new Error('第二个度量的轴名也不该重复单位');
+  }
+  console.log('  轴名去重：valueLabel 带单位时不再重复');
+
+  // 纵向参考线：画在类别轴上。
+  const vertical = await call('oks_chart', {
+    spec: { kind: 'column', x: 'm', value: 'cpu', marks: [{ value: '3月', label: '变更窗口', axis: 'x' }] },
+    data: comboRows,
+    name: 'probe_marks_x',
+  });
+  const vertSvg = readFileSync(resolve(DEV_ROOT, vertical.value.svgSrc), 'utf8');
+  if (!vertSvg.includes('变更窗口')) throw new Error('纵向参考线的标签应当画出来');
+  console.log('  纵向参考线：标签在');
+
   // 通用表达开关：排序与配色。
   const styled = await call('oks_chart', {
     spec: { kind: 'bar', x: 'site', value: 'n', style: { sort: 'desc', labels: true, colors: ['#8a6ad0'] } },
@@ -1534,7 +1598,6 @@ console.log('=== oks_chart（服务端出图）===');
     ['列不存在', { spec: { kind: 'bar', x: 'nope', value: 'nope2' }, data: [{ a: 1 }] }],
     ['bar 缺 value', { spec: { kind: 'bar', x: 'label' }, data: [{ label: 'A' }] }],
     ['line 缺 xType', { spec: { kind: 'line', x: 'label', value: 'value' }, data: [{ label: 'A', value: 1 }] }],
-    ['column 缺 series', { spec: { kind: 'column', x: 'label', value: 'value' }, data: [{ label: 'A', value: 1 }] }],
     ['pie 缺 value', { spec: { kind: 'pie', x: 'label' }, data: [{ label: 'A' }] }],
     ['area 缺 xType', { spec: { kind: 'area', x: 'label', value: 'value' }, data: [{ label: 1, value: 1 }] }],
     ['layout 越界', { spec: { kind: 'bar', x: 'label', value: 'value', layout: { labelFont: 4 } }, data: [{ label: 'A', value: 1 }] }],
@@ -1547,6 +1610,13 @@ console.log('=== oks_chart（服务端出图）===');
     ['style.sort 非法', { spec: { kind: 'bar', x: 'label', value: 'value', style: { sort: 'nope' } }, data: [{ label: 'A', value: 1 }] }],
     ['style.colors 非法', { spec: { kind: 'bar', x: 'label', value: 'value', style: { colors: ['red'] } }, data: [{ label: 'A', value: 1 }] }],
     ['scatter 缺 value', { spec: { kind: 'scatter', x: 'a' }, data: [{ a: 1 }] }],
+    ['second 填给 pie', { spec: { kind: 'pie', x: 'label', value: 'value', second: { value: 'n' } }, data: [{ label: 'A', value: 1, n: 2 }] }],
+    ['second 缺 value', { spec: { kind: 'column', x: 'label', series: 's', value: 'value', second: { label: 'x' } }, data: [{ label: 'A', s: 'p', value: 1 }] }],
+    ['second.kind 非 line', { spec: { kind: 'column', x: 'label', series: 's', value: 'value', second: { value: 'n', kind: 'bar' } }, data: [{ label: 'A', s: 'p', value: 1, n: 2 }] }],
+    ['marks 填给 scatter', { spec: { kind: 'scatter', x: 'a', value: 'b', marks: [{ value: 1 }] }, data: [{ a: 1, b: 2 }] }],
+    ['marks.axis 非法', { spec: { kind: 'bar', x: 'label', value: 'value', marks: [{ value: 1, axis: 'z' }] }, data: [{ label: 'A', value: 1 }] }],
+    ['marks.value 类型非法', { spec: { kind: 'bar', x: 'label', value: 'value', marks: [{ value: true }] }, data: [{ label: 'A', value: 1 }] }],
+    ['second 指向不存在的列', { spec: { kind: 'column', x: 'label', series: 's', value: 'value', second: { value: 'nope' } }, data: [{ label: 'A', s: 'p', value: 1 }] }],
   ];
   for (const [label, args] of failures) {
     let rejected = false;

@@ -8,12 +8,13 @@
  */
 import * as echarts from 'echarts/core';
 import { BarChart, LineChart, PieChart, ScatterChart } from 'echarts/charts';
-import { GraphicComponent, GridComponent, LegendComponent, TitleComponent, TooltipComponent } from 'echarts/components';
+import { GraphicComponent, GridComponent, LegendComponent, MarkLineComponent, TitleComponent, TooltipComponent } from 'echarts/components';
 import { SVGRenderer } from 'echarts/renderers';
 import type { EChartsCoreOption } from 'echarts/core';
 
 /** 只注册用得到的图表与组件——全量 echarts 约 1 MB，按需导入能显著小于它。
- *  graphic 是画来源标识用的：不注册它 echarts 会警告并静默丢掉那段文字。 */
+ *  这里漏注册任何一项都不报错：echarts 只往 stderr 打一行警告，然后静默丢掉那部分图形
+ *  （graphic 丢了来源标识、markLine 丢了参考线、ScatterChart 丢了整张图）。 */
 echarts.use([
   BarChart,
   LineChart,
@@ -22,6 +23,7 @@ echarts.use([
   GraphicComponent,
   GridComponent,
   LegendComponent,
+  MarkLineComponent,
   TitleComponent,
   TooltipComponent,
   SVGRenderer,

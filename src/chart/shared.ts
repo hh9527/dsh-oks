@@ -68,6 +68,29 @@ export const needsSlantedTicks = (categories: readonly string[]): boolean => {
   return widest > slot * 0.8;
 };
 
+/** 第二个度量：让同一张图里再画一条线，并给它一个独立的右侧数值轴。
+ *  它的存在意义就是"两个量纲差很远的东西放一起看"（如 CPU 百分比与端口数计数）。 */
+export interface SecondMetric {
+  /** 第二个度量所在的列名。 */
+  value: string;
+  /** 第二个度量画成什么。目前只开折线——柱与柱并排会混淆"哪个是主轴"。 */
+  kind?: 'line';
+  /** 右侧数值轴的说明；不填时用 value 的列名。 */
+  label?: string;
+  /** 第二个度量的单位。 */
+  unit?: string;
+}
+
+/** 一条参考线 / 阈值线。只画线加标签，不做区域填充。 */
+export interface MarkLine {
+  /** 线的位置：数值轴上是数值，类别轴上是类别名。 */
+  value: number | string;
+  /** 线上的标签。 */
+  label?: string;
+  /** 画在哪根轴上：`y` 是数值轴（阈值，默认），`x` 是类别轴（某个时间点）。 */
+  axis?: 'y' | 'x';
+}
+
 /** agent 可以覆盖的表达开关（都放在 spec 里，全部可选）。
  *  它们管"这份数据怎么表达"：排序、数值标签、配色。不填就走默认。 */
 export interface StyleOverrides {
@@ -127,8 +150,11 @@ export const resolveLayout = (options: {
   tickCount: options.overrides.tickCount ?? DEFAULT_TICK_COUNT,
 });
 
-/** 数值轴的说明：valueLabel 与 unit 合成，已含单位就不再重复。 */
+/** 数值轴的说明：valueLabel 与 unit 合成。
+ *  label 里已经带了单位就不再重复——agent 常把单位写进 label（"CPU 使用率 (%)"），
+ *  再给一次 unit 就会拼成"CPU 使用率 (%)（%）"。 */
 export const valueAxisLabel = (valueLabel: string | null, unit: string | null): string | null => {
   if (valueLabel === null) return unit === null ? null : `单位：${unit}`;
-  return unit === null ? valueLabel : `${valueLabel}（${unit}）`;
+  if (unit === null || valueLabel.includes(unit)) return valueLabel;
+  return `${valueLabel}（${unit}）`;
 };

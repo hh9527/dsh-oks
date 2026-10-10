@@ -5,7 +5,7 @@ import { runJaq } from './jaq.ts';
 import { buildOption, CHART_WIDTH } from './chart/option.ts';
 import { renderEchartsSvg } from './chart/echarts.ts';
 import { buildFigureHtml, renderReportHtml } from './chart/report.ts';
-import type { LayoutOverrides, StyleOverrides } from './chart/shared.ts';
+import type { LayoutOverrides, MarkLine, SecondMetric, StyleOverrides } from './chart/shared.ts';
 import { OBJECT_OUTPUT, renderChart, renderCheck, renderJaq, renderJson, renderQuery, renderValue, withoutQueries } from './response.ts';
 import type { Row } from './response.ts';
 import { REFERENCE_KINDS, referencesOf, renderReferences, renderSearch, searchIndex } from './retrieval.ts';
@@ -104,9 +104,7 @@ const resolveChartRows = (
     columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
     kind = 'agent';
   }
-  const referenced = [spec.x, spec.value, spec.series].filter((name): name is string => name !== null);
-  // 空数据没有列可校验，也不该因此报错：空结果照样出一张空图。
-  const missing = rows.length === 0 ? [] : referenced.filter((name) => !columns.includes(name));
+  const missing = missingColumns(spec, columns, rows.length);
   if (missing.length > 0) {
     return { error: `这些列不在数据里：${missing.join(', ')}。可用的列：${columns.join(', ') || '(没有列)'}` };
   }
@@ -196,6 +194,10 @@ interface ChartSpec {
   stack: 'total' | 'percent' | null;
   /** 图元专属：scatter 的第三维（点大小）。 */
   size: string | null;
+  /** 第二个度量：同一张图里再画一条线，带独立的右侧数值轴。 */
+  second: SecondMetric | null;
+  /** 参考线 / 阈值线。 */
+  marks: MarkLine[];
   /** 通用表达开关：排序、数值标签、配色。 */
   style: StyleOverrides;
   layout: LayoutOverrides;
@@ -267,6 +269,77 @@ const CHART_SORTS = ['none', 'desc', 'asc'] as const;
 const CHART_DATA_MAX_ROWS = 1000;
 const CHART_DATA_MAX_BYTES = 256 * 1024;
 
+/** 规格里引用的列（含图元专属字段指向的列）。
+ *  oks_chart 与报告里的 chart 块共用这一份，否则会出现"工具接受、报告里报错"的半边差异。 */
+const referencedColumns = (spec: ChartSpec): string[] =>
+  [spec.x, spec.value, spec.series, spec.size, spec.second?.value ?? null]
+    .filter((name): name is string => name !== null);
+
+/** 数据里缺了哪些被引用的列。空数据没有列可校验，也不该因此报错——空结果照样出一张空图。 */
+const missingColumns = (spec: ChartSpec, columns: readonly string[], rowCount: number): string[] =>
+  rowCount === 0 ? [] : referencedColumns(spec).filter((name) => !columns.includes(name));
+
+/** 解析第二个度量。它就是"同一张图里的另一条线 + 一个独立的右侧数值轴"，
+ *  存在的意义是两个量纲差很远的东西能放一起对照。目前只开折线。 */
+const parseSecond = (raw: unknown, kind: string): { second: SecondMetric | null } | { error: string } => {
+  if (raw === undefined || raw === null) return { second: null };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { error: 'spec.second 必须是对象：value 必填（第二个度量的列名），可选 kind / label / unit' };
+  }
+  if (kind === 'pie' || kind === 'scatter') {
+    return { error: `spec.second 只对 bar / column / line / area 有意义（${kind} 用不上它）` };
+  }
+  const record = raw as Record<string, unknown>;
+  if (record.kind !== undefined && record.kind !== 'line') {
+    return { error: `spec.second.kind 目前只支持 "line"，收到 ${JSON.stringify(record.kind)}` };
+  }
+  if (typeof record.value !== 'string' || record.value.length === 0) {
+    return { error: 'spec.second 需要 value（第二个度量的列名）' };
+  }
+  const unknown = Object.keys(record).filter((key) => !['value', 'kind', 'label', 'unit'].includes(key));
+  if (unknown.length > 0) return { error: `spec.second 里不认识的项：${unknown.join(', ')}` };
+  return {
+    second: {
+      value: record.value,
+      kind: 'line',
+      label: typeof record.label === 'string' && record.label.length > 0 ? record.label : undefined,
+      unit: typeof record.unit === 'string' && record.unit.length > 0 ? record.unit : undefined,
+    },
+  };
+};
+
+/** 解析参考线 / 阈值线：数值轴上的阈值（axis 默认 y），或类别轴上的一次事件（axis: "x"）。 */
+const parseMarks = (raw: unknown, kind: string): { marks: MarkLine[] } | { error: string } => {
+  if (raw === undefined || raw === null) return { marks: [] };
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > 12) {
+    return { error: 'spec.marks 必须是 1–12 条参考线的数组' };
+  }
+  if (kind === 'pie' || kind === 'scatter') {
+    return { error: `spec.marks 只对 bar / column / line / area 有意义（${kind} 用不上它）` };
+  }
+  const marks: MarkLine[] = [];
+  for (const item of raw) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      return { error: 'spec.marks 的每一项都要是对象：value、可选的 label 与 axis' };
+    }
+    const record = item as Record<string, unknown>;
+    if (typeof record.value !== 'number' && typeof record.value !== 'string') {
+      return { error: `spec.marks 的 value 必须是数字或类别名，收到 ${JSON.stringify(record.value)}` };
+    }
+    if (record.axis !== undefined && record.axis !== 'x' && record.axis !== 'y') {
+      return { error: `spec.marks 的 axis 只能是 x 或 y，收到 ${JSON.stringify(record.axis)}` };
+    }
+    const unknown = Object.keys(record).filter((key) => !['value', 'label', 'axis'].includes(key));
+    if (unknown.length > 0) return { error: `spec.marks 的项里不认识的字段：${unknown.join(', ')}` };
+    marks.push({
+      value: record.value,
+      label: typeof record.label === 'string' && record.label.length > 0 ? record.label : undefined,
+      axis: record.axis === 'x' ? 'x' : 'y',
+    });
+  }
+  return { marks };
+};
+
 /** 解析并校验通用表达开关：每一项都可选，给了就必须在合理范围内。
  *  越界的值画出来是废图，不如直接报错让 agent 重来。 */
 const parseStyle = (raw: unknown): { style: StyleOverrides } | { error: string } => {
@@ -330,6 +403,8 @@ const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: string } =
     unit: text('unit'),
     stack: null,
     size: text('size'),
+    second: null,
+    marks: [],
     style: {},
     layout: {},
   };
@@ -339,6 +414,12 @@ const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: string } =
   const parsedStyle = parseStyle(record.style);
   if ('error' in parsedStyle) return { error: parsedStyle.error };
   spec.style = parsedStyle.style;
+  const parsedSecond = parseSecond(record.second, spec.kind);
+  if ('error' in parsedSecond) return { error: parsedSecond.error };
+  spec.second = parsedSecond.second;
+  const parsedMarks = parseMarks(record.marks, spec.kind);
+  if ('error' in parsedMarks) return { error: parsedMarks.error };
+  spec.marks = parsedMarks.marks;
   // 图元专属字段：填给不支持的图元时直接报错，不静默忽略——agent 需要知道这个开关在这张图上没意义。
   if (record.stack !== undefined && record.stack !== null) {
     if (!(CHART_STACKS as readonly unknown[]).includes(record.stack)) {
@@ -359,11 +440,9 @@ const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: string } =
     return { error: 'bar 需要 spec.x（类别列）与 spec.value（数值列）' };
   }
   if (spec.kind === 'column') {
+    // series 可选：给了就是分组柱，不给就是每类一根柱子——后者是"单柱 + 一条线"的常见组合。
     if (spec.x === '' || spec.value === '') {
       return { error: 'column 需要 spec.x（类别列）与 spec.value（数值列）' };
-    }
-    if (spec.series === null) {
-      return { error: 'column 需要 spec.series（分组列）：每个类别里按它分成相邻的几根柱子' };
     }
   }
   if (spec.kind === 'pie') {
@@ -983,19 +1062,45 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         properties: {
           spec: {
             type: 'object',
-            description: 'Figure specification. kind is required: bar needs x (the category column) and value; column needs x, series (the grouping column: one bar per distinct value inside each category) and value — it draws grouped vertical bars, or stacked ones when stack is given; line needs x, value and xType (number or time), plus an optional series for several lines; area is a line with the region below it filled, and takes the same fields as line (stack works here too); pie needs x (the slice label column) and value, and only positive values are drawn; scatter needs x and value (two numeric columns) and takes an optional size column for bubble charts. title / xLabel / valueLabel / unit are display text you supply.',
+            description: 'Figure specification. kind is required: bar needs x (the category column) and value; column needs x and value — one bar per category, or grouped bars when series is given, or stacked ones when stack is given; line needs x, value and xType (number or time), plus an optional series for several lines; area is a line with the region below it filled, and takes the same fields as line (stack works here too); pie needs x (the slice label column) and value, and only positive values are drawn; scatter needs x and value (two numeric columns) and takes an optional size column for bubble charts. title / xLabel / valueLabel / unit are display text you supply.',
             properties: {
               kind: { type: 'string', enum: [...CHART_KINDS], description: 'Which figure to draw.' },
               title: { type: 'string', description: 'Title shown above the figure.' },
               x: { type: 'string', description: 'bar / column: the category column. line / area: the horizontal-axis column. pie: the slice label column. scatter: the numeric column drawn on the horizontal axis.' },
               value: { type: 'string', description: 'The numeric column drawn as bar length, column height, line height, area height, slice size or the vertical position of a scatter point.' },
-              series: { type: 'string', description: 'line / area: one line (or area) per distinct value. column: required — one bar per distinct value, placed side by side inside each category (stacked when stack is given).' },
+              series: { type: 'string', description: 'line / area: one line (or area) per distinct value. column: optional — each distinct value becomes its own bar inside every category (stacked when stack is given); omit it for a single bar per category.' },
               xType: { type: 'string', enum: ['number', 'time'], description: 'line only: how to read the x column. time accepts RFC 3339 text or epoch milliseconds.' },
               xLabel: { type: 'string', description: 'Axis label for x (display text).' },
               valueLabel: { type: 'string', description: 'Axis label for the value (display text).' },
               unit: { type: 'string', description: 'Unit shown with the values (display text).' },
               stack: { type: 'string', enum: [...CHART_STACKS], description: 'column / area only: "total" stacks the series on top of each other (so the total reads off the top), "percent" normalises each category to 100% so the mix is comparable. Omit to place them side by side (column) or overlay them (area).' },
               size: { type: 'string', description: 'scatter only: a numeric column mapped to the marker size, turning the figure into a bubble chart.' },
+              second: {
+                type: 'object',
+                description: 'A second metric drawn as a line on its own right-hand value axis. Use it when the two numbers differ by orders of magnitude (CPU percent vs port count) and their relationship is the point. bar / column / line / area only.',
+                properties: {
+                  value: { type: 'string', description: 'Column holding the second metric.' },
+                  kind: { type: 'string', enum: ['line'], description: 'How to draw the second metric. Only "line" for now.' },
+                  label: { type: 'string', description: 'Label for the right-hand axis (display text).' },
+                  unit: { type: 'string', description: 'Unit for the second metric (display text).' },
+                },
+                required: ['value'],
+                additionalProperties: false,
+              },
+              marks: {
+                type: 'array',
+                description: 'Reference lines drawn over the figure: thresholds, baselines, or a marked point in time. The value axis grows to fit them, so a threshold above the data still shows. bar / column / line / area only.',
+                items: {
+                  type: 'object',
+                  properties: {
+                    value: { oneOf: [{ type: 'number' }, { type: 'string' }], description: 'Where the line sits: a number on the value axis, or a category name on the category axis.' },
+                    label: { type: 'string', description: 'Text shown on the line.' },
+                    axis: { type: 'string', enum: ['x', 'y'], description: 'Which axis it is drawn on. Default "y" (a threshold); "x" marks a category.' },
+                  },
+                  required: ['value'],
+                  additionalProperties: false,
+                },
+              },
               style: {
                 type: 'object',
                 description: 'Optional expression overrides that apply to every figure kind. All fields optional.',
@@ -1062,10 +1167,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
           source = 'agent';
         }
-        const referenced = [spec.x, spec.value, spec.series]
-          .filter((name): name is string => name !== null);
-        // 空数据没有列可校验，也不该因此报错：空结果照样出一张空图。
-        const missing = rows.length === 0 ? [] : referenced.filter((name) => !columns.includes(name));
+        const missing = missingColumns(spec, columns, rows.length);
         if (missing.length > 0) {
           throw new Error(`这些列不在数据里：${missing.join(', ')}。可用的列：${columns.join(', ') || '(没有列)'}`);
         }

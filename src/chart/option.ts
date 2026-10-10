@@ -17,7 +17,9 @@ import {
   toNumber,
   valueAxisLabel,
   type LayoutOverrides,
+  type MarkLine,
   type Row,
+  type SecondMetric,
   type StyleOverrides,
 } from './shared.ts';
 import type { EChartsCoreOption } from 'echarts/core';
@@ -49,15 +51,18 @@ export interface OptionInput {
   stack?: 'total' | 'percent' | null;
   /** 图元专属：scatter 的第三维——把这一列的数值映射成点的大小。 */
   size?: string | null;
+  /** 第二个度量：同一张图里再画一条线，带独立的右侧数值轴。 */
+  second?: SecondMetric | null;
+  /** 参考线 / 阈值线。 */
+  marks?: readonly MarkLine[];
   /** 通用表达开关。 */
   style?: StyleOverrides;
   layout?: LayoutOverrides;
 }
 
-const axisName = (label: string | null, unit: string | null): string | undefined => {
-  if (label === null) return unit === null ? undefined : unit;
-  return unit === null ? label : `${label}（${unit}）`;
-};
+/** 轴名与 `valueAxisLabel` 是同一件事，只是这里的"没有名字"要还原成 echarts 认的 `undefined`。 */
+const axisName = (label: string | null, unit: string | null): string | undefined =>
+  valueAxisLabel(label, unit) ?? undefined;
 
 /** 把结果行按 x 归类，再按 series 分组；返回类别顺序与每个序列的取值。
  *  类别顺序默认沿用数据——数据本身常带语义顺序（如告警等级的严重度）；有 style.sort 时按合计重排。 */
@@ -254,6 +259,13 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
     axisLine: { lineStyle: { color: '#d8e0ea' } },
     axisTick: { show: false },
   };
+  // 参考线的值要能落在轴上：echarts 对超出轴范围的 markLine 直接不画，而"线不见了"比
+  // "线画歪了"更难发现——阈值本来就是用来对照的，画不出来等于没给。
+  const markValues = (spec.marks ?? [])
+    .filter((mark) => mark.axis !== 'x' && typeof mark.value === 'number')
+    .map((mark) => mark.value as number);
+  const markMax = markValues.length === 0 ? null : Math.max(...markValues);
+
   const measureAxis = {
     type: 'value' as const,
     name: axisName(spec.valueLabel, spec.unit),
@@ -265,6 +277,10 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
       ? { fontSize: labelFont, color: '#1c2b3a', formatter: '{value}%' }
       : { fontSize: labelFont, color: '#1c2b3a' },
     ...(stack === 'percent' ? { max: 100 } : {}),
+    // 让上界至少盖住参考线。echarts 的 max 接受函数，入参是它自己算出的边界。
+    ...(stack !== 'percent' && markMax !== null
+      ? { max: (bounds: { max: number }) => Math.max(bounds.max, markMax) }
+      : {}),
     // echarts 的 splitNumber 是"分割段数"，档数减一。
     splitNumber: Math.max(1, layout.tickCount - 1),
     axisLine: { show: false },
@@ -323,7 +339,58 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
   const xAxis = horizontal ? measureAxis : (spec.kind === 'line' || spec.kind === 'area') && spec.xType === 'time'
     ? { ...categoryAxis, type: 'time' as const, data: undefined }
     : categoryAxis;
-  const yAxis = horizontal ? categoryAxis : measureAxis;
+
+  // 第二个度量：独立的右侧数值轴。它存在的前提就是"两个量纲差很远"，所以轴必须分开。
+  // 取值按类别取第一行——有 series 时，第二维度不该随分组变化。
+  const second = spec.second ?? null;
+  const firstRowByCategory = new Map<string, Row>();
+  for (const row of rows) {
+    const key = toLabel(row[spec.x]);
+    if (!firstRowByCategory.has(key)) firstRowByCategory.set(key, row);
+  }
+  const secondName = second === null ? null : axisName(second.label ?? second.value, second.unit ?? null) ?? second.value;
+  const secondAxis = second === null || secondName === null ? null : {
+    ...measureAxis,
+    name: secondName,
+    position: 'right' as const,
+    splitLine: { show: false },
+  };
+  const secondSeries = second === null || secondName === null ? null : {
+    type: 'line' as const,
+    name: secondName,
+    yAxisIndex: 1,
+    smooth: false,
+    symbol: 'circle',
+    symbolSize: 6,
+    connectNulls: false,
+    lineStyle: { width: 2, color: pick(seriesNames.length) },
+    itemStyle: { color: pick(seriesNames.length) },
+    // 时间轴时同样要以 [时间, 值] 给出，echarts 才会按时间排布。
+    data: spec.xType === 'time' && (spec.kind === 'line' || spec.kind === 'area')
+      ? categories
+        .map((category) => [category, toNumber(firstRowByCategory.get(category)?.[second.value])] as [string, number | null])
+        .filter((pair) => pair[1] !== null)
+      : categories.map((category) => toNumber(firstRowByCategory.get(category)?.[second.value])),
+  };
+
+  // 参考线 / 阈值线：挂在主轴的第一条 series 上。只画线加标签，不做区域填充。
+  const markLine = spec.marks === undefined || spec.marks.length === 0 ? undefined : {
+    silent: true,
+    symbol: 'none' as const,
+    lineStyle: { color: '#c0567a', type: 'dashed' as const, width: 1.5 },
+    label: { fontSize: labelFont, color: '#c0567a' },
+    data: spec.marks.map((mark) => ({
+      [mark.axis === 'x' ? 'xAxis' : 'yAxis']: mark.value,
+      label: { formatter: mark.label ?? String(mark.value) },
+    })),
+  };
+
+  const allSeries: Record<string, unknown>[] = secondSeries === null ? [...series] : [...series, secondSeries];
+  if (markLine !== undefined && allSeries.length > 0) allSeries[0].markLine = markLine;
+
+  const yAxis = secondAxis === null
+    ? (horizontal ? categoryAxis : measureAxis)
+    : [horizontal ? categoryAxis : measureAxis, secondAxis];
 
   return {
     height,
@@ -331,12 +398,14 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
       title,
       legend,
       graphic: footnote(spec.sourceLabel, labelFont),
-      grid,
+      // 右侧多了数值轴，留出位置。
+      grid: secondAxis === null ? grid : { ...grid, right: 56 },
       xAxis,
       yAxis,
       // 时间轴时数据要以 [时间, 值] 形式给出，echarts 才会按时间排布。
       series: (spec.kind === 'line' || spec.kind === 'area') && spec.xType === 'time'
-        ? series.map((item, index) => {
+        ? allSeries.map((item, index) => {
+          if (index >= series.length) return item;
           const bucket = points.get(seriesNames[index]) ?? new Map<string, number>();
           const rows2 = rows
             .filter((row) => (spec.series === null ? true : toLabel(row[spec.series]) === seriesNames[index]))
@@ -344,7 +413,7 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
             .filter((pair) => pair[1] !== null);
           return { ...item, data: rows2 };
         })
-        : series,
+        : allSeries,
     },
   };
 };
