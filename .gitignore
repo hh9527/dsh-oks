@@ -3,8 +3,5 @@ node_modules/
 .pnpm-store/
 dist/
 
-# typst 包缓存（构建时由 typst binary 生成）
-.typst-cache/
-
 # 运行产物：查询结果、图、报告都落在这里，不进版本库
 .data/

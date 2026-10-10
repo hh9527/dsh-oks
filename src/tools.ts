@@ -2,11 +2,9 @@ import { applyOps, encode, parseMoment, resolveZone } from './time.ts';
 import type { ContextTimeZone, TimeState } from './time.ts';
 import { capLine } from './text.ts';
 import { runJaq } from './jaq.ts';
-import { renderAreaTypst } from './chart/area.ts';
-import { renderBarsTypst } from './chart/bars.ts';
-import { renderLineTypst } from './chart/line.ts';
-import { renderPieTypst } from './chart/pie.ts';
-import { renderTypstSvg } from './chart/typst.ts';
+import { buildOption, CHART_WIDTH } from './chart/option.ts';
+import { renderEchartsSvg } from './chart/echarts.ts';
+import { buildFigureHtml, renderReportHtml } from './chart/report.ts';
 import type { LayoutOverrides } from './chart/shared.ts';
 import { OBJECT_OUTPUT, renderChart, renderCheck, renderJaq, renderJson, renderQuery, renderValue, withoutQueries } from './response.ts';
 import type { Row } from './response.ts';
@@ -21,7 +19,7 @@ import { isArray } from './host.ts';
 import { errorText } from './host.ts';
 import type { DiagnosticEntry, LogFn, ServiceResponse, ToolDefinition, ToolExec, TraceStep } from './host.ts';
 import { intentKey } from './key.ts';
-import { nameProblem, readResult, saveChartSvg, saveResult } from './results.ts';
+import { nameProblem, readResult, saveArtifact, saveResult } from './results.ts';
 import type { ColumnInfo } from './results.ts';
 
 /** oks_info 的入参。 */
@@ -69,6 +67,106 @@ const limitOf = (intent: unknown): number | null => {
   if (intent === null || typeof intent !== 'object' || Array.isArray(intent)) return null;
   const limit = (intent as Record<string, unknown>).limit;
   return typeof limit === 'number' && Number.isInteger(limit) ? limit : null;
+};
+
+/** oks_report 的入参：报告素材 + 文件名前缀 + 可选备注。 */
+interface ReportArgs {
+  spec?: unknown;
+  name?: unknown;
+  note?: unknown;
+}
+
+/** 取一张图的数据：src 与 data 恰好提供一个，并校验规格要用的列都在。
+ *  oks_chart 与 oks_report 共用这一套，保证两处的口径一致。 */
+const resolveChartRows = (
+  source: { src?: unknown; data?: unknown },
+  root: string,
+  spec: ChartSpec,
+): { rows: Array<Record<string, unknown>>; columns: string[]; source: 'query' | 'agent' } | { error: string } => {
+  const hasSrc = typeof source.src === 'string' && source.src.length > 0;
+  const hasData = source.data !== undefined && source.data !== null;
+  if (hasSrc === hasData) {
+    return { error: '需要 src 与 data 恰好提供一个：src 引用查询结果文件，data 是你要画的数据本身。' };
+  }
+  let rows: Array<Record<string, unknown>>;
+  let columns: string[];
+  let kind: 'query' | 'agent';
+  if (hasSrc) {
+    // src 走与 oks_jaq_result 同一套读取与路径校验：只认工作区 .data/ 里的结果文件。
+    const file = readResult(root, source.src);
+    rows = file.rows;
+    columns = file.columns.map((column) => column.name);
+    kind = 'query';
+  } else {
+    const parsed = parseChartData(source.data);
+    if ('error' in parsed) return { error: parsed.error };
+    rows = parsed.rows;
+    columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+    kind = 'agent';
+  }
+  const referenced = [spec.x, spec.value, spec.series].filter((name): name is string => name !== null);
+  // 空数据没有列可校验，也不该因此报错：空结果照样出一张空图。
+  const missing = rows.length === 0 ? [] : referenced.filter((name) => !columns.includes(name));
+  if (missing.length > 0) {
+    return { error: `这些列不在数据里：${missing.join(', ')}。可用的列：${columns.join(', ') || '(没有列)'}` };
+  }
+  return { rows, columns, source: kind };
+};
+
+/** 解析并校验报告素材。图的规格与取数都复用 oks_chart 那一套。 */
+/** 报告的素材：标题、副标题与正文 markdown。章节（`##`）与图的落点（```chart 块）都在正文里，
+ *  所以不需要另外的结构——报告只认这一种写法。 */
+interface ReportSpec {
+  title: string;
+  subtitle: string | null;
+  markdown: string;
+}
+
+const parseReportSpec = (raw: unknown): { spec: ReportSpec } | { error: string } => {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return { error: 'oks_report 需要 spec（对象）：title 与 markdown 必填' };
+  }
+  const record = raw as Record<string, unknown>;
+  const title = record.title;
+  if (typeof title !== 'string' || title.trim() === '') return { error: 'spec.title 必填，且不能是空字符串' };
+  const markdown = record.markdown;
+  if (typeof markdown !== 'string' || markdown.trim() === '') {
+    return { error: 'spec.markdown 必填：用 ## 写章节，用 ```chart 块放图' };
+  }
+  const unknown = Object.keys(record).filter((key) => !['title', 'subtitle', 'markdown'].includes(key));
+  if (unknown.length > 0) return { error: `spec 里不认识的项：${unknown.join(', ')}` };
+  return {
+    spec: {
+      title,
+      subtitle: record.subtitle === undefined || record.subtitle === null ? null : String(record.subtitle),
+      markdown,
+    },
+  };
+};
+
+/** 画报告里的一张图：解析规格、取数、列校验、渲染成内联 SVG。
+ *  与 oks_chart 共用 parseChartSpec / resolveChartRows，所以两处的口径完全一致。 */
+const renderReportFigure = (
+  json: Record<string, unknown>,
+  root: string,
+): { html: string; caption: string | null } | { error: string } => {
+  const parsedChart = parseChartSpec(json);
+  if ('error' in parsedChart) return { error: parsedChart.error };
+  const chartSpec = parsedChart.spec;
+  const resolved = resolveChartRows({ src: json.src, data: json.data }, root, chartSpec);
+  if ('error' in resolved) return { error: resolved.error };
+  if (chartSpec.kind === 'line') {
+    const issue = lineProblem(resolved.rows, chartSpec);
+    if (issue !== null) return { error: issue };
+  }
+  // 来源逐图判定：这张图是从结果文件取数，还是用 agent 自填的行。
+  const sourceLabel = resolved.source === 'query' ? '基于查询结果' : 'agent 自主填写';
+  const { option, height } = buildOption(resolved.rows, { ...chartSpec, sourceLabel });
+  const svg = renderEchartsSvg(option, CHART_WIDTH, height);
+  return {
+    html: buildFigureHtml(svg, null),
+    caption: json.caption === undefined || json.caption === null ? null : String(json.caption),
+  };
 };
 
 /** oks_chart 的入参：图表规格 + 恰好一个数据路径（src 或 data）。 */
@@ -895,27 +993,16 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         }
         // 服务端出图：画成 SVG 落盘，并把「可以原样粘进回答」的那一行交给 agent。
         // 来源标识画进图里——图离开这段对话也要能自证数据来自查询还是 agent 自填。
-        // 五种图元都走 typst（lilaq）：条形（竖条 column / 横条 bar）与折线（line）。
+        // 五种图元都走同一条 echarts 链路：规格 + 结果行 → option → SVG。
         const sourceLabel = source === 'query' ? '基于查询结果' : 'agent 自主填写';
-        const { kind, ...rest } = spec;
-        const layout = spec.layout;
-        const svg = await renderTypstSvg(
-          kind === 'line'
-            ? renderLineTypst(rows, { ...rest, xType: spec.xType, series: spec.series, sourceLabel, layout })
-            : kind === 'area'
-              ? renderAreaTypst(rows, { ...rest, xType: spec.xType, series: spec.series, sourceLabel, layout })
-              : kind === 'pie'
-                ? renderPieTypst(rows, { ...rest, sourceLabel, layout })
-                : renderBarsTypst(
-                  rows,
-                  { ...rest, series: spec.series, sourceLabel, layout },
-                  kind === 'column' ? 'vertical' : 'horizontal',
-                ),
-        );
-        const saved = saveChartSvg({
+        const { option, height } = buildOption(rows, { ...spec, sourceLabel });
+        const svg = renderEchartsSvg(option, CHART_WIDTH, height);
+        const saved = saveArtifact({
           root: entry.settings.workspaceRoot,
           name: typeof args?.name === 'string' && args.name.length > 0 ? args.name : 'chart',
-          svg,
+          content: svg,
+          extension: '.svg',
+          label: '图表名',
         });
         const alt = (spec.title ?? (source === 'query' ? '查询结果图' : '数据图')).replace(/[[\]]/g, '');
         const markdown = `![${alt}](${saved.src})`;
@@ -936,6 +1023,62 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           spec,
           intent,
         };
+      },
+    },
+    {
+      name: 'oks_report',
+      description: 'Assemble a self-contained HTML report from a markdown body. The markdown is parsed with a restricted subset — headings, paragraphs, lists, tables, bold/italic/inline code, links, blockquotes, rules and fenced code blocks — and embedded HTML is escaped rather than interpreted. A ```chart fenced block draws a figure: its body is a JSON object shaped like the spec of oks_chart, plus src or data and an optional caption. Figures are inlined as SVG, so the single file opens anywhere with no external assets. Hand the result to the user with the present tool — an HTML report does not render in the reply body itself.',
+      parameters: {
+        type: 'object',
+        properties: {
+          spec: {
+            type: 'object',
+            description: 'The report material.',
+            properties: {
+              title: { type: 'string', description: 'Report title.' },
+              subtitle: { type: 'string', description: 'Optional subtitle — usually the time window the report covers.' },
+              markdown: {
+                type: 'string',
+                description: 'The report body in markdown. Use ## for sections (they become the table of contents). Where a figure should appear, put a fenced ```chart block whose body is a JSON object such as {"kind":"bar","title":"…","x":"col","value":"col","src":".data/….json","caption":"…"} — give exactly one of src and data, and the named columns must exist in that data. Other fenced blocks are rendered as plain code.',
+              },
+            },
+            required: ['title', 'markdown'],
+            additionalProperties: false,
+          },
+          name: { type: 'string', description: 'Optional file-name prefix for the saved HTML; defaults to "report". Same rules as a query batch name.' },
+          note: { type: 'string', description: 'Optional short note carried in the receipt — your own narration, kept apart from the system source label.' },
+        },
+        required: ['spec'],
+        additionalProperties: false,
+      },
+      output: { schema: OBJECT_OUTPUT, render: renderValue },
+      async execute(args: ReportArgs, exec: ToolExec) {
+        const entry = knowledge.ensureWorkspace(exec);
+        const parsed = parseReportSpec(args?.spec);
+        if ('error' in parsed) throw new Error(parsed.error);
+        const note = typeof args?.note === 'string' ? args.note : null;
+        let figureCount = 0;
+        const html = renderReportHtml({
+          title: parsed.spec.title,
+          subtitle: parsed.spec.subtitle,
+          generatedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+          markdown: parsed.spec.markdown,
+          figure: (json) => {
+            const rendered = renderReportFigure(json, entry.settings.workspaceRoot);
+            if ('html' in rendered) figureCount += 1;
+            return rendered;
+          },
+        });
+        const saved = saveArtifact({
+          root: entry.settings.workspaceRoot,
+          name: typeof args?.name === 'string' && args.name.length > 0 ? args.name : 'report',
+          content: html,
+          extension: '.html',
+          label: '报告名',
+        });
+        const markdown = `[${parsed.spec.title}](${saved.src})`;
+        // 来源逐图判定，报告级没有单一来源可报；每张图的标识已经画在图里。
+        return { ok: true, htmlSrc: saved.src, markdown, at: saved.at, note, figureCount };
       },
     },
     {

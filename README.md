@@ -1,6 +1,6 @@
 # dsh-oks
 
-把**某个领域的知识服务（OKS）**接进 DSH，成为七个原生工具 + 三个辅助工具 — 用于在 Harness Web 里
+把**某个领域的知识服务（OKS）**接进 DSH，成为八个原生工具 + 三个辅助工具 — 用于在 Harness Web 里
 **亲手体验**「业务问句 → 实际查询结果」这条链路。查询在**只读**连接上执行；命中的结果写进工作区
 `.data/` 下的结果文件，**默认不进模型上下文**，要用时用 `oks_jaq_result` 在它上面做结构化查询取回。
 
@@ -52,6 +52,7 @@ Node 按 URL 缓存 ESM 模块，所以：
 | `oks_query` | `{intents:{<名>:{intent,key}}}` | 核 key 后**只读执行**：每个成功项写进 `<工作区>/.data/<名>-<key>-<at>.json`，回执只给 `dataSrc`、列信息与行数——**数据行与语句都不进这段对话**（数据按需读回，语句在执行记录与呈现记录里）；失败项按 `key_mismatch` / `rejected` / `query_error` / `save_error` 分别报告 |
 | `oks_jaq_result` | `{src, query}` | 在结果文件上做**结构化查询**：`query` 是作用在**行数组**上的 jaq（与 jq 兼容）表达式——`.[] \| select(.count > 100)`、`.[] \| {name, total}`、`sort_by(.total) \| reverse \| .[0:5]`。表达式决定取回什么，按需投影即可；结果文件的内部结构不进契约。`src` 限定在工作区 `.data/` 内 |
 | `oks_chart` | `{spec, src?, data?, name?, note?}` | 把图画成 **SVG 存进工作区**：`src` 与 `data` **恰好提供一个**——`src` 引用查询结果文件（来源固定标为「基于查询结果」），`data` 是你自填的对象行数组（「agent 自主填写」）。五种图元都用 `x`（类别/横轴列）与 `value`（数值列）作底：**分组柱** `column` 另需 `series`（组内分组），**横条** `bar`、**饼图** `pie`（只取正数）、**多序列折线** `line` 与**面积图** `area`（后两者要 `xType`，可选 `series`）。要看明细表，直接在回答里写 markdown 表格。回执给出一行 `![标题](路径)`，agent 把它放进回答，图就显示在那里 |
+| `oks_report` | `{spec, name?, note?}` | 把叙述与图组织成一份**自足的 HTML 报告**存进工作区：`spec` 给 `title`、可选 `subtitle` 与一段 **markdown 正文**。正文用 `##` 分章节（成为目录），支持列表、表格、加粗、行内代码、引用、分隔线与换行（`<br>` / 行尾两空格 / 行尾 `\`），**除 `<br>` 外的 HTML 会转义**；**图写在它该出现的位置**——一个语言标为 `chart` 的围栏块，块里是 JSON（字段与 `oks_chart` 的 spec 相同，再给 `src` 或 `data` 其一与可选 `caption`，图注编号由系统给）。图以**内联 SVG** 嵌在页面里，单文件可以发给任何人打开。报告**不出现在回答正文**：回执给出一行 markdown 链接，agent 用 `present` 交付，用户点开在右侧栏阅读 |
 | `va_ask` | `{query}` | 咨询本会话的**词汇助手**：给一个说法（词/短语/一句话，中英不限），拿回词表里等价或相近的说法——回答是**一行一个字符串**，每个字符串都是词表原文。助手是插件自己建、自己收的**顶层 agent**（preset `oks`、与调用方同一工作区、共用同一份进程内索引），平时归档，被咨询时临时恢复。它给的是线索，检索口径仍由 `oks_search` / `oks_info` 决定。**整份词表由插件渲染成助手系统提示词里的一个 section**（模板 + 全部词条），助手一个工具都没有。装配**不发任何消息**；每个说法才是一次回合，拿到回答后插件把表面上的节点全部收进一个固定文本的标记，所以助手每次只看到「系统提示词里的词表 + 一个标记 + 当前这个说法」（会话日志保持 append-only，标记节点用 `sourceEventSeqs` 记下遮蔽范围）|
 | `time_now` | `{timeZone?}` | 当前时刻的**各种标准表示**（epoch 毫秒/秒、UTC 文本、RFC 3339、带偏移的本地文本、日期、ISO 周）+ 实际用的时区。服务不读时钟，所以相对时间必须在这里换成绝对边界 |
 | `time_calc` | `{base?, timeZone?, operations?}` | 日历代数：`add`（year/quarter/month/week/day/hour/minute/second）、`floor`/`ceil` 到日历边界（周默认周一起）、`convert` 换时区。日/周保持**本地墙钟**（跨 DST 的一天可能不是 24 小时），月/季/年**钳制**到当月最后一天。区间半开 `[start, end)` |
@@ -223,9 +224,9 @@ pnpm run dev          # 同上，但 watch：改完立刻重建
 pnpm run check        # typecheck + build + 冒烟
 ```
 
-出图走 **typst**：一张图先用 lowering 生成 typst 源码（`src/chart/` 下每种图元一个文件），
-再由 typst 的 WASM 运行时段编译成 SVG。运行时要的静态资产（两份 WASM、中文字体、typst 包缓存）
-由 `scripts/build-assets.mjs` 放进 `dist/`，与产物同级——部署一个插件就是拿到一个 `dist/` 目录。
+出图与报告都走 **echarts**：规格（业务字段与结果行）直接翻成 echarts option，再由它的 SSR 模式
+（`renderer: 'svg'`）产出 SVG。整条链路是纯 JS——`dist/` 里只有一个 `index.mjs`（约 1.6 MB，
+echarts 按需导入后打在里面），没有 WASM、字体或包缓存之类的旁资产。
 
 打出去的包只含运行时需要的：`dist/` + `cordis.patch.yml` + `icon.svg` + `locale/*.json`
 （`files` 就这么列的）——`src/`、`smoke.ts` 这些都不进 npm。
@@ -275,13 +276,12 @@ OKS_WORKSPACE=/path/to/ws node smoke.ts              # 或者显式指定
 
 ## 实现备注
 
-- **产物随 `dist/` 一起部署**：直接注册原始工具定义（`ctx.tools.register()` 只校验 `output.schema`），
-  查询用 Node 自带的 `node:sqlite`。代码全部打进 `dist/index.mjs`，运行时的静态资产与它同级——
-  出图用的 WASM（typst 的编译器与渲染器）、中文字体、typst 包缓存。冒烟最后一段会把整个 `dist/`
-  搬进空目录，并在那里真画一张图，验证这套资产确实自足。
-- **一种渲染路径**：五种图元（`bar` / `column` / `line` / `pie` / `area`）都由 lowering 生成 typst
-  源码再编译成 SVG——条形与折线用 lilaq，饼图用 cetz-plot。这样"回答里的图"与未来的 PDF 报告
-  同源，也不必为每种图型自己写布局与刻度。
+- **产物自足**：直接注册原始工具定义（`ctx.tools.register()` 只校验 `output.schema`），
+  查询用 Node 自带的 `node:sqlite`。代码与 echarts 全部打进 `dist/index.mjs`，没有旁资产——
+  冒烟最后一段会把整个 `dist/` 搬进空目录，并在那里真画一张图，验证这一点。
+- **一种渲染路径**：五种图元（`bar` / `column` / `line` / `pie` / `area`）都由同一份规格渲染——
+  `src/chart/option.ts` 把业务字段与结果行翻成 option，`src/chart/echarts.ts` 用它的 SSR 出 SVG。
+  报告（`src/chart/report.ts`）复用同一条链路：正文 markdown 里的 `chart` 围栏块就地画成内联 SVG。
 - `parameters` 只使用受支持的 JSON Schema 关键字子集：`type` / `oneOf` / `properties` /
   `required` / `additionalProperties` / `items` / `enum` / `const` 加注解关键字；
   批次形状、规模与名字校验，以及 key 的重新计算与比对，都放在 `execute` 里。

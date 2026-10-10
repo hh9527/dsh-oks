@@ -140,25 +140,32 @@ export function saveResult(options: {
   return { dataSrc: `${DATA_DIR}/${fileName}`, columns, rowCount: rows.length };
 }
 
-/** 把一张图写成 SVG 文件：与结果文件同一套命名与独占创建规则，只是没有 key（图不对应 Intent）。
- *  返回的 src 是相对工作区根的路径，交给 agent 粘进回答引用。 */
-export function saveChartSvg(options: { root: string; name: string; svg: string }): { src: string; at: string } {
+/** 把一份产物（图、报告）写成文件：与结果文件同一套命名与独占创建规则，只是没有 key
+ *  （产物不对应 Intent）。返回的 src 是相对工作区根的路径，交给 agent 粘进回答引用。
+ *  `label` 只用于错误信息，比如「图表名」「报告名」。 */
+export function saveArtifact(options: {
+  root: string;
+  name: string;
+  content: string;
+  extension: string;
+  label: string;
+}): { src: string; at: string } {
   const problem = nameProblem(options.name);
-  if (problem !== null) throw new Error(`图表名不合法（${JSON.stringify(options.name)}）：${problem}`);
+  if (problem !== null) throw new Error(`${options.label}不合法（${JSON.stringify(options.name)}）：${problem}`);
   const at = resultStamp();
   mkdirSync(join(options.root, DATA_DIR), { recursive: true });
-  // 图没有 key 可区分，而同一毫秒里可能连着画两张同名的图，所以撞名时依次加序号，
-  // 而不是覆盖已有的图、也不是让调用失败。
+  // 产物没有 key 可区分，而同一毫秒里可能连着产两份同名的，所以撞名时依次加序号，
+  // 而不是覆盖已有的产物、也不是让调用失败。
   for (let attempt = 1; attempt <= 100; attempt += 1) {
     const fileName = attempt === 1
-      ? `${options.name}-${at}.svg`
-      : `${options.name}-${at}-${attempt}.svg`;
+      ? `${options.name}-${at}${options.extension}`
+      : `${options.name}-${at}-${attempt}${options.extension}`;
     const target = join(options.root, DATA_DIR, fileName);
     let handle: number | null = null;
     try {
       // 与结果文件同样的独占创建：只在确实由我们创建时才在失败时清理。
       handle = openSync(target, 'wx');
-      writeSync(handle, options.svg);
+      writeSync(handle, options.content);
       closeSync(handle);
       handle = null;
       return { src: `${DATA_DIR}/${fileName}`, at };

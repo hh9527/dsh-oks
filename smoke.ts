@@ -9,7 +9,7 @@
 // 被测工作区默认取**当前目录**（必须有 oks.json，否则明确报错），也可用环境变量指定：
 //   cd /path/to/workspace && node /path/to/dsh-oks/smoke.ts
 //   OKS_WORKSPACE=/path/to/workspace node smoke.ts
-import { apply, renderBarsTypst } from './dist/index.mjs';
+import { apply, buildOption, CHART_WIDTH, renderEchartsSvg } from './dist/index.mjs';
 import { applyOps, encode, parseMoment } from './src/time.ts';
 import { singleFlight } from './src/single-flight.ts';
 import { intentKey } from './src/key.ts';
@@ -68,7 +68,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'oks_jaq_result', 'oks_chart', 'time_now', 'time_calc', 'va_ask'];
+const EXPECTED_TOOLS = ['oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'oks_jaq_result', 'oks_chart', 'oks_report', 'time_now', 'time_calc', 'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -1262,7 +1262,7 @@ console.log('=== oks_chart（服务端出图）===');
   const inlineSvg = readFileSync(resolve(DEV_ROOT, inline.value.svgSrc), 'utf8');
   console.log(`  落盘 ${inline.value.svgSrc}（${inlineSvg.length} 字符）: ${inlineSvg.startsWith('<svg') ? '✓' : '✗'}`);
   if (!inlineSvg.startsWith('<svg')) throw new Error('产物应当是 SVG');
-  // typst 把文字转成路径，SVG 里搜不到文本；标题从回执字段验证，图形从 path 验证。
+  // 图里的文字是真 <text>（echarts 不把文字转成路径），标题则从回执字段核对。
   if (!inlineSvg.includes('<path')) throw new Error('SVG 里应当有图形');
   if (inline.value.title !== '方案对比') throw new Error('回执应当带上标题');
   // 回执给出的 markdown 指向同一个文件
@@ -1288,11 +1288,15 @@ console.log('=== oks_chart（服务端出图）===');
   const fromSrcSvg = readFileSync(resolve(DEV_ROOT, fromSrc.value.svgSrc), 'utf8');
   if (!fromSrcSvg.startsWith('<svg')) throw new Error('src 路径也应当落一份 SVG');
   console.log(`  src 路径：${fromSrc.value.rowCount} 行 → ${fromSrc.value.svgSrc} · 带原始 Intent ✓`);
-  // 来源标识同样搜不到文本（文字已转路径）：一侧看 lowering 产物里画了什么，一侧看回执字段。
-  const inlineLowering = renderBarsTypst([{ label: 'A', value: 1 }], {
-    title: null, sourceLabel: 'agent 自主填写', x: 'label', value: 'value', series: null,
-    xLabel: null, valueLabel: null, unit: null,
-  }, 'horizontal');
+  // 来源标识也从 lowering 产物核对一遍：它与回执字段应当一致。
+  const inlineLowering = renderEchartsSvg(
+    buildOption([{ label: 'A', value: 1 }], {
+      kind: 'bar', title: null, sourceLabel: 'agent 自主填写', x: 'label', value: 'value',
+      series: null, xType: null, xLabel: null, valueLabel: null, unit: null,
+    }).option,
+    CHART_WIDTH,
+    200,
+  );
   if (!inlineLowering.includes('来源：agent 自主填写')) throw new Error('自主填写的图里应当有来源标识');
   if (inline.value.source !== 'agent') throw new Error('回执应当标明来源是 agent 自主填写');
   if (fromSrc.value.source !== 'query') throw new Error('回执应当标明来源是查询结果');
@@ -1308,7 +1312,7 @@ console.log('=== oks_chart（服务端出图）===');
   console.log(`  正负对照：${signedSvg.includes('#c0567a') ? '负值用区分色 ✓' : '✗ 没有区分色'}`);
   if (!signedSvg.includes('#c0567a')) throw new Error('负值应当用区分色绘制');
 
-  // 分组柱走 typst（lilaq）：横轴是类别，每个类别里按 series 分成相邻的柱子。
+  // 分组柱：横轴是类别，每个类别里按 series 分成相邻的柱子。
   const column = await call('oks_chart', {
     spec: {
       kind: 'column', title: '月销售额（按渠道）', x: 'month', series: 'channel', value: 'amount',
@@ -1327,7 +1331,7 @@ console.log('=== oks_chart（服务端出图）===');
   if (!columnSvg.startsWith('<svg')) throw new Error('分组柱应当落一份 SVG');
   if (!columnSvg.includes('<path')) throw new Error('分组柱的 SVG 里应当有图形');
 
-  // 饼图（cetz-plot）：只画正数，负数与零跳过；配色与标签由 piechart 负责。
+  // 饼图：只画正数，负数与零跳过；配色按扇区轮转。
   const pie = await call('oks_chart', {
     spec: { kind: 'pie', title: '各级别占比', x: 'label', value: 'value' },
     data: [
@@ -1350,7 +1354,7 @@ console.log('=== oks_chart（服务端出图）===');
   });
   if (pieEmpty.value.ok !== true) throw new Error('没有正数时饼图也应当出图');
 
-  // 面积图（lilaq 的 fill-between）：字段与折线一致，x 轴同样支持 number / time。
+  // 面积图：字段与折线一致，x 轴同样支持 number / time。
   const area = await call('oks_chart', {
     spec: { kind: 'area', title: '每日告警数', x: 'day', value: 'count', xType: 'number' },
     data: [{ day: 0, count: 15 }, { day: 1, count: 25 }, { day: 2, count: 18 }],
@@ -1369,6 +1373,108 @@ console.log('=== oks_chart（服务端出图）===');
   const tunedSvg = readFileSync(resolve(DEV_ROOT, tuned.value.svgSrc), 'utf8');
   console.log(`  排版覆盖：labelFont/height/slantTicks 生效 → ${(tunedSvg.match(/<path/g) ?? []).length} 个 path`);
   if (!tunedSvg.includes('<path')) throw new Error('覆盖排版后仍应出图');
+
+  // 报告：markdown 正文（章节 + 叙述 + chart 块）→ 自足的 HTML（图内联、无外链、无脚本）。
+  const report = await call('oks_report', {
+    spec: {
+      title: '周报（冒烟）',
+      subtitle: '2026-09-09 ~ 10-08',
+      markdown: [
+        '## 一、等级分布',
+        '',
+        '本周期共 **100** 条告警，其中：',
+        '',
+        '- 严重 15 条',
+        '- 提示 36 条',
+        '',
+        '```chart',
+        JSON.stringify({ kind: 'bar', x: 'k', value: 'n', data: [{ k: '严重', n: 15 }, { k: '提示', n: 36 }], caption: '各级别条数' }),
+        '```',
+        '',
+        '## 二、口径说明',
+        '',
+        '> 度量取自知识模型声明，未自定义聚合。',
+        '',
+        '| 项 | 值 |',
+        '| --- | --- |',
+        '| 时间窗 | 30 天 |',
+        '| 明细 | 甲站 96 条<br>乙站 78 条 |',
+        '',
+        '这一段里有硬换行：',
+        '第一行<br>第二行  ', 
+        '第三行\\',
+        '第四行（软换行会并成一行）',
+        '',
+        '```sql',
+        'select alarm_count from current_alarm',
+        '```',
+        '',
+        '---',
+        '',
+        '**注意**：`weighted` 是加权分，不可与条数直接相加。',
+        '',
+        '<script>alert(1)</script>',
+        '',
+        '还有一段 <span>不该放行</span> 的标签。',
+      ].join('\n'),
+    },
+    name: 'probe_report',
+  });
+  const reportHtml = readFileSync(resolve(DEV_ROOT, report.value.htmlSrc), 'utf8');
+  console.log(`  报告：${report.value.figureCount} 张图 → ${report.value.htmlSrc}`);
+  if (!reportHtml.includes('<svg class="chart"')) throw new Error('报告里的图应当以 svg 元素内联，而不是 base64 图片');
+  if (reportHtml.includes('<script')) throw new Error('报告里不应有脚本');
+  if (/src="http/.test(reportHtml)) throw new Error('报告应当是自足的，不该有外链');
+  // 图是内联的，所以可以直接在 HTML 里核对内容；也顺带确认清理没有漏掉脚本。
+  if (!reportHtml.includes('来源：agent 自主填写')) throw new Error('图里应当带来源标识');
+  if (/<svg[^>]*\son[a-z]+=/i.test(reportHtml)) throw new Error('内联 SVG 上不应留下事件属性');
+  // 根元素不该再带固定宽高——那样就不能随栏宽自适应了。
+  if (/<svg class="chart"[^>]*\swidth=/i.test(reportHtml)) throw new Error('内联 SVG 不应保留固定宽度');
+
+  // markdown 子集的几个要点：白名单语法要渲染出来，子集之外的一律当文本。
+  if (!reportHtml.includes('<ul>')) throw new Error('列表应当渲染成 ul');
+  if (!reportHtml.includes('<blockquote>')) throw new Error('引用应当渲染成 blockquote');
+  if (!reportHtml.includes('<table>')) throw new Error('表格应当渲染成 table');
+  if (!reportHtml.includes('<hr>')) throw new Error('分隔线应当渲染成 hr');
+  if (!reportHtml.includes('<strong>100</strong>')) throw new Error('加粗应当渲染成 strong');
+  if (!reportHtml.includes('class="language-sql"')) throw new Error('非 chart 围栏应当渲染成代码块，并带上语言标注');
+  // `<br>`、行尾两空格与行尾反斜杠都应当渲染成换行；软换行并成一行。
+  if ((reportHtml.match(/<br>/g) ?? []).length < 3) throw new Error('三种硬换行都应当渲染成 br');
+  if (!reportHtml.includes('第四行（软换行会并成一行）')) throw new Error('软换行应当并进同一段');
+  if (!reportHtml.includes('&lt;script&gt;')) throw new Error('内嵌 HTML 应当被转义成文本，而不是解释成标签');
+  if (reportHtml.includes('<script>alert')) throw new Error('内嵌 HTML 绝不能穿透成真标签');
+  if (!reportHtml.includes('&lt;span&gt;不该放行&lt;/span&gt;')) throw new Error('span 应当被转义成文本');
+  if (reportHtml.includes('<span>不该放行')) throw new Error('只白名单 br，其它标签必须仍然转义');
+  // 表格单元格里同样能换行——它走的是同一套行内渲染。
+  if (!/<td>甲站 96 条<br>乙站 78 条<\/td>/.test(reportHtml)) {
+    throw new Error('表格单元格里的 br 应当渲染成换行');
+  }
+
+  // 来源逐图判定：报告不再要求"所有图同源"（那会逼 agent 把查询结果当自填行填进来，
+  // 反而让标识失真，真机上出现过）。冒烟里只有单列的 count 结果、构不出图，
+  // 所以这里验两件事：混用不再被拒、每张图各自带来源标识。
+  const mixed = await call('oks_report', {
+    spec: {
+      title: '多来源报告（冒烟）',
+      markdown: [
+        '## 多来源',
+        '',
+        '```chart',
+        JSON.stringify({ kind: 'bar', x: 'label', value: 'value', data: [{ label: '甲', value: 1 }], caption: '第一张' }),
+        '```',
+        '',
+        '```chart',
+        JSON.stringify({ kind: 'bar', x: 'label', value: 'value', data: [{ label: '乙', value: 2 }], caption: '第二张' }),
+        '```',
+      ].join('\n'),
+    },
+    name: 'probe_report_mixed',
+  });
+  const mixedHtml = readFileSync(resolve(DEV_ROOT, mixed.value.htmlSrc), 'utf8');
+  console.log(`  多来源报告：${mixed.value.figureCount} 张图，各自带来源标识`);
+  if ((mixedHtml.match(/来源：agent 自主填写/g) ?? []).length < 2) {
+    throw new Error('每张图都应当带自己的来源标识');
+  }
 
   // 规格与图的校验：这些都要在画图之前被拒。
   const failures = [
@@ -1520,10 +1626,10 @@ console.log('=== 插件只写 .data/ 里的结果文件 ===');
   if (existsSync(`${DEV_ROOT}/.oks`)) throw new Error('计划文件目录不该存在');
   if (existsSync(`${DEV_ROOT}/.data`)) {
     const files = readdirSync(`${DEV_ROOT}/.data`);
-    // 这里现在有两类产物：查询结果（.json）与图表（.svg）。
-    const allProducts = files.length > 0 && files.every((name) => /\.(json|svg)$/.test(name));
-    console.log(`  .data/ 里 ${files.length} 个产物、都是 .json 或 .svg: ${allProducts ? '✓' : '✗'}`);
-    if (!allProducts) throw new Error('.data/ 里出现了结果与图之外的产物');
+    // 这里目前有三类产物：查询结果（.json）、图（.svg）与报告（.html）。
+    const allProducts = files.length > 0 && files.every((name) => /\.(json|svg|html)$/.test(name));
+    console.log(`  .data/ 里 ${files.length} 个产物、都是 .json / .svg / .html: ${allProducts ? '✓' : '✗'}`);
+    if (!allProducts) throw new Error('.data/ 里出现了结果、图与报告之外的产物');
   }
 }
 
@@ -1570,8 +1676,7 @@ console.log('=== 查询超时 + 复活（queryTimeoutMs=1）===');
 }
 
 // ── 自包含：把 dist/ 整个目录搬进空目录（没有 node_modules、没有源码）也能用 ──────
-// 提示词在构建期内联进产物；WASM、字体、typst 包都在 dist/ 里与产物同级，
-// index.mjs 会引用同目录下的 chunk（例如 wasm.mjs）。
+// 提示词与 echarts 都在构建期内联进产物，dist/ 里没有旁资产。
 console.log('=== 自包含（把 dist/ 整个目录放进空目录）===');
 {
   mkdirSync(SCRATCH, { recursive: true });
@@ -1600,11 +1705,13 @@ console.log('=== 自包含（把 dist/ 整个目录放进空目录）===');
     ok('助手提示词也内联在产物里（占位符在同一份源码里）',
       text.includes('<!-- 词表 -->')
       && readFileSync(new URL('./src/va-prompt-tpl.md', import.meta.url), 'utf8').includes('<!-- 词表 -->'));
-    // 资产也要跟着走：从空目录里真画一张图，会读到 dist/ 里的 WASM、字体与 typst 包。
-    const svg = await mod.renderTypstSvg(
-      '#import "@preview/lilaq:0.6.0" as lq\n#lq.diagram(lq.bar((0, 1), (1, 2)))',
-    );
-    ok('空目录里也能出图（WASM、字体、typst 包都在 dist/ 内）',
+    // 产物自足：从空目录里真画一张图。echarts 已经打进 index.mjs，没有旁资产要读。
+    const built = mod.buildOption([{ k: 'A', n: 1 }], {
+      kind: 'bar', title: null, sourceLabel: 'agent 自主填写', x: 'k', value: 'n',
+      series: null, xType: null, xLabel: null, valueLabel: null, unit: null,
+    });
+    const svg = mod.renderEchartsSvg(built.option, mod.CHART_WIDTH, built.height);
+    ok('空目录里也能出图（echarts 已打进产物，无旁资产）',
       svg.startsWith('<svg') && svg.includes('<path'));
   } finally {
     rmSync(alone, { recursive: true, force: true });

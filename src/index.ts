@@ -13,11 +13,10 @@
 
 // 出图的 lowering 与渲染层也在这里导出：插件入口是单文件打包，导出它们便于单独测试，
 // 对宿主没有影响（宿主只认 apply 与 inject）。
-export { renderAreaTypst } from './chart/area.ts';
-export { renderBarsTypst } from './chart/bars.ts';
-export { renderLineTypst } from './chart/line.ts';
-export { renderPieTypst } from './chart/pie.ts';
-export { renderTypstSvg, warmUpChartRendering } from './chart/typst.ts';
+export { buildOption, CHART_WIDTH, plotHeight } from './chart/option.ts';
+export { renderEchartsSvg } from './chart/echarts.ts';
+export { buildFigureHtml, renderReportHtml } from './chart/report.ts';
+export { renderMarkdown } from './chart/markdown.ts';
 // 外加两个与模型无关的辅助工具：time_now（当前时刻的各种标准表示）、
 // time_calc（日历代数：加减 / 对齐到日历边界 / 换时区）——服务不读时钟，相对时间
 // 必须在提交前换成绝对边界；这两个工具只做标准表示，不解释任何领域格式。
@@ -47,7 +46,6 @@ export { renderTypstSvg, warmUpChartRendering } from './chart/typst.ts';
 import { createKnowledge } from './knowledge.ts';
 import { createTimeContext } from './time-context.ts';
 import { createTools } from './tools.ts';
-import { warmUpChartRendering } from './chart/typst.ts';
 import { createVaRuntime } from './va.ts';
 import type { LogFn, PluginContext } from './host.ts';
 import type { PluginConfig } from './config.ts';
@@ -67,10 +65,6 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
 
   const timeContext = createTimeContext({ ctx, log });
   timeContext.install();
-
-  // 出图前要先实例化 typst 的 WASM 并加载字体（约一秒）。这里后台预热一次，
-  // 用户第一次让它画图时就不用等；预热失败不阻塞加载，真出图时再报错。
-  warmUpChartRendering();
 
   const knowledge = createKnowledge({ ctx, log, config });
 

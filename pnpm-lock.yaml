@@ -8,15 +8,9 @@ importers:
 
   .:
     dependencies:
-      '@myriaddreamin/typst-ts-renderer':
-        specifier: ^0.7.0
-        version: 0.7.0
-      '@myriaddreamin/typst-ts-web-compiler':
-        specifier: ^0.7.0
-        version: 0.7.0
-      '@myriaddreamin/typst.ts':
-        specifier: ^0.7.0
-        version: 0.7.0(@myriaddreamin/typst-ts-renderer@0.7.0)(@myriaddreamin/typst-ts-web-compiler@0.7.0)
+      echarts:
+        specifier: ^6.1.0
+        version: 6.1.0
     devDependencies:
       '@types/node':
         specifier: ^26.6.4
@@ -29,23 +23,6 @@ importers:
         version: 7.0.2
 
 packages:
-
-  '@myriaddreamin/typst-ts-renderer@0.7.0':
-    resolution: {integrity: sha512-3sXIGxZn9MufPrPn6251DeuLf2FIEILYNzY5lX0XOJmaIYqgvQ3qpfqkCjgQD+splBvt5R1N3BuuNFrZKsHhMw==}
-
-  '@myriaddreamin/typst-ts-web-compiler@0.7.0':
-    resolution: {integrity: sha512-nMwMcfOBy5pABPDuVM7/u8425SxhPUM+OJe6daqqgVOT3+neCTz4JKwx2L8XasfEHTNvd0cUI07LR9q5ADo7Gw==}
-
-  '@myriaddreamin/typst.ts@0.7.0':
-    resolution: {integrity: sha512-JtO5Td/1QesH1IBKAZtbayFNK8u2sl3iz18Y67uYqBEdcXiu3z+wpZcDDKlmVJvAcCgSjHTnuk6ZLfkYclrGGQ==}
-    peerDependencies:
-      '@myriaddreamin/typst-ts-renderer': ^0.7.0
-      '@myriaddreamin/typst-ts-web-compiler': ^0.7.0
-    peerDependenciesMeta:
-      '@myriaddreamin/typst-ts-renderer':
-        optional: true
-      '@myriaddreamin/typst-ts-web-compiler':
-        optional: true
 
   '@oxc-project/types@0.152.0':
     resolution: {integrity: sha512-oM/5rLBm2tPkg0iBgkH/FOeR3PCDpY19GTgAZjMFM8h9WI9VW7cLgzp6nwtarYKmovavIQZ+Fe/RKX/8C8O/Rw==}
@@ -450,6 +427,9 @@ packages:
       oxc-resolver:
         optional: true
 
+  echarts@6.1.0:
+    resolution: {integrity: sha512-q0yaFPggC9FUdsWH4blavRWFmxdrIodbkoKNAjJudAI6CA9gNPxHtV2RcZNEepZVlk4yvBYkOkbk6HIVpIyHZA==}
+
   empathic@2.1.0:
     resolution: {integrity: sha512-AnfC1ATldl49/cvZdLPDjBfrRNwbDO05aibiOtzQu3qtlbJtomNLhF30HEtn/7iBz50dlMECqATo3fG0LrdEgw==}
     engines: {node: '>=14'}
@@ -469,9 +449,6 @@ packages:
 
   hookable@6.1.2:
     resolution: {integrity: sha512-+abwxtiEA52GCVIsQqut3S/uKTbUwYIp4Pe/vv+6py5XiXBCqMZHg6pA6Y5qhgLSEys0/cYuPbO0z1QFj5ZCmg==}
-
-  idb@7.1.1:
-    resolution: {integrity: sha512-gchesWBzyvGHRO9W8tzUWFDycow5gwjvFKfyV9FF32Y7F50yZMp7mP+T2mJIWFx49zicqyC4uefHM17o6xKIVQ==}
 
   import-without-cache@0.4.1:
     resolution: {integrity: sha512-vXoV9PjKHEednCUu01e98TkImxy67e3BJXbTIOmIq4Hyzw3IAwYRcuPkfeTzJzwyyts4kjuA73x+pWJLc4f86A==}
@@ -568,6 +545,9 @@ packages:
       unrun:
         optional: true
 
+  tslib@2.3.0:
+    resolution: {integrity: sha512-N82ooyxVNm6h1riLCoyS9e3fuJ3AMG2zIZs2Gd1ATcSFjSA23Q0fzjjZeh0jbJvWVDZ0cJT8yaNNaaXHzueNjg==}
+
   typescript@7.0.2:
     resolution: {integrity: sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA==}
     engines: {node: '>=16.20.0'}
@@ -592,18 +572,10 @@ packages:
   yuku-parser@0.10.2:
     resolution: {integrity: sha512-CgaU0/PPjCAIEZ3WQroosOxTY3eeKldAN3h+vk8pMNz4+jl1CZzBR4pW+K/rRPF112VooCL5FdjJoiMNjDrL2A==}
 
+  zrender@6.1.0:
+    resolution: {integrity: sha512-oEGMDB6pOP2S6OwRR4PdVv610zrjnA3Bh+JnSG12fYJlBKjtNAoEb5fSUoCOOINlH96I2fU38/A2UpRKs67xYQ==}
+
 snapshots:
-
-  '@myriaddreamin/typst-ts-renderer@0.7.0': {}
-
-  '@myriaddreamin/typst-ts-web-compiler@0.7.0': {}
-
-  '@myriaddreamin/typst.ts@0.7.0(@myriaddreamin/typst-ts-renderer@0.7.0)(@myriaddreamin/typst-ts-web-compiler@0.7.0)':
-    dependencies:
-      idb: 7.1.1
-    optionalDependencies:
-      '@myriaddreamin/typst-ts-renderer': 0.7.0
-      '@myriaddreamin/typst-ts-web-compiler': 0.7.0
 
   '@oxc-project/types@0.152.0': {}
 
@@ -802,6 +774,11 @@ snapshots:
 
   dts-resolver@3.0.0: {}
 
+  echarts@6.1.0:
+    dependencies:
+      tslib: 2.3.0
+      zrender: 6.1.0
+
   empathic@2.1.0: {}
 
   fdir@6.5.0(picomatch@4.0.7):
@@ -813,8 +790,6 @@ snapshots:
       resolve-pkg-maps: 1.0.0
 
   hookable@6.1.2: {}
-
-  idb@7.1.1: {}
 
   import-without-cache@0.4.1: {}
 
@@ -897,6 +872,8 @@ snapshots:
       - oxc-resolver
       - vue-tsc
 
+  tslib@2.3.0: {}
+
   typescript@7.0.2:
     optionalDependencies:
       '@typescript/typescript-aix-ppc64': 7.0.2
@@ -967,3 +944,7 @@ snapshots:
       '@yuku-parser/binding-linux-x64-musl': 0.10.2
       '@yuku-parser/binding-win32-arm64': 0.10.2
       '@yuku-parser/binding-win32-x64': 0.10.2
+
+  zrender@6.1.0:
+    dependencies:
+      tslib: 2.3.0
