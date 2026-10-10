@@ -2,3 +2,6 @@ node_modules/
 .npm-cache/
 .pnpm-store/
 dist/
+
+# typst 包缓存（构建时由 typst binary 生成）
+.typst-cache/

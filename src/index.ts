@@ -10,6 +10,14 @@
 // oks_query（核 key 后**只读查询**数据文件，成功项落盘、回结构回执；SQL/bindings 只在这一条路径上出现）、
 // oks_jaq_result（在结果文件上做结构化查询：表达式作用在行数组上）、
 // oks_chart（在服务端把图画成 SVG 存进工作区，回执给出可直接粘进回答的引用）。
+
+// 出图的 lowering 与渲染层也在这里导出：插件入口是单文件打包，导出它们便于单独测试，
+// 对宿主没有影响（宿主只认 apply 与 inject）。
+export { renderAreaTypst } from './chart/area.ts';
+export { renderBarsTypst } from './chart/bars.ts';
+export { renderLineTypst } from './chart/line.ts';
+export { renderPieTypst } from './chart/pie.ts';
+export { renderTypstSvg, warmUpChartRendering } from './chart/typst.ts';
 // 外加两个与模型无关的辅助工具：time_now（当前时刻的各种标准表示）、
 // time_calc（日历代数：加减 / 对齐到日历边界 / 换时区）——服务不读时钟，相对时间
 // 必须在提交前换成绝对边界；这两个工具只做标准表示，不解释任何领域格式。
@@ -39,6 +47,7 @@
 import { createKnowledge } from './knowledge.ts';
 import { createTimeContext } from './time-context.ts';
 import { createTools } from './tools.ts';
+import { warmUpChartRendering } from './chart/typst.ts';
 import { createVaRuntime } from './va.ts';
 import type { LogFn, PluginContext } from './host.ts';
 import type { PluginConfig } from './config.ts';
@@ -58,6 +67,10 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
 
   const timeContext = createTimeContext({ ctx, log });
   timeContext.install();
+
+  // 出图前要先实例化 typst 的 WASM 并加载字体（约一秒）。这里后台预热一次，
+  // 用户第一次让它画图时就不用等；预热失败不阻塞加载，真出图时再报错。
+  warmUpChartRendering();
 
   const knowledge = createKnowledge({ ctx, log, config });
 

@@ -2,7 +2,12 @@ import { applyOps, encode, parseMoment, resolveZone } from './time.ts';
 import type { ContextTimeZone, TimeState } from './time.ts';
 import { capLine } from './text.ts';
 import { runJaq } from './jaq.ts';
-import { renderChartSvg } from './svg.ts';
+import { renderAreaTypst } from './chart/area.ts';
+import { renderBarsTypst } from './chart/bars.ts';
+import { renderLineTypst } from './chart/line.ts';
+import { renderPieTypst } from './chart/pie.ts';
+import { renderTypstSvg } from './chart/typst.ts';
+import type { LayoutOverrides } from './chart/shared.ts';
 import { OBJECT_OUTPUT, renderChart, renderCheck, renderJaq, renderJson, renderQuery, renderValue, withoutQueries } from './response.ts';
 import type { Row } from './response.ts';
 import { REFERENCE_KINDS, referencesOf, renderReferences, renderSearch, searchIndex } from './retrieval.ts';
@@ -75,10 +80,12 @@ interface ChartArgs {
   note?: unknown;
 }
 
-/** 校验后的图表规格（图元：横条 / 多序列折线）。
- *  x 与 value 在这里是非空字符串：bar 与 line 都要求它们，校验不通过根本走不到画图。 */
+/** 校验后的图表规格。图元：横条（bar）、分组柱（column）、多序列折线（line）、饼图（pie）、
+ *  面积图（area）。x 与 value 在这里是非空字符串：五种图元都要求它们，校验不通过根本走不到画图；
+ *  column 另外要求作为分组维度的 series，line 与 area 还要求 xType。
+ *  layout 是排版覆盖项（字号、高度、是否斜排标签），全部可选、缺省走默认规则。 */
 interface ChartSpec {
-  kind: 'bar' | 'line';
+  kind: 'bar' | 'line' | 'column' | 'pie' | 'area';
   title: string | null;
   x: string;
   value: string;
@@ -87,7 +94,44 @@ interface ChartSpec {
   xLabel: string | null;
   valueLabel: string | null;
   unit: string | null;
+  layout: LayoutOverrides;
 }
+
+/** 解析并校验排版覆盖项：每一项都可选，给了就必须在合理范围内——
+ *  越界的值（比如 4pt 的字）画出来是废图，不如直接报错让 agent 重来。 */
+const parseLayout = (raw: unknown): { layout: LayoutOverrides } | { error: string } => {
+  if (raw === undefined || raw === null) return { layout: {} };
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    return { error: 'spec.layout 必须是对象：labelFont / titleFont / height / rowHeight / slantTicks 都可选' };
+  }
+  const record = raw as Record<string, unknown>;
+  const layout: LayoutOverrides = {};
+  const bounds: Array<[keyof LayoutOverrides, number, number]> = [
+    // 正文字号不需要跟着标题放到那么大：18pt 在 720pt 页宽里已经把绘图区压得很窄了。
+    ['labelFont', 8, 18],
+    ['titleFont', 8, 32],
+    ['height', 200, 2000],
+    ['rowHeight', 16, 80],
+    ['tickCount', 3, 12],
+  ];
+  for (const [name, min, max] of bounds) {
+    const value = record[name];
+    if (value === undefined) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+      return { error: `spec.layout.${name} 要在 ${min}..${max} 之间，收到 ${JSON.stringify(value)}` };
+    }
+    (layout as Record<string, unknown>)[name] = value;
+  }
+  if (record.slantTicks !== undefined) {
+    if (typeof record.slantTicks !== 'boolean') {
+      return { error: `spec.layout.slantTicks 必须是 true 或 false，收到 ${JSON.stringify(record.slantTicks)}` };
+    }
+    layout.slantTicks = record.slantTicks;
+  }
+  const unknown = Object.keys(record).filter((key) => !['labelFont', 'titleFont', 'height', 'rowHeight', 'slantTicks', 'tickCount'].includes(key));
+  if (unknown.length > 0) return { error: `spec.layout 里不认识的项：${unknown.join(', ')}` };
+  return { layout };
+};
 
 /** oks_chart 的返回值（渲染与 presentationMeta 读它）。 */
 interface ChartAnswer {
@@ -110,7 +154,7 @@ interface ChartAnswer {
   intent: unknown;
 }
 
-const CHART_KINDS = ['bar', 'line'] as const;
+const CHART_KINDS = ['bar', 'line', 'column', 'pie', 'area'] as const;
 /** data 路径的规模上限：更大的数据应当先查询、再用 src 引用结果文件。 */
 const CHART_DATA_MAX_ROWS = 1000;
 const CHART_DATA_MAX_BYTES = 256 * 1024;
@@ -118,7 +162,7 @@ const CHART_DATA_MAX_BYTES = 256 * 1024;
 /** 校验图表规格；只做形状与必填，不解释领域含义。 */
 const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: string } => {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { error: 'oks_chart 需要 spec（对象）：kind 必填，bar 与 line 各有自己的字段' };
+    return { error: 'oks_chart 需要 spec（对象）：kind 必填，各个图元有各自的字段' };
   }
   const record = raw as Record<string, unknown>;
   const kind = record.kind;
@@ -139,9 +183,32 @@ const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: string } =
     xLabel: text('xLabel'),
     valueLabel: text('valueLabel'),
     unit: text('unit'),
+    layout: {},
   };
+  const parsedLayout = parseLayout(record.layout);
+  if ('error' in parsedLayout) return { error: parsedLayout.error };
+  spec.layout = parsedLayout.layout;
   if (spec.kind === 'bar' && (spec.x === '' || spec.value === '')) {
     return { error: 'bar 需要 spec.x（类别列）与 spec.value（数值列）' };
+  }
+  if (spec.kind === 'column') {
+    if (spec.x === '' || spec.value === '') {
+      return { error: 'column 需要 spec.x（类别列）与 spec.value（数值列）' };
+    }
+    if (spec.series === null) {
+      return { error: 'column 需要 spec.series（分组列）：每个类别里按它分成相邻的几根柱子' };
+    }
+  }
+  if (spec.kind === 'pie') {
+    if (spec.x === '' || spec.value === '') {
+      return { error: 'pie 需要 spec.x（类别列）与 spec.value（数值列）' };
+    }
+  }
+  if (spec.kind === 'area') {
+    if (spec.x === '' || spec.value === '') {
+      return { error: 'area 需要 spec.x（横轴列）与 spec.value（数值列）' };
+    }
+    if (spec.xType === null) return { error: 'area 需要 spec.xType：number 或 time' };
   }
   if (spec.kind === 'line') {
     if (spec.x === '' || spec.value === '') {
@@ -749,17 +816,31 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         properties: {
           spec: {
             type: 'object',
-            description: 'Figure specification. kind is required: bar needs x (the category column) and value (the numeric column); line needs x, value and xType (number or time), plus an optional series column for several lines. title / xLabel / valueLabel / unit are display text you supply.',
+            description: 'Figure specification. kind is required: bar needs x (the category column) and value; column needs x, series (the grouping column: one bar per distinct value inside each category) and value — it draws grouped vertical bars; line needs x, value and xType (number or time), plus an optional series for several lines; area is a line with the region below it filled, and takes the same fields as line; pie needs x (the slice label column) and value, and only positive values are drawn. title / xLabel / valueLabel / unit are display text you supply.',
             properties: {
-              kind: { type: 'string', enum: ['bar', 'line'], description: 'Which figure to draw.' },
+              kind: { type: 'string', enum: ['bar', 'line', 'column', 'pie', 'area'], description: 'Which figure to draw.' },
               title: { type: 'string', description: 'Title shown above the figure.' },
-              x: { type: 'string', description: 'bar: the category column. line: the horizontal-axis column.' },
-              value: { type: 'string', description: 'The numeric column drawn as bar length or line height.' },
-              series: { type: 'string', description: 'line only: split into one line per distinct value of this column.' },
+              x: { type: 'string', description: 'bar / column: the category column. line / area: the horizontal-axis column. pie: the slice label column.' },
+              value: { type: 'string', description: 'The numeric column drawn as bar length, column height, line height, area height or slice size.' },
+              series: { type: 'string', description: 'line / area: one line (or area) per distinct value. column: required — one bar per distinct value, placed side by side inside each category.' },
               xType: { type: 'string', enum: ['number', 'time'], description: 'line only: how to read the x column. time accepts RFC 3339 text or epoch milliseconds.' },
               xLabel: { type: 'string', description: 'Axis label for x (display text).' },
               valueLabel: { type: 'string', description: 'Axis label for the value (display text).' },
               unit: { type: 'string', description: 'Unit shown with the values (display text).' },
+              layout: {
+                type: 'object',
+                description: 'Optional typography overrides — use these when the user is unhappy with the default proportions. All fields optional.',
+                properties: {
+                  labelFont: { type: 'number', description: 'Axis label / tick / legend size in pt, 8-18. Default scales with data density between 8.5 and 11.5.' },
+                  titleFont: { type: 'number', description: 'Title size in pt, 8-32. Default 12.' },
+                  height: { type: 'number', description: 'Figure height in pt, 200-2000. Default 340 for column / line / area; for bar it is derived from the row count; for pie it sets the canvas size (default 255 ≈ 9cm).' },
+                  rowHeight: { type: 'number', description: 'Height of one category row in a horizontal bar chart, in pt, 16-80. Default 26, and it grows automaticallly when labelFont is large.' },
+                  slantTicks: { type: 'boolean', description: 'Force (true) or forbid (false) slanted x-axis labels. Default: slant only when labels would collide.' },
+                  tickCount: { type: 'number', description: 'Number of ticks on the value axis, 3-12. Default 6. Increase it when the reader needs finer granularity, decrease it when the axis looks like a ruler.' },
+                },
+                required: [],
+                additionalProperties: false,
+              },
             },
             required: ['kind'],
             additionalProperties: false,
@@ -814,10 +895,23 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         }
         // 服务端出图：画成 SVG 落盘，并把「可以原样粘进回答」的那一行交给 agent。
         // 来源标识画进图里——图离开这段对话也要能自证数据来自查询还是 agent 自填。
-        const svg = renderChartSvg(rows, {
-          ...spec,
-          sourceLabel: source === 'query' ? '基于查询结果' : 'agent 自主填写',
-        });
+        // 五种图元都走 typst（lilaq）：条形（竖条 column / 横条 bar）与折线（line）。
+        const sourceLabel = source === 'query' ? '基于查询结果' : 'agent 自主填写';
+        const { kind, ...rest } = spec;
+        const layout = spec.layout;
+        const svg = await renderTypstSvg(
+          kind === 'line'
+            ? renderLineTypst(rows, { ...rest, xType: spec.xType, series: spec.series, sourceLabel, layout })
+            : kind === 'area'
+              ? renderAreaTypst(rows, { ...rest, xType: spec.xType, series: spec.series, sourceLabel, layout })
+              : kind === 'pie'
+                ? renderPieTypst(rows, { ...rest, sourceLabel, layout })
+                : renderBarsTypst(
+                  rows,
+                  { ...rest, series: spec.series, sourceLabel, layout },
+                  kind === 'column' ? 'vertical' : 'horizontal',
+                ),
+        );
         const saved = saveChartSvg({
           root: entry.settings.workspaceRoot,
           name: typeof args?.name === 'string' && args.name.length > 0 ? args.name : 'chart',

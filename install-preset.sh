@@ -3,6 +3,8 @@
 #
 # 可重复执行：每一步都先看现状，已经成立就跳过。顺序是
 #   1. 产物：dist/index.mjs 不存在时，在仓库里构建（node_modules 缺失才先 pnpm install）。
+#      构建会把出图要的静态资产（typst 的两份 WASM、中文字体、typst 包缓存）一并放进 dist/，
+#      所以这里没有单独的资产步骤；额外的前置条件是本机有 typst 命令（拉 typst 包时才用）。
 #   2. profile：package.json 不存在时，用 `dsh plugin` 按模板初始化。
 #   3. 依赖：把本仓库以 link: 写进 profile 的 package.json。
 #   4. 链接：profile 的 node_modules 里没有 @local/dsh-oks 时，在该 profile 里跑 pnpm install
