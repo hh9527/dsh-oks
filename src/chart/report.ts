@@ -89,6 +89,16 @@ figcaption { color: #6b7b8c; font-size: 12.5px; margin-top: 8px; }
 .figure-error { border: 1px dashed #e0b4b4; background: #fdf6f6; color: #8a4b4b; border-radius: 8px;
                 padding: 10px 14px; font-size: 13px; margin: 16px 0; }
 footer { margin-top: 52px; padding-top: 16px; border-top: 1px solid #e5eaf1; color: #93a3b4; font-size: 12px; }
+
+/* 打印：报告的"稳定排版"就靠这一段——图与表不跨页、标题不落在页尾、纸上的链接退回普通文字。 */
+@media print {
+  body { max-width: none; padding: 0; color: #000; }
+  nav { display: none; }
+  h2, h3 { break-after: avoid; }
+  figure, table, pre, blockquote { break-inside: avoid; }
+  a { color: inherit; text-decoration: none; }
+  figure svg.chart { border-color: #ccc; }
+}
 `.trim();
 
 /** 从 markdown 里抽出章节标题，生成目录。 */

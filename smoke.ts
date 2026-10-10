@@ -1437,6 +1437,9 @@ console.log('=== oks_chart（服务端出图）===');
   if (!reportHtml.includes('<table>')) throw new Error('表格应当渲染成 table');
   if (!reportHtml.includes('<hr>')) throw new Error('分隔线应当渲染成 hr');
   if (!reportHtml.includes('<strong>100</strong>')) throw new Error('加粗应当渲染成 strong');
+  // 报告要能直接打印：打印样式里图与表不跨页、标题不落在页尾。
+  if (!reportHtml.includes('@media print')) throw new Error('报告应当带打印样式');
+  if (!/break-inside:\s*avoid/.test(reportHtml)) throw new Error('打印时图与表不应被分页截断');
   if (!reportHtml.includes('class="language-sql"')) throw new Error('非 chart 围栏应当渲染成代码块，并带上语言标注');
   // `<br>`、行尾两空格与行尾反斜杠都应当渲染成换行；软换行并成一行。
   if ((reportHtml.match(/<br>/g) ?? []).length < 3) throw new Error('三种硬换行都应当渲染成 br');
