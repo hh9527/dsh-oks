@@ -12,7 +12,11 @@ import {
   distinct,
   labelFontSize,
   needsSlantedTicks,
+  rampAt,
+  rampStops,
+  readableOn,
   resolveLayout,
+  supports,
   toLabel,
   toNumber,
   valueAxisLabel,
@@ -30,10 +34,16 @@ import type { EChartsCoreOption } from 'echarts/core';
 /** 图表的输出尺寸（px）。echarts 的 SSR 不做自适应，宽高必须在初始化时给定。 */
 export const CHART_WIDTH = PAGE_WIDTH;
 
-/** 测得的绘图区高度：竖条 / 折线 / 面积为固定值，横条按行数算，饼图为方框边长。 */
-export const plotHeight = (kind: string, categoryCount: number, labelFont: number, overrides: LayoutOverrides): number => {
+/** 测得的绘图区高度：竖条 / 折线 / 面积为固定值，横条按行数算，饼图为方框边长。
+ *  `count` 是"有多少行要占高度"：横条与矩阵是一行一个类别（矩阵传的是分组数），其余传类别数。 */
+export const plotHeight = (kind: string, count: number, labelFont: number, overrides: LayoutOverrides): number => {
   const rowHeight = Math.max(overrides.rowHeight ?? 26, Math.round(labelFont * 1.8));
-  const fallback = kind === 'bar' ? Math.round(60 + categoryCount * rowHeight) : kind === 'pie' ? 300 : 340;
+  const fallback = kind === 'bar' ? Math.round(60 + count * rowHeight)
+    // 矩阵的行是分组，高度按行数走；再给标题与底部色标留出位置。
+    : kind === 'heatmap' ? Math.max(240, Math.round(104 + count * rowHeight))
+      : kind === 'pie' ? 300
+        : kind === 'radar' ? 420
+          : 340;
   return overrides.height ?? fallback;
 };
 
@@ -121,6 +131,16 @@ const short = (value: number): string => {
   return String(Number(value.toFixed(digits)));
 };
 
+/** 轴上限取整到 1 / 2 / 5 的整十倍数。
+ *  雷达的每个指标各有各的量纲，上限只能是"这个人看得懂的数"，不能是 3421 这种实测最大值。 */
+const niceMax = (value: number): number => {
+  if (!(value > 0)) return 1;
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  const scaled = value / magnitude;
+  const step = scaled <= 1 ? 1 : scaled <= 2 ? 2 : scaled <= 5 ? 5 : 10;
+  return step * magnitude;
+};
+
 /** 没有可画的数据时，给一张只有标题与说明的图，而不是空白画布。 */
 const emptyOption = (spec: OptionInput, layout: ReturnType<typeof resolveLayout>): EChartsCoreOption => ({
   title: {
@@ -136,7 +156,7 @@ const emptyOption = (spec: OptionInput, layout: ReturnType<typeof resolveLayout>
 
 /**
  * 规格 + 结果行 → echarts option。
- * 五种图元共用同一套规则：色板按序列轮转、负值用区分色、空序列跳过、类别密度决定标签斜排。
+ * 所有图元共用同一套规则：色板按序列轮转、负值用区分色、空序列跳过、类别密度决定标签斜排。
  */
 export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: EChartsCoreOption; height: number } => {
   const { categories, seriesNames, points } = group(rows, spec);
@@ -146,7 +166,16 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
     overrides: spec.layout ?? {},
     defaultHeight: 340,
   });
-  const height = plotHeight(spec.kind, categories.length, labelFont, spec.layout ?? {});
+  const height = plotHeight(
+    spec.kind,
+    // 占高度的"行"数：矩阵的行是分组（横轴才是类别）；横条图是一行一条，
+    // 分组时每个类别里有 series 条，行数要乘开——不乘的话每根只有几个像素高，图不可读。
+    spec.kind === 'heatmap' ? seriesNames.length
+      : spec.kind === 'bar' ? categories.length * Math.max(seriesNames.length, 1)
+        : categories.length,
+    labelFont,
+    spec.layout ?? {},
+  );
 
   const hasValues = [...points.values()].some((bucket) => bucket.size > 0);
   if (!hasValues) return { option: emptyOption(spec, layout), height };
@@ -166,7 +195,10 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
   const palette = spec.style?.colors !== undefined && spec.style.colors.length > 0 ? spec.style.colors : SERIES_COLORS;
   const pick = (index: number): string => palette[index % palette.length];
   const showLabels = spec.style?.labels === true;
-  const stack = spec.kind === 'column' || spec.kind === 'area' ? spec.stack : undefined;
+  // spec.stack 的"没写"是 null，而下面各处的判断比的是 undefined——两种"没有"混在一起，
+  // "不给 stack"就会被当成 stack: 'total'。"分组柱"因此在真机上从来画不出来（永远是多段的一根）。
+  // 在这一行统一成 undefined，让"没写"和"没写"只有一个样子。
+  const stack = supports(spec.kind, 'stack') ? spec.stack ?? undefined : undefined;
 
   // 散点：两个量之间的关系。给了 size 就把第三维映射成点的大小（气泡图）。
   if (spec.kind === 'scatter') {
@@ -280,6 +312,12 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
     .filter((mark) => mark.axis !== 'x' && typeof mark.value === 'number')
     .map((mark) => mark.value as number);
   const markMax = markValues.length === 0 ? null : Math.max(...markValues);
+  const markMin = markValues.length === 0 ? null : Math.min(...markValues);
+  // 折线的数值轴跟着数据走（scale），别的图元从 0 起。
+  // 折线读的是"走势"，而走势常常发生在很窄的一段里——可用率 98.4–99.9% 落在 0–100 的轴上
+  // 就是一条平线（真机报告里的图 9/图 10 正是如此：三条线的全部差距只有 3px）。
+  // 柱与面积不能这样：长度与面积本身就是量，不从 0 起会说谎。
+  const fitRange = spec.kind === 'line';
 
   const measureAxis = {
     type: 'value' as const,
@@ -297,9 +335,14 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
     // 看起来像"图被截断了"。放宽 max 会让那个怪数字直接变成刻度（108%、110%…），所以改用
     // boundaryGap：值域向上扩一成，刻度仍收在 100%。
     ...(stack === 'percent' ? { max: 110 } : {}),
+    ...(fitRange ? { scale: true, boundaryGap: [0.08, 0.08] } : {}),
     // 让上界至少盖住参考线。echarts 的 max 接受函数，入参是它自己算出的边界。
     ...(stack !== 'percent' && markMax !== null
       ? { max: (bounds: { max: number }) => Math.max(bounds.max, markMax) }
+      : {}),
+    // 下界同理：轴收窄之后，比数据还低的阈值线会像上一波那样静默消失。
+    ...(markMin !== null && (fitRange || markMin < 0)
+      ? { min: (bounds: { min: number }) => Math.min(bounds.min, markMin) }
       : {}),
     // echarts 的 splitNumber 是"分割段数"，档数减一。
     splitNumber: Math.max(1, layout.tickCount - 1),
@@ -453,6 +496,118 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
     };
   }
 
+  // 矩阵：两个类别维度加一个数值维度，数值映射成颜色深浅。它是"分组柱"的另一种画法，
+  // 数据形状完全一样（行 = 类别 + 分组 + 数值），只是用颜色代替了柱高。
+  if (spec.kind === 'heatmap') {
+    const yNames = seriesNames;
+    const cells: Array<[number, number, number]> = [];
+    let min = Number.POSITIVE_INFINITY;
+    let max = Number.NEGATIVE_INFINITY;
+    categories.forEach((category, xi) => {
+      yNames.forEach((name, yi) => {
+        const value = points.get(name)?.get(category);
+        if (value === undefined) return;
+        cells.push([xi, yi, value]);
+        min = Math.min(min, value);
+        max = Math.max(max, value);
+      });
+    });
+    if (cells.length === 0) return { option: emptyOption(spec, layout), height };
+    // 只有一个取值时色阶没有跨度：把区间撑开半格，免得色标除零。
+    const span = max - min;
+    const floor = span === 0 ? min - 0.5 : min;
+    const ceiling = span === 0 ? max + 0.5 : max;
+    // 格子少时默认写出数值：矩阵本来就可以当表格读。挤的时候得关掉，否则一片糊。
+    const showCellLabels = spec.style?.labels ?? cells.length <= 30;
+    const ramp = rampStops(spec.style?.colors);
+    const data = cells.map((value) => {
+      if (!showCellLabels) return value;
+      // 数字用深色还是浅色，要看它脚下那格的实际底色——算出来再挑对比度更高的一边。
+      const t = (value[2] - floor) / (ceiling - floor);
+      return { value, label: { color: readableOn(rampAt(ramp, t)) } };
+    });
+    return {
+      height,
+      option: {
+        title,
+        graphic: footnote(spec.sourceLabel, labelFont),
+        // 纵轴是分组（可能是设备名或日期），左边留得比柱状图宽一些；底部留给颜色标尺。
+        grid: { ...grid, left: 118, top: spec.title === null ? 24 : 56, bottom: 62 },
+        xAxis: { ...categoryAxis, data: categories },
+        yAxis: { ...categoryAxis, data: yNames, axisLabel: { fontSize: labelFont, color: '#1c2b3a', rotate: 0 } },
+        visualMap: {
+          type: 'continuous' as const,
+          min: floor,
+          max: ceiling,
+          calculable: false,
+          orient: 'horizontal' as const,
+          left: 'center',
+          bottom: 4,
+          // 横向色标里 itemHeight 才是长度，itemWidth 是厚度。
+          itemWidth: 12,
+          itemHeight: 120,
+          // 标尺两端写数据里真实的最小 / 最大值——跨度为零时上下限是撑开过的，别把撑开的那两个数写上去。
+          text: [short(max), short(min)],
+          textStyle: { fontSize: Math.max(9, labelFont - 1), color: '#5b6b7c' },
+          inRange: { color: ramp },
+        },
+        series: [{
+          type: 'heatmap' as const,
+          data,
+          label: { show: showCellLabels, fontSize: Math.max(9, labelFont - 2) },
+          // 格子之间留一道白缝，邻格的深浅才分得开。
+          itemStyle: { borderColor: '#ffffff', borderWidth: 1 },
+        }],
+      },
+    };
+  }
+
+  // 雷达：一圈指标轴，每个对象一条闭合折线。它也是"行 = 指标 + 对象 + 数值"这份三元组，
+  // 与分组柱同源——只是把"每个对象在每个指标上"画成了形状而不是长度。
+  if (spec.kind === 'radar') {
+    const indicator = categories.map((category) => {
+      const values = seriesNames
+        .map((name) => points.get(name)?.get(category))
+        .filter((value): value is number => value !== undefined);
+      const peak = values.length === 0 ? 0 : Math.max(...values);
+      const low = values.length === 0 ? 0 : Math.min(...values);
+      // 每个指标一根自己的量纲：共用一根的话，"端口数"会把"可用率百分比"压成圆心的一团。
+      return { name: category, max: niceMax(peak), ...(low < 0 ? { min: -niceMax(-low) } : {}) };
+    });
+    // 缺值留 null（断开这一段），不补 0——补 0 会伪造出一个"这一维为零"的形状。
+    const data = seriesNames.map((name, index) => ({
+      name: name === '' ? axisName(spec.valueLabel, spec.unit) ?? 'value' : name,
+      value: categories.map((category) => points.get(name)?.get(category) ?? null),
+      itemStyle: { color: pick(index) },
+      lineStyle: { width: 2, color: darken(pick(index)) },
+      areaStyle: { color: pick(index), opacity: 0.12 },
+      label: showLabels
+        ? { show: true, fontSize: Math.max(9, labelFont - 2), color: '#3d4d5c' }
+        : undefined,
+      symbolSize: 4,
+    }));
+    return {
+      height,
+      option: {
+        title,
+        legend,
+        graphic: footnote(spec.sourceLabel, labelFont),
+        radar: {
+          center: ['50%', spec.title === null ? '54%' : '57%'],
+          radius: '64%',
+          indicator,
+          axisName: { fontSize: labelFont, color: '#5b6b7c' },
+          // 圈数就是雷达的刻度档数，太密会糊成一团蛛网。
+          splitNumber: Math.max(2, Math.min(layout.tickCount, 6)),
+          axisLine: { lineStyle: { color: '#d8e0ea' } },
+          splitLine: { lineStyle: { color: '#eef2f7' } },
+          splitArea: { show: false },
+        },
+        series: [{ type: 'radar' as const, data }],
+      },
+    };
+  }
+
   // 第二个度量：独立的右侧数值轴。它存在的前提就是"两个量纲差很远"，所以轴必须分开。
   // 取值按类别取第一行——有 series 时，第二维度不该随分组变化。
   const second = spec.second ?? null;
@@ -466,6 +621,8 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
   const secondAxis = second === null || secondName === null ? null : {
     ...measureAxis,
     name: secondName,
+    // 第二个度量总是折线，所以它的轴也按数据收紧——主轴是柱（从 0 起）时它照样收紧。
+    ...(fitRange ? {} : { scale: true, boundaryGap: [0.08, 0.08] }),
     position: horizontal ? ('top' as const) : ('right' as const),
     splitLine: { show: false },
   };

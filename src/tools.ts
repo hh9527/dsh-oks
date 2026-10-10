@@ -5,8 +5,8 @@ import { runJaq } from './jaq.ts';
 import { buildOption, CHART_WIDTH } from './chart/option.ts';
 import { renderEchartsSvg } from './chart/echarts.ts';
 import { buildFigureHtml, renderReportHtml } from './chart/report.ts';
-import { CHART_KINDS, inferXType } from './chart/shared.ts';
-import type { ChartKind, LayoutOverrides, MarkLine, SecondMetric, StyleOverrides } from './chart/shared.ts';
+import { CHART_KINDS, inferXType, supportedKinds, supports, toNumber } from './chart/shared.ts';
+import type { ChartKind, ExpressionSwitch, LayoutOverrides, MarkLine, SecondMetric, StyleOverrides } from './chart/shared.ts';
 import { OBJECT_OUTPUT, renderChart, renderCheck, renderJaq, renderJson, renderQuery, renderValue, withoutQueries } from './response.ts';
 import type { Row } from './response.ts';
 import { REFERENCE_KINDS, referencesOf, renderReferences, renderSearch, searchIndex } from './retrieval.ts';
@@ -155,10 +155,8 @@ const renderReportFigure = (
   const resolved = resolveChartRows({ src: json.src, data: json.data }, root, chartSpec);
   if ('error' in resolved) return { error: resolved.error };
   applyInferredXType(chartSpec, resolved.rows);
-  if (chartSpec.kind === 'line') {
-    const issue = lineProblem(resolved.rows, chartSpec);
-    if (issue !== null) return { error: issue };
-  }
+  const issue = shapeProblem(resolved.rows, chartSpec);
+  if (issue !== null) return { error: issue };
   // 来源逐图判定：这张图是从结果文件取数，还是用 agent 自填的行。
   const sourceLabel = resolved.source === 'query' ? '基于查询结果' : 'agent 自主填写';
   const { option, height } = buildOption(resolved.rows, { ...chartSpec, sourceLabel });
@@ -178,9 +176,9 @@ interface ChartArgs {
   note?: unknown;
 }
 
-/** 校验后的图表规格。图元：横条（bar）、分组柱（column）、多序列折线（line）、饼图（pie）、
- *  面积图（area）。x 与 value 在这里是非空字符串：五种图元都要求它们，校验不通过根本走不到画图；
- *  column 另外要求作为分组维度的 series，line 与 area 还要求 xType。
+/** 校验后的图表规格。
+ *  x 与 value 在这里是非空字符串：除 histogram 外都要求它们，校验不通过根本走不到画图；
+ *  哪些图元还要 series、哪些开关对哪些图元有意义，由 parseChartSpec 按 shared.ts 里那份适用表判定。
  *  layout 是排版覆盖项（字号、高度、是否斜排标签），全部可选、缺省走默认规则。 */
 interface ChartSpec {
   kind: ChartKind;
@@ -290,16 +288,19 @@ const referencedColumns = (spec: ChartSpec): string[] =>
 const missingColumns = (spec: ChartSpec, columns: readonly string[], rowCount: number): string[] =>
   rowCount === 0 ? [] : referencedColumns(spec).filter((name) => !columns.includes(name));
 
+/** 开关填给了不支持的图元：按共享的适用表报错，表在 shared.ts 里只有一份。
+ *  在这里再枚一遍图元，就会出现"报错说能用、渲染层不认"这种两边不一致。 */
+const unsupported = (name: ExpressionSwitch, kind: string): string =>
+  `spec.${name} 只对 ${supportedKinds(name).join(' / ')} 有意义（${kind} 用不上它）`;
+
 /** 解析第二个度量。它就是"同一张图里的另一条线 + 一个独立的右侧数值轴"，
  *  存在的意义是两个量纲差很远的东西能放一起对照。目前只开折线。 */
-const parseSecond = (raw: unknown, kind: string): { second: SecondMetric | null } | { error: string } => {
+const parseSecond = (raw: unknown, kind: ChartKind): { second: SecondMetric | null } | { error: string } => {
   if (raw === undefined || raw === null) return { second: null };
   if (typeof raw !== 'object' || Array.isArray(raw)) {
     return { error: 'spec.second 必须是对象：value 必填（第二个度量的列名），可选 kind / label / unit' };
   }
-  if (kind === 'pie' || kind === 'scatter') {
-    return { error: `spec.second 只对 bar / column / line / area 有意义（${kind} 用不上它）` };
-  }
+  if (!supports(kind, 'second')) return { error: unsupported('second', kind) };
   const record = raw as Record<string, unknown>;
   if (record.kind !== undefined && record.kind !== 'line') {
     return { error: `spec.second.kind 目前只支持 "line"，收到 ${JSON.stringify(record.kind)}` };
@@ -320,14 +321,12 @@ const parseSecond = (raw: unknown, kind: string): { second: SecondMetric | null 
 };
 
 /** 解析参考线 / 阈值线：数值轴上的阈值（axis 默认 y），或类别轴上的一次事件（axis: "x"）。 */
-const parseMarks = (raw: unknown, kind: string): { marks: MarkLine[] } | { error: string } => {
+const parseMarks = (raw: unknown, kind: ChartKind): { marks: MarkLine[] } | { error: string } => {
   if (raw === undefined || raw === null) return { marks: [] };
   if (!Array.isArray(raw) || raw.length === 0 || raw.length > 12) {
     return { error: 'spec.marks 必须是 1–12 条参考线的数组' };
   }
-  if (kind === 'pie' || kind === 'scatter') {
-    return { error: `spec.marks 只对 bar / column / line / area 有意义（${kind} 用不上它）` };
-  }
+  if (!supports(kind, 'marks')) return { error: unsupported('marks', kind) };
   const marks: MarkLine[] = [];
   for (const item of raw) {
     if (item === null || typeof item !== 'object' || Array.isArray(item)) {
@@ -447,23 +446,17 @@ const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: string } =
     if (!(CHART_STACKS as readonly unknown[]).includes(record.stack)) {
       return { error: `spec.stack 必须是 ${CHART_STACKS.join(' / ')} 之一，收到 ${JSON.stringify(record.stack)}` };
     }
-    if (spec.kind !== 'column' && spec.kind !== 'area') {
-      return { error: `spec.stack 只对 column 与 area 有意义（${spec.kind} 用不上它）` };
-    }
+    if (!supports(spec.kind, 'stack')) return { error: unsupported('stack', spec.kind) };
     spec.stack = record.stack as ChartSpec['stack'];
   }
   if (record.bins !== undefined && record.bins !== null) {
     if (typeof record.bins !== 'number' || !Number.isInteger(record.bins) || record.bins < 1 || record.bins > 200) {
       return { error: `spec.bins 必须是 1–200 的整数，收到 ${JSON.stringify(record.bins)}` };
     }
-    if (spec.kind !== 'histogram') {
-      return { error: `spec.bins 只对 histogram 有意义（${spec.kind} 用不上它）` };
-    }
+    if (!supports(spec.kind, 'bins')) return { error: unsupported('bins', spec.kind) };
     spec.bins = record.bins;
   }
-  if (spec.size !== null && spec.kind !== 'scatter') {
-    return { error: `spec.size 只对 scatter 有意义（把这一列映射成点的大小，${spec.kind} 用不上它）` };
-  }
+  if (spec.size !== null && !supports(spec.kind, 'size')) return { error: unsupported('size', spec.kind) };
   if (spec.kind === 'histogram' && spec.value === '') {
     return { error: 'histogram 需要 spec.value（要统计分布的那一列数值）' };
   }
@@ -474,6 +467,16 @@ const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: string } =
   }
   if (spec.kind === 'scatter' && (spec.x === '' || spec.value === '')) {
     return { error: 'scatter 需要 spec.x 与 spec.value（两个数值列），可选 spec.size（点大小）' };
+  }
+  // 矩阵与雷达都要"两个类别维度 + 一个数值维度"：一个类别当横轴（矩阵）/ 当指标（雷达），
+  // 另一个当纵轴（矩阵）/ 当被比较的对象（雷达）。少了第二个维度形状就不成立，所以这里当必填。
+  if (spec.kind === 'heatmap' || spec.kind === 'radar') {
+    if (spec.x === '' || spec.value === '' || spec.series === null) {
+      return {
+        error: `${spec.kind} 需要 spec.x（${spec.kind === 'heatmap' ? '横轴类别' : '指标'}）、`
+          + `spec.series（${spec.kind === 'heatmap' ? '纵轴类别' : '被比较的对象'}）与 spec.value（数值列）`,
+      };
+    }
   }
   if (spec.kind === 'bar' && (spec.x === '' || spec.value === '')) {
     return { error: 'bar 需要 spec.x（类别列）与 spec.value（数值列）' };
@@ -570,6 +573,43 @@ const lineProblem = (rows: readonly Record<string, unknown>[], spec: ChartSpec):
     if (rawValue !== null && rawValue !== undefined && !Number.isFinite(Number(rawValue))) {
       return `数值列 ${valueColumn} 的值 ${JSON.stringify(rawValue)} 既不是有限数值也不是 null`;
     }
+  }
+  return null;
+};
+
+/** 数据形状不满足图元的要求时报错：规格写对了、数据不对，同样画不出那张图。
+ *  两个渲染入口（oks_chart 与报告里的 chart 块）共用这一份，免得各判一次、改的时候只想起一处。 */
+const shapeProblem = (rows: readonly Record<string, unknown>[], spec: ChartSpec): string | null => {
+  if (spec.kind === 'line') return lineProblem(rows, spec);
+  if (spec.kind !== 'radar' || rows.length === 0) return null;
+  // 雷达的轴就是指标：少于三根轴围不出形状，画出来像一张坏掉的折线。
+  const indicators = [...new Set(rows.map((row) => String(row[spec.x] ?? '')))];
+  if (indicators.length < 3) {
+    return `radar 至少需要 3 个指标（spec.x 的不同取值），这一列只有 ${indicators.length} 个：`
+      + '比较两个量用 bar / column，看一组值怎么分布用 box';
+  }
+  // 到这里 series 一定非空（parseChartSpec 要求的），类型上收一下。
+  const seriesColumn = spec.series;
+  if (seriesColumn === null) return null;
+  // 每个对象在每个指标上都要有值。缺的那个顶点 echarts 会画在圆心，看起来就是"这一维是 0"，
+  // 而"没测到"与"就是 0"是两件事——矩阵对缺格留白，雷达没有留白这个选项，所以只能要求补齐。
+  const objects = [...new Set(rows.map((row) => String(row[seriesColumn] ?? '')))];
+  const measured = new Set<string>();
+  for (const row of rows) {
+    if (toNumber(row[spec.value]) === null) continue;
+    measured.add(`${String(row[seriesColumn] ?? '')}\u0000${String(row[spec.x] ?? '')}`);
+  }
+  const gaps: string[] = [];
+  for (const object of objects) {
+    for (const indicator of indicators) {
+      if (!measured.has(`${object}\u0000${indicator}`)) gaps.push(`${object} × ${indicator}`);
+    }
+  }
+  if (gaps.length > 0) {
+    const shown = gaps.slice(0, 3).join('、');
+    return `radar 要求每个对象在每个指标上都有值，缺 ${gaps.length} 处（${shown}${gaps.length > 3 ? ' …' : ''}）：`
+      + '缺的顶点会被画在圆心，看起来像"这一维是 0"。要表达 0 就把那一行写进数据，'
+      + '否则把指标拆成不同的图，或换 column / heatmap。';
   }
   return null;
 };
@@ -1122,14 +1162,14 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         properties: {
           spec: {
             type: 'object',
-            description: 'Figure specification. kind is required: bar needs x (the category column) and value; column needs x and value — one bar per category, or grouped bars when series is given, or stacked ones when stack is given; line needs x, value and xType (number or time), plus an optional series for several lines; area is a line with the region below it filled, and takes the same fields as line (stack works here too); pie needs x (the slice label column) and value, and only positive values are drawn; scatter needs x and value (two numeric columns) and takes an optional size column for bubble charts; histogram needs only value (one numeric column) and shows how those values are distributed; box needs x (the category) and value, and draws one box per category. title / xLabel / valueLabel / unit are display text you supply.',
+            description: 'Figure specification. kind is required: bar needs x (the category column) and value; column needs x and value — one bar per category, or grouped bars when series is given, or stacked ones when stack is given; line needs x and value (xType is inferred from the column, override it with number or time), plus an optional series for several lines; area is a line with the region below it filled, and takes the same fields as line (stack works here too); pie needs x (the slice label column) and value, and only positive values are drawn; scatter needs x and value (two numeric columns) and takes an optional size column for bubble charts; histogram needs only value (one numeric column) and shows how those values are distributed; box needs x (the category) and value, and draws one box per category; heatmap needs x (the horizontal category), series (the vertical category) and value, and colours each cell by its value — a combination with no row stays blank, not zero; radar needs x (the indicator), series (the object compared) and value, at least three indicators, and gives every indicator its own scale. title / xLabel / valueLabel / unit are display text you supply.',
             properties: {
               kind: { type: 'string', enum: [...CHART_KINDS], description: 'Which figure to draw.' },
               bins: { type: 'number', description: 'histogram only: how many bins to cut the value range into. Omit to let it pick by sample count.' },
               title: { type: 'string', description: 'Title shown above the figure.' },
-              x: { type: 'string', description: 'bar / column: the category column. line / area: the horizontal-axis column. pie: the slice label column. scatter: the numeric column drawn on the horizontal axis.' },
-              value: { type: 'string', description: 'The numeric column drawn as bar length, column height, line height, area height, slice size or the vertical position of a scatter point.' },
-              series: { type: 'string', description: 'line / area: one line (or area) per distinct value. column: optional — each distinct value becomes its own bar inside every category (stacked when stack is given); omit it for a single bar per category.' },
+              x: { type: 'string', description: 'bar / column: the category column. line / area: the horizontal-axis column. pie: the slice label column. scatter: the numeric column drawn on the horizontal axis. histogram: not used. heatmap: the horizontal category. radar: the indicator.' },
+              value: { type: 'string', description: 'The numeric column drawn as bar length, column height, line height, area height, slice size, the vertical position of a scatter point, the cell colour of a heatmap or the distance from the centre in a radar.' },
+              series: { type: 'string', description: 'line / area: one line (or area) per distinct value. bar: optional — each distinct value becomes its own bar inside every category, drawn side by side along the vertical axis. column: optional — each distinct value becomes its own bar inside every category (stacked when stack is given); omit it for a single bar per category. heatmap: required — the vertical category, one row of the matrix per distinct value. radar: required — the object being compared, one closed line per distinct value.' },
               xType: { type: 'string', enum: ['number', 'time'], description: 'line only: how to read the x column. time accepts RFC 3339 text or epoch milliseconds.' },
               xLabel: { type: 'string', description: 'Axis label for x (display text).' },
               valueLabel: { type: 'string', description: 'Axis label for the value (display text).' },
@@ -1167,8 +1207,8 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
                 description: 'Optional expression overrides that apply to every figure kind. All fields optional.',
                 properties: {
                   sort: { type: 'string', enum: [...CHART_SORTS], description: 'Category order. Default "none" keeps the order the rows came in — data often carries a meaningful order already (severity levels, for instance).' },
-                  labels: { type: 'boolean', description: 'Draw the value next to each bar, point or slice. Default false — turn it on when the reader needs exact numbers rather than the axis.' },
-                  colors: { type: 'array', items: { type: 'string' }, description: 'Override the palette with up to 12 #rrggbb values; they are used in order for the series (or slices).' },
+                  labels: { type: 'boolean', description: 'Draw the values on the figure: next to each bar, point or slice, or inside each heatmap cell. Default false, except on a heatmap with at most 30 cells, where the numbers are written in by default so the matrix doubles as a table.' },
+                  colors: { type: 'array', items: { type: 'string' }, description: 'Override the palette with up to 12 #rrggbb values; they are used in order for the series (or slices). On a heatmap there are no series to colour: one colour is the anchor the ramp is built from (light to dark), several become the ramp itself.' },
                 },
                 required: [],
                 additionalProperties: false,
@@ -1233,13 +1273,11 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           throw new Error(`这些列不在数据里：${missing.join(', ')}。可用的列：${columns.join(', ') || '(没有列)'}`);
         }
         const inferredXType = applyInferredXType(spec, rows);
-        if (spec.kind === 'line') {
-          const issue = lineProblem(rows, spec);
-          if (issue !== null) throw new Error(issue);
-        }
+        const issue = shapeProblem(rows, spec);
+        if (issue !== null) throw new Error(issue);
         // 服务端出图：画成 SVG 落盘，并把「可以原样粘进回答」的那一行交给 agent。
         // 来源标识画进图里——图离开这段对话也要能自证数据来自查询还是 agent 自填。
-        // 五种图元都走同一条 echarts 链路：规格 + 结果行 → option → SVG。
+        // 所有图元都走同一条 echarts 链路：规格 + 结果行 → option → SVG。
         const sourceLabel = source === 'query' ? '基于查询结果' : 'agent 自主填写';
         const { option, height } = buildOption(rows, { ...spec, sourceLabel });
         const svg = renderEchartsSvg(option, CHART_WIDTH, height);

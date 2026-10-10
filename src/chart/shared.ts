@@ -1,14 +1,43 @@
 // 出图与报告的公共件：色板、取数与排版规则。
 //
-// 五种图元（bar / column / line / pie / area）都建在这些之上，语义（沿用数据顺序、
-// 缺失组合留空、来源标识、字号随数据密度缩放）在这里统一保证。
+// 十种图元（bar / line / column / pie / area / scatter / histogram / box / heatmap / radar）
+// 都建在这些之上，语义（沿用数据顺序、缺失组合留空、来源标识、字号随数据密度缩放）在这里统一保证。
 
 export type Row = Record<string, unknown>;
 
 /** 全部图元。清单只此一份：schema 的枚举、规格的类型、渲染的分支都从这里取，
  *  否则加一个图元要改三处，漏掉一处就是"工具收下了、渲染认不得"（或反过来）。 */
-export const CHART_KINDS = ['bar', 'line', 'column', 'pie', 'area', 'scatter', 'histogram', 'box'] as const;
+export const CHART_KINDS = [
+  'bar', 'line', 'column', 'pie', 'area', 'scatter', 'histogram', 'box', 'heatmap', 'radar',
+] as const;
 export type ChartKind = (typeof CHART_KINDS)[number];
+
+/** 图元专属开关各自适用的图元。
+ *
+ *  这份表只此一份：校验（填给不支持的图元就报错）与渲染（这个开关在这张图上生不生效）都从它取。
+ *  两处各写一遍就会漏——漏的后果不是报错，而是开关在这张图上**静默无效**。 */
+export const EXPRESSION_SUPPORT = {
+  /** 堆叠：把同一个分组里的序列叠起来。 */
+  stack: ['column', 'area'],
+  /** 气泡：把第三列映射成点的大小。 */
+  size: ['scatter'],
+  /** 分箱：直方图的箱子数。 */
+  bins: ['histogram'],
+  /** 第二个度量：另一条线配一个独立的第二数值轴。 */
+  second: ['bar', 'column', 'line', 'area'],
+  /** 参考线 / 阈值线。 */
+  marks: ['bar', 'column', 'line', 'area'],
+} as const;
+
+/** 图元专属开关的名字。 */
+export type ExpressionSwitch = keyof typeof EXPRESSION_SUPPORT;
+
+/** 这个开关在这张图上生不生效。 */
+export const supports = (kind: ChartKind, feature: ExpressionSwitch): boolean =>
+  (EXPRESSION_SUPPORT[feature] as readonly ChartKind[]).includes(kind);
+
+/** 开关适用的图元清单，报错时用它告诉 agent 该填给谁。 */
+export const supportedKinds = (feature: ExpressionSwitch): readonly ChartKind[] => EXPRESSION_SUPPORT[feature];
 
 /** 色板：同一个序列在不同图元里颜色保持一致。 */
 export const SERIES_COLORS = ['#5a8cf0', '#e0803a', '#4aa96c', '#c0567a', '#8a6ad0'];
@@ -155,20 +184,69 @@ export const resolveLayout = (options: {
   tickCount: options.overrides.tickCount ?? DEFAULT_TICK_COUNT,
 });
 
+/** 颜色在色板里的样子：`#rrggbb` → 三个通道。不是这个形状的就当成中性灰，
+ *  免得把一处笔误放大成一片崩溃——画出来的颜色不对，比整张图画不出来好定位。 */
+const rgbOf = (hex: string): [number, number, number] => {
+  const match = /^#([0-9a-fA-F]{6})$/.exec(hex);
+  if (match === null) return [128, 128, 128];
+  const value = Number.parseInt(match[1], 16);
+  return [(value >> 16) & 0xff, (value >> 8) & 0xff, value & 0xff];
+};
+
+const hexOf = ([r, g, b]: [number, number, number]): string =>
+  `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`;
+
 /** 把颜色调暗一档，用于折线 / 面积的描边。
  *
  *  描边和填充同色时等于没有描边——层与层之间因为有别的颜色垫在下面还看得出来，
  *  但**最上面那条外缘线**是同色叠同色，直接消失，整张图看着像"缺了顶部的细节"。
  */
 export const darken = (hex: string, amount = 0.26): string => {
-  const match = /^#([0-9a-fA-F]{6})$/.exec(hex);
-  if (match === null) return hex;
-  const value = Number.parseInt(match[1], 16);
   const scale = (channel: number): number => Math.max(0, Math.round(channel * (1 - amount)));
-  const r = scale((value >> 16) & 0xff);
-  const g = scale((value >> 8) & 0xff);
-  const b = scale(value & 0xff);
-  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, '0')}`;
+  const [r, g, b] = rgbOf(hex);
+  return hexOf([scale(r), scale(g), scale(b)]);
+};
+
+/** 把颜色调浅一档（向白色混合），用于色阶的浅端。它是 `darken` 的镜像。 */
+export const tint = (hex: string, amount = 0.9): string => {
+  const scale = (channel: number): number => Math.min(255, Math.round(channel + (255 - channel) * amount));
+  const [r, g, b] = rgbOf(hex);
+  return hexOf([scale(r), scale(g), scale(b)]);
+};
+
+/** 数值到颜色的连续色阶。
+ *
+ *  序列色板回答"第几个序列用什么颜色"，色阶回答"数值多大用什么颜色"——两件事，共用 `style.colors`：
+ *  agent 给一个颜色就由它生成"浅 → 深"，给多个就按它们插值（于是红-黄-绿的等级色阶也表达得了）。
+ */
+export const rampStops = (colors: readonly string[] | undefined): string[] => {
+  const base = colors === undefined || colors.length === 0 ? SERIES_COLORS[0] : colors[0];
+  if (colors !== undefined && colors.length > 1) return [...colors];
+  return [tint(base, 0.92), tint(base, 0.55), base, darken(base, 0.42)];
+};
+
+/** 色阶上某一点的颜色：在相邻两个锚点之间按 sRGB 线性插值——echarts 取色走的也是这条路径，
+ *  所以用它算出来的深浅，和格子上真正的底色是一致的。 */
+export const rampAt = (stops: readonly string[], t: number): string => {
+  const scaled = Math.max(0, Math.min(1, t)) * (stops.length - 1);
+  const index = Math.min(stops.length - 2, Math.floor(scaled));
+  const local = scaled - index;
+  const from = rgbOf(stops[index]);
+  const to = rgbOf(stops[Math.min(index + 1, stops.length - 1)]);
+  const mix = (a: number, b: number): number => Math.round(a + (b - a) * local);
+  return hexOf([mix(from[0], to[0]), mix(from[1], to[1]), mix(from[2], to[2])]);
+};
+
+/** 放在这个底色上的文字该用深色还是浅色：取对比度更高的那一边。
+ *  色阶中段的颜色对深浅两种文字都不友好（两边都只有 3.5:1 上下），所以只能挑好的一边；
+ *  分界点取"与两者的对比度相等"的那个亮度，不是看着差不多的一刀切。 */
+export const readableOn = (background: string): string => {
+  const channels = rgbOf(background).map((channel) => {
+    const value = channel / 255;
+    return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  const luminance = 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+  return luminance < 0.249 ? '#ffffff' : '#2a3540';
 };
 
 /** 从一列值推断横轴怎么读。

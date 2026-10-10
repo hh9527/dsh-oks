@@ -7,19 +7,30 @@
  *  宽高必须在 init 时给定：SSR 模式下没有 DOM 可测量，echarts 不做自适应。
  */
 import * as echarts from 'echarts/core';
-import { BarChart, BoxplotChart, LineChart, PieChart, ScatterChart } from 'echarts/charts';
-import { GraphicComponent, GridComponent, LegendComponent, MarkLineComponent, TitleComponent, TooltipComponent } from 'echarts/components';
+import { BarChart, BoxplotChart, HeatmapChart, LineChart, PieChart, RadarChart, ScatterChart } from 'echarts/charts';
+import {
+  GraphicComponent,
+  GridComponent,
+  LegendComponent,
+  MarkLineComponent,
+  TitleComponent,
+  TooltipComponent,
+  VisualMapComponent,
+} from 'echarts/components';
 import { SVGRenderer } from 'echarts/renderers';
 import type { EChartsCoreOption } from 'echarts/core';
 
 /** 只注册用得到的图表与组件——全量 echarts 约 1 MB，按需导入能显著小于它。
  *  这里漏注册任何一项都不报错：echarts 只往 stderr 打一行警告，然后静默丢掉那部分图形
- *  （graphic 丢了来源标识、markLine 丢了参考线、ScatterChart 丢了整张图）。 */
+ *  （graphic 丢了来源标识、markLine 丢了参考线、ScatterChart 丢了整张图、VisualMapComponent
+ *  丢了矩阵的颜色——矩阵会画成一格一个默认色的白板）。 */
 echarts.use([
   BarChart,
   BoxplotChart,
+  HeatmapChart,
   LineChart,
   PieChart,
+  RadarChart,
   ScatterChart,
   GraphicComponent,
   GridComponent,
@@ -27,6 +38,7 @@ echarts.use([
   MarkLineComponent,
   TitleComponent,
   TooltipComponent,
+  VisualMapComponent,
   SVGRenderer,
 ]);
 

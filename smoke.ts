@@ -13,6 +13,7 @@ import { apply, buildOption, CHART_WIDTH, renderEchartsSvg } from './dist/index.
 import { applyOps, encode, parseMoment } from './src/time.ts';
 import { singleFlight } from './src/single-flight.ts';
 import { intentKey } from './src/key.ts';
+import { CHART_KINDS, supports } from './src/chart/shared.ts';
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
@@ -1638,6 +1639,58 @@ console.log('=== oks_chart（服务端出图）===');
   if (!boxSvg.includes('甲') || !boxSvg.includes('乙')) throw new Error('箱线图每个类别一个箱');
   console.log('  箱线图：两个类别都在');
 
+  // 矩阵：两个类别维度 + 数值决定深浅。它是分组柱的另一种画法，同一份三元组。
+  const heatRows = [
+    { day: '周一', level: '严重', n: 12 }, { day: '周二', level: '严重', n: 18 },
+    { day: '周一', level: '重要', n: 25 }, { day: '周二', level: '重要', n: 31 },
+    { day: '周一', level: '次要', n: 40 },
+    { day: '周一', level: '提示', n: 61 }, { day: '周二', level: '提示', n: 74 },
+  ];
+  const heatSpec = { kind: 'heatmap', title: '等级 × 星期', x: 'day', value: 'n', series: 'level' };
+  const heat = await call('oks_chart', { spec: heatSpec, data: heatRows, name: 'probe_heatmap' });
+  const heatSvg = readFileSync(resolve(DEV_ROOT, heat.value.svgSrc), 'utf8');
+  if (!heatSvg.startsWith('<svg') || !heatSvg.includes('<path')) throw new Error('矩阵应当落一份有图形的 SVG');
+  const heatBuilt = buildOption(heatRows, {
+    kind: 'heatmap', title: null, sourceLabel: 'agent 自主填写', x: 'day', value: 'n', series: 'level',
+    xType: null, xLabel: null, valueLabel: null, unit: null,
+  });
+  const heatCells = heatBuilt.option.series[0].data;
+  // 4 个等级 × 2 天 = 8 个组合，数据里只有 7 个：缺的那格不画，也不补 0。
+  if (heatCells.length !== 7) throw new Error(`矩阵应当只画有数据的格子（8 个组合里 7 个有数据，画了 ${heatCells.length} 个）`);
+  // 颜色标尺：两端是数据里的最小 / 最大值，中间是一支连续色阶。
+  const scale = heatBuilt.option.visualMap;
+  if (scale.min !== 12 || scale.max !== 74) throw new Error(`颜色标尺的上下限应当是 12 与 74，收到 ${scale.min} / ${scale.max}`);
+  if (!Array.isArray(scale.inRange.color) || scale.inRange.color.length < 3) {
+    throw new Error('矩阵该有一条连续色阶，不是一组序列色板');
+  }
+  // 格子里的数字：深色格子配浅字、浅色格子配深字——中段两边都只有 3.5:1，取好的那一边。
+  const labelColorOf = (value) => heatCells.find((cell) => Array.isArray(cell?.value) && cell.value[2] === value)?.label?.color;
+  if (labelColorOf(74) !== '#ffffff') throw new Error(`最深那格的数字该用浅色，收到 ${labelColorOf(74)}`);
+  if (labelColorOf(12) !== '#2a3540') throw new Error(`最浅那格的数字该用深色，收到 ${labelColorOf(12)}`);
+  console.log(`  矩阵：8 个组合画了 ${heatCells.length} 格（缺格留白）· 色标 12–74`);
+
+  // 雷达：一圈指标轴，每个对象一条闭合折线，每个指标一根自己的量纲。
+  const radarRows = [
+    { metric: '可用率', device: '核心', v: 99 }, { metric: '时延', device: '核心', v: 12 },
+    { metric: '端口占用', device: '核心', v: 71 },
+    { metric: '可用率', device: '汇聚', v: 96 }, { metric: '时延', device: '汇聚', v: 31 },
+    { metric: '端口占用', device: '汇聚', v: 88 },
+  ];
+  const radarSpec = { kind: 'radar', title: '两台设备', x: 'metric', value: 'v', series: 'device' };
+  const radar = await call('oks_chart', { spec: radarSpec, data: radarRows, name: 'probe_radar' });
+  const radarSvg = readFileSync(resolve(DEV_ROOT, radar.value.svgSrc), 'utf8');
+  if (!radarSvg.includes('核心') || !radarSvg.includes('汇聚')) throw new Error('雷达上的每个对象都该出现（图例）');
+  const radarBuilt = buildOption(radarRows, {
+    kind: 'radar', title: null, sourceLabel: 'agent 自主填写', x: 'metric', value: 'v', series: 'device',
+    xType: null, xLabel: null, valueLabel: null, unit: null,
+  });
+  const peaks = radarBuilt.option.radar.indicator.map((entry) => entry.max);
+  // 上限取 1/2/5 的整十倍数：时延最大 31 → 50，可用率最大 99 → 100。
+  // 三个指标共用一根轴的话，时延会被压成贴着圆心的一道。
+  if (JSON.stringify(peaks) !== '[100,50,100]') throw new Error(`每个指标该有自己的量纲，收到 ${JSON.stringify(peaks)}`);
+  console.log(`  雷达：3 个指标各一根量纲 ${JSON.stringify(peaks)} · 2 个对象`);
+
+
   // 轴名里的单位不该拼两遍：agent 常把单位写进 valueLabel，同时又给 unit（真机反馈）。
   const dupUnit = await call('oks_chart', {
     spec: { kind: 'column', x: 'm', value: 'cpu', valueLabel: 'CPU 使用率 (%)', unit: '%' },
@@ -1730,6 +1783,129 @@ console.log('=== oks_chart（服务端出图）===');
   }
 
   // 规格与图的校验：这些都要在画图之前被拒。
+  // 分组柱 vs 堆叠柱：真机上报回来的问题——不给 stack 时柱子变成多段的一根（永远堆叠）。
+  // 原来这里只断言"有图形"，而那种断言抓不到它：堆叠也是一个 <path>。所以要断言几何关系。
+  const groupRows = [
+    { q: 'Q1', c: '线上', v: 320 }, { q: 'Q1', c: '门店', v: 180 }, { q: 'Q1', c: '政企', v: 90 },
+    { q: 'Q2', c: '线上', v: 360 }, { q: 'Q2', c: '门店', v: 175 }, { q: 'Q2', c: '政企', v: 120 },
+  ];
+  // 柱子是 d="M<x> <y>l<宽> 0l0 <高>l-<宽> 0Z"：竖柱看 x 与底边 y，横条看 y 与厚度。
+  const barsOf = (svg) => [...svg.matchAll(/<path\b[^>]*>/g)].flatMap((match) => {
+    const d = /d="M([\d.]+) ([\d.]+)l([\d.]+) 0l0 (-?[\d.]+)l-/.exec(match[0]);
+    const fill = /fill="(#[0-9a-f]{6})"/.exec(match[0]);
+    return d === null || fill === null ? [] : [{ x: Number(d[1]), y: Number(d[2]), w: Number(d[3]), h: Number(d[4]) }];
+  });
+  const barSpread = (values) => Math.max(...values) - Math.min(...values);
+  const columnSpec = { kind: 'column', x: 'q', value: 'v', series: 'c' };
+  const grouped = await call('oks_chart', { spec: columnSpec, data: groupRows, name: 'probe_grouped' });
+  const stacked = await call('oks_chart', { spec: { ...columnSpec, stack: 'total' }, data: groupRows, name: 'probe_stacked' });
+  const groupedBars = barsOf(readFileSync(resolve(DEV_ROOT, grouped.value.svgSrc), 'utf8'));
+  const stackedBars = barsOf(readFileSync(resolve(DEV_ROOT, stacked.value.svgSrc), 'utf8'));
+  const distinctX = (bars) => [...new Set(bars.map((bar) => bar.x))];
+  // 并排：6 根柱子各占一个 x，而且都踩在同一条基线上。
+  if (groupedBars.length !== 6 || distinctX(groupedBars).length !== 6 || barSpread(groupedBars.map((bar) => bar.y)) > 1) {
+    throw new Error(`不给 stack 时柱子应当并排（各占一个 x、同一条基线），实际 ${JSON.stringify(groupedBars)}`);
+  }
+  // 堆叠：一个类别一个 x（2 个类别 2 个位置），同一个 x 上垒着三段、底边各不相同。
+  const stackedX = distinctX(stackedBars);
+  const legs = stackedBars.filter((bar) => bar.x === stackedX[0]).map((bar) => bar.y);
+  if (stackedX.length !== 2 || legs.length !== 3 || barSpread(legs) < 10) {
+    throw new Error(`stack: total 时柱子应当垒起来（同一个 x、三段不同的底），实际 ${JSON.stringify(stackedBars)}`);
+  }
+  // 同一个默认值不落在别的图元上：area 不给 stack 是叠着画、line 从来不分段。
+  const stackOf = (kind, spec) => buildOption(groupRows, {
+    kind, title: null, sourceLabel: 'agent 自主填写', x: 'q', value: 'v', series: 'c',
+    xType: null, xLabel: null, valueLabel: null, unit: null, ...spec,
+  }).option.series.map((item) => item.stack ?? null);
+  if (JSON.stringify(stackOf('area', {})) !== '[null,null,null]') throw new Error('area 不给 stack 时不该堆叠');
+  if (JSON.stringify(stackOf('line', {})) !== '[null,null,null]') throw new Error('line 没有堆叠这个说法');
+  console.log('  分组柱 vs 堆叠柱：并排与垒起各就各位');
+
+  // 横条图 + series：横向的分组条。它原来按"类别数"算高度，一个类别三条时每根只有 5px 高。
+  const groupedBar = await call('oks_chart', {
+    spec: { kind: 'bar', x: 'q', value: 'v', series: 'c' },
+    data: groupRows,
+    name: 'probe_bar_grouped',
+  });
+  const barBars = barsOf(readFileSync(resolve(DEV_ROOT, groupedBar.value.svgSrc), 'utf8'));
+  if (barBars.length !== 6) throw new Error(`横条分组应当是 6 条，收到 ${barBars.length}`);
+  if (new Set(barBars.map((bar) => bar.y)).size !== 6) throw new Error('横条分组应当是 6 条各自一个 y');
+  if (Math.min(...barBars.map((bar) => Math.abs(bar.h))) < 12) {
+    throw new Error(`分组横条的厚度应当够读（≥12px），实际 ${Math.min(...barBars.map((bar) => Math.abs(bar.h)))}px`);
+  }
+  console.log(`  分组横条：6 条各自 ${Math.abs(barBars[0].h).toFixed(1)}px 厚`);
+
+  // 折线的数值轴跟着数据收紧（柱与面积仍然从 0 起）。真机报告里的图 9/图 10 是这事的第一现场：
+  // 可用率 98.4–99.9% 落在 0–100 的轴上，三条线的全部差距只有 3px，图注说的"一起下沉"根本看不见。
+  const kpiRows = ['1月', '2月', '3月'].flatMap((month, index) => [
+    { month, device: '甲', v: [99.8, 99.4, 99.9][index] },
+    { month, device: '乙', v: [99.6, 98.41, 99.9][index] },
+  ]);
+  const axisTicksOf = (svg) => [...svg.matchAll(/<text[^>]*>([^<]{1,12})<\/text>/g)]
+    .map((match) => match[1].trim()).filter((text) => /^-?[\d.]+$/.test(text)).map(Number);
+  const lineSpec = { kind: 'line', x: 'month', value: 'v', series: 'device', unit: '%' };
+  const kpiLine = await call('oks_chart', { spec: lineSpec, data: kpiRows, name: 'probe_line_kpi' });
+  const lineTicks = axisTicksOf(readFileSync(resolve(DEV_ROOT, kpiLine.value.svgSrc), 'utf8'));
+  if (Math.min(...lineTicks) < 90) {
+    throw new Error(`折线的数值轴应当贴住数据（98.4% 起），实际最低刻度 ${Math.min(...lineTicks)}`);
+  }
+  // 面积与柱不从 0 起会说谎（长度/面积本身就是量），所以它们照旧。
+  const kpiArea = await call('oks_chart', { spec: { ...lineSpec, kind: 'area' }, data: kpiRows, name: 'probe_area_kpi' });
+  const areaTicks = axisTicksOf(readFileSync(resolve(DEV_ROOT, kpiArea.value.svgSrc), 'utf8'));
+  if (Math.min(...areaTicks) !== 0) throw new Error(`面积的数值轴应当从 0 起，实际最低刻度 ${Math.min(...areaTicks)}`);
+  // 轴收紧之后，比数据还低的参考线不能像上一波那样静默消失。
+  const marked = await call('oks_chart', {
+    spec: { ...lineSpec, marks: [{ value: 98, label: '可用率下限' }] },
+    data: kpiRows,
+    name: 'probe_line_mark_low',
+  });
+  const markedSvg = readFileSync(resolve(DEV_ROOT, marked.value.svgSrc), 'utf8');
+  if (!markedSvg.includes('可用率下限')) throw new Error('低于数据的参考线也该画出来（轴要为它让出下界）');
+  console.log(`  折线轴收紧：线图最低刻度 ${Math.min(...lineTicks)} · 面积图 ${Math.min(...areaTicks)} · 轴外阈值线仍在`);
+
+  // 图元专属开关的适用表只有一份（shared.ts）。把"开关 × 图元"逐个真跑一遍：
+  // 表里写支持的必须收下，不支持的必须按表报错。表改了而校验没跟上，这里当场露馅；
+  // 报错文案也必须是"spec.<开关>"这一条，免得它其实是因为别的原因被拒、看起来却像通过了。
+  const minimalSpec: Record<string, Record<string, unknown>> = {
+    bar: { x: 'k', value: 'w' },
+    line: { x: 'k', value: 'w' },
+    column: { x: 'k', value: 'w' },
+    pie: { x: 'k', value: 'w' },
+    area: { x: 'k', value: 'w' },
+    scatter: { x: 'w', value: 'w' },
+    histogram: { value: 'w' },
+    box: { x: 'k', value: 'w' },
+    heatmap: { x: 'k', value: 'w', series: 's' },
+    radar: { x: 'k', value: 'w', series: 's' },
+  };
+  const switchValue: Record<string, unknown> = {
+    stack: 'total', size: 'w', bins: 4, second: { value: 'w' }, marks: [{ value: 1 }],
+  };
+  // 一份能让所有图元都过关的数据：两个分组 × 三个类别（雷达因此有 3 个指标且没有缺口）。
+  const gridRows = ['a', 'b', 'c'].flatMap((k, i) => ['p', 'q'].map((s, j) => ({ k, s, w: i + j + 1 })));
+  let checked = 0;
+  for (const feature of Object.keys(switchValue)) {
+    for (const kind of CHART_KINDS) {
+      const expected = supports(kind, feature);
+      let message = '';
+      let accepted = true;
+      try {
+        await call('oks_chart', {
+          spec: { kind, ...minimalSpec[kind], [feature]: switchValue[feature] },
+          data: gridRows,
+        });
+      } catch (cause) { accepted = false; message = String(cause?.message ?? cause); }
+      if (accepted !== expected) {
+        throw new Error(`${kind} + ${feature}：表里写${expected ? '支持' : '不支持'}，实际${accepted ? '收下了' : '被拒了'}（${message.slice(0, 60)}）`);
+      }
+      if (!expected && !message.includes(`spec.${feature}`)) {
+        throw new Error(`${kind} + ${feature}：被拒的理由不是这个开关，而是 ${message.slice(0, 60)}`);
+      }
+      checked += 1;
+    }
+  }
+  console.log(`  开关适用表：${Object.keys(switchValue).length} 个开关 × ${CHART_KINDS.length} 种图元 = ${checked} 组，逐一核对`);
+
   const failures = [
     ['两个都缺', { spec: { kind: 'bar', x: 'a', value: 'b' } }],
     ['两个都给', { spec: { kind: 'bar', x: 'a', value: 'b' }, src: saved.dataSrc, data: [{}] }],
@@ -1752,6 +1928,14 @@ console.log('=== oks_chart（服务端出图）===');
     ['box 缺 x', { spec: { kind: 'box', value: 'v' }, data: [{ v: 1 }] }],
     ['bins 填给 column', { spec: { kind: 'column', x: 'label', value: 'value', bins: 5 }, data: [{ label: 'A', value: 1 }] }],
     ['bins 越界', { spec: { kind: 'histogram', value: 'value', bins: 999 }, data: [{ value: 1 }] }],
+    ['heatmap 缺 series', { spec: { kind: 'heatmap', x: 'day', value: 'n' }, data: [{ day: 'a', n: 1 }] }],
+    ['radar 缺 series', { spec: { kind: 'radar', x: 'm', value: 'v' }, data: [{ m: 'a', v: 1 }] }],
+    ['radar 指标不足 3', { spec: { kind: 'radar', x: 'm', value: 'v', series: 's' }, data: [{ m: 'a', s: 'x', v: 1 }, { m: 'b', s: 'x', v: 2 }] }],
+    // 雷达没有"留白"这个选项：缺的顶点 echarts 会画在圆心，看起来就是"这一维是 0"。
+    ['radar 有缺口', {
+      spec: { kind: 'radar', x: 'm', value: 'v', series: 's' },
+      data: [{ m: 'a', s: 'x', v: 1 }, { m: 'b', s: 'x', v: 2 }, { m: 'c', s: 'x', v: 3 }, { m: 'a', s: 'y', v: 4 }, { m: 'b', s: 'y', v: 5 }],
+    }],
     ['second 填给 pie', { spec: { kind: 'pie', x: 'label', value: 'value', second: { value: 'n' } }, data: [{ label: 'A', value: 1, n: 2 }] }],
     ['second 缺 value', { spec: { kind: 'column', x: 'label', series: 's', value: 'value', second: { label: 'x' } }, data: [{ label: 'A', s: 'p', value: 1 }] }],
     ['second.kind 非 line', { spec: { kind: 'column', x: 'label', series: 's', value: 'value', second: { value: 'n', kind: 'bar' } }, data: [{ label: 'A', s: 'p', value: 1, n: 2 }] }],
