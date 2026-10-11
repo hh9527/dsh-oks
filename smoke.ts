@@ -1739,6 +1739,26 @@ console.log('=== oks_chart（服务端出图）===');
   if (labelColorOf(12) !== '#2a3540') throw new Error(`最浅那格的数字该用深色，收到 ${labelColorOf(12)}`);
   console.log(`  矩阵：8 个组合画了 ${heatCells.length} 格（缺格留白）· 色标 12–74`);
 
+  // 最浅的那一格也要和"没数据留的白"分得开：真机上 21 个有数据的格子里有 13 个是 rgb(242,246,254)，
+  // 与纯白只差 (13,9,1)——同一张图里还有 15 个空格，读者分不出哪些格子在说话。
+  const wide = await call('oks_chart', {
+    spec: { kind: 'heatmap', x: 'k', value: 'v', series: 's' },
+    data: [
+      { k: 'a', s: '甲', v: 1 }, { k: 'b', s: '甲', v: 100 },
+      { k: 'a', s: '乙', v: 2 }, { k: 'b', s: '乙', v: 60 },
+    ],
+    name: 'probe_heatmap_light',
+  });
+  const wideSvg = readFileSync(resolve(DEV_ROOT, wide.value.svgSrc), 'utf8');
+  const fills = [...wideSvg.matchAll(/fill="rgb\((\d+),(\d+),(\d+)\)"/g)]
+    .map((match) => [Number(match[1]), Number(match[2]), Number(match[3])]);
+  const lightest = fills.reduce((best, fill) => (Math.min(...fill) > Math.min(...best) ? fill : best), [0, 0, 0]);
+  const gap = Math.max(...lightest.map((channel) => 255 - channel));
+  if (gap < 20) {
+    throw new Error(`矩阵最浅的一格与纯白只差 ${gap}（${lightest}）：有数据和没数据会分不开`);
+  }
+  console.log(`  矩阵最浅一格 ${lightest.join(',')}，与纯白差 ${gap}`);
+
   // 雷达：一圈指标轴，每个对象一条闭合折线，每个指标一根自己的量纲。
   const radarRows = [
     { metric: '可用率', device: '核心', v: 99 }, { metric: '时延', device: '核心', v: 12 },

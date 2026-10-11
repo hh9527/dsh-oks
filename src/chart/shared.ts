@@ -222,7 +222,10 @@ export const tint = (hex: string, amount = 0.9): string => {
 export const rampStops = (colors: readonly string[] | undefined): string[] => {
   const base = colors === undefined || colors.length === 0 ? SERIES_COLORS[0] : colors[0];
   if (colors !== undefined && colors.length > 1) return [...colors];
-  return [tint(base, 0.92), tint(base, 0.55), base, darken(base, 0.42)];
+  // 浅端只到 75% 白：再浅（92% 白 ≈ rgb(242,246,254)）时，"最小的那个值"和"没有数据留的白"
+  // 在屏幕上是同一个颜色——真机上就撞到过：21 个有数据的格子里 13 个落在这一档，
+  // 而同一张图里还有 15 个真正没数据的空格，读者分不出哪些格子是在说"这里只有 1 条"。
+  return [tint(base, 0.75), tint(base, 0.55), base, darken(base, 0.42)];
 };
 
 /** 色阶上某一点的颜色：在相邻两个锚点之间按 sRGB 线性插值——echarts 取色走的也是这条路径，
