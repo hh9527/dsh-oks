@@ -49,7 +49,7 @@ Node 按 URL 缓存 ESM 模块，所以：
 | `oks_references` | `{key, link?, kind?, skip?}` | 按 key **反向**找引用它的节点：回引用种类与引用方的 key。用来回答"哪个维度用了这套值域""哪个数据集声明了这个度量" |
 | `oks_info` | `{key:"<不透明字符串>"}` | 按 key 读一个知识节点（每次都向服务要，插件不缓存节点）。**入口是 `key:"index"`**（唯一可以凭记忆给出的 key）；之后按返回内容给出的 key 逐级继续——怎么继续、到哪一层，节点自己的说明会回答。key 一律原样传递，**不要构造、切分或解码** |
 | `oks_check_intent` | `{intents:{<名>:Intent}}` | **只校验**：按名字回结论，通过的项给出 `key`（该项 Intent 的标识，提交查询时原样带回）。每个 Intent 必须带顶层 `limit`（1..100）：它是 Intent 的一部分、也参与哈希。不回查询语句，也不碰数据——迭代 Intent 形状时用它 |
-| `oks_query` | `{intents:{<名>:{intent,key}}}` | 核 key 后**只读执行**：每个成功项写进 `<工作区>/.data/<名>-<key>-<at>.json`，回执只给 `dataSrc`、列信息与行数——**数据行与语句都不进这段对话**（数据按需读回，语句在执行记录与呈现记录里）；失败项按 `key_mismatch` / `rejected` / `query_error` / `save_error` 分别报告 |
+| `oks_query` | `{intents:{<名>:{intent,key}}}` | 核 key 后**只读执行**：每个成功项写进 `<工作区>/.data/<时间>-<名>-<内容哈希>.query.json`，回执只给 `dataSrc`、列信息与行数——**数据行与语句都不进这段对话**（数据按需读回，语句在执行记录与呈现记录里）；失败项按 `key_mismatch` / `rejected` / `query_error` / `save_error` 分别报告 |
 | `oks_jaq_result` | `{src, query}` | 在结果文件上做**结构化查询**：`query` 是作用在**行数组**上的 jaq（与 jq 兼容）表达式——`.[] \| select(.count > 100)`、`.[] \| {name, total}`、`sort_by(.total) \| reverse \| .[0:5]`。表达式决定取回什么，按需投影即可；结果文件的内部结构不进契约。`src` 限定在工作区 `.data/` 内 |
 | `oks_chart` | `{spec, src?, data?, name?, note?}` | 把图画成 **SVG 存进工作区**：`src` 与 `data` **恰好提供一个**——`src` 引用查询结果文件（来源固定标为「基于查询结果」），`data` 是你自填的对象行数组（「agent 自主填写」）。十种图元都用 `x`（类别/横轴列）与 `value`（数值列）作底（`histogram` 只给 `value`）：**分组柱** `column`，可选 `series`（组内分组）；**横条** `bar`（可选 `series`：横向的分组条）；**饼图** `pie`（只取正数）；**多序列折线** `line`、**面积图** `area`（可选 `series`，`xType` 不填按数据推断）；**散点** `scatter`（可选 `size` 当第三维）；**直方图** `histogram`（可选 `bins`）；**箱线图** `box`；**矩阵** `heatmap` 与**雷达** `radar`（两者都要 `series`：矩阵的纵轴类别 / 雷达的被比较对象）。要看明细表，直接在回答里写 markdown 表格。回执给出一行 `![标题](路径)`，agent 把它放进回答，图就显示在那里 |
 | `oks_report` | `{spec, name?, note?}` | 把叙述与图组织成一份**自足的 HTML 报告**存进工作区：`spec` 给 `title`、可选 `subtitle` 与一段 **markdown 正文**。正文用 `##` 分章节（成为目录），支持列表、表格、加粗、行内代码、引用、分隔线与换行（`<br>` / 行尾两空格 / 行尾 `\`），**除 `<br>` 外的 HTML 会转义**；**图写在它该出现的位置**——一个语言标为 `chart` 的围栏块，块里是 JSON（字段与 `oks_chart` 的 spec 相同，再给 `src` 或 `data` 其一与可选 `caption`，图注编号由系统给）。图以**内联 SVG** 嵌在页面里，单文件可以发给任何人打开。报告**不出现在回答正文**：回执给出一行 markdown 链接，agent 用 `present` 交付，用户点开在右侧栏阅读 |
@@ -101,9 +101,11 @@ key 模式，以及 `vocabulary`（哪些 kind 进词汇表、每类词条的归
 - **行数由 Intent 的 `limit` 决定**：服务把它落到 SQL 的最终限行，插件完整保存这次 Intent 的结果
   （执行器只用同一个数字做保险，不再另加 `queryMaxRows` 截断）。数据行都进了结果文件，所以
   模型可见文本天然远在宿主 tool-result pruner 的阈值（8192 字符）之下。
-- **结果落盘**：每个成功项写一个 JSON 文件到 `<工作区>/.data/`，文件名 `<名>-<key>-<at>.json`，
-  内含原始 Intent、列信息（列名取自 SQL 元数据、类型按返回值观察，空结果记 unknown）、行数与完整数据行。
-  独占创建，重名报保存错误；写失败会清掉不完整的文件。按需取数由 `oks_jaq_result` 负责——`src` 限定在
+- **结果落盘**：每个成功项写一个 JSON 文件到 `<工作区>/.data/`，文件名
+  `<时间>-<名>-<内容哈希>.query.json`（`<时间>` 是 UTC 到秒、与文件里的 `at` 逐字相同；
+  `<内容哈希>` 是文件内容 sha256 的前 8 位），内含原始 Intent、列信息（列名取自 SQL 元数据、
+  类型按返回值观察，空结果记 unknown）、行数与完整数据行。独占创建，同名的只可能是同一份内容
+  （哈希相同即去重，内容不同则报错）；写失败会清掉不完整的文件。按需取数由 `oks_jaq_result` 负责——`src` 限定在
   `.data/` 内，并检查真实路径不越界。
 - **空的要说清楚**：结果为空时，若数据目录里有 `manifest.json`，插件会报出数据窗口
   （`[start, endExclusive)`），提示"可能是时间落在窗口之外"。
@@ -286,9 +288,12 @@ OKS_WORKSPACE=/path/to/ws node smoke.ts              # 或者显式指定
 - `parameters` 只使用受支持的 JSON Schema 关键字子集：`type` / `oneOf` / `properties` /
   `required` / `additionalProperties` / `items` / `enum` / `const` 加注解关键字；
   批次形状、规模与名字校验，以及 key 的重新计算与比对，都放在 `execute` 里。
-- **`.data/` 是工作区里唯一的落点**：查询结果写成 `<名>-<key>-<at>.json`，图写成 `<名>-<at>.svg`
-  （同毫秒重名时依次加序号）。名字拒绝分隔符、控制字符与 `.`/`..`；读取时先按 `.data/` 前缀收窄，
-  再用真实路径复核，挡住符号链接逃逸；独占创建、失败清理。
+- **`.data/` 是工作区里唯一的落点**，三类产物一套命名：`<时间>-<名>[-<内容哈希>].<类别><扩展名>`
+  ——查询结果是 `.query.json`，图是 `.chart.svg`，报告是 `.report.html`。时间在最前面，`ls` 就是
+  时间序；内容哈希等于文件字节的 sha256 前 8 位，所以**同名即同内容**，撞名不需要"加序号"那套补丁
+  （查询结果那一段是名字前缀而不是内容哈希，撞名时读出来核一遍再决定是去重还是报错）。
+  名字是**标识**而不是标题：只用 `0-9`、`_` 与 `a-z`，超过 60 字符就截成"前 53 + `~` + 6 位哈希"；
+  读取时先按 `.data/` 前缀收窄，再用真实路径复核，挡住符号链接逃逸；独占创建、失败清理。
 - 宿主是**进程内 worker**（`node:worker_threads` + 内置 WebAssembly）；当前只支持快照产物，
   产物没有 `telora.snapshot` 段时直接报错。
 - 执行器是**另一个 worker**：`node:sqlite` 同步，只有独立线程才能被超时强杀；

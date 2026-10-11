@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
-// Intent 的 key：两个用途——「先校验、再执行」的一致性核对，以及结果文件的命名。
+// Intent 的 key：用途是「先校验、再执行」的一致性核对；结果文件里也留着它，
+// 用来核对"这份结果出自哪一次校验过的 Intent"。
 // 它是一致性标识，不是访问授权凭据：对 agent 不透明、必须原样搬运，也不能凭它取回 Intent。
 
 /** 规范化：递归按对象字段名排序，保留数组顺序，数值 / 字符串按 JSON 编码。
@@ -21,7 +22,7 @@ export function canonicalJson(value: unknown): string {
 }
 
 /** key = 单个 Intent 的规范化 JSON 的 SHA-256 前 32 个十六进制字符（128 位）。
- *  校验返回、查询核对、结果文件与文件名统一用这一个值（见 rfc/0001 的承载清单）。 */
+ *  校验返回、查询核对与结果文件里统一用这一个值（见 rfc/0001 的承载清单）。 */
 export function intentKey(intent: unknown): string {
   return createHash('sha256').update(canonicalJson(intent)).digest('hex').slice(0, 32);
 }

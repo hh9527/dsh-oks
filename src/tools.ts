@@ -905,7 +905,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         properties: {
           intents: {
             type: 'object',
-            description: 'One to five named graph Intents: an object mapping a batch name to one Intent, e.g. {"ports":{"op":"Graph","root":"d","nodes":[{"id":"d","entity":"<dataset id>"}],"edges":[],"select":[],"limit":100}}. The name labels the batch and becomes the result file name prefix, so it must be non-empty and free of path separators. Every Intent must declare a top-level limit — the integer 1..100 that decides how many rows this query returns; it is part of the Intent and is hashed with it. Closed Intent choices use the declared enum spelling in PascalCase (e.g. op "Graph", filter op "Eq", direction "Desc", row_grain "Root"); the entity is the declared dataset id, not the knowledge key. The service also declares the authoritative Intent syntax — read it from the knowledge nodes it points you to instead of relying on memory.',
+            description: 'One to five named graph Intents: an object mapping a batch name to one Intent, e.g. {"ports":{"op":"Graph","root":"d","nodes":[{"id":"d","entity":"<dataset id>"}],"edges":[],"select":[],"limit":100}}. The name labels the batch and becomes part of the result file name, so it is an identifier rather than a title: 0-9, _ and a-z only, at most 60 characters. Every Intent must declare a top-level limit — the integer 1..100 that decides how many rows this query returns; it is part of the Intent and is hashed with it. Closed Intent choices use the declared enum spelling in PascalCase (e.g. op "Graph", filter op "Eq", direction "Desc", row_grain "Root"); the entity is the declared dataset id, not the knowledge key. The service also declares the authoritative Intent syntax — read it from the knowledge nodes it points you to instead of relying on memory.',
             additionalProperties: { type: 'object', additionalProperties: true },
           },
         },
@@ -1233,7 +1233,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           },
           src: { type: 'string', description: 'A dataSrc returned by oks_query, copied verbatim. Exactly one of src and data must be given.' },
           data: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'Row objects you supply yourself (an empty array is valid). Exactly one of src and data must be given.' },
-          name: { type: 'string', description: 'Optional file-name prefix for the saved SVG; defaults to "chart". Same rules as a query batch name.' },
+          name: { type: 'string', description: 'Optional name for the saved SVG; defaults to "chart". A name is an identifier, not a title: 0-9, _ and a-z only, at most 60 characters (longer ones are cut and tagged with a ~ plus a short hash), and the file is named <time>-<name>-<content hash>.chart.svg.' },
           note: { type: 'string', description: 'Optional short note carried in the receipt — your own narration, kept apart from the system source label.' },
         },
         required: ['spec'],
@@ -1286,7 +1286,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           name: typeof args?.name === 'string' && args.name.length > 0 ? args.name : 'chart',
           content: svg,
           extension: '.svg',
-          label: '图表名',
+          kind: 'chart',
         });
         const alt = (spec.title ?? (source === 'query' ? '查询结果图' : '数据图')).replace(/[[\]]/g, '');
         const markdown = `![${alt}](${saved.src})`;
@@ -1329,7 +1329,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             required: ['title', 'markdown'],
             additionalProperties: false,
           },
-          name: { type: 'string', description: 'Optional file-name prefix for the saved HTML; defaults to "report". Same rules as a query batch name.' },
+          name: { type: 'string', description: 'Optional name for the saved HTML; defaults to "report". A name is an identifier, not a title: 0-9, _ and a-z only, at most 60 characters, and the file is named <time>-<name>-<content hash>.report.html.' },
           note: { type: 'string', description: 'Optional short note carried in the receipt — your own narration, kept apart from the system source label.' },
         },
         required: ['spec'],
@@ -1358,7 +1358,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           name: typeof args?.name === 'string' && args.name.length > 0 ? args.name : 'report',
           content: html,
           extension: '.html',
-          label: '报告名',
+          kind: 'report',
         });
         const markdown = `[${parsed.spec.title}](${saved.src})`;
         // 来源逐图判定，报告级没有单一来源可报；每张图的标识已经画在图里。

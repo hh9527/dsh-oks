@@ -9,7 +9,8 @@
 // 被测工作区默认取**当前目录**（必须有 oks.json，否则明确报错），也可用环境变量指定：
 //   cd /path/to/workspace && node /path/to/dsh-oks/smoke.ts
 //   OKS_WORKSPACE=/path/to/workspace node smoke.ts
-import { apply, buildOption, CHART_WIDTH, renderEchartsSvg } from './dist/index.mjs';
+import { apply, artifactName, buildOption, CHART_WIDTH, NAME_MAX, renderEchartsSvg, resultStamp } from './dist/index.mjs';
+import { createHash } from 'node:crypto';
 import { applyOps, encode, parseMoment } from './src/time.ts';
 import { singleFlight } from './src/single-flight.ts';
 import { intentKey } from './src/key.ts';
@@ -24,6 +25,8 @@ const SCRATCH = `${DEV_ROOT}/.oks-smoke`;
 // 插件只在工作区的 .data/ 里写查询结果，别处不碰；顶层清单因此只允许新增 .data/。
 const workspaceListing = () => readdirSync(DEV_ROOT).filter((name) => name !== '.oks-smoke').sort().join(',');
 const listingBefore = workspaceListing();
+// .data/ 里可能已经躺着上次跑剩下的产物，所以只看"这次新增的"。
+const dataListingBefore = new Set(existsSync(`${DEV_ROOT}/.data`) ? readdirSync(`${DEV_ROOT}/.data`) : []);
 
 const registered = new Map();
 const disposers = [];
@@ -1087,6 +1090,14 @@ const withKeys = async (named, dir) => {
 // ── 校验路径：只回诊断与 key，不回任何语句 ──────────────────────────────────
 console.log('=== oks_check_intent（只校验，通过项给 key）===');
 {
+  // 批次名字也走同一套校验：名字是标识不是标题，所以在**校验阶段**就被挡下，不会白跑一次查询。
+  {
+    const bad = await call('oks_check_intent', { intents: { '告警-分布': countNamed.count } });
+    // 校验工具把名字问题当"这一批的结论"回出来（不抛），所以断言看回执正文。
+    if (!/0-9/.test(bad.text)) throw new Error(`批次名字里的中文与连字符应当被拒：${bad.text.slice(0, 120)}`);
+    if ((bad.value.results ?? []).some((item) => item.key !== null)) throw new Error('名字不合法时不该给出 key');
+    console.log(`  批次名字的字符集：${bad.text.split('\n').find((line) => /0-9/.test(line))?.trim().slice(0, 70)}`);
+  }
   const accepted = await call('oks_check_intent', { intents: countNamed });
   console.log(accepted.text.split('\n').filter((line) => /◂|key=|校验结论/.test(line)).map((l) => `  ${l}`).join('\n'));
   if (!/全部可用/.test(accepted.text)) throw new Error('有效批次应当判定为可用');
@@ -1246,7 +1257,37 @@ if (dimension === null) {
   if (savedFile.rows.length !== first.rowCount) throw new Error('结果文件应当完整保存这次 Intent 的结果');
 }
 
-// ── 图表：服务端出 SVG、两条数据路径、回执给出可粘进回答的 markdown ─────────
+// ── .data/ 的产物命名：<时间>-<名字>[-<内容哈希>].<类别><扩展名> ─────────────
+console.log('=== 产物命名 ===');
+{
+  const sha = (text) => createHash('sha256').update(text).digest('hex');
+  const svg = '<svg/>';
+  const named = artifactName({ at: '20261010T115343Z', name: 'alarm_by_level', kind: 'chart', extension: '.svg', content: svg });
+  ok('名字里那段就是内容哈希（前缀 8 位）',
+    named === `20261010T115343Z-alarm_by_level-${sha(svg).slice(0, 8)}.chart.svg`);
+  ok('时间戳到秒', /^\d{8}T\d{6}Z$/.test(resultStamp()));
+  // 内容不是一次拿到时那一段可以省掉（现在没有调用方这么做，但格式留了这个位置）。
+  ok('没有内容就没有哈希段',
+    artifactName({ at: '20261010T115343Z', name: 'x', kind: 'query', extension: '.json' }) === '20261010T115343Z-x.query.json');
+
+  // 超长名字：前 53 + `~` + 6 位哈希，总长仍在上限内；`~` 是允许字符集之外的唯一记号。
+  const nameOf = (fileName) => fileName.slice('20261010T115343Z-'.length).replace(/-[0-9a-f]{8}\.report\.html$/, '');
+  const long = 'a'.repeat(NAME_MAX - 7) + 'XXXXXXX' + 'b'.repeat(20);
+  const cut = artifactName({ at: '20261010T115343Z', name: long, kind: 'report', extension: '.html', content: svg });
+  const cutName = nameOf(cut);
+  ok(`超长名字截到 ${NAME_MAX} 字符且留了 ~ 记号`,
+    cutName.length === NAME_MAX && cutName === `${long.slice(0, NAME_MAX - 7)}~${sha(long.slice(NAME_MAX - 7)).slice(0, 6)}`);
+  // 只差"被截掉的那一段"的两个长名字仍要分得开：哈希覆盖的是**整个**被丢掉的部分。
+  // （若按 name[N..] 取哈希，这两个名字会塌成同一个文件名。）
+  const twin = artifactName({ at: '20261010T115343Z', name: `${long.slice(0, NAME_MAX - 7)}YYYYYYY${'b'.repeat(20)}`, kind: 'report', extension: '.html', content: svg });
+  ok('被截掉的那一段参与哈希', nameOf(twin) !== cutName);
+
+  // 名字是标识：字符集收得紧，`-` 与 `.` 才能当无歧义的分隔符。
+  // 校验在工具入口：非法名字进不了文件名（这里先只核对纯函数，工具那条在图表一节里真跑）。
+  console.log(`  命名：${named}`);
+}
+
+
 console.log('=== oks_chart（服务端出图）===');
 {
   // data 路径：agent 自填数据，来源固定为「agent 自主填写」。
@@ -1263,6 +1304,18 @@ console.log('=== oks_chart（服务端出图）===');
   const inlineSvg = readFileSync(resolve(DEV_ROOT, inline.value.svgSrc), 'utf8');
   console.log(`  落盘 ${inline.value.svgSrc}（${inlineSvg.length} 字符）: ${inlineSvg.startsWith('<svg') ? '✓' : '✗'}`);
   if (!inlineSvg.startsWith('<svg')) throw new Error('产物应当是 SVG');
+  // 名字自证内容：`sha256sum` 出来的前 8 位就是名字里那一段，回执的 at 就是名字里那段时间。
+  {
+    const fileName = inline.value.svgSrc.replace('.data/', '');
+    const digest = createHash('sha256').update(inlineSvg).digest('hex').slice(0, 8);
+    if (!fileName.includes(`-${digest}.chart.svg`)) {
+      throw new Error(`文件名里的哈希应当等于内容的 sha256 前 8 位：${fileName} vs ${digest}`);
+    }
+    if (!fileName.startsWith(`${inline.value.at}-`)) {
+      throw new Error(`文件名应当以回执给的 at 开头：${fileName} vs ${inline.value.at}`);
+    }
+    console.log(`  名字自证：${fileName.split('-').slice(-1)[0]} = sha256(内容) 前 8 位 · at 一致`);
+  }
   // 图里的文字是真 <text>（echarts 不把文字转成路径），标题则从回执字段核对。
   if (!inlineSvg.includes('<path')) throw new Error('SVG 里应当有图形');
   // 产物必须是"没有任何动画的静态图"：浏览器会真的执行 SVG 里的 @keyframes，
@@ -1278,6 +1331,23 @@ console.log('=== oks_chart（服务端出图）===');
     throw new Error(`回执应当给出指向该 SVG 的 markdown，收到 ${JSON.stringify(inline.value.markdown)}`);
   }
   console.log(`  回执给出的 markdown: ${inline.value.markdown}`);
+
+  // 同一份产物写两次：名字里有内容哈希，所以"撞名"只可能是同一份内容。
+  // 同一秒里是去重（指同一个文件），跨秒就是两个文件——两条路都不该出现"-2"这种序号补丁。
+  {
+    const spec = { kind: 'bar', x: 'label', value: 'value' };
+    const data = [{ label: 'A', value: 3 }, { label: 'B', value: 5 }];
+    const before = new Set(readdirSync(resolve(DEV_ROOT, '.data')));
+    const first = await call('oks_chart', { spec, data, name: 'probe_dup' });
+    const second = await call('oks_chart', { spec, data, name: 'probe_dup' });
+    const added = readdirSync(resolve(DEV_ROOT, '.data')).filter((name) => !before.has(name));
+    const same = first.value.svgSrc === second.value.svgSrc;
+    console.log(`  同一份产物写两次：${same ? '同一秒 → 去重' : '跨了秒 → 各存一份'}（新增 ${added.length} 个）`);
+    if (same ? added.length !== 1 : added.length !== 2) {
+      throw new Error(`去重与否都只该按内容算，新增文件数 ${added.length}`);
+    }
+    if (added.some((name) => /-\d+\.[a-z]+\./.test(name))) throw new Error(`不该再出现序号补丁：${added.join(', ')}`);
+  }
 
   // src 路径：引用查询结果文件，来源固定为「基于查询结果」，并从文件带出原始 Intent。
   const answer = await call('oks_query', { intents: await withKeys(countNamed) });
@@ -1954,6 +2024,11 @@ console.log('=== oks_chart（服务端出图）===');
     ['layout 越界', { spec: { kind: 'bar', x: 'label', value: 'value', layout: { labelFont: 4 } }, data: [{ label: 'A', value: 1 }] }],
     ['layout 写错项', { spec: { kind: 'bar', x: 'label', value: 'value', layout: { nope: 1 } }, data: [{ label: 'A', value: 1 }] }],
     ['图表名越界', { spec: { kind: 'bar', x: 'label', value: 'value' }, data: [{ label: 'A', value: 1 }], name: '../evil' }],
+    // 名字是标识不是标题：大小写、连字符、点、空格、中文都进不了文件名
+    //（收得这么紧，`-` 与 `.` 才能当无歧义的分隔符）。
+    ['名字带大写', { spec: { kind: 'bar', x: 'label', value: 'value' }, data: [{ label: 'A', value: 1 }], name: 'Probe' }],
+    ['名字带连字符', { spec: { kind: 'bar', x: 'label', value: 'value' }, data: [{ label: 'A', value: 1 }], name: 'probe-a' }],
+    ['名字是中文', { spec: { kind: 'bar', x: 'label', value: 'value' }, data: [{ label: 'A', value: 1 }], name: '告警分布' }],
     // 图元专属字段填给别的图元要报错，不静默忽略。
     ['stack 填给 bar', { spec: { kind: 'bar', x: 'label', value: 'value', stack: 'total' }, data: [{ label: 'A', value: 1 }] }],
     ['size 填给 column', { spec: { kind: 'column', x: 'label', series: 's', value: 'value', size: 'n' }, data: [{ label: 'A', s: 'x', value: 1 }] }],
@@ -2114,11 +2189,14 @@ console.log('=== 插件只写 .data/ 里的结果文件 ===');
   console.log(`  没有 .oks/plans: ${existsSync(`${DEV_ROOT}/.oks`) ? '✗' : '✓'}`);
   if (existsSync(`${DEV_ROOT}/.oks`)) throw new Error('计划文件目录不该存在');
   if (existsSync(`${DEV_ROOT}/.data`)) {
-    const files = readdirSync(`${DEV_ROOT}/.data`);
-    // 这里目前有三类产物：查询结果（.json）、图（.svg）与报告（.html）。
-    const allProducts = files.length > 0 && files.every((name) => /\.(json|svg|html)$/.test(name));
-    console.log(`  .data/ 里 ${files.length} 个产物、都是 .json / .svg / .html: ${allProducts ? '✓' : '✗'}`);
-    if (!allProducts) throw new Error('.data/ 里出现了结果、图与报告之外的产物');
+    const files = readdirSync(`${DEV_ROOT}/.data`).filter((name) => !dataListingBefore.has(name));
+    // 三类产物一套命名：<时间>-<名字>[-<内容哈希>].<类别><扩展名>。
+    const PRODUCT = /^\d{8}T\d{6}Z-[0-9a-z_~]+-[0-9a-f]{8,}\.(query\.json|chart\.svg|report\.html)$/;
+    const allProducts = files.length > 0 && files.every((name) => PRODUCT.test(name));
+    console.log(`  .data/ 里 ${files.length} 个产物、都是 <时间>-<名字>-<哈希>.<类别><扩展名>: ${allProducts ? '✓' : '✗'}`);
+    if (!allProducts) {
+      throw new Error(`.data/ 里出现了不按命名规则落地的产物：${files.filter((name) => !PRODUCT.test(name)).slice(0, 3).join(', ')}`);
+    }
   }
 }
 

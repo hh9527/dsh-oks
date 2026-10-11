@@ -14,6 +14,9 @@
 // 出图的 lowering 与渲染层也在这里导出：插件入口是单文件打包，导出它们便于单独测试，
 // 对宿主没有影响（宿主只认 apply 与 inject）。
 export { buildOption, CHART_WIDTH, plotHeight } from './chart/option.ts';
+// 产物的命名规则也导出：它是对外可核对的约定（名字里那段 = 文件内容的 sha256 前 8 位），
+// 冒烟按它断言，别的工具按它解析。
+export { artifactName, NAME_MAX, resultStamp } from './results.ts';
 export { renderEchartsSvg } from './chart/echarts.ts';
 export { buildFigureHtml, renderReportHtml } from './chart/report.ts';
 export { renderMarkdown } from './chart/markdown.ts';
@@ -31,7 +34,7 @@ export { renderMarkdown } from './chart/markdown.ts';
 // 建好词汇表与反向引用索引，之后整个进程按产物的 artifact_sha256 复用。索引里只有词汇与
 // 引用边，不含节点内容——读节点始终由 oks_info 透传给服务。它不进模型上下文。
 //
-// **工作区里唯一的落点是查询结果**：每个成功项写进 `.data/<名>-<key>-<at>.json`——数据行只在这里，
+// **工作区里唯一的落点是查询结果**：每个成功项写进 `.data/<时间>-<名字>-<内容哈希>.query.json`——数据行只在这里，
 // 默认不进模型上下文，要取数由 oks_jaq_result 用表达式选。除此之外没有计划文件、没有缓存产物；
 // 每次执行的 SQL、bindings、行数与耗时写进宿主日志（ctx.logger）。
 //

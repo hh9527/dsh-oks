@@ -1,10 +1,12 @@
+import { createHash } from 'node:crypto';
 import { closeSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { errorText, isRecord } from './host.ts';
 
-// 查询结果的落盘与读取（见 rfc/0001 的「查询结果保存」）。
-// 每个成功 Intent 一个 JSON 文件，放在工作区的 .data/ 下：<name>-<key>-<at>.json。
-// 文件含原始 Intent、列信息、行数与完整数据行——于是数据行可以只被「引用」，
+// 查询结果与产物的落盘与读取（见 rfc/0001 的「查询结果保存」）。
+// 每个成功 Intent 一个 JSON 文件、每张图与每份报告各一个文件，都落在工作区的 .data/ 下，
+// 名字统一是 <时间>-<名字>[-<内容哈希>].<类别><扩展名>（见 artifactName）。
+// 结果文件含原始 Intent、列信息、行数与完整数据行——于是数据行可以只被「引用」，
 // 不必默认进入模型上下文；按需取数另走 oks_jaq_result。
 
 /** 结果文件所在的目录（相对工作区根）。 */
@@ -36,19 +38,94 @@ export interface ResultFile {
   rows: Array<Record<string, unknown>>;
 }
 
-/** at：该项成功执行结束的 UTC 时间，格式 YYYYMMDDTHHmmssSSSZ。 */
+/** at：该项成功执行结束的 UTC 时间，格式 YYYYMMDDTHHmmssZ（到秒）。
+ *  它同时是文件名最前面那一段——两处逐字相同，名字与文件内容里的 at 对得起来。 */
 export const resultStamp = (when: Date = new Date()): string =>
-  when.toISOString().replace(/[-:]/g, '').replace(/\.(\d{3})Z$/, '$1Z');
+  when.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
 
-/** 名字作为文件名前缀：拒绝路径分隔符、控制字符、空白名，以及 . 与 .. */
+/** .data/ 里的三类产物。它进文件名，与扩展名各管一件事。 */
+export type ArtifactKind = 'query' | 'chart' | 'report';
+
+/** 类别的中文名，只用在报错里。 */
+const KIND_LABEL: Record<ArtifactKind, string> = { query: '结果', chart: '图表', report: '报告' };
+
+/** 名字的长度上限（字符）。字符集限定为 ASCII，所以字符数就是字节数。 */
+export const NAME_MAX = 60;
+
+/** 文本的 sha256 前 length 位十六进制。 */
+const digest = (text: string, length: number): string =>
+  createHash('sha256').update(text).digest('hex').slice(0, length);
+
+/** 内容哈希：sha256(文件字节) 的前 8 位。放进文件名之后，`sha256sum` 一下就能核对。 */
+const contentHash = (content: string): string => digest(content, 8);
+
+/** 名字作为文件名里的标识：只用 0-9、_ 与 a-z。
+ *
+ *  字符集收得这么紧，是为了让 `-` 与 `.` 在文件名里成为**无歧义的分隔符**：
+ *  名字里不可能出现它们，`<时间>-<名字>-<哈希>.<类别><扩展名>` 才解析得出来。
+ *  名字是标识、不是标题——中文名没法"清洗"成 ASCII（音译是猜的），所以这里报错而不是改写；
+ *  给人看的文字在 title / 列名 / 图注里。 */
 export function nameProblem(name: unknown): string | null {
   if (typeof name !== 'string' || name.length === 0) return '名字必须是字符串';
-  if (name === '.' || name === '..') return `名字不能是 ${name}`;
-  if (name.includes('/') || name.includes('\\')) return '名字里不能有路径分隔符';
-  // eslint-disable-next-line no-control-regex
-  if (/[\u0000-\u001f\u007f]/.test(name)) return '名字里不能有控制字符';
+  if (!/^[0-9a-z_]+$/.test(name)) {
+    return '名字只能是 0-9、_ 与 a-z（它是标识，不是标题）：'
+      + `收到 ${JSON.stringify(name)}，改成像 alarm_by_level 这样的名字`;
+  }
   return null;
 }
+
+/** 超长名字的缩短：前 53 个字符 + `~` + 其余部分的 6 位哈希，总长仍 ≤ NAME_MAX。
+ *  `~` 是允许字符集之外的唯一记号，见到它就知道这段名字被截过。 */
+const shortName = (name: string): string => {
+  if (name.length <= NAME_MAX) return name;
+  const keep = name.slice(0, NAME_MAX - 7);
+  return `${keep}~${digest(name.slice(keep.length), 6)}`;
+};
+
+/** 产物的统一命名：`<时间>-<名字>[-<内容哈希>].<类别><扩展名>`。
+ *
+ *  时间在最前面，`ls .data/` 出来就是时间序；名字是给人看的那一半；哈希是给核对的那一半
+ *  ——它等于文件内容的 sha256 前 8 位，于是**同名 ⟺ 同内容**，撞名不再需要"加序号"这套补丁；
+ *  类别与扩展名各管一件事：类别用来取同类清单（`.data/*.chart.*`），扩展名给工具看。
+ *  内容不是一次拿到的（流式写）时哈希那一段省略，那时才退回按序号消歧。 */
+export const artifactName = (options: {
+  at: string;
+  name: string;
+  kind: ArtifactKind;
+  extension: string;
+  content?: string;
+}): string => {
+  const hash = options.content === undefined ? '' : `-${contentHash(options.content)}`;
+  return `${options.at}-${shortName(options.name)}${hash}.${options.kind}${options.extension}`;
+};
+
+/** 独占写一个产物文件。
+ *
+ *  名字里带着内容哈希时，"撞名"就是**同样的内容**，直接当去重（返回同一个路径）是安全的；
+ *  查询结果那段是文件名前缀而不是内容哈希，所以撞名必须读出来核一遍——一致才认作同一份，
+ *  不一致就报错。两条路都不覆盖任何已有的文件。 */
+const writeExclusive = (target: string, content: string, kind: ArtifactKind): void => {
+  let handle: number | null = null;
+  try {
+    // wx：独占创建。只有 fd 确实由我们拿到，才在失败时清理这个不完整的文件。
+    handle = openSync(target, 'wx');
+    writeSync(handle, content);
+    closeSync(handle);
+    handle = null;
+    return;
+  } catch (cause) {
+    if (handle !== null) {
+      try { closeSync(handle); } catch { /* 已经关掉就算了 */ }
+      try { unlinkSync(target); } catch { /* 清理失败不掩盖真正的原因 */ }
+    }
+    if ((cause as NodeJS.ErrnoException).code !== 'EEXIST') {
+      throw new Error(`保存${KIND_LABEL[kind]}失败：${errorText(cause)}`);
+    }
+    if (contentHash(readFileSync(target, 'utf8')) !== contentHash(content)) {
+      throw new Error(`保存${KIND_LABEL[kind]}失败：${target} 已存在且内容不同`);
+    }
+  }
+};
 
 /** 值编码：大整数转十进制字符串、二进制转 base64，并给出观察到的类型标签。 */
 function encodeCell(value: unknown): { value: unknown; type: string } {
@@ -110,9 +187,8 @@ export function saveResult(options: {
   const directory = join(options.root, DATA_DIR);
   mkdirSync(directory, { recursive: true });
   const at = resultStamp();
-  const fileName = `${options.name}-${options.key}-${at}.json`;
-  const target = join(directory, fileName);
   const { columns, rows } = describeRows(options.sqlColumns, options.rows);
+  // 文件内容里的 name 是**原名全文**：文件名会按 60 字符截断，记录不截断。
   const payload: ResultFile = {
     name: options.name,
     key: options.key,
@@ -122,65 +198,36 @@ export function saveResult(options: {
     rowCount: rows.length,
     rows,
   };
-  let handle: number | null = null;
-  try {
-    // wx：独占创建。重名（EEXIST）在这一步失败——那时**什么都没创建**，所以绝不能去动目标路径上
-    // 已有的文件；只有 fd 确实由我们拿到，才在失败时清理这个不完整的文件。
-    handle = openSync(target, 'wx');
-    writeSync(handle, `${JSON.stringify(payload, null, 2)}\n`);
-    closeSync(handle);
-    handle = null;
-  } catch (cause) {
-    if (handle !== null) {
-      try { closeSync(handle); } catch { /* 已经关掉就算了 */ }
-      try { unlinkSync(target); } catch { /* 清理失败不掩盖真正的原因 */ }
-    }
-    throw new Error(`保存结果失败：${errorText(cause)}`);
-  }
+  const body = `${JSON.stringify(payload, null, 2)}\n`;
+  const fileName = artifactName({ at, name: options.name, kind: 'query', extension: '.json', content: body });
+  writeExclusive(join(directory, fileName), body, 'query');
   return { dataSrc: `${DATA_DIR}/${fileName}`, columns, rowCount: rows.length };
 }
 
-/** 把一份产物（图、报告）写成文件：与结果文件同一套命名与独占创建规则，只是没有 key
- *  （产物不对应 Intent）。返回的 src 是相对工作区根的路径，交给 agent 粘进回答引用。
- *  `label` 只用于错误信息，比如「图表名」「报告名」。 */
+/** 把一份产物（图、报告）写成文件：与结果文件同一套命名与独占创建规则。
+ *  返回的 src 是相对工作区根的路径，交给 agent 粘进回答引用。 */
 export function saveArtifact(options: {
   root: string;
   name: string;
   content: string;
   extension: string;
-  label: string;
+  kind: Exclude<ArtifactKind, 'query'>;
 }): { src: string; at: string } {
   const problem = nameProblem(options.name);
-  if (problem !== null) throw new Error(`${options.label}不合法（${JSON.stringify(options.name)}）：${problem}`);
+  if (problem !== null) {
+    throw new Error(`${KIND_LABEL[options.kind]}名不合法（${JSON.stringify(options.name)}）：${problem}`);
+  }
   const at = resultStamp();
   mkdirSync(join(options.root, DATA_DIR), { recursive: true });
-  // 产物没有 key 可区分，而同一毫秒里可能连着产两份同名的，所以撞名时依次加序号，
-  // 而不是覆盖已有的产物、也不是让调用失败。
-  for (let attempt = 1; attempt <= 100; attempt += 1) {
-    const fileName = attempt === 1
-      ? `${options.name}-${at}${options.extension}`
-      : `${options.name}-${at}-${attempt}${options.extension}`;
-    const target = join(options.root, DATA_DIR, fileName);
-    let handle: number | null = null;
-    try {
-      // 与结果文件同样的独占创建：只在确实由我们创建时才在失败时清理。
-      handle = openSync(target, 'wx');
-      writeSync(handle, options.content);
-      closeSync(handle);
-      handle = null;
-      return { src: `${DATA_DIR}/${fileName}`, at };
-    } catch (cause) {
-      if (handle !== null) {
-        try { closeSync(handle); } catch { /* 已经关掉就算了 */ }
-        try { unlinkSync(target); } catch { /* 清理失败不掩盖真正的原因 */ }
-      }
-      // 撞名：换一个序号继续试；其它错误直接报出来。
-      if ((cause as NodeJS.ErrnoException).code !== 'EEXIST') {
-        throw new Error(`保存图表失败：${errorText(cause)}`);
-      }
-    }
-  }
-  throw new Error(`保存图表失败：同名文件太多（${options.name}）`);
+  const fileName = artifactName({
+    at,
+    name: options.name,
+    kind: options.kind,
+    extension: options.extension,
+    content: options.content,
+  });
+  writeExclusive(join(options.root, DATA_DIR, fileName), options.content, options.kind);
+  return { src: `${DATA_DIR}/${fileName}`, at };
 }
 
 /** dataSrc 的语法范围：只接受能在工作区 .data/ 里落位的相对路径。 */
