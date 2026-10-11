@@ -306,6 +306,10 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
     axisLine: { lineStyle: { color: '#d8e0ea' } },
     axisTick: { show: false },
   };
+  // 竖着排的类别轴自上而下：第一项在最上面。
+  // 名次、清单、矩阵的行，人都是从第一行往下读的——横条图的"第一名"落在最下面，
+  // 矩阵的行从下往上排（我们把数值写进格子、说它"同时就是一张表"），两处都说不过去。
+  const verticalCategoryAxis = { ...categoryAxis, inverse: true };
   // 参考线的值要能落在轴上：echarts 对超出轴范围的 markLine 直接不画，而"线不见了"比
   // "线画歪了"更难发现——阈值本来就是用来对照的，画不出来等于没给。
   const markValues = (spec.marks ?? [])
@@ -534,7 +538,7 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
         // 纵轴是分组（可能是设备名或日期），左边留得比柱状图宽一些；底部留给颜色标尺。
         grid: { ...grid, left: 118, top: spec.title === null ? 24 : 56, bottom: 62 },
         xAxis: { ...categoryAxis, data: categories },
-        yAxis: { ...categoryAxis, data: yNames, axisLabel: { fontSize: labelFont, color: '#1c2b3a', rotate: 0 } },
+        yAxis: { ...verticalCategoryAxis, data: yNames, axisLabel: { fontSize: labelFont, color: '#1c2b3a', rotate: 0 } },
         visualMap: {
           type: 'continuous' as const,
           min: floor,
@@ -665,7 +669,7 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
   if (markLine !== undefined && allSeries.length > 0) allSeries[0].markLine = markLine;
 
   const yAxis = horizontal
-    ? categoryAxis
+    ? verticalCategoryAxis
     : (secondAxis === null ? measureAxis : [measureAxis, secondAxis]);
   const xAxis = horizontal && secondAxis !== null ? [baseXAxis, secondAxis] : baseXAxis;
 

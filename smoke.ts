@@ -1863,6 +1863,43 @@ console.log('=== oks_chart（服务端出图）===');
   if (!markedSvg.includes('可用率下限')) throw new Error('低于数据的参考线也该画出来（轴要为它让出下界）');
   console.log(`  折线轴收紧：线图最低刻度 ${Math.min(...lineTicks)} · 面积图 ${Math.min(...areaTicks)} · 轴外阈值线仍在`);
 
+  // 竖着排的类别轴自上而下：横条图的"第一名"在最上面，矩阵的第一行在最上面。
+  // 横条原来是从下往上（Top-N 排名得反着读），矩阵的行也一样——而我们还把数值写进格子里、
+  // 说它"同时就是一张表"。表格不会从最后一行开始读。
+  const rankRows = [{ k: '第一项', v: 100 }, { k: '第二项', v: 60 }, { k: '第三项', v: 20 }];
+  const rankBars = async (kind, name) => barsOf(readFileSync(resolve(DEV_ROOT, (await call('oks_chart', {
+    spec: { kind, x: 'k', value: 'v' },
+    data: rankRows,
+    name,
+  })).value.svgSrc), 'utf8'));
+  const horizontalBars = (await rankBars('bar', 'probe_bar_rank')).sort((a, b) => b.w - a.w);
+  if (!(horizontalBars[0].y < horizontalBars[horizontalBars.length - 1].y)) {
+    throw new Error(`横条最长的那根（第一名）应当在最上面，实际 y=${horizontalBars[0].y} 与 ${horizontalBars[2].y}`);
+  }
+  // 竖柱照旧从左往右：这条规则只落在"竖着排的类别轴"上。
+  const verticalBars = await rankBars('column', 'probe_column_rank');
+  if (!(verticalBars[0].x < verticalBars[verticalBars.length - 1].x)) {
+    throw new Error('竖柱的第一项应当仍在最左边');
+  }
+  const matrixRows = await call('oks_chart', {
+    spec: { kind: 'heatmap', x: 'k', value: 'v', series: 's' },
+    data: rankRows.flatMap((row, index) => [{ ...row, s: '甲' }, { ...row, s: '乙', v: 3 - index }]),
+    name: 'probe_heatmap_rows',
+  });
+  const matrixSvg = readFileSync(resolve(DEV_ROOT, matrixRows.value.svgSrc), 'utf8');
+  const labelY = (svg, text) => {
+    for (const match of svg.matchAll(/<text[^>]*transform="translate\(([\d.]+) ([\d.]+)\)"[^>]*>([\s\S]*?)<\/text>/g)) {
+      if (match[3].includes(text)) return Number(match[2]);
+    }
+    return null;
+  };
+  const firstRow = labelY(matrixSvg, '甲');
+  const secondRow = labelY(matrixSvg, '乙');
+  if (!(firstRow !== null && secondRow !== null && firstRow < secondRow)) {
+    throw new Error(`矩阵的第一行应当在最上面，实际甲 y=${firstRow}、乙 y=${secondRow}`);
+  }
+  console.log(`  竖着排的类别轴：横条第一名 y=${horizontalBars[0].y}（最上）· 矩阵第一行 y=${firstRow}`);
+
   // 图元专属开关的适用表只有一份（shared.ts）。把"开关 × 图元"逐个真跑一遍：
   // 表里写支持的必须收下，不支持的必须按表报错。表改了而校验没跟上，这里当场露馅；
   // 报错文案也必须是"spec.<开关>"这一条，免得它其实是因为别的原因被拒、看起来却像通过了。
