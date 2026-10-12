@@ -2,10 +2,11 @@
 # install-preset.sh —— 把一个 dsh profile 配成「OKS 问数」（preset id `oks`）。
 #
 # 可重复执行：每一步都先看现状，已经成立就跳过。顺序是
-#   1. 产物：dist/index.mjs 不存在时，在仓库里构建（node_modules 缺失才先 pnpm install）。
+#   1. 产物：packages/dsh-oks 里的 dist/index.mjs 不存在时，在包里构建
+#      （node_modules 缺失才先 pnpm install）。
 #      出图与报告都在这个产物里（echarts 按需导入后打进来），dist/ 里没有旁资产。
 #   2. profile：package.json 不存在时，用 `dsh plugin` 按模板初始化。
-#   3. 依赖：把本仓库以 link: 写进 profile 的 package.json。
+#   3. 依赖：把 packages/dsh-oks 以 link: 写进 profile 的 package.json。
 #   4. 链接：profile 的 node_modules 里没有 @local/dsh-oks 时，在该 profile 里跑 pnpm install
 #      （走 `dsh plugin --profile <名> install`，拿它的文件锁与 pnpm 调用）。
 #   5. preset：profile 的 cordis.patch.yml 里没有 preset-oks 时，把下面这段追加进去。
@@ -22,12 +23,14 @@
 #
 # 用法：./install-preset.sh
 # 直接跑就够了：profile 取 $DSH_PROFILE（没有就用 web），home 取 $DSH_HOME（没有就用 ~/.dsh）；
-# 被链接的插件源就是本脚本所在的仓库，不用给路径。--profile / --dsh-home 只作覆盖。
+# 被链接的插件源就是本脚本所在仓库里的 packages/dsh-oks，不用给路径。
+# --profile / --dsh-home 只作覆盖。
 
 set -euo pipefail
 
 REPO_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGE='@local/dsh-oks'
+PACKAGE_DIR="$REPO_DIR/packages/dsh-oks"
 PATCH_ID='preset-oks'
 
 usage() {
@@ -35,7 +38,8 @@ usage() {
 用法：install-preset.sh
 
 直接跑就够了：profile 取 $DSH_PROFILE（没有就用 web），home 取 $DSH_HOME（没有就用
-~/.dsh）；被链接的插件源就是本脚本所在的仓库，不用给路径。下面两个开关只作覆盖：
+~/.dsh）；被链接的插件源就是本脚本所在仓库里的 packages/dsh-oks，不用给路径。
+下面两个开关只作覆盖：
 
   --profile <名字>    换成别的 profile
   --dsh-home <目录>   换成别的 Harness home
@@ -101,16 +105,17 @@ say "用 ${DSH_ARR[*]} 调用 dsh"
 
 # ── 1. 产物 ──────────────────────────────────────────────────────────────────
 # 仓库只带源码：exports 指向 dist/index.mjs，而 dist/ 不入库，所以新克隆必须先构建。
-if [ ! -f "$REPO_DIR/dist/index.mjs" ]; then
+[ -f "$PACKAGE_DIR/package.json" ] || fail "没有包目录 $PACKAGE_DIR"
+if [ ! -f "$PACKAGE_DIR/dist/index.mjs" ]; then
   command -v pnpm >/dev/null 2>&1 || fail 'dist/index.mjs 不存在，构建需要 pnpm'
   say '构建插件产物 dist/index.mjs'
   (
-    cd "$REPO_DIR"
+    cd "$PACKAGE_DIR"
     [ -d node_modules ] || pnpm install
     pnpm run build
   ) || fail 'pnpm 构建失败'
 fi
-[ -f "$REPO_DIR/dist/index.mjs" ] || fail "构建后仍没有 $REPO_DIR/dist/index.mjs"
+[ -f "$PACKAGE_DIR/dist/index.mjs" ] || fail "构建后仍没有 $PACKAGE_DIR/dist/index.mjs"
 
 # ── 2. profile ───────────────────────────────────────────────────────────────
 if [ ! -f "$MANIFEST" ]; then
@@ -132,11 +137,11 @@ if MANIFEST="$MANIFEST" PACKAGE="$PACKAGE" node --input-type=module -e '
   say "依赖已在 $MANIFEST"
 else
   say "把 $PACKAGE 以 link: 写进 $MANIFEST"
-  MANIFEST="$MANIFEST" PACKAGE="$PACKAGE" REPO_DIR="$REPO_DIR" node --input-type=module -e '
+  MANIFEST="$MANIFEST" PACKAGE="$PACKAGE" PACKAGE_DIR="$PACKAGE_DIR" node --input-type=module -e '
     import { readFileSync, writeFileSync } from "node:fs";
     const file = process.env.MANIFEST;
     const manifest = JSON.parse(readFileSync(file, "utf8"));
-    manifest.dependencies = { ...(manifest.dependencies ?? {}), [process.env.PACKAGE]: `link:${process.env.REPO_DIR}` };
+    manifest.dependencies = { ...(manifest.dependencies ?? {}), [process.env.PACKAGE]: `link:${process.env.PACKAGE_DIR}` };
     writeFileSync(file, `${JSON.stringify(manifest, undefined, 2)}\n`, { mode: 0o600 });
   ' || fail "写 $MANIFEST 失败"
 fi
@@ -245,7 +250,7 @@ fi
 
 say "profile $PROFILE 已注册 preset $PATCH_ID"
 say "  profile 目录：$PROFILE_DIR"
-say "  插件链接：$PROFILE_DIR/node_modules/$PACKAGE -> $REPO_DIR"
+say "  插件链接：$PROFILE_DIR/node_modules/$PACKAGE -> $PACKAGE_DIR"
 
 # 注册的是 preset；profile 的 bundle 层里若也有本包，全局那行会跟着一起生效。
 if MANIFEST="$MANIFEST" PACKAGE="$PACKAGE" node --input-type=module -e '
