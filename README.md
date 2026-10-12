@@ -14,10 +14,6 @@ AGENTS.md             在本仓库工作时的约定
 安装、工具面、工作区声明（`oks.json`）与产出的完整说明见
 [`packages/dsh-oks/README.md`](packages/dsh-oks/README.md)。
 
-**界面只留「产出」**：默认的"工作区文件"与"终端"两个页签在 profile 里置为 `disabled`——这是刻意的，
-OKS 面向**制品**、不面向文件（要读某个产物，点条目用文档预览打开）。改这条决定只需删掉 profile 补丁
-里那两行，但请先想清楚要不要把"翻文件"重新交给用户。
-
 右侧栏的「产出」页签在 [`packages/dsh-oks-ui`](packages/dsh-oks-ui/README.md)：调插件开的两条
 同源端点（清单 + 保留），呈现制品（图与报告）而不是文件；`★` 一下就保留，不经过 agent。
 方案与边界见 [`rfc/0004-artifact-timeline.md`](rfc/0004-artifact-timeline.md)。
