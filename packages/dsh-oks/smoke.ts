@@ -17,7 +17,7 @@ import { singleFlight } from './src/single-flight.ts';
 import { intentKey } from './src/key.ts';
 import { CHART_KINDS, supports } from './src/chart/shared.ts';
 // 端点测试要与工具走同一个落状态函数（`oks_pin` 用的就是它）。
-import { pinBySrc } from './src/state.ts';
+import { listArtifacts, openState, pinBySrc, syncArtifacts, VISIBLE } from './src/state.ts';
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
@@ -2525,6 +2525,37 @@ console.log('=== 分类与"当前只算报表" ===');
 }
 
 // ── 界面那两条端点：清单 + 保留（都是机械操作，界面直接打它们，不经过 agent）────────────
+// ── 目录一时看不见，不该把清单清空 ──────────────────────────────────────────
+//   这是"清单过一会儿变空、刷新页面又回来"那个 bug 的根因：一次看不见 artifacts/ 就把库里
+//   的行全删了，于是那一次清单真的是空的。
+console.log('=== 目录看不见时不清空 ===');
+{
+  const dir = mkdtempSync(join(tmpdir(), 'oks-sync-'));
+  const report = readdirSync(join(DEV_ROOT, 'artifacts')).find((name) => VISIBLE.test(name));
+  mkdirSync(join(dir, 'artifacts'), { recursive: true });
+  copyFileSync(join(DEV_ROOT, 'artifacts', String(report)), join(dir, 'artifacts', String(report)));
+  const state = openState(dir);
+  try {
+    syncArtifacts(state, dir);
+    ok('先在临时工作区里建出清单', listArtifacts(state).length === 1);
+    rmSync(join(dir, 'artifacts'), { recursive: true, force: true });
+    const removed = syncArtifacts(state, dir);
+    ok('目录不在时不同步（一次看不见不该清空）',
+      removed.length === 0 && listArtifacts(state).length === 1);
+    mkdirSync(join(dir, 'artifacts'), { recursive: true });
+    copyFileSync(join(DEV_ROOT, 'artifacts', String(report)), join(dir, 'artifacts', String(report)));
+    syncArtifacts(state, dir);
+    ok('目录回来之后清单照旧', listArtifacts(state).length === 1);
+    // 文件真的没了时才移除那一行。
+    rmSync(join(dir, 'artifacts', String(report)), { force: true });
+    const gone = syncArtifacts(state, dir);
+    ok('文件真的不在时才移除行', gone.length === 1 && listArtifacts(state).length === 0);
+  } finally {
+    state.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 console.log('=== 界面那两条端点 ===');
 {
   const { createArtifactsEndpoint, createDownloadEndpoint, createPinEndpoint } = await import('./src/endpoint.ts');

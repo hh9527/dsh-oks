@@ -224,7 +224,7 @@ window.__ModuleLoader__.load({
     const module = { exports: {} as ModuleExports };
     const exports = module.exports;
     const React = require('react') as typeof import('react');
-    const { createElement, useCallback, useEffect, useState } = React;
+    const { createElement, useCallback, useEffect, useRef, useState } = React;
     // 引导页里那一条要一个图标；图标来自宿主的 primitives 包（与 files / terminal 同源）。
     const primitives = require('@deepseek-ai/dsh-client-ui-primitives') as { GuideArtworkFiles?: unknown };
 
@@ -249,6 +249,9 @@ window.__ModuleLoader__.load({
         const [listing, setListing] = useState<Listing | null>(null);
         const [error, setError] = useState<string | null>(null);
         const [busy, setBusy] = useState(false);
+        /** 手上这份清单（给"变空了要再问一次"的判断用；state 在闭包里读不到最新的）。 */
+        const heldListing = useRef<Listing | null>(null);
+        useEffect(() => { heldListing.current = listing; }, [listing]);
 
         const load = useCallback(async () => {
           if (typeof sessionId !== 'string' || sessionId.length === 0) {
@@ -256,8 +259,15 @@ window.__ModuleLoader__.load({
             return;
           }
           try {
-            const fresh = await readListing(sessionId);
-            setListing((held) => (sameListing(held, fresh) ? held : fresh));
+            let fresh = await readListing(sessionId);
+            // 一次"清单变空"可能是宿主那边一次误判（例如目录一时看不见）。再问一次，
+            // 只有第二次也是空才接受——否则用户会看到清单凭空清空、要刷新才回来。
+            const held = heldListing.current;
+            if (fresh.entries.length === 0 && held !== null && held.entries.length > 0) {
+              console.warn(`[oks-ui] 清单从 ${held.entries.length} 条变成 0 条，立刻再问一次`);
+              fresh = await readListing(sessionId);
+            }
+            setListing((current) => (sameListing(current, fresh) ? current : fresh));
             setError(null);
           } catch (cause) {
             console.warn(`[oks-ui] 读不到清单（session=${sessionId}）：${describe(cause)}`);

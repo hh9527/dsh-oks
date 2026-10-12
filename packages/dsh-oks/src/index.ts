@@ -93,6 +93,7 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
     if (webServer === undefined) return;
     const sessions = webCtx.get('sessions');
     const deps = {
+      log,
       rootFor: (sessionId: string) => {
         const cwd = sessions?.get(sessionId)?.header?.cwd;
         if (typeof cwd !== 'string' || cwd.length === 0) {

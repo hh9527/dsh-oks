@@ -90,10 +90,14 @@ export function openState(root: string): State {
 }
 
 /** 把清单对齐到目录：读每个可见产物的自述写进库，删掉文件已经不在的行。
- *  **pin 不在这一步里动**——它只由 `pin` / `unpin` 改。 */
-export function syncArtifacts(state: State, root: string): void {
+ *  **pin 不在这一步里动**——它只由 `pin` / `unpin` 改。
+ *  返回这次从清单里移除的文件名（调用方爱记就记一行，便于事后自证）。 */
+export function syncArtifacts(state: State, root: string): string[] {
   const directory = join(root, ARTIFACT_DIR);
-  const files = existsSync(directory) ? readdirSync(directory).filter((file) => VISIBLE.test(file)) : [];
+  // 目录不在时**什么都不做**。还没写过产物是常态；而"这一次看不见目录"绝不该把库里的行清光
+  // ——那样清单会凭空变空，得刷新页面（重新挂载、重新读）才回来。
+  if (!existsSync(directory)) return [];
+  const files = readdirSync(directory).filter((file) => VISIBLE.test(file));
   const upsert = state.db.prepare(`insert into artifacts (file, name, kind, at, title, category, source)
     values (?, ?, ?, ?, ?, ?, ?)
     on conflict(file) do update set name = excluded.name, kind = excluded.kind,
@@ -108,10 +112,15 @@ export function syncArtifacts(state: State, root: string): void {
       seen.add(file);
       upsert.run(file, meta.name, meta.kind, meta.at, meta.title, meta.category ?? null, meta.source ?? null);
     }
+    const removed: string[] = [];
     for (const row of state.db.prepare('select file from artifacts').all() as Array<{ file: string }>) {
-      if (!seen.has(row.file)) state.db.prepare('delete from artifacts where file = ?').run(row.file);
+      if (!seen.has(row.file)) {
+        state.db.prepare('delete from artifacts where file = ?').run(row.file);
+        removed.push(row.file);
+      }
     }
     state.db.exec('commit');
+    return removed;
   } catch (cause) {
     state.db.exec('rollback');
     throw cause;

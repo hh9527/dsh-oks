@@ -24,6 +24,7 @@ assert.equal(entry.id, '@local/dsh-oks-ui');
 const fakeReact = {
   createElement: (type, props, ...children) => ({ type, props, children }),
   useCallback: (fn) => fn,
+  useRef: (initial) => ({ current: initial }),
   useEffect: () => {},
   useState: (initial) => [initial, () => {}],
 };

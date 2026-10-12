@@ -50,6 +50,8 @@ function reportFile(file: string): boolean {
 export interface PanelDeps {
   /** 会话 → 工作区根；取不到就抛，端点回 400（不猜一个工作区出来）。 */
   rootFor(sessionId: string): string;
+  /** 记一行（可选）：清单里移除了行时说明一下，事后能自证。 */
+  log?(message: string): void;
   /** 落状态：与 `oks_pin` / `oks_unpin` 走的是同一个函数。 */
   pin(root: string, src: string, pinned: boolean): { file: string; pinned: boolean };
 }
@@ -94,7 +96,10 @@ export function createArtifactsEndpoint(deps: PanelDeps): PanelHandler {
       const root = deps.rootFor(sessionId);
       const state = openState(root);
       try {
-        syncArtifacts(state, root);
+        const removed = syncArtifacts(state, root);
+        if (removed.length > 0) {
+          deps.log?.(`[oks] 清单里移除了 ${removed.length} 行（文件已经不在 artifacts/ 里）`);
+        }
         const entries = listArtifacts(state);
         reply(res, 200, { ok: true, value: { keepAliveMinutes: KEEP_ALIVE_MINUTES, entries } });
       } finally {
