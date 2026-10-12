@@ -4,10 +4,11 @@
  *  "代码来自我们"这条边界交给一个通用解析器的选项去守。这里的子集是自己写的，只认白名单语法，
  *  其余一律按文本转义，行为完全可控、也没有新增依赖。
  *
- *  支持的语法：`#`/`##`/`###` 标题、段落、无序与有序列表、表格、围栏代码块、
+ *  支持的语法：`#`/`##`/`###` 标题、段落、无序与有序列表、表格、围栏代码块、独占一行的图片，
  *  以及行内的加粗、斜体、行内代码与链接。**内嵌 HTML 不在其中**。
  *
- *  围栏代码块不在这里渲染：它交给调用方（`onFence`），因为 `chart` 块要画成图。 */
+ *  围栏代码块与独占一行的图片都不在这里渲染：交给调用方（`onFence` / `onImage`），
+ *  因为 `chart` 块要画成图、图片要把工作区里的素材读进来内联。 */
 import type { Row } from './shared.ts';
 
 /** 围栏的语言标注：只保留字母数字与少数符号，其余丢弃。
@@ -19,6 +20,14 @@ export const safeLanguage = (info: string): string => {
 
 /** 围栏块交给调用方处理：返回要插进 HTML 的内容。 */
 export type FenceHandler = (info: string, body: string, index: number) => string;
+
+/** 独占一行的图片交给调用方处理：返回要插进 HTML 的内容。
+ *  `alt` 是这一行的图注（markdown 的图片语法本来就把它当替代文本）。 */
+export type ImageHandler = (alt: string, href: string) => string;
+
+/** 独占一行的图片：`![图注](路径)`。**行内的图片不成图**——图在报告里自成一块，
+ *  "一行里混着文字"这种写法保持原样（今天就是按纯文本渲染），规则可预测。 */
+const IMAGE_LINE = /^!\[([^\]]*)\]\(([^()\s]+)\)\s*$/;
 
 /** HTML 转义——所有文本都从这里过。 */
 export const escapeHtml = (value: string): string => value
@@ -78,13 +87,15 @@ const startsBlock = (line: string): boolean =>
   || /^\s*\d+\.\s+/.test(line)
   || /^\s*>\s?/.test(line)
   || /^(-{3,}|\*{3,}|_{3,})\s*$/.test(line)
+  || IMAGE_LINE.test(line.trim())
   || line.trimStart().startsWith('|');
 
 /**
  * 把 markdown 子集渲染成 HTML 片段。
- * `onFence` 处理围栏代码块；未识别的语法按普通文本输出，不会穿透成标记。
+ * `onFence` 处理围栏代码块、`onImage` 处理独占一行的图片；未识别的语法按普通文本输出，
+ * 不会穿透成标记。
  */
-export const renderMarkdown = (source: string, onFence: FenceHandler): string => {
+export const renderMarkdown = (source: string, onFence: FenceHandler, onImage?: ImageHandler): string => {
   const lines = source.replace(/\r\n?/g, '\n').split('\n');
   const out: string[] = [];
   let fenceIndex = 0;
@@ -106,6 +117,14 @@ export const renderMarkdown = (source: string, onFence: FenceHandler): string =>
       index += 1; // 吃掉收尾的 ```
       out.push(onFence(info, body.join('\n'), fenceIndex));
       fenceIndex += 1;
+      continue;
+    }
+
+    // 独占一行的图片：整行就是一张图，交给调用方（报告把 .data/ 里的素材读进来内联）。
+    const image = line.trim().match(IMAGE_LINE);
+    if (image !== null && onImage !== undefined) {
+      out.push(onImage(image[1].trim(), image[2].trim()));
+      index += 1;
       continue;
     }
 

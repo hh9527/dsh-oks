@@ -20,7 +20,7 @@ import { isArray } from './host.ts';
 import { errorText } from './host.ts';
 import type { DiagnosticEntry, LogFn, ServiceResponse, ToolDefinition, ToolExec, TraceStep } from './host.ts';
 import { intentKey } from './key.ts';
-import { nameProblem, readResult, saveArtifact, saveResult } from './results.ts';
+import { DATA_DIR, nameProblem, readArtifact, readResult, saveArtifact, saveResult } from './results.ts';
 import type { ColumnInfo } from './results.ts';
 
 /** oks_info 的入参。 */
@@ -165,6 +165,27 @@ const renderReportFigure = (
     html: buildFigureHtml(svg, null),
     caption: json.caption === undefined || json.caption === null ? null : String(json.caption),
   };
+};
+
+/** 报告里引用的图（`![图注](路径)`）：把工作区 .data/ 下已经画好的 SVG 读进来内联。
+ *
+ *  路径两种写法都认——`.data/x.svg`（相对工作区根，和 dataSrc 一样）与 `x.svg`
+ *  （相对 .data/：报告自己就住在那里，所以这个解释在人看来同样自然）。
+ *  与其要求 agent 记住"相对谁"，不如让两种都对；两种都落在 .data/ 里，安全性不变。
+ *  除此之外（`./`、`../`、绝对路径、子目录、http）一概拒绝，报错里给出正确写法。 */
+const renderReportFigureFile = (root: string, href: string): { html: string } | { error: string } => {
+  const src = href.startsWith(`${DATA_DIR}/`) ? href : `${DATA_DIR}/${href}`;
+  let svg: string;
+  try {
+    svg = readArtifact(root, src, '.svg');
+  } catch (cause) {
+    return {
+      error: `报告里引用的图取不到：${href}（${errorText(cause)}）。`
+        + `写法可以是 ${DATA_DIR}/<文件>.chart.svg 或 <文件>.chart.svg，文件要在工作区 ${DATA_DIR}/ 里`,
+    };
+  }
+  if (!/<svg[\s>]/i.test(svg)) return { error: `报告里引用的图不是 SVG：${href}` };
+  return { html: buildFigureHtml(svg, null) };
 };
 
 /** oks_chart 的入参：图表规格 + 恰好一个数据路径（src 或 data）。 */
@@ -1323,7 +1344,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
               subtitle: { type: 'string', description: 'Optional subtitle — usually the time window the report covers.' },
               markdown: {
                 type: 'string',
-                description: 'The report body in markdown. Use ## for sections (they become the table of contents). Where a figure should appear, put a fenced ```chart block whose body is a JSON object such as {"kind":"bar","title":"…","x":"col","value":"col","src":".data/….json","caption":"…"} — give exactly one of src and data, and the named columns must exist in that data. Other fenced blocks are rendered as plain code.',
+                description: 'The report body in markdown. Use ## for sections (they become the table of contents). A figure goes in one of two ways. If it is already drawn, reference that line on a line of its own: ![caption](.data/<file>.chart.svg) — the file is read back and inlined, so the report stays a single self-contained file; either .data/<file>.chart.svg or <file>.chart.svg is accepted (the report itself lives in .data/), nothing else is. If the report should draw it, put a fenced ```chart block whose body is a JSON object such as {"kind":"bar","title":"…","x":"col","value":"col","src":".data/….json","caption":"…"} — give exactly one of src and data (there src is copied verbatim from a dataSrc, so it keeps its .data/ prefix), and the named columns must exist in that data. Both kinds share one figure numbering, in the order they appear. Other fenced blocks are rendered as plain code.',
               },
             },
             required: ['title', 'markdown'],
@@ -1349,6 +1370,11 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           markdown: parsed.spec.markdown,
           figure: (json) => {
             const rendered = renderReportFigure(json, entry.settings.workspaceRoot);
+            if ('html' in rendered) figureCount += 1;
+            return rendered;
+          },
+          figureFile: (href) => {
+            const rendered = renderReportFigureFile(entry.settings.workspaceRoot, href);
             if ('html' in rendered) figureCount += 1;
             return rendered;
           },

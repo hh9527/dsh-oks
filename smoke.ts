@@ -1872,6 +1872,65 @@ console.log('=== oks_chart（服务端出图）===');
     throw new Error('每张图都应当带自己的来源标识');
   }
 
+  // 报告里的图两种写法：已经画好的直接引用那一行，要报告自己画的写 chart 块。
+  // 两者共用一套编号，混着写也要对号；取不到图要留说明，而不是静默少一张。
+  {
+    const drawn = await call('oks_chart', {
+      spec: { kind: 'bar', x: 'label', value: 'value', title: '被引用的图' },
+      data: [{ label: '甲', value: 3 }, { label: '乙', value: 5 }],
+      name: 'probe_report_ref',
+    });
+    const refPath = drawn.value.svgSrc;                       // .data/<...>.chart.svg
+    const bare = refPath.replace('.data/', '');               // 报告自己也在 .data/ 里，裸名同样自然
+    const fence = (label) => ['```chart', JSON.stringify({
+      kind: 'bar', x: 'label', value: 'value', data: [{ label, value: 2 }], caption: `${label}图`,
+    }), '```'].join('\n');
+    const ref = await call('oks_report', {
+      spec: {
+        title: '引用图（冒烟）',
+        markdown: [
+          '## 一、画出来的',
+          '',
+          fence('第一'),
+          '',
+          '## 二、引用已落盘的',
+          '',
+          `![引用带前缀](${refPath})`,
+          '',
+          `![引用裸名](${bare})`,
+          '',
+          '## 三、取不到的那些',
+          '',
+          '![不存在的图](.data/nope.chart.svg)',
+          '',
+          '![越界的图](../evil.chart.svg)',
+          '',
+          '## 四、再画一张，编号要接着走',
+          '',
+          fence('第四'),
+        ].join('\n'),
+      },
+      name: 'probe_report_ref',
+    });
+    const refHtml = readFileSync(resolve(DEV_ROOT, ref.value.htmlSrc), 'utf8');
+    const inline = (refHtml.match(/<svg class="chart"/g) ?? []).length;
+    const captions = [...refHtml.matchAll(/<figcaption>图 (\d+)　([^<]*)<\/figcaption>/g)].map((m) => `${m[1]}:${m[2]}`);
+    console.log(`  引用图：内联 ${inline} 张 · 图注 ${captions.join(' ')} · figureCount=${ref.value.figureCount}`);
+    if (inline !== 4) throw new Error(`四张图都该内联成 <svg class="chart">，收到 ${inline}`);
+    if (JSON.stringify(captions) !== JSON.stringify(['1:第一图', '2:引用带前缀', '3:引用裸名', '4:第四图'])) {
+      throw new Error(`两种写法应当共用一套编号（取不到的图不占号），实际 ${JSON.stringify(captions)}`);
+    }
+    if (ref.value.figureCount !== 4) throw new Error(`回执的图数应当只数画出来的，收到 ${ref.value.figureCount}`);
+    // 取不到的两种写法：各留一段说明，而且说明里要给出正确写法（能靠报错自纠）。
+    const errors = [...refHtml.matchAll(/<div class="figure-error">([^<]*)<\/div>/g)].map((m) => m[1]);
+    if (errors.length !== 2) throw new Error(`两个取不到的引用各该留一段说明，收到 ${errors.length}`);
+    if (!errors[0].includes('nope.chart.svg') || !errors[0].includes('.data/')) {
+      throw new Error(`说明里该指出写错的那一行并给出正确写法：${errors[0]}`);
+    }
+    if (/!\[[^\]]*\]\(/.test(refHtml)) throw new Error('图片语法不该以字面文本出现在正文里');
+    if (refHtml.includes('evil.chart.svg</svg>')) throw new Error('越界的引用不该被读进来');
+  }
+
   // 规格与图的校验：这些都要在画图之前被拒。
   // 分组柱 vs 堆叠柱：真机上报回来的问题——不给 stack 时柱子变成多段的一根（永远堆叠）。
   // 原来这里只断言"有图形"，而那种断言抓不到它：堆叠也是一个 <path>。所以要断言几何关系。

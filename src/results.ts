@@ -239,23 +239,40 @@ export function resolveDataSrc(root: string, dataSrc: unknown): string {
   const target = resolve(root, dataSrc);
   const inside = relative(directory, target);
   if (inside.length === 0 || inside.startsWith('..') || isAbsolute(inside)) {
-    throw new Error(`dataSrc 只能指向工作区 ${DATA_DIR}/ 里的结果文件：${JSON.stringify(dataSrc)}`);
+    throw new Error(`dataSrc 只能指向工作区 ${DATA_DIR}/ 里的文件：${JSON.stringify(dataSrc)}`);
   }
   return target;
 }
 
-/** 读回结果文件；真实路径也必须落在 .data/ 里（挡住符号链接逃逸）。 */
-export function readResult(root: string, dataSrc: unknown): ResultFile {
-  const target = resolveDataSrc(root, dataSrc);
+/** 把一个 .data/ 里的产物定位到真实路径：先按前缀收窄，再用真实路径复核（挡住符号链接逃逸）。
+ *  "找不到"与"越界"要分开报——这两种错，修法完全不同。 */
+function artifactPath(root: string, src: unknown): string {
+  const target = resolveDataSrc(root, src);
+  let real: string;
+  try {
+    real = realpathSync(target);
+  } catch {
+    throw new Error(`找不到 ${JSON.stringify(src)}`);
+  }
   const realDirectory = realpathSync(resolve(root, DATA_DIR));
-  const real = realpathSync(target);
   const inside = relative(realDirectory, real);
   if (inside.length === 0 || inside.startsWith('..') || isAbsolute(inside)) {
-    throw new Error(`dataSrc 指向的路径不在工作区 ${DATA_DIR}/ 里：${JSON.stringify(dataSrc)}`);
+    throw new Error(`引用指向的路径不在工作区 ${DATA_DIR}/ 里：${JSON.stringify(src)}`);
   }
-  const parsed: unknown = JSON.parse(readFileSync(real, 'utf8'));
+  return real;
+}
+
+/** 读回结果文件；真实路径也必须落在 .data/ 里（挡住符号链接逃逸）。 */
+export function readResult(root: string, dataSrc: unknown): ResultFile {
+  const parsed: unknown = JSON.parse(readFileSync(artifactPath(root, dataSrc), 'utf8'));
   if (!isRecord(parsed) || !Array.isArray(parsed.rows) || !Array.isArray(parsed.columns)) {
     throw new Error(`结果文件结构不完整：${JSON.stringify(dataSrc)}`);
   }
   return parsed as unknown as ResultFile;
+}
+
+/** 读一份已经落盘的产物（报告里引用的图）：路径约束与结果文件相同，另加一条扩展名核对。 */
+export function readArtifact(root: string, src: string, extension: string): string {
+  if (!src.endsWith(extension)) throw new Error(`只认 ${extension} 产物：${JSON.stringify(src)}`);
+  return readFileSync(artifactPath(root, src), 'utf8');
 }
