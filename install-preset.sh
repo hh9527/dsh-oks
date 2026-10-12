@@ -10,6 +10,11 @@
 #      （走 `dsh plugin --profile <名> install`，拿它的文件锁与 pnpm 调用）。
 #   5. preset：profile 的 cordis.patch.yml 里没有 preset-oks 时，把下面这段追加进去。
 #      模板里的空数组占位 [] 会让位——它后面再接 - insert: 不是合法 YAML。
+#   6. 默认：没有 agent-preset-registry 的配置时，把 default 写成 oks。preset 注册了不等于
+#      被选中——新会话落在 registry 的 default 上，不写这一步新会话还是 standard。
+#
+# 怎么调用 dsh：优先 $DSH_CMD（可以是一整串，例如 DSH_CMD='pnpm dlx @deepseek-ai/dsh'），
+# 其次 PATH 里的 dsh，最后退回 `pnpm dlx @deepseek-ai/dsh`——部署里常常没有全局 dsh。
 #
 # 注册的是 preset：oks_* / time_* / va_ask 只在这个 preset 的作用域里。脚本不把本包写进
 # profile 的 dsh.profile.bundles：bundles 里的包会连它自己的 cordis.patch.yml 一起应用，
@@ -80,7 +85,19 @@ MANIFEST="$PROFILE_DIR/package.json"
 PATCH_FILE="$PROFILE_DIR/cordis.patch.yml"
 
 command -v node >/dev/null 2>&1 || fail '需要 node（dsh 也依赖它）'
-command -v dsh >/dev/null 2>&1 || fail 'PATH 里没有 dsh；先装 DeepSeek Harness（或把 dsh 放进 PATH）'
+
+# 用数组而不是字符串：路径里有空格时字符串会被拆开。
+if [ -n "${DSH_CMD:-}" ]; then
+  read -r -a DSH_ARR <<< "$DSH_CMD"
+  [ "${#DSH_ARR[@]}" -gt 0 ] || fail "DSH_CMD 是空的：$DSH_CMD"
+elif command -v dsh >/dev/null 2>&1; then
+  DSH_ARR=(dsh)
+elif command -v pnpm >/dev/null 2>&1; then
+  DSH_ARR=(pnpm dlx @deepseek-ai/dsh)
+else
+  fail 'PATH 里既没有 dsh 也没有 pnpm：装一个，或用 DSH_CMD 给出调用方式（例如 DSH_CMD="pnpm dlx @deepseek-ai/dsh"）'
+fi
+say "用 ${DSH_ARR[*]} 调用 dsh"
 
 # ── 1. 产物 ──────────────────────────────────────────────────────────────────
 # 仓库只带源码：exports 指向 dist/index.mjs，而 dist/ 不入库，所以新克隆必须先构建。
@@ -98,7 +115,7 @@ fi
 # ── 2. profile ───────────────────────────────────────────────────────────────
 if [ ! -f "$MANIFEST" ]; then
   say "初始化 profile $PROFILE（$PROFILE_DIR）"
-  DSH_HOME="$DSH_HOME_DIR" dsh plugin --profile "$PROFILE" install \
+  DSH_HOME="$DSH_HOME_DIR" "${DSH_ARR[@]}" plugin --profile "$PROFILE" install \
     || fail "初始化 profile $PROFILE 失败"
 fi
 [ -f "$MANIFEST" ] || fail "没有 profile 清单 $MANIFEST"
@@ -131,7 +148,7 @@ if [ -f "$PROFILE_DIR/node_modules/$PACKAGE/package.json" ]; then
 else
   command -v pnpm >/dev/null 2>&1 || fail '安装依赖需要 pnpm'
   say "在 profile $PROFILE 里安装（pnpm install）"
-  DSH_HOME="$DSH_HOME_DIR" dsh plugin --profile "$PROFILE" install \
+  DSH_HOME="$DSH_HOME_DIR" "${DSH_ARR[@]}" plugin --profile "$PROFILE" install \
     || fail "profile $PROFILE 的依赖安装失败"
   [ -f "$PROFILE_DIR/node_modules/$PACKAGE/package.json" ] \
     || fail "安装后仍没有 $PROFILE_DIR/node_modules/$PACKAGE"
@@ -202,9 +219,27 @@ else
               - id: tool-result-pruner
                 name: "@deepseek-ai/dsh-compaction-tool-result-pruner"
                 config:
-                  thresholdChars: 8192
+                  # 阈值管"小于这个数就别动它"：64K 之下原样进上下文（被剪掉的中间段往往是
+                  # 知识节点声明、文件正文与构建输出里最要紧的部分）；head/tail 只服务更大的输出。
+                  thresholdChars: 65536
                   headChars: 4096
                   tailChars: 1024
+YAML
+fi
+
+# ── 6. 默认 preset ───────────────────────────────────────────────────────────
+# preset 注册了不等于被选中：新会话落在 preset-registry 的 default 上（base 那里是 standard）。
+# selectedDefault（用户在界面上选过的）优先级更高，所以这里只写 default，不锁死用户的选择。
+if grep -qE "^[[:space:]]*-[[:space:]]*id:[[:space:]]*agent-preset-registry[[:space:]]*\$" "$PATCH_FILE"; then
+  say "agent-preset-registry 已在 $PATCH_FILE"
+else
+  say "把默认 preset 写成 $PATCH_ID（追加 agent-preset-registry）"
+  cat >> "$PATCH_FILE" <<'YAML'
+
+# 默认 preset：新会话落在 OKS 上（preset 注册了不等于被选中）。
+- id: agent-preset-registry
+  config:
+    default: oks
 YAML
 fi
 
@@ -222,4 +257,4 @@ if MANIFEST="$MANIFEST" PACKAGE="$PACKAGE" node --input-type=module -e '
   say "      只想保留 preset 就把它从 bundles 里删掉（本脚本不动 bundles）。"
 fi
 
-say "下一步：启动或重启该 profile（例如 dsh $PROFILE）。用户补丁层是热重载的，如果它正在运行，新会话用新定义。"
+say "下一步：启动或重启该 profile（例如 ${DSH_ARR[*]} $PROFILE）。用户补丁层是热重载的，如果它正在运行，新会话用新定义。"
