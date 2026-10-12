@@ -17,6 +17,8 @@ export { buildOption, CHART_WIDTH, plotHeight } from './chart/option.ts';
 // 产物的命名规则也导出：它是对外可核对的约定（名字里那段 = 文件内容的 sha256 前 8 位），
 // 冒烟按它断言，别的工具按它解析。
 export { artifactName, NAME_MAX, resultStamp } from './results.ts';
+// 产物自述的读写也导出：它是"产物自己说得清自己是什么"这条契约的实现，冒烟直接按它断言。
+export { embedArtifactMeta, readArtifactMeta, saveArtifact } from './results.ts';
 export { renderEchartsSvg } from './chart/echarts.ts';
 export { buildFigureHtml, renderReportHtml } from './chart/report.ts';
 export { renderMarkdown } from './chart/markdown.ts';
@@ -50,6 +52,11 @@ import { createKnowledge } from './knowledge.ts';
 import { createTimeContext } from './time-context.ts';
 import { createTools } from './tools.ts';
 import { createVaRuntime } from './va.ts';
+import { ARTIFACTS_ENDPOINT, createArtifactsEndpoint, createDownloadEndpoint, createPinEndpoint, DOWNLOAD_ENDPOINT, PIN_ENDPOINT } from './endpoint.ts';
+import { pinBySrc } from './state.ts';
+
+// 界面那条机械通道的两条路径（页签与插件约定同一对常量）。
+export { ARTIFACTS_ENDPOINT, DOWNLOAD_ENDPOINT, PIN_ENDPOINT };
 import type { LogFn, PluginContext } from './host.ts';
 import type { PluginConfig } from './config.ts';
 
@@ -78,6 +85,34 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
     const dispose = ctx.tools.register(definition);
     if (typeof dispose === 'function') ctx.effect(() => dispose);
   }
+
+  // 界面用的一对同源端点：清单 + 保留（都是机械操作，不该经过 agent）。
+  // 需要 web 服务才装配——没有 web 的部署里插件照常工作（这里就不装）。
+  ctx.inject?.(['webServer'], (webCtx) => {
+    const webServer = webCtx.get('webServer');
+    if (webServer === undefined) return;
+    const sessions = webCtx.get('sessions');
+    const deps = {
+      rootFor: (sessionId: string) => {
+        const cwd = sessions?.get(sessionId)?.header?.cwd;
+        if (typeof cwd !== 'string' || cwd.length === 0) {
+          throw new Error(`找不到会话 ${sessionId} 的工作区目录`);
+        }
+        return cwd;
+      },
+      pin: pinBySrc,
+    };
+    webCtx.effect(() => webServer.register({
+      kind: 'exact', path: ARTIFACTS_ENDPOINT, handler: createArtifactsEndpoint(deps),
+    }));
+    webCtx.effect(() => webServer.register({
+      kind: 'exact', path: PIN_ENDPOINT, handler: createPinEndpoint(deps),
+    }));
+    webCtx.effect(() => webServer.register({
+      kind: 'exact', path: DOWNLOAD_ENDPOINT, handler: createDownloadEndpoint(deps),
+    }));
+    log(`[oks] 面板端点已开：${ARTIFACTS_ENDPOINT} · ${PIN_ENDPOINT} · ${DOWNLOAD_ENDPOINT}`);
+  });
 
   ctx.effect(() => knowledge.dispose);
 }

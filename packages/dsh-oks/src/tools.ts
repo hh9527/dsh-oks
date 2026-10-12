@@ -7,7 +7,9 @@ import { renderEchartsSvg } from './chart/echarts.ts';
 import { buildFigureHtml, renderReportHtml } from './chart/report.ts';
 import { CHART_KINDS, inferXType, supportedKinds, supports, toNumber } from './chart/shared.ts';
 import type { ChartKind, ExpressionSwitch, LayoutOverrides, MarkLine, SecondMetric, StyleOverrides } from './chart/shared.ts';
-import { OBJECT_OUTPUT, renderChart, renderCheck, renderJaq, renderJson, renderQuery, renderValue, withoutQueries } from './response.ts';
+import { OBJECT_OUTPUT, renderArtifacts, renderChart, renderCheck, renderJaq, renderJson, renderPin,
+  renderQuery, renderValue, withoutQueries } from './response.ts';
+import { KEEP_ALIVE_MINUTES, listArtifacts, pinBySrc, pruneArtifacts, syncArtifacts, openState } from './state.ts';
 import type { Row } from './response.ts';
 import { REFERENCE_KINDS, referencesOf, renderReferences, renderSearch, searchIndex } from './retrieval.ts';
 import type { ReferencesArgs, SearchArgs } from './retrieval.ts';
@@ -22,6 +24,11 @@ import type { DiagnosticEntry, LogFn, ServiceResponse, ToolDefinition, ToolExec,
 import { intentKey } from './key.ts';
 import { ARTIFACT_DIR, nameProblem, readArtifact, readResult, saveArtifact, saveResult } from './results.ts';
 import type { ColumnInfo } from './results.ts';
+
+/** oks_pin / oks_unpin 的入参：产物在 artifacts/ 里的路径，从回执原样搬。 */
+interface PinArgs {
+  src?: unknown;
+}
 
 /** oks_info 的入参。 */
 interface InfoArgs {
@@ -74,6 +81,8 @@ const limitOf = (intent: unknown): number | null => {
 interface ReportArgs {
   spec?: unknown;
   name?: unknown;
+  /** 精确分类（周报、月报、即时分析…）：没给就按"即时分析"。 */
+  category?: unknown;
   note?: unknown;
 }
 
@@ -202,6 +211,19 @@ interface ChartSpec {
   layout: LayoutOverrides;
 }
 
+/** 图的**显示标题**：agent 给了就用它，没给就按"序列 × 维度 × 度量"造一个——**永不为空**。
+ *
+ *  它进的是产物的自述（清单里显示的那一行），**不改图的绘制**：图里画不画标题仍由 agent 决定
+ *  （`spec.title` 为空时绘图区照旧不留标题位）。列名本身就是维度与度量的名字，所以这段话
+ *  不需要任何领域知识；全空时才退回图元名。 */
+const chartTitle = (spec: ChartSpec): string => {
+  const given = spec.title === null ? '' : spec.title.trim();
+  if (given !== '') return given;
+  const parts = [spec.series, spec.x, spec.value]
+    .filter((part): part is string => typeof part === 'string' && part.trim() !== '');
+  return parts.length > 0 ? parts.join(' × ') : spec.kind;
+};
+
 /** 解析并校验排版覆盖项：每一项都可选，给了就必须在合理范围内——
  *  越界的值（比如 4pt 的字）画出来是废图，不如直接报错让 agent 重来。 */
 const parseLayout = (raw: unknown): { layout: LayoutOverrides } | { error: string } => {
@@ -249,7 +271,8 @@ const parseLayout = (raw: unknown): { layout: LayoutOverrides } | { error: strin
 interface ChartAnswer {
   ok: true;
   kind: ChartSpec['kind'];
-  title: string | null;
+  /** 始终有值：agent 没给标题时这里是工具造的那个。 */
+  title: string;
   source: 'query' | 'agent';
   /** 查询结果文件（src 路径才有）。 */
   src: string | null;
@@ -742,6 +765,23 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
   log: LogFn;
   config: PluginConfig | undefined;
 }): ToolDefinition[] {
+
+  /** 写产物之前顺带清一次过期的（**懒惰清理**：插件只在被调用时活着，因此不需要定时器）。
+   *  保留过的不动、认不出的不动；删了什么进宿主日志——删除是唯一不可逆的动作，必须留痕。 */
+  const pruneBeforeWrite = (root: string): void => {
+    const state = openState(root);
+    try {
+      const { removed, kept, untouched } = pruneArtifacts(state, root, KEEP_ALIVE_MINUTES);
+      if (removed.length > 0) {
+        log(`[oks] prune · 清理 ${removed.length} 个过期产物（保活 ${KEEP_ALIVE_MINUTES} 分钟；`
+          + `保留 ${kept} 个、认不出 ${untouched} 个不动）`);
+      }
+      // 顺手把清单同步一次：这样页签在**这次写产物之后**就能看到它，不必等一次清单调用。
+      syncArtifacts(state, root);
+    } finally {
+      state.close();
+    }
+  };
   /** 降一批 Intent。服务只在整批通过时才回 queries，所以被拒批次里没有报 Error 的子集
    *  会再提交一次——这样"5 个里坏了 1 个"仍能拿到其余 4 个的执行物。 */
   const lowerBatch = async (
@@ -1073,6 +1113,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           slot.truncated = outcome.truncated;
           try {
             // 只读执行成功就落盘：数据行只留在结果文件里，模型可见面只有引用。
+            pruneBeforeWrite(entry.settings.workspaceRoot);
             const saved = saveResult({
               root: entry.settings.workspaceRoot,
               name: slot.name,
@@ -1231,6 +1272,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           src: { type: 'string', description: 'A dataSrc returned by oks_query, copied verbatim. Exactly one of src and data must be given.' },
           data: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'Row objects you supply yourself (an empty array is valid). Exactly one of src and data must be given.' },
           name: { type: 'string', description: 'Optional name for the saved SVG; defaults to "chart". A name is an identifier, not a title: 0-9, _ and a-z only, at most 60 characters (longer ones are cut and tagged with a ~ plus a short hash), and the file is named <time>-<name>-<content hash>.chart.svg.' },
+          category: { type: 'string', description: 'The precise kind of report, as a short noun phrase the reader recognizes — 周报 / 月报 / 即时分析 / 复盘 and the like. It is the text next to the type icon in the artifacts list, so keep it to a few characters; omit it for a one-off analysis and it defaults to 即时分析.' },
           note: { type: 'string', description: 'Optional short note carried in the receipt — your own narration, kept apart from the system source label.' },
         },
         required: ['spec'],
@@ -1278,21 +1320,25 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         const sourceLabel = source === 'query' ? '基于查询结果' : 'agent 自主填写';
         const { option, height } = buildOption(rows, { ...spec, sourceLabel });
         const svg = renderEchartsSvg(option, CHART_WIDTH, height);
+        const title = chartTitle(spec);
+        pruneBeforeWrite(entry.settings.workspaceRoot);
         const saved = saveArtifact({
           root: entry.settings.workspaceRoot,
           name: typeof args?.name === 'string' && args.name.length > 0 ? args.name : 'chart',
           content: svg,
           extension: '.svg',
           kind: 'chart',
+          title,
+          source,
         });
-        const alt = (spec.title ?? (source === 'query' ? '查询结果图' : '数据图')).replace(/[[\]]/g, '');
+        const alt = title.replace(/[[\]]/g, '');
         const markdown = `![${alt}](${saved.src})`;
         const note = typeof args?.note === 'string' && args.note.length > 0 ? args.note : null;
         log(`[oks] chart ${spec.kind} · source=${source} · ${rows.length} 行 → ${saved.src}`);
         return {
           ok: true as const,
           kind: spec.kind,
-          title: spec.title,
+          title,
           source,
           src: hasSrc ? String(args?.src) : null,
           svgSrc: saved.src,
@@ -1327,6 +1373,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             additionalProperties: false,
           },
           name: { type: 'string', description: 'Optional name for the saved HTML; defaults to "report". A name is an identifier, not a title: 0-9, _ and a-z only, at most 60 characters, and the file is named <time>-<name>-<content hash>.report.html.' },
+          category: { type: 'string', description: 'The precise kind of report, as a short noun phrase the reader recognizes — 周报 / 月报 / 即时分析 / 复盘 and the like. It is the text next to the type icon in the artifacts list, so keep it to a few characters; omit it for a one-off analysis and it defaults to 即时分析.' },
           note: { type: 'string', description: 'Optional short note carried in the receipt — your own narration, kept apart from the system source label.' },
         },
         required: ['spec'],
@@ -1350,16 +1397,90 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             return rendered;
           },
         });
+        pruneBeforeWrite(entry.settings.workspaceRoot);
         const saved = saveArtifact({
           root: entry.settings.workspaceRoot,
           name: typeof args?.name === 'string' && args.name.length > 0 ? args.name : 'report',
           content: html,
           extension: '.html',
           kind: 'report',
+          // 报告没有单一来源可写：叙述是 agent 写的，图逐张自证（见渲染层那句注释）。
+          title: parsed.spec.title,
+          // 大类是"报表"（用图标呈现），这一项是更精确的分类：agent 没给就按"即时分析"。
+          category: typeof args?.category === 'string' && args.category.trim() !== ''
+            ? args.category.trim()
+            : '即时分析',
         });
         const markdown = `[${parsed.spec.title}](${saved.src})`;
         // 来源逐图判定，报告级没有单一来源可报；每张图的标识已经画在图里。
         return { ok: true, htmlSrc: saved.src, markdown, at: saved.at, note, figureCount };
+      },
+    },
+    {
+      name: 'oks_pin',
+      description: 'Pin one artifact so keep-alive cleanup leaves it alone. Figures and reports in this workspace are temporary by default: an unpinned one is removed about an hour after it was produced, so pin whatever the user wants to keep — or asked to share. Pinning is about retention only: it does not change where the artifact appears, nor how it looks. src is the artifacts/… path from a receipt, copied verbatim.',
+      parameters: {
+        type: 'object',
+        properties: {
+          src: {
+            type: 'string',
+            description: 'The artifacts/… path of a figure or report, copied verbatim from the receipt that produced it (…​.chart.svg or …​.report.html).',
+          },
+        },
+        required: ['src'],
+        additionalProperties: false,
+      },
+      output: { schema: OBJECT_OUTPUT, render: renderPin },
+      async execute(args: PinArgs, exec: ToolExec) {
+        const entry = knowledge.ensureWorkspace(exec);
+        const { file, pinned } = pinBySrc(entry.settings.workspaceRoot, args?.src, true);
+        log(`[oks] pin ${file}`);
+        return { ok: true as const, pinned, file, keepAliveMinutes: KEEP_ALIVE_MINUTES };
+      },
+    },
+    {
+      name: 'oks_unpin',
+      description: 'Undo a pin: the artifact becomes subject to keep-alive cleanup again. This is not an undo of deletion — if its keep-alive window has already passed, the next cleanup removes it. src is the artifacts/… path from a receipt, copied verbatim.',
+      parameters: {
+        type: 'object',
+        properties: {
+          src: {
+            type: 'string',
+            description: 'The artifacts/… path of a pinned figure or report, copied verbatim from the receipt that produced it.',
+          },
+        },
+        required: ['src'],
+        additionalProperties: false,
+      },
+      output: { schema: OBJECT_OUTPUT, render: renderPin },
+      async execute(args: PinArgs, exec: ToolExec) {
+        const entry = knowledge.ensureWorkspace(exec);
+        const { file, pinned } = pinBySrc(entry.settings.workspaceRoot, args?.src, false);
+        log(`[oks] unpin ${file}`);
+        return { ok: true as const, pinned, file, keepAliveMinutes: KEEP_ALIVE_MINUTES };
+      },
+    },
+    {
+      name: 'oks_artifacts',
+      description: 'List this workspace\'s artifacts — its figures and reports, newest first, each with its title, kind, time and whether it is pinned. Query results are internal and never appear here. Use it when the user asks what has been produced, or to find the path of something you did not produce in this session before pinning it.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        additionalProperties: false,
+      },
+      output: { schema: OBJECT_OUTPUT, render: renderArtifacts },
+      async execute(_args: unknown, exec: ToolExec) {
+        const entry = knowledge.ensureWorkspace(exec);
+        const root = entry.settings.workspaceRoot;
+        const state = openState(root);
+        try {
+          syncArtifacts(state, root);
+          const entries = listArtifacts(state);
+          log(`[oks] artifacts · ${entries.length} 条（保留 ${entries.filter((item) => item.pinned).length}）`);
+          return { ok: true as const, keepAliveMinutes: KEEP_ALIVE_MINUTES, entries };
+        } finally {
+          state.close();
+        }
       },
     },
     {

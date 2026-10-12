@@ -1,7 +1,8 @@
 node_modules/
 .npm-cache/
 .pnpm-store/
-dist/
+lib/
+.tsbuild/
 
 # 运行产物：查询结果、图、报告都落在这里，不进版本库
 artifacts/

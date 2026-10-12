@@ -1,0 +1,7 @@
+{
+  "name": "dsh-oks-repo",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ]
+}

@@ -1,6 +1,6 @@
 # dsh-oks
 
-把**某个领域的知识服务（OKS）**接进 DSH，成为八个原生工具 + 三个辅助工具 — 用于在 Harness Web 里
+把**某个领域的知识服务（OKS）**接进 DSH，成为十一个原生工具 + 三个辅助工具 — 用于在 Harness Web 里
 **亲手体验**「业务问句 → 实际查询结果」这条链路。查询在**只读**连接上执行；命中的结果写进工作区
 `artifacts/` 下的结果文件，**默认不进模型上下文**，要用时用 `oks_jaq_result` 在它上面做结构化查询取回。
 
@@ -35,7 +35,7 @@ profile 顶层不必多一行。
 
 Node 按 URL 缓存 ESM 模块，所以：
 
-- 改 `src/` 下的源码后要重新 `pnpm run build`（产物是自包含的 `dist/index.mjs`，含
+- 改 `src/` 下的源码后要重新 `pnpm run build`（产物是自包含的 `lib/index.mjs`，含
   `src/skill.md`、`src/va-prompt-tpl.md` 两份构建期内联的提示词）；改完要**重启 profile**
   才加载新的模块代（`link:` 的好处是**不必重新安装**，重启即可；若用 `file:`，pnpm 会硬链接成拷贝，
   改源码不再生效）；
@@ -53,6 +53,9 @@ Node 按 URL 缓存 ESM 模块，所以：
 | `oks_jaq_result` | `{src, query}` | 在结果文件上做**结构化查询**：`query` 是作用在**行数组**上的 jaq（与 jq 兼容）表达式——`.[] \| select(.count > 100)`、`.[] \| {name, total}`、`sort_by(.total) \| reverse \| .[0:5]`。表达式决定取回什么，按需投影即可；结果文件的内部结构不进契约。`src` 限定在工作区 `artifacts/` 内 |
 | `oks_chart` | `{spec, src?, data?, name?, note?}` | 把图画成 **SVG 存进工作区**：`src` 与 `data` **恰好提供一个**——`src` 引用查询结果文件（来源固定标为「基于查询结果」），`data` 是你自填的对象行数组（「agent 自主填写」）。十种图元都用 `x`（类别/横轴列）与 `value`（数值列）作底（`histogram` 只给 `value`）：**分组柱** `column`，可选 `series`（组内分组）；**横条** `bar`（可选 `series`：横向的分组条）；**饼图** `pie`（只取正数）；**多序列折线** `line`、**面积图** `area`（可选 `series`，`xType` 不填按数据推断）；**散点** `scatter`（可选 `size` 当第三维）；**直方图** `histogram`（可选 `bins`）；**箱线图** `box`；**矩阵** `heatmap` 与**雷达** `radar`（两者都要 `series`：矩阵的纵轴类别 / 雷达的被比较对象）。要看明细表，直接在回答里写 markdown 表格。回执给出一行 `![标题](路径)`，agent 把它放进回答，图就显示在那里 |
 | `oks_report` | `{spec, name?, note?}` | 把叙述与图组织成一份**自足的 HTML 报告**存进工作区：`spec` 给 `title`、可选 `subtitle` 与一段 **markdown 正文**。正文用 `##` 分章节（成为目录），支持列表、表格、加粗、行内代码、引用、分隔线与换行（`<br>` / 行尾两空格 / 行尾 `\`），**除 `<br>` 外的 HTML 会转义**；**图写在它该出现的位置，只有一种写法：先画再引**——用 `oks_chart` 画出来（回执给的就是那一行），再把 `![图注](artifacts/<文件>.chart.svg)` **独占一行**放进正文；报告把那份 SVG 读进来**内联**（路径写 `artifacts/x.chart.svg` 或 `x.chart.svg` 都认），图注编号按出现顺序由系统给。语言标为 `chart` 的围栏块**不再接受**（会在原处留一段说明指回去）——于是报告正文里不带任何 JSON 片段。图以**内联 SVG** 嵌在页面里，单文件可以发给任何人打开。报告**不出现在回答正文**：回执给出一行 markdown 链接，agent 用 `present` 交付，用户点开在右侧栏阅读 |
+| `oks_artifacts` | `{}` | 列出本工作区的**图与报告**（最新在前）：标题、类别、时间、是否保留。查询结果是内部制品、不出现。用它回答"产出过什么"，或在保留别的东西之前先找到它的路径 |
+| `oks_pin` | `{src}` | **保留**一件图或报告：产物默认是临时的（产出约 60 分钟后由保活清理删掉），保留过的不再被清。保留只影响存留，**不改它在界面上出现的位置** |
+| `oks_unpin` | `{src}` | 取消保留，它重新受保活约束。**这不是删除的撤销**——已经过了保活窗口的话，下一次清理就会删掉它 |
 | `va_ask` | `{query}` | 咨询本会话的**词汇助手**：给一个说法（词/短语/一句话，中英不限），拿回词表里等价或相近的说法——回答是**一行一个字符串**，每个字符串都是词表原文。助手是插件自己建、自己收的**顶层 agent**（preset `oks`、与调用方同一工作区、共用同一份进程内索引），平时归档，被咨询时临时恢复。它给的是线索，检索口径仍由 `oks_search` / `oks_info` 决定。**整份词表由插件渲染成助手系统提示词里的一个 section**（模板 + 全部词条），助手一个工具都没有。装配**不发任何消息**；每个说法才是一次回合，拿到回答后插件把表面上的节点全部收进一个固定文本的标记，所以助手每次只看到「系统提示词里的词表 + 一个标记 + 当前这个说法」（会话日志保持 append-only，标记节点用 `sourceEventSeqs` 记下遮蔽范围）|
 | `time_now` | `{timeZone?}` | 当前时刻的**各种标准表示**（epoch 毫秒/秒、UTC 文本、RFC 3339、带偏移的本地文本、日期、ISO 周）+ 实际用的时区。服务不读时钟，所以相对时间必须在这里换成绝对边界 |
 | `time_calc` | `{base?, timeZone?, operations?}` | 日历代数：`add`（year/quarter/month/week/day/hour/minute/second）、`floor`/`ceil` 到日历边界（周默认周一起）、`convert` 换时区。日/周保持**本地墙钟**（跨 DST 的一天可能不是 24 小时），月/季/年**钳制**到当月最后一天。区间半开 `[start, end)` |
@@ -214,23 +217,23 @@ bin/telora -C <模型目录> build <模型名> --snapshot \
 
 ## 开发
 
-源码在 `src/`（TypeScript），构建出**单一产物** `dist/index.mjs`（profile 里 `link:` 装的插件加载它）
-——所以**改完 `src/` 必须重新构建**（`dist/` 不进 git；`pnpm install` 会经 `prepare` 自动构建一次，
+源码在 `src/`（TypeScript），构建出**单一产物** `lib/index.mjs`（profile 里 `link:` 装的插件加载它）
+——所以**改完 `src/` 必须重新构建**（`lib/` 不进 git；`pnpm install` 会经 `prepare` 自动构建一次，
 `pnpm run test` 也会先构建，忘了构建不会静默用到旧产物）：
 
 ```sh
 pnpm install          # tsdown + typescript（只用于开发/构建）
 pnpm run typecheck    # tsc --noEmit，零报错
-pnpm run build        # tsdown → dist/index.mjs（自包含）
+pnpm run build        # tsdown → lib/index.mjs（自包含）
 pnpm run dev          # 同上，但 watch：改完立刻重建
 pnpm run check        # typecheck + build + 冒烟
 ```
 
 出图与报告都走 **echarts**：规格（业务字段与结果行）直接翻成 echarts option，再由它的 SSR 模式
-（`renderer: 'svg'`）产出 SVG。整条链路是纯 JS——`dist/` 里只有一个 `index.mjs`（约 1.6 MB，
+（`renderer: 'svg'`）产出 SVG。整条链路是纯 JS——`lib/` 里只有一个 `index.mjs`（约 1.6 MB，
 echarts 按需导入后打在里面），没有 WASM、字体或包缓存之类的旁资产。
 
-打出去的包只含运行时需要的：`dist/` + `cordis.patch.yml` + `icon.svg` + `locale/*.json`
+打出去的包只含运行时需要的：`lib/` + `cordis.patch.yml` + `icon.svg` + `locale/*.json`
 （`files` 就这么列的）——`src/`、`smoke.ts` 这些都不进 npm。
 
 提示词是**普通源码模块**：`.md` 和 `.ts` 一样按功能/架构归属，不按文件类型分目录、也不单列一个
@@ -241,7 +244,7 @@ echarts 按需导入后打在里面），没有 WASM、字体或包缓存之类�
 
 构建用 [tsdown](https://tsdown.dev)（rolldown 系，和 DSH 自己 node 侧包的产物一致）。Node ≥ 22
 能直接跑 `.ts`，所以 `smoke.ts` 不用先构建就能跑（它自己对 `src/time.ts` 这类纯函数的单测也是直接
-导入源码）；被测的插件本体则从 `dist/index.mjs` 导入——**测的就是最终制品**。
+导入源码）；被测的插件本体则从 `lib/index.mjs` 导入——**测的就是最终制品**。
 
 `smoke.ts` 是 JS 风格的测试脚本（自造假宿主、动态导入），**不纳入 `tsc` 检查**：要纳入需要先给它
 写一套假宿主的类型（约 200 处隐式 any），那是另一件事。
@@ -265,7 +268,7 @@ cd packages/dsh-oks && OKS_WORKSPACE=/path/to/ws node smoke.ts          # 或者
 结果文件里有，且带原始 Intent 与列信息）、**改了 Intent 复用别的 key 会被 `key_mismatch` 拒掉**、
 `queryMaxRows` 触顶时的截断说明、缺 / 坏 `dataFile` 的报错（坏的那份要在回执里写明执行失败）、
 **按需取数**（表达式作用在行数组上、求值器的报错原样带回、缺 `query` 与越界 `src` 的明确报错）、
-**插件只写 `artifacts/`**、自带技能的注册（名字合法、描述非空、正文与 `src/skill.md` 逐字一致、
+**插件只写 `artifacts/` 与 `.oks/`**（且 `.oks/` 里只有状态库）、自带技能的注册（名字合法、描述非空、正文与 `src/skill.md` 逐字一致、
 正文不含任何具体领域名）、第二个工作区按 `oks.json` 解析相对路径、无 `oks.json` 与**无 `telora.snapshot` 段**
 两种情况下都明确报错，以及模型请求与查询两侧 1 ms 上限下的超时强杀与复活。
 
@@ -279,8 +282,8 @@ cd packages/dsh-oks && OKS_WORKSPACE=/path/to/ws node smoke.ts          # 或者
 ## 实现备注
 
 - **产物自足**：直接注册原始工具定义（`ctx.tools.register()` 只校验 `output.schema`），
-  查询用 Node 自带的 `node:sqlite`。代码与 echarts 全部打进 `dist/index.mjs`，没有旁资产——
-  冒烟最后一段会把整个 `dist/` 搬进空目录，并在那里真画一张图，验证这一点。
+  查询用 Node 自带的 `node:sqlite`。代码与 echarts 全部打进 `lib/index.mjs`，没有旁资产——
+  冒烟最后一段会把整个 `lib/` 搬进空目录，并在那里真画一张图，验证这一点。
 - **一种渲染路径**：十种图元（`bar` / `line` / `column` / `pie` / `area` / `scatter` / `histogram` /
   `box` / `heatmap` / `radar`）都由同一份规格渲染——
   `src/chart/option.ts` 把业务字段与结果行翻成 option，`src/chart/echarts.ts` 用它的 SSR 出 SVG。
@@ -289,7 +292,20 @@ cd packages/dsh-oks && OKS_WORKSPACE=/path/to/ws node smoke.ts          # 或者
 - `parameters` 只使用受支持的 JSON Schema 关键字子集：`type` / `oneOf` / `properties` /
   `required` / `additionalProperties` / `items` / `enum` / `const` 加注解关键字；
   批次形状、规模与名字校验，以及 key 的重新计算与比对，都放在 `execute` 里。
-- **`artifacts/` 是工作区里唯一的落点**，三类产物一套命名：`<时间>-<名>[-<内容哈希>].<类别><扩展名>`
+- **落点是两个目录**：`artifacts/` 放产物，`.oks/state.db` 放状态（清单与保留）——产物会被保活
+  清理、状态不会被清，所以要分开放。保留是唯一不能从产物重建的东西，所以它在库里。
+- **当前只有报表算制品**：`artifacts/` 里的图是**报表里的图**（报表会把它内联进去），所以不进清单、
+  也不能被保留；查询结果同样是内部制品。`VISIBLE` 就是这条口径。
+- 报表可以带一个**精确分类**（`category`：周报 / 月报 / 即时分析…），它写在产物自述里、进清单，
+  界面上显示在大类图标旁边；没给就按"即时分析"。
+- **界面走三条同源端点**（`GET /oks/artifacts` 清单、`POST /oks/pin` 保留、`GET /oks/download` 下载）：
+  装了 web 服务才开，
+  没有 web 的部署里插件照常工作。右侧栏的「产出」页签只调这两条，不读文件、不碰工作区布局；
+  "点条目打开某一份产物"由界面交给宿主的文件页签（资源地址），产物内容不经过插件。产物**自述**自己是什么（报告 `<meta>`，图 `<title>` /
+  `<metadata>`，都在文件最前面），清单只是投影、随时能从目录与自述重建；**唯一不能重建的是保留**。
+- **保活**：未保留的产物在**产生 60 分钟**后由**懒惰清理**删除（写产物之前顺带清一次，没有定时器）；
+  清理只认下面这套命名，**认不出的文件一概不碰**，删了什么写进宿主日志。
+- 三类产物一套命名：`<时间>-<名>[-<内容哈希>].<类别><扩展名>`
   ——查询结果是 `.query.json`，图是 `.chart.svg`，报告是 `.report.html`。时间在最前面，`ls` 就是
   时间序；内容哈希等于文件字节的 sha256 前 8 位，所以**同名即同内容**，撞名不需要"加序号"那套补丁
   （查询结果那一段是名字前缀而不是内容哈希，撞名时读出来核一遍再决定是去重还是报错）。

@@ -99,6 +99,68 @@ export const artifactName = (options: {
   return `${options.at}-${shortName(options.name)}${hash}.${options.kind}${options.extension}`;
 };
 
+/** 产物自述：写进文件里的一份元数据。清单、页签与转发出去的单文件都靠它认出自己是什么。 */
+export interface ArtifactMeta {
+  /** 文件名里的名字段（标识）。 */
+  name: string;
+  kind: Exclude<ArtifactKind, 'query'>;
+  /** 与文件名最前面那段逐字相同的 UTC 时间。 */
+  at: string;
+  /** 给人看的标题——**永不为空**：agent 没给时由工具造一个。 */
+  title: string;
+  /** 更精确的分类（周报、月报、即时分析…）。大类由 `kind` 表达、用图标呈现，这一项是文字。 */
+  category?: string;
+  /** 数据的来路；报告由叙述与图拼成、没有单一来路，所以不写这一项。 */
+  source?: 'query' | 'agent';
+}
+
+/** 自述在文件里的标记名。两种产物各用一种原生写法：报告的 `<meta>`、图的 `<metadata>`。 */
+const META_KEY = 'dsh-oks-artifact';
+
+/** XML 文本与属性值的转义（只做必须的那几个字符）。 */
+const escapeXmlText = (value: string): string => value
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const escapeXmlAttr = (value: string): string => escapeXmlText(value).replace(/"/g, '&quot;');
+
+/** 把自述嵌进产物内容：报告插在 `<head>` 之后，图插在根 `<svg>` 之后。
+ *
+ *  位置是契约的一部分——**两者都在文件最前面**，所以读的人只读开头的有限字节就够；
+ *  图那两个元素借的是 SVG 原生件（`<title>` 与 `<metadata>`），都不参与绘制。
+ *  形状不认识时报错，而不是原样返回：那说明渲染层的形状变了，静默写出一份没有自述的产物更糟。 */
+export function embedArtifactMeta(content: string, meta: ArtifactMeta): string {
+  const json = JSON.stringify(meta);
+  if (meta.kind === 'report') {
+    const head = '<head>';
+    const at = content.indexOf(head);
+    if (at < 0) throw new Error('报告里没有 <head>，自述写不进去（渲染层的形状变了？）');
+    const insert = `${head}\n<meta name="${META_KEY}" content="${escapeXmlAttr(json)}">`;
+    return content.slice(0, at) + insert + content.slice(at + head.length);
+  }
+  const open = /<svg[^>]*>/.exec(content);
+  if (open === null) throw new Error('图里没有根 <svg>，自述写不进去（渲染层的形状变了？）');
+  const insert = `<title>${escapeXmlText(meta.title)}</title>`
+    + `<metadata id="${META_KEY}">${escapeXmlText(json)}</metadata>`;
+  const end = open.index + open[0].length;
+  return content.slice(0, end) + insert + content.slice(end);
+}
+
+/** 从产物内容里读回自述；读不到（老产物、形状不符、标题为空）就是 null。
+ *  两个正则都只匹配"文件最前面那一段"，不解析整个文档。 */
+export function readArtifactMeta(content: string): ArtifactMeta | null {
+  const html = new RegExp(`<meta name="${META_KEY}" content="([^"]*)">`).exec(content);
+  const svg = new RegExp(`<metadata id="${META_KEY}">([^<]*)</metadata>`).exec(content);
+  const raw = html?.[1] ?? svg?.[1];
+  if (raw === undefined) return null;
+  const json = raw.replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+  try {
+    const value = JSON.parse(json) as ArtifactMeta;
+    return typeof value?.title === 'string' && value.title.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 /** 独占写一个产物文件。
  *
  *  名字里带着内容哈希时，"撞名"就是**同样的内容**，直接当去重（返回同一个路径）是安全的；
@@ -212,21 +274,40 @@ export function saveArtifact(options: {
   content: string;
   extension: string;
   kind: Exclude<ArtifactKind, 'query'>;
+  /** 给人看的标题。**永不为空**：调用方在 agent 没给时负责造一个，这里只守门。 */
+  title: string;
+  /** 更精确的分类（周报、月报、即时分析…）；没给就不写这一项。 */
+  category?: string;
+  source?: 'query' | 'agent';
 }): { src: string; at: string } {
   const problem = nameProblem(options.name);
   if (problem !== null) {
     throw new Error(`${KIND_LABEL[options.kind]}名不合法（${JSON.stringify(options.name)}）：${problem}`);
   }
+  if (typeof options.title !== 'string' || options.title.trim() === '') {
+    throw new Error(`${KIND_LABEL[options.kind]}的标题不能为空：产物自述里那一行永远有值，`
+      + 'agent 没给标题时由工具按维度与度量造一个。');
+  }
   const at = resultStamp();
+  const meta: ArtifactMeta = {
+    name: options.name,
+    kind: options.kind,
+    at,
+    title: options.title,
+    ...(options.source === undefined ? {} : { source: options.source }),
+    ...(options.category === undefined ? {} : { category: options.category }),
+  };
+  // 先嵌自述、再算名字：文件名里的内容哈希必须等于**最终字节**的哈希。
+  const content = embedArtifactMeta(options.content, meta);
   mkdirSync(join(options.root, ARTIFACT_DIR), { recursive: true });
   const fileName = artifactName({
     at,
     name: options.name,
     kind: options.kind,
     extension: options.extension,
-    content: options.content,
+    content,
   });
-  writeExclusive(join(options.root, ARTIFACT_DIR, fileName), options.content, options.kind);
+  writeExclusive(join(options.root, ARTIFACT_DIR, fileName), content, options.kind);
   return { src: `${ARTIFACT_DIR}/${fileName}`, at };
 }
 
@@ -269,6 +350,13 @@ export function readResult(root: string, dataSrc: unknown): ResultFile {
     throw new Error(`结果文件结构不完整：${JSON.stringify(dataSrc)}`);
   }
   return parsed as unknown as ResultFile;
+}
+
+/** 把一个 src 解析成 artifacts/ 里的**文件名**（越界与不存在都在这里报错）。
+ *  状态层只记文件名——路径是工作区属性，换个工作区（同一份产物被拷过去）就该重新解析。 */
+export function artifactFileName(root: string, src: unknown): string {
+  const real = artifactPath(root, src);
+  return real.slice(real.lastIndexOf(sep) + 1);
 }
 
 /** 读一份已经落盘的产物（报告里引用的图）：路径约束与结果文件相同，另加一条扩展名核对。 */

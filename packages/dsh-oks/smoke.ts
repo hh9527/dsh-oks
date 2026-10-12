@@ -9,12 +9,15 @@
 // 被测工作区默认取**当前目录**（必须有 oks.json，否则明确报错），也可用环境变量指定：
 //   cd /path/to/workspace && node /path/to/dsh-oks/smoke.ts
 //   OKS_WORKSPACE=/path/to/workspace node smoke.ts
-import { apply, artifactName, buildOption, CHART_WIDTH, NAME_MAX, renderEchartsSvg, resultStamp } from './dist/index.mjs';
+import { apply, artifactName, buildOption, CHART_WIDTH, embedArtifactMeta, NAME_MAX, readArtifactMeta,
+  renderEchartsSvg, resultStamp, saveArtifact } from './lib/index.mjs';
 import { createHash } from 'node:crypto';
 import { applyOps, encode, parseMoment } from './src/time.ts';
 import { singleFlight } from './src/single-flight.ts';
 import { intentKey } from './src/key.ts';
 import { CHART_KINDS, supports } from './src/chart/shared.ts';
+// 端点测试要与工具走同一个落状态函数（`oks_pin` 用的就是它）。
+import { pinBySrc } from './src/state.ts';
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
@@ -72,7 +75,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'oks_jaq_result', 'oks_chart', 'oks_report', 'time_now', 'time_calc', 'va_ask'];
+const EXPECTED_TOOLS = ['oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'oks_jaq_result', 'oks_chart', 'oks_report', 'oks_artifacts', 'oks_pin', 'oks_unpin', 'time_now', 'time_calc', 'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -1288,6 +1291,36 @@ console.log('=== 产物命名 ===');
 }
 
 
+// ── 产物自述：写进文件里的元数据（报告 <meta>，图 <title> / <metadata>）──────────────
+console.log('=== 产物自述 ===');
+{
+  const meta = { name: 'alarm_by_level', kind: 'chart', at: '20261010T115343Z', title: '告警等级 <分布>', source: 'query' };
+  const svg = embedArtifactMeta('<svg width="10"><path d="M0 0"/></svg>', meta);
+  ok('图的自述写在根 <svg> 之后', svg.startsWith('<svg width="10"><title>') && svg.includes('id="dsh-oks-artifact"'));
+  const back = readArtifactMeta(svg);
+  ok('图的自述能读回（标题里的尖括号走 XML 转义）',
+    back?.title === meta.title && back?.source === 'query' && back?.at === meta.at && back?.name === meta.name);
+
+  const html = embedArtifactMeta('<html><head><meta charset="utf-8"></head><body></body></html>', { ...meta, kind: 'report', source: undefined });
+  ok('报告的自述插在 <head> 之后', html.startsWith('<html><head>\n<meta name="dsh-oks-artifact"'));
+  ok('报告的自述能读回，且没有来源项', readArtifactMeta(html)?.kind === 'report' && readArtifactMeta(html)?.source === undefined);
+  ok('没有自述的产物读回 null', readArtifactMeta('<svg/>') === null && readArtifactMeta('{}') === null);
+
+  // 形状不认识时报错而不是原样返回：渲染层形状变了要立刻知道，静默写出一份没有自述的产物更糟。
+  const throwsWith = (run, needle) => {
+    try { run(); return null; } catch (err) { const text = String(err?.message ?? err); return text.includes(needle) ? text : null; }
+  };
+  ok('报告形状不符时报错', throwsWith(() => embedArtifactMeta('<html><body>没有 head</body></html>', { ...meta, kind: 'report' }), '<head>') !== null);
+  ok('图形状不符时报错', throwsWith(() => embedArtifactMeta('not svg', meta), '<svg>') !== null);
+
+  // 标题永不为空：这是存储层守的门（工具侧会先造一个，见图表一节）。
+  const emptyTitle = throwsWith(
+    () => saveArtifact({ root: SCRATCH, name: 'no_title', content: '<svg/>', extension: '.svg', kind: 'chart', title: '   ' }),
+    '标题不能为空');
+  ok('空标题被存储层拒掉', emptyTitle !== null);
+  console.log(`  自述：${back?.title} · at=${back?.at} · source=${back?.source}`);
+}
+
 console.log('=== oks_chart（服务端出图）===');
 {
   // data 路径：agent 自填数据，来源固定为「agent 自主填写」。
@@ -1300,10 +1333,21 @@ console.log('=== oks_chart（服务端出图）===');
   if (inline.value.ok !== true || inline.value.source !== 'agent') throw new Error('data 路径的来源应当是 agent 自主填写');
   if (inline.value.rowCount !== 2) throw new Error('data 路径应当报告行数');
   if (!/agent 自主填写/.test(inline.text)) throw new Error('回执应当标出来源');
+  if (inline.value.title !== '方案对比') throw new Error('回执里的标题应当是 agent 给的那个');
   // 图真的落成了 SVG
   const inlineSvg = readFileSync(resolve(DEV_ROOT, inline.value.svgSrc), 'utf8');
   console.log(`  落盘 ${inline.value.svgSrc}（${inlineSvg.length} 字符）: ${inlineSvg.startsWith('<svg') ? '✓' : '✗'}`);
   if (!inlineSvg.startsWith('<svg')) throw new Error('产物应当是 SVG');
+  // 自述就写在文件最前面：标题、类别、时间、来源都在里面，读开头一段就够。
+  const inlineMeta = readArtifactMeta(inlineSvg);
+  if (inlineMeta === null) throw new Error('落盘的图应当带自述');
+  if (inlineMeta.title !== '方案对比' || inlineMeta.kind !== 'chart' || inlineMeta.source !== 'agent') {
+    throw new Error(`自述里的 title / kind / source 不对：${JSON.stringify(inlineMeta)}`);
+  }
+  if (inlineMeta.at !== inline.value.at || !inline.value.svgSrc.includes(inlineMeta.at)) {
+    throw new Error('自述里的 at 应当与回执、文件名里的时间一致');
+  }
+  if (inlineSvg.indexOf('dsh-oks-artifact') > 400) throw new Error('自述应当写在文件最前面');
   // 名字自证内容：`sha256sum` 出来的前 8 位就是名字里那一段，回执的 at 就是名字里那段时间。
   {
     const fileName = inline.value.svgSrc.replace('artifacts/', '');
@@ -1346,7 +1390,11 @@ console.log('=== oks_chart（服务端出图）===');
     if (same ? added.length !== 1 : added.length !== 2) {
       throw new Error(`去重与否都只该按内容算，新增文件数 ${added.length}`);
     }
-    if (added.some((name) => /-\d+\.[a-z]+\./.test(name))) throw new Error(`不该再出现序号补丁：${added.join(', ')}`);
+    // 只抓"序号补丁"（`-2.chart.svg` 这种短计数器），别误伤**内容哈希恰好全是数字**的文件：
+    // 8 位十六进制里全落在 0-9 的概率约 2%，那不是序号。
+    if (added.some((name) => /-\d{1,4}\.(?:chart|report|query)\./.test(name))) {
+      throw new Error(`不该再出现序号补丁：${added.join(', ')}`);
+    }
   }
 
   // src 路径：引用查询结果文件，来源固定为「基于查询结果」，并从文件带出原始 Intent。
@@ -1450,6 +1498,16 @@ console.log('=== oks_chart（服务端出图）===');
   const tunedSvg = readFileSync(resolve(DEV_ROOT, tuned.value.svgSrc), 'utf8');
   console.log(`  排版覆盖：labelFont/height/slantTicks 生效 → ${(tunedSvg.match(/<path/g) ?? []).length} 个 path`);
   if (!tunedSvg.includes('<path')) throw new Error('覆盖排版后仍应出图');
+  // 这张图没有标题：自述里那一行**永不为空**，工具按"维度 × 度量"造一个（只进自述，不改绘制）。
+  const tunedMeta = readArtifactMeta(tunedSvg);
+  if (tunedMeta === null) throw new Error('落盘的图应当带自述');
+  if (tunedMeta.title !== 'label × value') {
+    throw new Error(`没给标题时应当按维度与度量造一个，收到 ${JSON.stringify(tunedMeta.title)}`);
+  }
+  if (!tunedSvg.includes('<title>label × value</title>')) throw new Error('自述应当把造出来的标题也写进 <title>');
+  // 造出来的标题只进自述：绘图区仍由 agent 的 spec 决定，没标题就不该有标题位。
+  if (/<text[^>]*>label × value<\/text>/.test(tunedSvg)) throw new Error('造标题不该顺手把标题画进图里');
+  console.log(`  自述：${tunedMeta.title}（agent 没给标题，工具造的）`);
 
   // 报告：markdown 正文（章节 + 叙述 + 引用的图）→ 自足的 HTML（图内联、无外链、无脚本）。
   // 图只有一种来源：工作区里**已经画好**的 SVG（上面那张 tuned 就是现成的）。
@@ -1503,6 +1561,13 @@ console.log('=== oks_chart（服务端出图）===');
     throw new Error('引用的图应当按出现顺序拿到编号与图注');
   }
   if (!reportHtml.includes('<svg class="chart"')) throw new Error('报告里的图应当以 svg 元素内联，而不是 base64 图片');
+  const reportMeta = readArtifactMeta(reportHtml);
+  if (reportMeta === null) throw new Error('落盘的报告应当带自述');
+  if (reportMeta.title !== '周报（冒烟）' || reportMeta.kind !== 'report') {
+    throw new Error(`报告自述里的 title / kind 不对：${JSON.stringify(reportMeta)}`);
+  }
+  if (reportMeta.source !== undefined) throw new Error('报告由叙述与图拼成，自述里不该写单一来源');
+  if (reportHtml.indexOf('dsh-oks-artifact') > 400) throw new Error('自述应当写在文件最前面');
   if (reportHtml.includes('<script')) throw new Error('报告里不应有脚本');
   if (/src="http/.test(reportHtml)) throw new Error('报告应当是自足的，不该有外链');
   // 图是内联的，所以可以直接在 HTML 里核对内容；也顺带确认清理没有漏掉脚本。
@@ -2273,16 +2338,22 @@ console.log('=== 非快照产物（只有 wasm 头，没有 telora.snapshot 段�
   }
 }
 
-// ── 插件只写工作区的 artifacts/（查询结果），别处不碰 ───────────────────────────
-console.log('=== 插件只写 artifacts/ 里的结果文件 ===');
+// ── 插件只写工作区的 artifacts/（产物）与 .oks/（状态），别处不碰 ─────────────────
+console.log('=== 插件只写 artifacts/ 与 .oks/ ===');
 {
   const after = workspaceListing();
   const before = new Set(listingBefore.split(',').filter(Boolean));
   const added = after.split(',').filter(Boolean).filter((name) => !before.has(name));
   console.log(`  顶层新增条目：${added.join(', ') || '(无)'}`);
-  if (added.some((name) => name !== 'artifacts')) throw new Error(`插件创建了 artifacts/ 之外的东西：${added.join(', ')}`);
-  console.log(`  没有 .oks/plans: ${existsSync(`${DEV_ROOT}/.oks`) ? '✗' : '✓'}`);
-  if (existsSync(`${DEV_ROOT}/.oks`)) throw new Error('计划文件目录不该存在');
+  const allowed = ['artifacts', '.oks'];
+  if (added.some((name) => !allowed.includes(name))) throw new Error(`插件创建了 ${allowed.join(' / ')} 之外的东西：${added.join(', ')}`);
+  // 状态目录里只有状态库：没有计划文件，也没有缓存出来的产物。
+  const stateFiles = existsSync(`${DEV_ROOT}/.oks`) ? readdirSync(`${DEV_ROOT}/.oks`) : [];
+  console.log(`  .oks/ 里：${stateFiles.join(', ') || '(没有)'}`);
+  // 状态库里两样东西：状态（state.db）与给界面读的清单投影（index.json）。
+  if (stateFiles.some((name) => !['state.db', 'state.db-journal', 'index.json'].includes(name))) {
+    throw new Error(`.oks/ 里出现了状态与清单之外的东西：${stateFiles.join(', ')}`);
+  }
   if (existsSync(`${DEV_ROOT}/artifacts`)) {
     const files = readdirSync(`${DEV_ROOT}/artifacts`).filter((name) => !dataListingBefore.has(name));
     // 三类产物一套命名：<时间>-<名字>[-<内容哈希>].<类别><扩展名>。
@@ -2337,16 +2408,212 @@ console.log('=== 查询超时 + 复活（queryTimeoutMs=1）===');
   console.log(`  第 2 次: ${await attempt()}`);
 }
 
-// ── 自包含：把 dist/ 整个目录搬进空目录（没有 node_modules、没有源码）也能用 ──────
-// 提示词与 echarts 都在构建期内联进产物，dist/ 里没有旁资产。
-console.log('=== 自包含（把 dist/ 整个目录放进空目录）===');
+// ── 自包含：把 lib/ 整个目录搬进空目录（没有 node_modules、没有源码）也能用 ──────
+// 提示词与 echarts 都在构建期内联进产物，lib/ 里没有旁资产。
+// ── 产出层的状态：清单、pin 与保活清理 ─────────────────────────────────────────
+console.log('=== 清单、pin 与保活清理 ===');
+{
+  // 清单：图与报告进清单，查询结果（内部制品）不出现；每条标题永不为空；最新在前。
+  const listed = await call('oks_artifacts', {});
+  const entries = listed.value.entries;
+  console.log(`  清单：${entries.length} 条（保留 ${entries.filter((entry) => entry.pinned).length} 条）`);
+  ok('清单列出了产物', entries.length >= 2);
+  ok('查询结果是内部制品，不进清单', !entries.some((entry) => entry.file.endsWith('.query.json')));
+  ok('清单里每一条都有标题（自述里那一行永不为空）',
+    entries.every((entry) => typeof entry.title === 'string' && entry.title.length > 0));
+  ok('清单最新在前', entries.every((entry, index) => index === 0 || entries[index - 1].at >= entry.at));
+
+  // pin：只改存留、不改位置；回执把后果说出来。
+  const target = entries.find((entry) => entry.file.endsWith('.report.html')) ?? entries[0];
+  const src = `artifacts/${target.file}`;
+  const indexBefore = entries.findIndex((entry) => entry.file === target.file);
+  const pinReceipt = await call('oks_pin', { src });
+  ok('pin 的回执说已保留、并说清它只影响存留',
+    pinReceipt.value.pinned === true && /已保留/.test(pinReceipt.text)
+    && /不改它在界面上出现的位置/.test(pinReceipt.text));
+  const afterPin = (await call('oks_artifacts', {})).value.entries;
+  ok('pin 之后清单里那一条是已保留', afterPin.find((entry) => entry.file === target.file)?.pinned === true);
+  ok('pin 不改变条目在清单里的位置', afterPin.findIndex((entry) => entry.file === target.file) === indexBefore);
+  const unpinReceipt = await call('oks_unpin', { src });
+  ok('unpin 的回执说它重新受保活约束',
+    unpinReceipt.value.pinned === false && /已取消保留/.test(unpinReceipt.text)
+    && /下一次清理就会删掉它/.test(unpinReceipt.text));
+
+  // 非法 src 要有明确的话：越界、不是可见产物、找不到。
+  const refused = async (bad) => (await refusalOf(() => call('oks_pin', { src: bad }))) ?? '';
+  ok('pin 拒绝 artifacts/ 之外的路径', (await refused('.oks/state.db')).includes('只能指向工作区 artifacts/'));
+  ok('pin 拒绝不存在的产物', (await refused('artifacts/nope.chart.svg')).includes('找不到'));
+  const internals = readdirSync(join(DEV_ROOT, 'artifacts')).filter((name) => name.endsWith('.query.json'));
+  ok('工作区里确实有内部制品（好让下一条有意义）', internals.length > 0);
+  ok('pin 拒绝内部制品（查询结果）', (await refused(`artifacts/${internals[0]}`)).includes('只有报表可以保留'));
+  // 图表当前**不算制品**（它是一份报表里的图）：清单里没有它，也就不该能被保留。
+  const figure = readdirSync(join(DEV_ROOT, 'artifacts')).find((name) => name.endsWith('.chart.svg'));
+  ok('工作区里确实有图（好让下一条有意义）', typeof figure === 'string');
+  ok('pin 拒绝图（当前只有报表算制品）',
+    (await refused(`artifacts/${figure}`)).includes('只有报表可以保留'));
+
+  // 保活清理：种三份"过期"的东西——一份过期报告（该清）、一份过期但保留的报告（该留）、
+  // 一份认不出的文件（不碰）；然后写一张图触发清理（清理发生在**写产物之前**）。
+  const oldStamp = '20200101T000000Z';
+  const hashOf = (text) => createHash('sha256').update(text).digest('hex').slice(0, 8);
+  const oldReport = `${oldStamp}-old_report-${hashOf('old-report')}.report.html`;
+  const keptReport = `${oldStamp}-old_kept-${hashOf('old-kept')}.report.html`;
+  const stranger = `${oldStamp}-stranger.txt`;
+  const oldBody = (name, title) => embedArtifactMeta('<html><head></head><body>old</body></html>',
+    { name, kind: 'report', at: oldStamp, title });
+  writeFileSync(join(DEV_ROOT, 'artifacts', oldReport), oldBody('old_report', '很久以前的报告'));
+  writeFileSync(join(DEV_ROOT, 'artifacts', keptReport), oldBody('old_kept', '要留住的旧报告'));
+  writeFileSync(join(DEV_ROOT, 'artifacts', stranger), '用户自己放在这里的东西');
+  await call('oks_pin', { src: `artifacts/${keptReport}` });
+  const logsBefore = logs.length;
+  await call('oks_chart', { spec: { kind: 'bar', x: 'label', value: 'value' }, data: [{ label: 'A', value: 1 }], name: 'probe_prune' });
+  ok('过期且未保留的产物被清理', !existsSync(join(DEV_ROOT, 'artifacts', oldReport)));
+  ok('保留过的产物不会被清理', existsSync(join(DEV_ROOT, 'artifacts', keptReport)));
+  ok('认不出的文件不动', existsSync(join(DEV_ROOT, 'artifacts', stranger)));
+  const pruneLog = logs.slice(logsBefore).find((line) => line.includes('prune'));
+  console.log(`  清理留痕：${pruneLog ?? '(没有)'}`);
+  // 日志只说数量：至少清了一条；"认不出的"要等于目录里真正认不出的文件数（我们没碰它们）。
+  const oursPattern = /^\d{8}T\d{6}Z-[0-9a-z_~]+(?:-[0-9a-f]{8})?\.(query\.json|chart\.svg|report\.html)$/;
+  const strangerCount = readdirSync(join(DEV_ROOT, 'artifacts')).filter((name) => !oursPattern.test(name)).length;
+  const cleanedCount = typeof pruneLog === 'string' ? Number(/清理 (\d+) 个过期产物/.exec(pruneLog)?.[1] ?? 0) : 0;
+  ok('清理留痕（宿主日志里有一行、至少清了一条、认不出的一个没动）',
+    cleanedCount >= 1 && typeof pruneLog === 'string' && pruneLog.includes(`认不出 ${strangerCount} 个不动`));
+  const listedAfter = (await call('oks_artifacts', {})).value.entries;
+  ok('清理之后清单里没有它了', !listedAfter.some((entry) => entry.file === oldReport));
+  ok('保留的那条还在清单里', listedAfter.some((entry) => entry.file === keptReport && entry.pinned === true));
+
+  // 清单能从目录重建：删掉状态库再列一次，条目还在——pin 丢了，这是预期（它是唯一不能重建的东西）。
+  rmSync(join(DEV_ROOT, '.oks'), { recursive: true, force: true });
+  const rebuilt = (await call('oks_artifacts', {})).value.entries;
+  ok('删掉状态库之后清单仍能从目录重建', rebuilt.length === listedAfter.length);
+  ok('重建之后 pin 丢了（pin 是唯一不能从产物重建的东西）', !rebuilt.some((entry) => entry.pinned === true));
+}
+
+// ── 给界面的清单：`.oks/index.json`（页签只读它，不碰 sqlite、也不解析产物文件）────────
+// ── 右侧栏页签的交付形态：经典脚本 + 宿主模块加载器协议 ───────────────────────
+console.log('=== 页签的交付形态 ===');
+{
+  const client = readFileSync(new URL('../dsh-oks-ui/lib/client.mjs', import.meta.url), 'utf8');
+  ok('用宿主的模块加载器协议交付',
+    client.includes('__ModuleLoader__.load(') && /id:\s*["']@local\/dsh-oks-ui["']/.test(client));
+  // 页面加载器按经典脚本执行它：顶层出现 import/export 就会整条 entry 不激活。
+  ok('没有顶层 import / export', !/^\s*(import|export)\s/m.test(client));
+  ok('依赖走工厂的 require()', /factory: \(require\)/.test(client) || /factory: \(require\)\s*=>/.test(client));
+}
+
+// ── 精确分类：报表可以带 category；清单里只有报表（图当前不算制品）────────────────────
+console.log('=== 分类与"当前只算报表" ===');
+{
+  const saved = await call('oks_report', {
+    spec: { title: '分类探针', markdown: '## 一\n\n正文。' },
+    name: 'probe_category',
+    category: '周报',
+  });
+  ok('报表可以带精确分类', String(saved.value.htmlSrc).includes('probe_category'));
+  const listed = await call('oks_artifacts', {});
+  const entries = listed.value.entries;
+  const probe = entries.find((entry) => entry.file.includes('probe_category'));
+  ok('清单里带着那个分类', probe?.category === '周报');
+  const others = entries.filter((entry) => !entry.file.includes('probe_category'));
+  ok('没给分类的报表落在默认分类上（即时分析）',
+    others.length === 0 || others.every((entry) => entry.category === '即时分析'));
+  ok('清单里只有报表（图当前不算制品）', entries.every((entry) => entry.kind === 'report'));
+  // 自述在 HTML 里是转义过的（&quot;），所以只看键与值都在。
+  const described = readFileSync(join(DEV_ROOT, 'artifacts', String(probe?.file)), 'utf8');
+  ok('自述里也写着分类（换成别的工具读也一样）',
+    described.includes('category') && described.includes('周报'));
+}
+
+// ── 界面那两条端点：清单 + 保留（都是机械操作，界面直接打它们，不经过 agent）────────────
+console.log('=== 界面那两条端点 ===');
+{
+  const { createArtifactsEndpoint, createDownloadEndpoint, createPinEndpoint } = await import('./src/endpoint.ts');
+  const asked: string[] = [];
+  const deps = {
+    rootFor: (sessionId: string) => { asked.push(sessionId); return DEV_ROOT; },
+    pin: (root: string, src: string, pinned: boolean) => pinBySrc(root, src, pinned),
+  };
+  const artifacts = createArtifactsEndpoint(deps);
+  const pin = createPinEndpoint(deps);
+  const download = createDownloadEndpoint(deps);
+  const call = async (
+    handler: (req: never, res: never) => Promise<void>,
+    method: string,
+    url: string,
+    body?: unknown,
+  ): Promise<{ status: number; body: Record<string, unknown>; text: string; headers: Record<string, string> }> => {
+    const chunks = body === undefined ? [] : [Buffer.from(JSON.stringify(body))];
+    const req = { method, url, [Symbol.asyncIterator]: async function* () { for (const chunk of chunks) yield chunk; } };
+    let status = 0;
+    let text = '';
+    let headers: Record<string, string> = {};
+    const res = {
+      writeHead(value: number, extra?: Record<string, string>) {
+        status = value;
+        headers = extra ?? {};
+        return { end(payload?: string) { text = payload ?? ''; } };
+      },
+    };
+    await handler(req as never, res as never);
+    // 回执是 JSON 就解析（下载端点是 HTML，原样留着给断言看）。注意别和入参 body 撞名。
+    const parsed = (headers['content-type'] ?? '').startsWith('application/json') && text !== ''
+      ? JSON.parse(text) as Record<string, unknown>
+      : {};
+    return { status, body: parsed, text, headers };
+  };
+
+  const first = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
+  const value = first.body.value as { keepAliveMinutes: number; entries: { file: string; pinned: boolean }[] } | undefined;
+  ok('GET 清单：回执是 { ok, value }', first.status === 200 && first.body.ok === true && Array.isArray(value?.entries));
+  ok('清单里有产物（界面要的就是这些）', (value?.entries.length ?? 0) > 0);
+  ok('回执带着保活窗口', Number(value?.keepAliveMinutes) > 0);
+
+  const target = value?.entries[0];
+  const pinned = await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: `artifacts/${target?.file}`, pinned: true });
+  ok(`POST 保留：落状态并回执（实际 ${pinned.status} ${JSON.stringify(pinned.body)}）`,
+    pinned.status === 200 && (pinned.body.value as { pinned: boolean } | undefined)?.pinned === true);
+
+  const again = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
+  const after = (again.body.value as { entries: { file: string; pinned: boolean }[] }).entries;
+  ok('再问一次清单：状态已经变了（界面重读即见）', after.find((item) => item.file === target?.file)?.pinned === true);
+  ok('两条端点都按 sessionId 找过工作区', asked.join(',') === 'probe,probe,probe');
+
+  // 边界：这两条端点很窄，不能被当成通用入口
+  ok('清单只接受 GET', (await call(artifacts, 'POST', '/oks/artifacts?sessionId=probe')).status === 405);
+  ok('保留只接受 POST', (await call(pin, 'GET', '/oks/pin')).status === 405);
+  ok('清单缺 sessionId 明确报错', (await call(artifacts, 'GET', '/oks/artifacts')).status === 400);
+  ok('保留缺字段明确报错', (await call(pin, 'POST', '/oks/pin', { sessionId: 'probe' })).status === 400);
+  ok('pinned 必须是布尔', (await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: `artifacts/${target?.file}`, pinned: 'yes' })).status === 400);
+  ok('不存在的产物不静默成功',
+    (await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: 'artifacts/nope.chart.svg', pinned: true })).status === 400);
+
+  await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: `artifacts/${target?.file}`, pinned: false });
+
+  // 下载：报表内容原样交给浏览器（带 attachment 头），界面用一个普通链接就能下载。
+  const file = encodeURIComponent(String(target?.file));
+  const got = await call(download, 'GET', `/oks/download?sessionId=probe&file=${file}`);
+  ok('GET 下载：报表内容原样返回', got.status === 200 && /<html/i.test(got.text));
+  ok('下载带 attachment 头（浏览器才当下载）', /attachment/.test(got.headers['content-disposition'] ?? ''));
+  ok('下载带文件名', (got.headers['content-disposition'] ?? '').includes(String(target?.file)));
+  ok('下载只接受 GET', (await call(download, 'POST', `/oks/download?sessionId=probe&file=${file}`)).status === 405);
+  ok('下载不接受路径', (await call(download, 'GET', '/oks/download?sessionId=probe&file=../state.db')).status === 400);
+  const figureFile = readdirSync(join(DEV_ROOT, 'artifacts')).find((name) => name.endsWith('.chart.svg'));
+  ok('下载不读图（当前只有报表算制品）',
+    (await call(download, 'GET', `/oks/download?sessionId=probe&file=${encodeURIComponent(String(figureFile))}`)).status === 400);
+  ok('不存在的报表回 404',
+    (await call(download, 'GET', '/oks/download?sessionId=probe&file=20260101T000000Z-nope.report.html')).status === 404);
+
+
+}
+
+console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
 {
   mkdirSync(SCRATCH, { recursive: true });
   const alone = mkdtempSync(join(SCRATCH, 'alone-'));
   try {
-    const dist = fileURLToPath(new URL('./dist', import.meta.url));
-    for (const name of readdirSync(dist)) {
-      cpSync(join(dist, name), join(alone, name), { recursive: true });
+    const libDir = fileURLToPath(new URL('./lib', import.meta.url));
+    for (const name of readdirSync(libDir)) {
+      cpSync(join(libDir, name), join(alone, name), { recursive: true });
     }
     const mod = await import(pathToFileURL(join(alone, 'index.mjs')).href);
     const captured = [];
@@ -2360,7 +2627,7 @@ console.log('=== 自包含（把 dist/ 整个目录放进空目录）===');
       effect: (fn) => { const dispose = fn(); return typeof dispose === 'function' ? dispose : () => {}; },
       on: () => () => {},
     }, {});
-    ok('空目录里只放整个 dist/ 就能加载', typeof mod.apply === 'function' && captured.length === 1);
+    ok('空目录里只放整个 lib/ 就能加载', typeof mod.apply === 'function' && captured.length === 1);
     ok('技能正文来自内联（与 src/skill.md 逐字一致）',
       captured[0]?.content === readFileSync(new URL('./src/skill.md', import.meta.url), 'utf8'));
     const text = readFileSync(join(alone, 'index.mjs'), 'utf8');

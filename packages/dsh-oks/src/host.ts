@@ -122,12 +122,28 @@ export interface PluginContext {
   get(name: 'agentPresets'): AgentPresetsService | undefined;
   get(name: 'workspaceRegistry'): WorkspaceRegistry | undefined;
   get(name: 'sessionTitle'): SessionTitleService | undefined;
+  get(name: 'sessions'): SessionsLookup | undefined;
+  get(name: 'webServer'): WebServerLike | undefined;
   get(name: string): unknown;
+  /** 需要某个服务时才装配（取不到就不装）：插件在无 web 的部署里照常工作。 */
+  inject?(names: string[], run: (ctx: PluginContext) => void): void;
   on(event: 'agent/pre-step', handler: PreStepHandler): Disposable;
   effect(effect: () => unknown): void;
   tools: ToolsService;
   systemPrompt?: SystemPromptService | null;
 }
+
+/** 会话服务的最小面：端点要按 sessionId 找到那个会话的工作区根。 */
+export interface SessionsLookup {
+  get(sessionId: string): { header?: { cwd?: unknown } } | undefined;
+}
+
+/** 宿主 web 服务的最小面：注册一条同源 HTTP 端点（界面的机械操作走它）。 */
+export interface WebServerLike {
+  register(route: { kind: 'exact' | 'prefix'; path: string; handler: PanelHandler }): () => void;
+}
+
+import type { PanelHandler } from './endpoint.ts';
 
 // ── 2. agent 与会话表面 ──────────────────────────────────────────────────────
 

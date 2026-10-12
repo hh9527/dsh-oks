@@ -1,0 +1,6 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/dsh-oks/tsconfig.host.json" }
+  ]
+}

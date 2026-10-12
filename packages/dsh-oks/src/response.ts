@@ -150,6 +150,48 @@ function renderTrace(trace: readonly TraceStep[] | null | undefined): string[] {
 }
 
 /** 纯计算类工具（不经过 OKS）的渲染：直接给结构化结果。 */
+/** oks_pin / oks_unpin 的回执：说清后果，尤其是取消保留之后会发生什么。 */
+export interface PinValue {
+  ok?: boolean;
+  pinned?: boolean;
+  file?: string;
+  keepAliveMinutes?: number;
+}
+
+export function renderPin(_args: unknown, value: PinValue | null | undefined): RenderBlock[] {
+  if (value?.ok !== true) return [{ type: 'text', text: '没有改动。\n' }];
+  const minutes = value.keepAliveMinutes ?? 60;
+  return [{
+    type: 'text',
+    text: `${value.pinned === true ? '已保留' : '已取消保留'}：${value.file ?? ''}\n`
+      + (value.pinned === true
+        ? `它不再受保活清理影响（清理只删未保留、且过了 ${minutes} 分钟的产物）。\n`
+        : `它重新受保活约束：已经过了 ${minutes} 分钟的话，下一次清理就会删掉它。\n`)
+      + '保留只影响存留，不改它在界面上出现的位置。\n',
+  }];
+}
+
+/** oks_artifacts 的回执：清单本身（最新在前）。界面里是双行块，这里一行一条就够。 */
+export interface ArtifactsValue {
+  ok?: boolean;
+  keepAliveMinutes?: number;
+  entries?: Array<{ title?: string; kind?: string; at?: string; file?: string; pinned?: boolean }>;
+}
+
+export function renderArtifacts(_args: unknown, value: ArtifactsValue | null | undefined): RenderBlock[] {
+  if (value?.ok !== true) return [{ type: 'text', text: '拿不到清单。\n' }];
+  const entries = value.entries ?? [];
+  if (entries.length === 0) return [{ type: 'text', text: '这个工作区还没有图或报告。\n' }];
+  const pinned = entries.filter((entry) => entry.pinned === true).length;
+  const lines = [`${entries.length} 条产物（最新在前，其中保留 ${pinned} 条）：`, ''];
+  for (const entry of entries.slice(0, 40)) {
+    lines.push(`${entry.pinned === true ? '★' : '·'} ${entry.title ?? ''}`);
+    lines.push(`    ${entry.kind === 'report' ? '报告' : '图表'} · ${entry.at ?? ''} · ${entry.file ?? ''}`);
+  }
+  if (entries.length > 40) lines.push(`… 还有 ${entries.length - 40} 条（界面里能看全）`);
+  return [{ type: 'text', text: `${lines.join('\n')}\n` }];
+}
+
 export function renderValue(_args: unknown, value: unknown): RenderBlock[] {
   return [{ type: 'text', text: `${JSON.stringify(value, null, 2)}\n` }];
 }
