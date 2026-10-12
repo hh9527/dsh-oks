@@ -875,7 +875,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         properties: {
           key: {
             type: 'string',
-            description: 'A knowledge key that exists in this artifact — composed from the declared key patterns, or taken verbatim from what a node returned.',
+            description: 'A knowledge key that exists in this model — composed from the declared key patterns, or taken verbatim from what a node returned.',
           },
           link: { type: 'string', enum: REFERENCE_KINDS, description: 'Restrict to one reference kind.' },
           kind: { type: 'string', description: 'Restrict to referencing nodes of one kind. The kinds that are discoverable are declared by the knowledge service of this workspace.' },

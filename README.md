@@ -13,12 +13,12 @@
 {
   "version": 1,
   "domain": "<领域名>",
-  "artifact": "<相对 oks.json 的 .wasm 路径>",
+  "model": "<相对 oks.json 的 .wasm 路径>",
   "dataFile": "<相对 oks.json 的 .sqlite 路径>"   // 省略 = 不能查询，只能校验
 }
 ```
 
-`artifact` 与 `dataFile` 都**相对 `oks.json` 所在目录**解析（绝对路径原样使用）。
+`model` 与 `dataFile` 都**相对 `oks.json` 所在目录**解析（绝对路径原样使用）。
 没有 `oks.json` 的工作区会**明确报错**（用错模型比报错贵）。
 
 ## 安装形态与迭代时的一个坑
@@ -70,7 +70,7 @@ key 模式，以及 `vocabulary`（哪些 kind 进词汇表、每类词条的归
 （同一份产物：节点数、词条数、引用数逐项相同）。
 
 - **只在第一次用到检索时同步建立**（一次全图遍历，实测 2,769 节点约 20 秒），之后按产物的
-  `artifact_sha256` 复用——同一份产物被多个工作区、多个会话声明时只派生一次；
+  模型内容的 sha256 复用——同一个模型被多个工作区、多个会话声明时只派生一次；
 - **占用的是插件内存，不是模型上下文**：词汇表与引用图都不进对话；
 - **索引里只有词汇与引用边**：节点内容不保留——读节点始终由 `oks_info` 透传给服务，插件不缓存它；
 - **进不进词汇表由服务声明**：`vocabulary` 列出哪些 kind 是词条，每条还声明 `owner`
@@ -145,7 +145,7 @@ key 模式，以及 `vocabulary`（哪些 kind 进词汇表、每类词条的归
 
 | 键 | 含义 |
 | --- | --- |
-| `domain` / `artifact` / `dataFile` | 覆盖工作区声明（缺 `domain` 或 `artifact` 时报错并给出补法；缺 `dataFile` 时只有 `oks_query` 报错） |
+| `domain` / `model` / `dataFile` | 覆盖工作区声明（缺 `domain` 或 `model` 时报错并给出补法；缺 `dataFile` 时只有 `oks_query` 报错） |
 | `requestTimeoutMs` | 默认 60000，单次服务请求的墙钟上限（到点 terminate worker，下次请求再拉起） |
 | `queryTimeoutMs` | 默认 30000，单次只读查询的墙钟上限（同上，到点 terminate 执行器） |
 | `queryMaxRows` | 默认 200，**执行器**取回行数的保险上限。结果行数由 Intent 顶层的 `limit`（1..100）决定，正常路径用不到这一项 |
@@ -161,7 +161,7 @@ key 模式，以及 `vocabulary`（哪些 kind 进词汇表、每类词条的归
       config: {}        # 模型与数据由工作区声明，这里通常什么都不用写
 ```
 
-`artifact` 与 `dataFile` 都是**独立部署物**：换机器、换域、换工作区都不用改插件。
+`model` 与 `dataFile` 都是**独立部署物**：换机器、换域、换工作区都不用改插件。
 
 ## 快照怎么来
 
@@ -169,7 +169,7 @@ key 模式，以及 `vocabulary`（哪些 kind 进词汇表、每类词条的归
 cd lab-ontology
 bin/telora -C <模型目录> build <模型名> --snapshot \
   --initialization-fuel 100000 --request-fuel 100000 --with-memory-limit 1024 \
-  -o /path/to/model.wasm   # 这个路径相对工作区的 oks.json 填进 artifact
+  -o /path/to/model.wasm   # 这个路径相对工作区的 oks.json 填进 model
 ```
 
 注意三点：

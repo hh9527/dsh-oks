@@ -18,7 +18,7 @@ export const DEFAULTS = {
 /** 工作区 oks.json 里插件认得的声明。 */
 export interface OksDeclaration {
   domain?: string;
-  artifact?: string;
+  model?: string;
   dataFile?: string;
   requestTimeoutMs?: number;
   retryAcceptedSubset?: boolean;
@@ -33,10 +33,10 @@ export interface PluginConfig extends OksDeclaration {
   vaReasoningEffort?: string;
 }
 
-/** 解析后的运行设置：domain / artifact 是必需非空字符串，其余都有落点。 */
+/** 解析后的运行设置：domain / model 是必需非空字符串，其余都有落点。 */
 export interface Settings {
   domain: string;
-  artifact: string;
+  model: string;
   dataFile: string | undefined;
   requestTimeoutMs: number;
   retryAcceptedSubset: boolean;
@@ -50,12 +50,12 @@ interface WorkspaceConfigResult {
   root: string;
   file: string;
   oks: OksDeclaration;
-  artifact: string | undefined;
+  model: string | undefined;
   dataFile: string | undefined;
 }
 
 /** 读工作区的 oks.json：**"哪个模型、哪份数据"由工作区声明**。
- *  `artifact` 与 `dataFile` 都相对 oks.json 所在目录解析（绝对路径原样用）。 */
+ *  `model` 与 `dataFile` 都相对 oks.json 所在目录解析（绝对路径原样用）。 */
 export function loadWorkspaceConfig(root: string): WorkspaceConfigResult {
   const file = join(root, 'oks.json');
   let oks: OksDeclaration;
@@ -65,14 +65,14 @@ export function loadWorkspaceConfig(root: string): WorkspaceConfigResult {
     throw new Error(
       `dsh-oks: 这个会话的工作区里没有可用的 ${file}（${errorText(cause)}）。`
       + '在工作区根目录放一份 oks.json 即可开放模型，例如 '
-      + '{"domain":"<知识服务领域名>","artifact":"<相对 oks.json 的 .wasm 路径>"}。'
+      + '{"domain":"<知识服务领域名>","model":"<相对 oks.json 的 .wasm 路径>"}。'
       + '插件不提供默认模型——用错模型比报错贵。',
     );
   }
   const resolve = (value: unknown): string | undefined => (typeof value === 'string' && value.length > 0
     ? (value.startsWith('/') ? value : join(root, value))
     : undefined);
-  return { root, file, oks, artifact: resolve(oks?.artifact), dataFile: resolve(oks?.dataFile) };
+  return { root, file, oks, model: resolve(oks?.model), dataFile: resolve(oks?.dataFile) };
 }
 
 /** 会话 → 工作区目录。工作区是**会话属性**（会话头里的 cwd），不是进程属性；
@@ -96,14 +96,14 @@ export function workspaceRootFor(exec: WorkspaceProbe | undefined): { root: stri
   );
 }
 
-/** 把一个工作区解析成一份运行设置。缺 domain / artifact 时报错并给出补法。 */
+/** 把一个工作区解析成一份运行设置。缺 domain / model 时报错并给出补法。 */
 export function resolveSettings(root: string, config: PluginConfig | undefined): Settings {
   const workspace = loadWorkspaceConfig(root);
   // 优先级：插件行的显式 config > 工作区的 oks.json > 与机器/模型无关的 DEFAULTS。
-  // domain / artifact 缺失时先落成空串：下面的 missing 检查对"undefined"和"空串"给的是同一条报错。
+  // domain / model 缺失时先落成空串：下面的 missing 检查对"undefined"和"空串"给的是同一条报错。
   const fromWorkspace: Settings = {
     domain: workspace.oks.domain ?? '',
-    artifact: workspace.artifact ?? '',
+    model: workspace.model ?? '',
     dataFile: workspace.dataFile,
     requestTimeoutMs: workspace.oks.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs,
     retryAcceptedSubset: workspace.oks.retryAcceptedSubset ?? DEFAULTS.retryAcceptedSubset,
@@ -115,7 +115,7 @@ export function resolveSettings(root: string, config: PluginConfig | undefined):
   // 设置有三个来源：与机器无关的默认值、工作区的 oks.json、插件行 config 里的这几个覆盖键。
   const settings: Settings = { ...DEFAULTS, ...fromWorkspace };
   if (config?.domain !== undefined) settings.domain = config.domain;
-  if (config?.artifact !== undefined) settings.artifact = config.artifact;
+  if (config?.model !== undefined) settings.model = config.model;
   if (config?.dataFile !== undefined) settings.dataFile = config.dataFile;
   if (config?.requestTimeoutMs !== undefined) settings.requestTimeoutMs = config.requestTimeoutMs;
   if (config?.retryAcceptedSubset !== undefined) settings.retryAcceptedSubset = config.retryAcceptedSubset;
@@ -123,11 +123,11 @@ export function resolveSettings(root: string, config: PluginConfig | undefined):
   if (config?.queryMaxRows !== undefined) settings.queryMaxRows = config.queryMaxRows;
   const missing: string[] = [];
   if (typeof settings.domain !== 'string' || settings.domain.length === 0) missing.push('domain');
-  if (typeof settings.artifact !== 'string' || settings.artifact.length === 0) missing.push('artifact');
+  if (typeof settings.model !== 'string' || settings.model.length === 0) missing.push('model');
   if (missing.length > 0) {
     throw new Error(
       `dsh-oks: ${workspace.file} 缺少必要声明: ${missing.join(', ')}。`
-      + '需要 {"domain":"<知识服务领域名>","artifact":"<相对 oks.json 的 .wasm 路径>"}，'
+      + '需要 {"domain":"<知识服务领域名>","model":"<相对 oks.json 的 .wasm 路径>"}，'
       + '也可以在插件行的 config 里覆盖。',
     );
   }
@@ -135,11 +135,11 @@ export function resolveSettings(root: string, config: PluginConfig | undefined):
 }
 
 /** 产物里有没有可直接导入的服务快照。 */
-export function hasSnapshot(artifactPath: string): boolean {
+export function hasSnapshot(modelPath: string): boolean {
   try {
-    const module = new WebAssembly.Module(readFileSync(artifactPath));
+    const module = new WebAssembly.Module(readFileSync(modelPath));
     return WebAssembly.Module.customSections(module, 'telora.snapshot').length > 0;
   } catch (cause) {
-    throw new Error(`cannot read telora artifact ${artifactPath}: ${errorText(cause)}`);
+    throw new Error(`cannot read the knowledge model ${modelPath}: ${errorText(cause)}`);
   }
 }

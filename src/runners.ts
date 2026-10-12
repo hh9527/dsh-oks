@@ -87,12 +87,12 @@ export const WORKER_SOURCE = [
   '  if (at !== buf.byteLength) throw new Error(\'trailing snapshot bytes\');',
   '  return { guest: guest, globals: globals };',
   '}',
-  'const module = new WebAssembly.Module(readFileSync(workerData.artifact));',
+  'const module = new WebAssembly.Module(readFileSync(workerData.model));',
   'const imports = WebAssembly.Module.imports(module);',
   'if (imports.length !== 0) throw new Error(\'expected a zero-import guest, got \' + imports.length);',
   'const encoder = new TextEncoder(); const textDecoder = new TextDecoder();',
   'const section = WebAssembly.Module.customSections(module, \'telora.snapshot\')[0];',
-  'if (section === undefined) throw new Error(\'artifact has no telora.snapshot section\');',
+  'if (section === undefined) throw new Error(\'model has no telora.snapshot section\');',
   'const snapshot = decodeSnapshot(new Uint8Array(section));',
   'let exports_ = null; let memory = null; let resetGlobals = [];',
   'function instantiate() {',
@@ -167,7 +167,7 @@ export function createWorkerRunner(config: Settings, log: LogFn): Runner {
   const spawn = (): Worker => {
     const created = new Worker(WORKER_SOURCE, {
       eval: true,
-      workerData: { artifact: config.artifact },
+      workerData: { model: config.model },
     });
     // 初始化失败（或之后崩溃）都当作这一代的死亡；下一次 send 会重新拉起。
     created.on('message', (message: RunnerReply) => {
@@ -229,13 +229,13 @@ export function createWorkerRunner(config: Settings, log: LogFn): Runner {
 
 /** 当前只支持快照产物：产物必须带 `telora.snapshot` 段，Node 内置引擎直接导入它。 */
 export function createRunner(config: Settings, log: LogFn): Runner {
-  if (!hasSnapshot(config.artifact)) {
+  if (!hasSnapshot(config.model)) {
     throw new Error(
-      `dsh-oks: artifact ${config.artifact} 里没有 telora.snapshot 段。`
+      `dsh-oks: 模型 ${config.model} 里没有 telora.snapshot 段。`
       + '当前只支持快照产物，请按 README 的「快照怎么来」用 `--snapshot` 重新构建。',
     );
   }
-  log(`[oks] in-process wasm worker (artifact ${config.artifact})`);
+  log(`[oks] in-process wasm worker (model ${config.model})`);
   return createWorkerRunner(config, log);
 }
 

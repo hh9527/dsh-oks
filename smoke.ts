@@ -1016,8 +1016,8 @@ let seed = null;
 console.log('=== 与发布物对比 ===');
 {
   const workspace = JSON.parse(readFileSync(`${DEV_ROOT}/oks.json`, 'utf8'));
-  const artifact = resolve(DEV_ROOT, workspace.artifact);
-  const base = artifact.replace(/\.snapshot\.wasm$/, '').replace(/\.wasm$/, '');
+  const model = resolve(DEV_ROOT, workspace.model);
+  const base = model.replace(/\.snapshot\.wasm$/, '').replace(/\.wasm$/, '');
   const reportPath = [`${base}.report.json`, `${base}.derived.report.json`]
     .find((candidate) => existsSync(candidate));
   if (reportPath === undefined) {
@@ -2183,7 +2183,7 @@ console.log('=== Intent 的 limit 必填且限于 1..100 ===');
   }
 }
 
-// ── 第二个工作区：artifact 与 dataFile 都相对 oks.json 解析 ─────────────────
+// ── 第二个工作区：model 与 dataFile 都相对 oks.json 解析 ─────────────────
 console.log('=== 第二个工作区（嵌套目录，路径都相对 oks.json）===');
 {
   mkdirSync(`${SCRATCH}/nested`, { recursive: true });
@@ -2192,7 +2192,7 @@ console.log('=== 第二个工作区（嵌套目录，路径都相对 oks.json）
   const entry = {
     version: 1,
     domain: anchor.domain,
-    artifact: relative(nested, resolve(DEV_ROOT, anchor.artifact)),
+    model: relative(nested, resolve(DEV_ROOT, anchor.model)),
   };
   if (typeof anchor.dataFile === 'string') entry.dataFile = relative(nested, resolve(DEV_ROOT, anchor.dataFile));
   writeFileSync(`${nested}/oks.json`, `${JSON.stringify(entry, null, 2)}\n`);
@@ -2209,7 +2209,7 @@ console.log('=== 没有 dataFile 的工作区（只能校验）===');
   const anchor = JSON.parse(readFileSync(`${DEV_ROOT}/oks.json`, 'utf8'));
   const dir = `${SCRATCH}/no-data`;
   writeFileSync(`${dir}/oks.json`, `${JSON.stringify({
-    version: 1, domain: anchor.domain, artifact: relative(dir, resolve(DEV_ROOT, anchor.artifact)),
+    version: 1, domain: anchor.domain, model: relative(dir, resolve(DEV_ROOT, anchor.model)),
   }, null, 2)}\n`);
   try {
     await call('oks_query', { intents: await withKeys(countNamed, dir) }, dir);
@@ -2232,7 +2232,7 @@ console.log('=== 坏 dataFile（不是 SQLite）===');
   writeFileSync(`${dir}/junk.txt`, 'not a database\n');
   writeFileSync(`${dir}/oks.json`, `${JSON.stringify({
     version: 1, domain: anchor.domain,
-    artifact: relative(dir, resolve(DEV_ROOT, anchor.artifact)),
+    model: relative(dir, resolve(DEV_ROOT, anchor.model)),
     dataFile: 'junk.txt',
   }, null, 2)}\n`);
   const failed = await call('oks_query', { intents: await withKeys(countNamed, dir) }, dir);
@@ -2263,7 +2263,7 @@ console.log('=== 非快照产物（只有 wasm 头，没有 telora.snapshot 段�
   mkdirSync(empty, { recursive: true });
   writeFileSync(`${empty}/empty.wasm`, Uint8Array.of(0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00));
   writeFileSync(`${empty}/oks.json`, `${JSON.stringify({
-    version: 1, domain: 'ic', artifact: 'empty.wasm',
+    version: 1, domain: 'ic', model: 'empty.wasm',
   }, null, 2)}\n`);
   try {
     await call('oks_info', { key: 'index' }, empty);

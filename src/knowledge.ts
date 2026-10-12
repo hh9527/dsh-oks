@@ -11,7 +11,7 @@ import { singleFlight } from './single-flight.ts';
 import { errorText } from './host.ts';
 import type { LogFn, PluginContext, WorkspaceProbe } from './host.ts';
 
-/** 进程级的检索层缓存：artifact sha256 -> 词汇表 + 反向引用索引。
+/** 进程级的检索层缓存：模型内容的 sha256 -> 词汇表 + 反向引用索引。
  *  词汇助手是另一个 agent 作用域里的实例，它和主 agent 共用这一份，不重爬引用图。 */
 const INDEX_BY_ARTIFACT = new Map<string, RetrievalIndex>();
 
@@ -93,24 +93,24 @@ export function createKnowledge({ ctx, log, config }: {
       index: null, // 检索层：词汇表 + 反向引用索引
     };
     workspaces.set(root, entry);
-    log(`[oks] workspace ${root} (cwd from ${from}) · domain=${settings.domain} · model=${settings.artifact}`);
+    log(`[oks] workspace ${root} (cwd from ${from}) · domain=${settings.domain} · model=${settings.model}`);
     entry.runner = createRunner(settings, log);
     return entry;
   };
 
   // 词汇表与引用图按**产物**持有：同一份产物被多个工作区、多个会话声明时只派生一次。
-  // 身份用 artifact_sha256（revision 字符串在两次不同构建之间可能不变，不能当身份）。
+  // 身份用模型内容的 sha256（服务的 revision 字符串在两次不同构建之间可能不变，不能当身份）。
   // 缓存放在**模块级**：词汇助手是另一个 agent 作用域里的实例，它要用同一份数据模型，
   // 而不是把整棵引用图再爬一遍。
   const indexes = INDEX_BY_ARTIFACT;
 
   // 正在进行的索引派生：并发的首次检索共享同一次初始化，不会各爬一遍引用图。
-  const indexFlights = new Map<string, Promise<RetrievalIndex>>(); // artifact sha256 -> 在飞的 promise
+  const indexFlights = new Map<string, Promise<RetrievalIndex>>(); // 模型内容的 sha256 -> 在飞的 promise
 
   /** 惰性建立检索层：第一次检索时执行，之后按产物哈希复用；并发时 single flight。 */
   const ensureIndex = async (entry: WorkspaceEntry): Promise<RetrievalIndex> => {
     if (entry.index !== null) return entry.index;
-    const sha = createHash('sha256').update(readFileSync(entry.settings.artifact)).digest('hex');
+    const sha = createHash('sha256').update(readFileSync(entry.settings.model)).digest('hex');
     const shared = indexes.get(sha);
     if (shared !== undefined) {
       entry.index = shared;
