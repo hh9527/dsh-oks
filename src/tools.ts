@@ -20,7 +20,7 @@ import { isArray } from './host.ts';
 import { errorText } from './host.ts';
 import type { DiagnosticEntry, LogFn, ServiceResponse, ToolDefinition, ToolExec, TraceStep } from './host.ts';
 import { intentKey } from './key.ts';
-import { DATA_DIR, nameProblem, readArtifact, readResult, saveArtifact, saveResult } from './results.ts';
+import { ARTIFACT_DIR, nameProblem, readArtifact, readResult, saveArtifact, saveResult } from './results.ts';
 import type { ColumnInfo } from './results.ts';
 
 /** oks_info 的入参。 */
@@ -93,7 +93,7 @@ const resolveChartRows = (
   let columns: string[];
   let kind: 'query' | 'agent';
   if (hasSrc) {
-    // src 走与 oks_jaq_result 同一套读取与路径校验：只认工作区 .data/ 里的结果文件。
+    // src 走与 oks_jaq_result 同一套读取与路径校验：只认工作区 artifacts/ 里的结果文件。
     const file = readResult(root, source.src);
     rows = file.rows;
     columns = file.columns.map((column) => column.name);
@@ -143,21 +143,21 @@ const parseReportSpec = (raw: unknown): { spec: ReportSpec } | { error: string }
   };
 };
 
-/** 报告里引用的图（`![图注](路径)`）：把工作区 .data/ 下已经画好的 SVG 读进来内联。
+/** 报告里引用的图（`![图注](路径)`）：把工作区 artifacts/ 下已经画好的 SVG 读进来内联。
  *
- *  路径两种写法都认——`.data/x.svg`（相对工作区根，和 dataSrc 一样）与 `x.svg`
- *  （相对 .data/：报告自己就住在那里，所以这个解释在人看来同样自然）。
- *  与其要求 agent 记住"相对谁"，不如让两种都对；两种都落在 .data/ 里，安全性不变。
+ *  路径两种写法都认——`artifacts/x.svg`（相对工作区根，和 dataSrc 一样）与 `x.svg`
+ *  （相对 artifacts/：报告自己就住在那里，所以这个解释在人看来同样自然）。
+ *  与其要求 agent 记住"相对谁"，不如让两种都对；两种都落在 artifacts/ 里，安全性不变。
  *  除此之外（`./`、`../`、绝对路径、子目录、http）一概拒绝，报错里给出正确写法。 */
 const renderReportFigureFile = (root: string, href: string): { html: string } | { error: string } => {
-  const src = href.startsWith(`${DATA_DIR}/`) ? href : `${DATA_DIR}/${href}`;
+  const src = href.startsWith(`${ARTIFACT_DIR}/`) ? href : `${ARTIFACT_DIR}/${href}`;
   let svg: string;
   try {
     svg = readArtifact(root, src, '.svg');
   } catch (cause) {
     return {
       error: `报告里引用的图取不到：${href}（${errorText(cause)}）。`
-        + `写法可以是 ${DATA_DIR}/<文件>.chart.svg 或 <文件>.chart.svg，文件要在工作区 ${DATA_DIR}/ 里`,
+        + `写法可以是 ${ARTIFACT_DIR}/<文件>.chart.svg 或 <文件>.chart.svg，文件要在工作区 ${ARTIFACT_DIR}/ 里`,
     };
   }
   if (!/<svg[\s>]/i.test(svg)) return { error: `报告里引用的图不是 SVG：${href}` };
@@ -941,7 +941,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_query',
-      description: 'Answer a business question from this workspace\'s data: validate one to five named graph Intents, then run the accepted ones as read-only queries against the data file the workspace declares. Each success is saved to a result file in the workspace (.data/) and the reply reports only its dataSrc, columns and rowCount — the rows stay out of this conversation until you take them with oks_jaq_result. A rejected Intent returns diagnostics instead of a dataSrc, and a name whose key does not match its Intent is refused before execution. Use oks_check_intent first to get the keys.',
+      description: 'Answer a business question from this workspace\'s data: validate one to five named graph Intents, then run the accepted ones as read-only queries against the data file the workspace declares. Each success is saved to a result file in the workspace (artifacts/) and the reply reports only its dataSrc, columns and rowCount — the rows stay out of this conversation until you take them with oks_jaq_result. A rejected Intent returns diagnostics instead of a dataSrc, and a name whose key does not match its Intent is refused before execution. Use oks_check_intent first to get the keys.',
       parameters: {
         type: 'object',
         properties: {
@@ -1106,7 +1106,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       parameters: {
         type: 'object',
         properties: {
-          src: { type: 'string', description: 'A dataSrc returned by oks_query, copied verbatim — a workspace-relative path under .data/.' },
+          src: { type: 'string', description: 'A dataSrc returned by oks_query, copied verbatim — a workspace-relative path under artifacts/.' },
           query: { type: 'string', description: 'A jaq/jq expression whose input is the array of row objects from that file.' },
         },
         required: ['src', 'query'],
@@ -1252,7 +1252,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         let intent: unknown = null;
         let source: 'query' | 'agent';
         if (hasSrc) {
-          // src 走与 oks_jaq_result 同一套读取与路径校验：只认工作区 .data/ 里的结果文件。
+          // src 走与 oks_jaq_result 同一套读取与路径校验：只认工作区 artifacts/ 里的结果文件。
           const file = readResult(entry.settings.workspaceRoot, args?.src);
           rows = file.rows;
           columns = file.columns.map((column) => column.name);
@@ -1308,7 +1308,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_report',
-      description: 'Assemble a self-contained HTML report from a markdown body. The markdown is parsed with a restricted subset — headings, paragraphs, lists, tables, bold/italic/inline code, links, blockquotes, rules, images and fenced code blocks — and embedded HTML is escaped rather than interpreted. Figures come in one way only: reference a figure you have already drawn, on a line of its own, as ![caption](.data/<file>.chart.svg) — the report reads that SVG back and inlines it, so the single file opens anywhere with no external assets. A ```chart fenced block is no longer accepted (it leaves a note telling you to draw first and reference the line). Hand the result to the user with the present tool — an HTML report does not render in the reply body itself.',
+      description: 'Assemble a self-contained HTML report from a markdown body. The markdown is parsed with a restricted subset — headings, paragraphs, lists, tables, bold/italic/inline code, links, blockquotes, rules, images and fenced code blocks — and embedded HTML is escaped rather than interpreted. Figures come in one way only: reference a figure you have already drawn, on a line of its own, as ![caption](artifacts/<file>.chart.svg) — the report reads that SVG back and inlines it, so the single file opens anywhere with no external assets. A ```chart fenced block is no longer accepted (it leaves a note telling you to draw first and reference the line). Hand the result to the user with the present tool — an HTML report does not render in the reply body itself.',
       parameters: {
         type: 'object',
         properties: {
@@ -1320,7 +1320,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
               subtitle: { type: 'string', description: 'Optional subtitle — usually the time window the report covers.' },
               markdown: {
                 type: 'string',
-                description: 'The report body in markdown. Use ## for sections (they become the table of contents). A figure comes in one way only: draw it first with oks_chart, then put the line that receipt gave you on a line of its own — ![caption](.data/<file>.chart.svg). The report reads that SVG back and inlines it, so the file stays single and self-contained; either .data/<file>.chart.svg or <file>.chart.svg is accepted (the report itself lives in .data/), nothing else is. Figure numbers are assigned in the order the references appear. A ```chart fenced block is no longer accepted. Other fenced blocks are rendered as plain code.',
+                description: 'The report body in markdown. Use ## for sections (they become the table of contents). A figure comes in one way only: draw it first with oks_chart, then put the line that receipt gave you on a line of its own — ![caption](artifacts/<file>.chart.svg). The report reads that SVG back and inlines it, so the file stays single and self-contained; either artifacts/<file>.chart.svg or <file>.chart.svg is accepted (the report itself lives in artifacts/), nothing else is. Figure numbers are assigned in the order the references appear. A ```chart fenced block is no longer accepted. Other fenced blocks are rendered as plain code.',
               },
             },
             required: ['title', 'markdown'],

@@ -145,7 +145,7 @@ export const renderReportHtml = (input: ReportInput): string => {
       // 工作区里**已经画好**的 SVG。所以这里不是"解析失败"，而是明确指回去该怎么做。
       if (info === 'chart') {
         return '<div class="figure-error">报告里的图不再用 chart 块：先用 oks_chart 画一次，'
-          + '再把回执给你的那一行 ![标题](.data/….chart.svg) 独占一行放进正文。</div>';
+          + '再把回执给你的那一行 ![标题](artifacts/….chart.svg) 独占一行放进正文。</div>';
       }
       return `<pre><code${safeLanguage(info)}>${escapeHtml(text)}</code></pre>`;
     },

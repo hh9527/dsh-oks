@@ -22,11 +22,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const DEV_ROOT = process.env.OKS_WORKSPACE ?? process.cwd();
 const SCRATCH = `${DEV_ROOT}/.oks-smoke`;
-// 插件只在工作区的 .data/ 里写查询结果，别处不碰；顶层清单因此只允许新增 .data/。
+// 插件只在工作区的 artifacts/ 里写查询结果，别处不碰；顶层清单因此只允许新增 artifacts/。
 const workspaceListing = () => readdirSync(DEV_ROOT).filter((name) => name !== '.oks-smoke').sort().join(',');
 const listingBefore = workspaceListing();
-// .data/ 里可能已经躺着上次跑剩下的产物，所以只看"这次新增的"。
-const dataListingBefore = new Set(existsSync(`${DEV_ROOT}/.data`) ? readdirSync(`${DEV_ROOT}/.data`) : []);
+// artifacts/ 里可能已经躺着上次跑剩下的产物，所以只看"这次新增的"。
+const dataListingBefore = new Set(existsSync(`${DEV_ROOT}/artifacts`) ? readdirSync(`${DEV_ROOT}/artifacts`) : []);
 
 const registered = new Map();
 const disposers = [];
@@ -1133,7 +1133,7 @@ console.log('=== oks_query（只读执行 + 结果落盘）===');
   if (first.status !== 'saved') throw new Error(`查询没有保存成功：${first.status} ${first.error ?? ''}`);
   console.log(`  行数 ${first.rowCount} · 渲染 ${answer.text.length} 字符（pruner 阈值 8192）`);
   if (first.rowCount < 1) throw new Error('查询应当至少返回一行');
-  if (typeof first.dataSrc !== 'string' || !first.dataSrc.startsWith('.data/')) throw new Error('成功项应当返回 .data/ 下的 dataSrc');
+  if (typeof first.dataSrc !== 'string' || !first.dataSrc.startsWith('artifacts/')) throw new Error('成功项应当返回 artifacts/ 下的 dataSrc');
   if (/sql:/.test(answer.text) || !/status:\s+saved/.test(answer.text)) throw new Error('回执应当是结构（保存状态），语句不进模型可见文本');
   const metaSql = answer.meta?.results?.[0]?.sql ?? null;
   console.log(`  语句只留在呈现记录里（meta.sql ${typeof metaSql === 'string' ? `${metaSql.length} 字符` : '缺失'}）: ${typeof metaSql === 'string' && metaSql.length > 0 ? '✓' : '✗'}`);
@@ -1217,7 +1217,7 @@ console.log('=== oks_jaq_result（用表达式取数）===');
     outOfBounds = String(cause?.message ?? cause);
   }
   console.log(`  越界的 src 被拒: ${/dataSrc/.test(outOfBounds) ? '✓' : '✗'}`);
-  if (!/dataSrc/.test(outOfBounds)) throw new Error('src 走出 .data/ 时必须报错');
+  if (!/dataSrc/.test(outOfBounds)) throw new Error('src 走出 artifacts/ 时必须报错');
 
   // 输出到达上限：按行边界截断，绝不留下半个 JSON 值（否则残片会被当成结果）
   const bulk = await call('oks_jaq_result', { src: first.dataSrc, query: 'range(1; 200000)' });
@@ -1257,7 +1257,7 @@ if (dimension === null) {
   if (savedFile.rows.length !== first.rowCount) throw new Error('结果文件应当完整保存这次 Intent 的结果');
 }
 
-// ── .data/ 的产物命名：<时间>-<名字>[-<内容哈希>].<类别><扩展名> ─────────────
+// ── artifacts/ 的产物命名：<时间>-<名字>[-<内容哈希>].<类别><扩展名> ─────────────
 console.log('=== 产物命名 ===');
 {
   const sha = (text) => createHash('sha256').update(text).digest('hex');
@@ -1306,7 +1306,7 @@ console.log('=== oks_chart（服务端出图）===');
   if (!inlineSvg.startsWith('<svg')) throw new Error('产物应当是 SVG');
   // 名字自证内容：`sha256sum` 出来的前 8 位就是名字里那一段，回执的 at 就是名字里那段时间。
   {
-    const fileName = inline.value.svgSrc.replace('.data/', '');
+    const fileName = inline.value.svgSrc.replace('artifacts/', '');
     const digest = createHash('sha256').update(inlineSvg).digest('hex').slice(0, 8);
     if (!fileName.includes(`-${digest}.chart.svg`)) {
       throw new Error(`文件名里的哈希应当等于内容的 sha256 前 8 位：${fileName} vs ${digest}`);
@@ -1337,10 +1337,10 @@ console.log('=== oks_chart（服务端出图）===');
   {
     const spec = { kind: 'bar', x: 'label', value: 'value' };
     const data = [{ label: 'A', value: 3 }, { label: 'B', value: 5 }];
-    const before = new Set(readdirSync(resolve(DEV_ROOT, '.data')));
+    const before = new Set(readdirSync(resolve(DEV_ROOT, 'artifacts')));
     const first = await call('oks_chart', { spec, data, name: 'probe_dup' });
     const second = await call('oks_chart', { spec, data, name: 'probe_dup' });
-    const added = readdirSync(resolve(DEV_ROOT, '.data')).filter((name) => !before.has(name));
+    const added = readdirSync(resolve(DEV_ROOT, 'artifacts')).filter((name) => !before.has(name));
     const same = first.value.svgSrc === second.value.svgSrc;
     console.log(`  同一份产物写两次：${same ? '同一秒 → 去重' : '跨了秒 → 各存一份'}（新增 ${added.length} 个）`);
     if (same ? added.length !== 1 : added.length !== 2) {
@@ -1879,8 +1879,8 @@ console.log('=== oks_chart（服务端出图）===');
       data: [{ label: '甲', value: 3 }, { label: '乙', value: 5 }],
       name: 'probe_report_ref',
     });
-    const refPath = drawn.value.svgSrc;                       // .data/<...>.chart.svg
-    const bare = refPath.replace('.data/', '');               // 报告自己也在 .data/ 里，裸名同样自然
+    const refPath = drawn.value.svgSrc;                       // artifacts/<...>.chart.svg
+    const bare = refPath.replace('artifacts/', '');               // 报告自己也在 artifacts/ 里，裸名同样自然
     // 再画一张，用来充当"报告里的第一张图"。
     const extra = await call('oks_chart', {
       spec: { kind: 'bar', x: 'label', value: 'value', title: '第一张' },
@@ -1906,7 +1906,7 @@ console.log('=== oks_chart（服务端出图）===');
           '',
           '## 三、取不到的那些',
           '',
-          '![不存在的图](.data/nope.chart.svg)',
+          '![不存在的图](artifacts/nope.chart.svg)',
           '',
           '![越界的图](../evil.chart.svg)',
           '',
@@ -1933,7 +1933,7 @@ console.log('=== oks_chart（服务端出图）===');
     // 取不到的两种写法：各留一段说明，而且说明里要给出正确写法（能靠报错自纠）。
     const errors = [...refHtml.matchAll(/<div class="figure-error">([^<]*)<\/div>/g)].map((m) => m[1]);
     if (errors.length !== 3) throw new Error(`两个取不到的引用加一个 chart 块，各该留一段说明，收到 ${errors.length}`);
-    if (!errors[0].includes('nope.chart.svg') || !errors[0].includes('.data/')) {
+    if (!errors[0].includes('nope.chart.svg') || !errors[0].includes('artifacts/')) {
       throw new Error(`说明里该指出写错的那一行并给出正确写法：${errors[0]}`);
     }
     // chart 块已经不接受：说明要指回去（先画一次、再把那一行放进正文），而不是静默变成代码块。
@@ -2273,24 +2273,24 @@ console.log('=== 非快照产物（只有 wasm 头，没有 telora.snapshot 段�
   }
 }
 
-// ── 插件只写工作区的 .data/（查询结果），别处不碰 ───────────────────────────
-console.log('=== 插件只写 .data/ 里的结果文件 ===');
+// ── 插件只写工作区的 artifacts/（查询结果），别处不碰 ───────────────────────────
+console.log('=== 插件只写 artifacts/ 里的结果文件 ===');
 {
   const after = workspaceListing();
   const before = new Set(listingBefore.split(',').filter(Boolean));
   const added = after.split(',').filter(Boolean).filter((name) => !before.has(name));
   console.log(`  顶层新增条目：${added.join(', ') || '(无)'}`);
-  if (added.some((name) => name !== '.data')) throw new Error(`插件创建了 .data/ 之外的东西：${added.join(', ')}`);
+  if (added.some((name) => name !== 'artifacts')) throw new Error(`插件创建了 artifacts/ 之外的东西：${added.join(', ')}`);
   console.log(`  没有 .oks/plans: ${existsSync(`${DEV_ROOT}/.oks`) ? '✗' : '✓'}`);
   if (existsSync(`${DEV_ROOT}/.oks`)) throw new Error('计划文件目录不该存在');
-  if (existsSync(`${DEV_ROOT}/.data`)) {
-    const files = readdirSync(`${DEV_ROOT}/.data`).filter((name) => !dataListingBefore.has(name));
+  if (existsSync(`${DEV_ROOT}/artifacts`)) {
+    const files = readdirSync(`${DEV_ROOT}/artifacts`).filter((name) => !dataListingBefore.has(name));
     // 三类产物一套命名：<时间>-<名字>[-<内容哈希>].<类别><扩展名>。
     const PRODUCT = /^\d{8}T\d{6}Z-[0-9a-z_~]+-[0-9a-f]{8,}\.(query\.json|chart\.svg|report\.html)$/;
     const allProducts = files.length > 0 && files.every((name) => PRODUCT.test(name));
-    console.log(`  .data/ 里 ${files.length} 个产物、都是 <时间>-<名字>-<哈希>.<类别><扩展名>: ${allProducts ? '✓' : '✗'}`);
+    console.log(`  artifacts/ 里 ${files.length} 个产物、都是 <时间>-<名字>-<哈希>.<类别><扩展名>: ${allProducts ? '✓' : '✗'}`);
     if (!allProducts) {
-      throw new Error(`.data/ 里出现了不按命名规则落地的产物：${files.filter((name) => !PRODUCT.test(name)).slice(0, 3).join(', ')}`);
+      throw new Error(`artifacts/ 里出现了不按命名规则落地的产物：${files.filter((name) => !PRODUCT.test(name)).slice(0, 3).join(', ')}`);
     }
   }
 }

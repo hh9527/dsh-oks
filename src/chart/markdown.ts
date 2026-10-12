@@ -120,7 +120,7 @@ export const renderMarkdown = (source: string, onFence: FenceHandler, onImage?: 
       continue;
     }
 
-    // 独占一行的图片：整行就是一张图，交给调用方（报告把 .data/ 里的素材读进来内联）。
+    // 独占一行的图片：整行就是一张图，交给调用方（报告把 artifacts/ 里的素材读进来内联）。
     const image = line.trim().match(IMAGE_LINE);
     if (image !== null && onImage !== undefined) {
       out.push(onImage(image[1].trim(), image[2].trim()));

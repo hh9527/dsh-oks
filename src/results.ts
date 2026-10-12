@@ -4,13 +4,13 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { errorText, isRecord } from './host.ts';
 
 // 查询结果与产物的落盘与读取（见 rfc/0001 的「查询结果保存」）。
-// 每个成功 Intent 一个 JSON 文件、每张图与每份报告各一个文件，都落在工作区的 .data/ 下，
+// 每个成功 Intent 一个 JSON 文件、每张图与每份报告各一个文件，都落在工作区的 artifacts/ 下，
 // 名字统一是 <时间>-<名字>[-<内容哈希>].<类别><扩展名>（见 artifactName）。
 // 结果文件含原始 Intent、列信息、行数与完整数据行——于是数据行可以只被「引用」，
 // 不必默认进入模型上下文；按需取数另走 oks_jaq_result。
 
 /** 结果文件所在的目录（相对工作区根）。 */
-export const DATA_DIR = '.data';
+export const ARTIFACT_DIR = 'artifacts';
 
 /** 一列的观察结果：列名取自 SQL 元数据，类型按返回值观察。 */
 export interface ColumnInfo {
@@ -43,7 +43,7 @@ export interface ResultFile {
 export const resultStamp = (when: Date = new Date()): string =>
   when.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
 
-/** .data/ 里的三类产物。它进文件名，与扩展名各管一件事。 */
+/** artifacts/ 里的三类产物。它进文件名，与扩展名各管一件事。 */
 export type ArtifactKind = 'query' | 'chart' | 'report';
 
 /** 类别的中文名，只用在报错里。 */
@@ -84,9 +84,9 @@ const shortName = (name: string): string => {
 
 /** 产物的统一命名：`<时间>-<名字>[-<内容哈希>].<类别><扩展名>`。
  *
- *  时间在最前面，`ls .data/` 出来就是时间序；名字是给人看的那一半；哈希是给核对的那一半
+ *  时间在最前面，`ls artifacts/` 出来就是时间序；名字是给人看的那一半；哈希是给核对的那一半
  *  ——它等于文件内容的 sha256 前 8 位，于是**同名 ⟺ 同内容**，撞名不再需要"加序号"这套补丁；
- *  类别与扩展名各管一件事：类别用来取同类清单（`.data/*.chart.*`），扩展名给工具看。
+ *  类别与扩展名各管一件事：类别用来取同类清单（`artifacts/*.chart.*`），扩展名给工具看。
  *  内容不是一次拿到的（流式写）时哈希那一段省略，那时才退回按序号消歧。 */
 export const artifactName = (options: {
   at: string;
@@ -184,7 +184,7 @@ export function saveResult(options: {
 }): SavedResult {
   const problem = nameProblem(options.name);
   if (problem !== null) throw new Error(`结果文件名不合法：${problem}`);
-  const directory = join(options.root, DATA_DIR);
+  const directory = join(options.root, ARTIFACT_DIR);
   mkdirSync(directory, { recursive: true });
   const at = resultStamp();
   const { columns, rows } = describeRows(options.sqlColumns, options.rows);
@@ -201,7 +201,7 @@ export function saveResult(options: {
   const body = `${JSON.stringify(payload, null, 2)}\n`;
   const fileName = artifactName({ at, name: options.name, kind: 'query', extension: '.json', content: body });
   writeExclusive(join(directory, fileName), body, 'query');
-  return { dataSrc: `${DATA_DIR}/${fileName}`, columns, rowCount: rows.length };
+  return { dataSrc: `${ARTIFACT_DIR}/${fileName}`, columns, rowCount: rows.length };
 }
 
 /** 把一份产物（图、报告）写成文件：与结果文件同一套命名与独占创建规则。
@@ -218,7 +218,7 @@ export function saveArtifact(options: {
     throw new Error(`${KIND_LABEL[options.kind]}名不合法（${JSON.stringify(options.name)}）：${problem}`);
   }
   const at = resultStamp();
-  mkdirSync(join(options.root, DATA_DIR), { recursive: true });
+  mkdirSync(join(options.root, ARTIFACT_DIR), { recursive: true });
   const fileName = artifactName({
     at,
     name: options.name,
@@ -226,25 +226,25 @@ export function saveArtifact(options: {
     extension: options.extension,
     content: options.content,
   });
-  writeExclusive(join(options.root, DATA_DIR, fileName), options.content, options.kind);
-  return { src: `${DATA_DIR}/${fileName}`, at };
+  writeExclusive(join(options.root, ARTIFACT_DIR, fileName), options.content, options.kind);
+  return { src: `${ARTIFACT_DIR}/${fileName}`, at };
 }
 
-/** dataSrc 的语法范围：只接受能在工作区 .data/ 里落位的相对路径。 */
+/** dataSrc 的语法范围：只接受能在工作区 artifacts/ 里落位的相对路径。 */
 export function resolveDataSrc(root: string, dataSrc: unknown): string {
   if (typeof dataSrc !== 'string' || dataSrc.length === 0) {
     throw new Error('需要一个 dataSrc（查询结果返回的那个相对路径）');
   }
-  const directory = resolve(root, DATA_DIR);
+  const directory = resolve(root, ARTIFACT_DIR);
   const target = resolve(root, dataSrc);
   const inside = relative(directory, target);
   if (inside.length === 0 || inside.startsWith('..') || isAbsolute(inside)) {
-    throw new Error(`dataSrc 只能指向工作区 ${DATA_DIR}/ 里的文件：${JSON.stringify(dataSrc)}`);
+    throw new Error(`dataSrc 只能指向工作区 ${ARTIFACT_DIR}/ 里的文件：${JSON.stringify(dataSrc)}`);
   }
   return target;
 }
 
-/** 把一个 .data/ 里的产物定位到真实路径：先按前缀收窄，再用真实路径复核（挡住符号链接逃逸）。
+/** 把一个 artifacts/ 里的产物定位到真实路径：先按前缀收窄，再用真实路径复核（挡住符号链接逃逸）。
  *  "找不到"与"越界"要分开报——这两种错，修法完全不同。 */
 function artifactPath(root: string, src: unknown): string {
   const target = resolveDataSrc(root, src);
@@ -254,15 +254,15 @@ function artifactPath(root: string, src: unknown): string {
   } catch {
     throw new Error(`找不到 ${JSON.stringify(src)}`);
   }
-  const realDirectory = realpathSync(resolve(root, DATA_DIR));
+  const realDirectory = realpathSync(resolve(root, ARTIFACT_DIR));
   const inside = relative(realDirectory, real);
   if (inside.length === 0 || inside.startsWith('..') || isAbsolute(inside)) {
-    throw new Error(`引用指向的路径不在工作区 ${DATA_DIR}/ 里：${JSON.stringify(src)}`);
+    throw new Error(`引用指向的路径不在工作区 ${ARTIFACT_DIR}/ 里：${JSON.stringify(src)}`);
   }
   return real;
 }
 
-/** 读回结果文件；真实路径也必须落在 .data/ 里（挡住符号链接逃逸）。 */
+/** 读回结果文件；真实路径也必须落在 artifacts/ 里（挡住符号链接逃逸）。 */
 export function readResult(root: string, dataSrc: unknown): ResultFile {
   const parsed: unknown = JSON.parse(readFileSync(artifactPath(root, dataSrc), 'utf8'));
   if (!isRecord(parsed) || !Array.isArray(parsed.rows) || !Array.isArray(parsed.columns)) {
