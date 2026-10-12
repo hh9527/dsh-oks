@@ -52,7 +52,7 @@ Node 按 URL 缓存 ESM 模块，所以：
 | `oks_query` | `{intents:{<名>:{intent,key}}}` | 核 key 后**只读执行**：每个成功项写进 `<工作区>/.data/<时间>-<名>-<内容哈希>.query.json`，回执只给 `dataSrc`、列信息与行数——**数据行与语句都不进这段对话**（数据按需读回，语句在执行记录与呈现记录里）；失败项按 `key_mismatch` / `rejected` / `query_error` / `save_error` 分别报告 |
 | `oks_jaq_result` | `{src, query}` | 在结果文件上做**结构化查询**：`query` 是作用在**行数组**上的 jaq（与 jq 兼容）表达式——`.[] \| select(.count > 100)`、`.[] \| {name, total}`、`sort_by(.total) \| reverse \| .[0:5]`。表达式决定取回什么，按需投影即可；结果文件的内部结构不进契约。`src` 限定在工作区 `.data/` 内 |
 | `oks_chart` | `{spec, src?, data?, name?, note?}` | 把图画成 **SVG 存进工作区**：`src` 与 `data` **恰好提供一个**——`src` 引用查询结果文件（来源固定标为「基于查询结果」），`data` 是你自填的对象行数组（「agent 自主填写」）。十种图元都用 `x`（类别/横轴列）与 `value`（数值列）作底（`histogram` 只给 `value`）：**分组柱** `column`，可选 `series`（组内分组）；**横条** `bar`（可选 `series`：横向的分组条）；**饼图** `pie`（只取正数）；**多序列折线** `line`、**面积图** `area`（可选 `series`，`xType` 不填按数据推断）；**散点** `scatter`（可选 `size` 当第三维）；**直方图** `histogram`（可选 `bins`）；**箱线图** `box`；**矩阵** `heatmap` 与**雷达** `radar`（两者都要 `series`：矩阵的纵轴类别 / 雷达的被比较对象）。要看明细表，直接在回答里写 markdown 表格。回执给出一行 `![标题](路径)`，agent 把它放进回答，图就显示在那里 |
-| `oks_report` | `{spec, name?, note?}` | 把叙述与图组织成一份**自足的 HTML 报告**存进工作区：`spec` 给 `title`、可选 `subtitle` 与一段 **markdown 正文**。正文用 `##` 分章节（成为目录），支持列表、表格、加粗、行内代码、引用、分隔线与换行（`<br>` / 行尾两空格 / 行尾 `\`），**除 `<br>` 外的 HTML 会转义**；**图写在它该出现的位置**，两种写法：已经画好的图**独占一行**写成 `![图注](.data/<文件>.chart.svg)`（报告把它读进来内联；路径写 `.data/x.chart.svg` 或 `x.chart.svg` 都认），要报告自己画的写一个语言标为 `chart` 的围栏块（块里是 JSON，字段与 `oks_chart` 的 spec 相同，再给 `src` 或 `data` 其一与可选 `caption`）；两种图共用一套编号，由系统按出现顺序给。图以**内联 SVG** 嵌在页面里，单文件可以发给任何人打开。报告**不出现在回答正文**：回执给出一行 markdown 链接，agent 用 `present` 交付，用户点开在右侧栏阅读 |
+| `oks_report` | `{spec, name?, note?}` | 把叙述与图组织成一份**自足的 HTML 报告**存进工作区：`spec` 给 `title`、可选 `subtitle` 与一段 **markdown 正文**。正文用 `##` 分章节（成为目录），支持列表、表格、加粗、行内代码、引用、分隔线与换行（`<br>` / 行尾两空格 / 行尾 `\`），**除 `<br>` 外的 HTML 会转义**；**图写在它该出现的位置，只有一种写法：先画再引**——用 `oks_chart` 画出来（回执给的就是那一行），再把 `![图注](.data/<文件>.chart.svg)` **独占一行**放进正文；报告把那份 SVG 读进来**内联**（路径写 `.data/x.chart.svg` 或 `x.chart.svg` 都认），图注编号按出现顺序由系统给。语言标为 `chart` 的围栏块**不再接受**（会在原处留一段说明指回去）——于是报告正文里不带任何 JSON 片段。图以**内联 SVG** 嵌在页面里，单文件可以发给任何人打开。报告**不出现在回答正文**：回执给出一行 markdown 链接，agent 用 `present` 交付，用户点开在右侧栏阅读 |
 | `va_ask` | `{query}` | 咨询本会话的**词汇助手**：给一个说法（词/短语/一句话，中英不限），拿回词表里等价或相近的说法——回答是**一行一个字符串**，每个字符串都是词表原文。助手是插件自己建、自己收的**顶层 agent**（preset `oks`、与调用方同一工作区、共用同一份进程内索引），平时归档，被咨询时临时恢复。它给的是线索，检索口径仍由 `oks_search` / `oks_info` 决定。**整份词表由插件渲染成助手系统提示词里的一个 section**（模板 + 全部词条），助手一个工具都没有。装配**不发任何消息**；每个说法才是一次回合，拿到回答后插件把表面上的节点全部收进一个固定文本的标记，所以助手每次只看到「系统提示词里的词表 + 一个标记 + 当前这个说法」（会话日志保持 append-only，标记节点用 `sourceEventSeqs` 记下遮蔽范围）|
 | `time_now` | `{timeZone?}` | 当前时刻的**各种标准表示**（epoch 毫秒/秒、UTC 文本、RFC 3339、带偏移的本地文本、日期、ISO 周）+ 实际用的时区。服务不读时钟，所以相对时间必须在这里换成绝对边界 |
 | `time_calc` | `{base?, timeZone?, operations?}` | 日历代数：`add`（year/quarter/month/week/day/hour/minute/second）、`floor`/`ceil` 到日历边界（周默认周一起）、`convert` 换时区。日/周保持**本地墙钟**（跨 DST 的一天可能不是 24 小时），月/季/年**钳制**到当月最后一天。区间半开 `[start, end)` |
@@ -284,7 +284,8 @@ OKS_WORKSPACE=/path/to/ws node smoke.ts              # 或者显式指定
 - **一种渲染路径**：十种图元（`bar` / `line` / `column` / `pie` / `area` / `scatter` / `histogram` /
   `box` / `heatmap` / `radar`）都由同一份规格渲染——
   `src/chart/option.ts` 把业务字段与结果行翻成 option，`src/chart/echarts.ts` 用它的 SSR 出 SVG。
-  报告（`src/chart/report.ts`）复用同一条链路：正文 markdown 里的 `chart` 围栏块就地画成内联 SVG。
+  报告（`src/chart/report.ts`）复用同一条链路：正文 markdown 里独占一行的 `![图注](.data/….chart.svg)`
+  被读回来、经同一套清理后内联成 SVG——所以报告正文里不带 JSON，图一律"先画后引"。
 - `parameters` 只使用受支持的 JSON Schema 关键字子集：`type` / `oneOf` / `properties` /
   `required` / `additionalProperties` / `items` / `enum` / `const` 加注解关键字；
   批次形状、规模与名字校验，以及 key 的重新计算与比对，都放在 `execute` 里。

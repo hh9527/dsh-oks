@@ -1451,7 +1451,8 @@ console.log('=== oks_chart（服务端出图）===');
   console.log(`  排版覆盖：labelFont/height/slantTicks 生效 → ${(tunedSvg.match(/<path/g) ?? []).length} 个 path`);
   if (!tunedSvg.includes('<path')) throw new Error('覆盖排版后仍应出图');
 
-  // 报告：markdown 正文（章节 + 叙述 + chart 块）→ 自足的 HTML（图内联、无外链、无脚本）。
+  // 报告：markdown 正文（章节 + 叙述 + 引用的图）→ 自足的 HTML（图内联、无外链、无脚本）。
+  // 图只有一种来源：工作区里**已经画好**的 SVG（上面那张 tuned 就是现成的）。
   const report = await call('oks_report', {
     spec: {
       title: '周报（冒烟）',
@@ -1464,9 +1465,7 @@ console.log('=== oks_chart（服务端出图）===');
         '- 严重 15 条',
         '- 提示 36 条',
         '',
-        '```chart',
-        JSON.stringify({ kind: 'bar', x: 'k', value: 'n', data: [{ k: '严重', n: 15 }, { k: '提示', n: 36 }], caption: '各级别条数' }),
-        '```',
+        `![各级别条数](${tuned.value.svgSrc})`,
         '',
         '## 二、口径说明',
         '',
@@ -1498,7 +1497,11 @@ console.log('=== oks_chart（服务端出图）===');
     name: 'probe_report',
   });
   const reportHtml = readFileSync(resolve(DEV_ROOT, report.value.htmlSrc), 'utf8');
-  console.log(`  报告：${report.value.figureCount} 张图 → ${report.value.htmlSrc}`);
+  console.log(`  报告：${report.value.figureCount} 张引用的图 → ${report.value.htmlSrc}`);
+  if (report.value.figureCount !== 1) throw new Error(`这份报告引用了一张图，收到 ${report.value.figureCount}`);
+  if (!reportHtml.includes('<figcaption>图 1　各级别条数</figcaption>')) {
+    throw new Error('引用的图应当按出现顺序拿到编号与图注');
+  }
   if (!reportHtml.includes('<svg class="chart"')) throw new Error('报告里的图应当以 svg 元素内联，而不是 base64 图片');
   if (reportHtml.includes('<script')) throw new Error('报告里不应有脚本');
   if (/src="http/.test(reportHtml)) throw new Error('报告应当是自足的，不该有外链');
@@ -1846,30 +1849,26 @@ console.log('=== oks_chart（服务端出图）===');
     throw new Error('表格单元格里的 br 应当渲染成换行');
   }
 
-  // 来源逐图判定：报告不再要求"所有图同源"（那会逼 agent 把查询结果当自填行填进来，
-  // 反而让标识失真，真机上出现过）。冒烟里只有单列的 count 结果、构不出图，
-  // 所以这里验两件事：混用不再被拒、每张图各自带来源标识。
+  // 来源逐图判定：报告不要求"所有图同源"（那会逼 agent 把查询结果当自填行填进来，
+  // 反而让标识失真，真机上出现过）。现在这件事是白送的：引用哪张图，就带哪张图的来源标识，
+  // 所以这里拿"一张自填的 + 一张查询结果的"来验。
   const mixed = await call('oks_report', {
     spec: {
       title: '多来源报告（冒烟）',
       markdown: [
         '## 多来源',
         '',
-        '```chart',
-        JSON.stringify({ kind: 'bar', x: 'label', value: 'value', data: [{ label: '甲', value: 1 }], caption: '第一张' }),
-        '```',
+        `![自填的那张](${tuned.value.svgSrc})`,
         '',
-        '```chart',
-        JSON.stringify({ kind: 'bar', x: 'label', value: 'value', data: [{ label: '乙', value: 2 }], caption: '第二张' }),
-        '```',
+        `![查询结果的那张](${fromSrc.value.svgSrc})`,
       ].join('\n'),
     },
     name: 'probe_report_mixed',
   });
   const mixedHtml = readFileSync(resolve(DEV_ROOT, mixed.value.htmlSrc), 'utf8');
   console.log(`  多来源报告：${mixed.value.figureCount} 张图，各自带来源标识`);
-  if ((mixedHtml.match(/来源：agent 自主填写/g) ?? []).length < 2) {
-    throw new Error('每张图都应当带自己的来源标识');
+  if (!mixedHtml.includes('来源：agent 自主填写') || !mixedHtml.includes('来源：基于查询结果')) {
+    throw new Error('引用进来的图应当各自带原来的来源标识');
   }
 
   // 报告里的图两种写法：已经画好的直接引用那一行，要报告自己画的写 chart 块。
@@ -1882,6 +1881,12 @@ console.log('=== oks_chart（服务端出图）===');
     });
     const refPath = drawn.value.svgSrc;                       // .data/<...>.chart.svg
     const bare = refPath.replace('.data/', '');               // 报告自己也在 .data/ 里，裸名同样自然
+    // 再画一张，用来充当"报告里的第一张图"。
+    const extra = await call('oks_chart', {
+      spec: { kind: 'bar', x: 'label', value: 'value', title: '第一张' },
+      data: [{ label: '甲', value: 2 }],
+      name: 'probe_report_ref_first',
+    });
     const fence = (label) => ['```chart', JSON.stringify({
       kind: 'bar', x: 'label', value: 'value', data: [{ label, value: 2 }], caption: `${label}图`,
     }), '```'].join('\n');
@@ -1889,9 +1894,9 @@ console.log('=== oks_chart（服务端出图）===');
       spec: {
         title: '引用图（冒烟）',
         markdown: [
-          '## 一、画出来的',
+          '## 一、引用的第一张',
           '',
-          fence('第一'),
+          `![第一张](${extra.value.svgSrc})`,
           '',
           '## 二、引用已落盘的',
           '',
@@ -1905,9 +1910,13 @@ console.log('=== oks_chart（服务端出图）===');
           '',
           '![越界的图](../evil.chart.svg)',
           '',
-          '## 四、再画一张，编号要接着走',
+          '## 四、再引一张，编号要接着走',
           '',
-          fence('第四'),
+          `![第四张](${tuned.value.svgSrc})`,
+          '',
+          '## 五、chart 块已经不接受',
+          '',
+          fence('老的写法'),
         ].join('\n'),
       },
       name: 'probe_report_ref',
@@ -1917,17 +1926,24 @@ console.log('=== oks_chart（服务端出图）===');
     const captions = [...refHtml.matchAll(/<figcaption>图 (\d+)　([^<]*)<\/figcaption>/g)].map((m) => `${m[1]}:${m[2]}`);
     console.log(`  引用图：内联 ${inline} 张 · 图注 ${captions.join(' ')} · figureCount=${ref.value.figureCount}`);
     if (inline !== 4) throw new Error(`四张图都该内联成 <svg class="chart">，收到 ${inline}`);
-    if (JSON.stringify(captions) !== JSON.stringify(['1:第一图', '2:引用带前缀', '3:引用裸名', '4:第四图'])) {
-      throw new Error(`两种写法应当共用一套编号（取不到的图不占号），实际 ${JSON.stringify(captions)}`);
+    if (JSON.stringify(captions) !== JSON.stringify(['1:第一张', '2:引用带前缀', '3:引用裸名', '4:第四张'])) {
+      throw new Error(`编号应当按正文出现顺序走（取不到的图不占号），实际 ${JSON.stringify(captions)}`);
     }
     if (ref.value.figureCount !== 4) throw new Error(`回执的图数应当只数画出来的，收到 ${ref.value.figureCount}`);
     // 取不到的两种写法：各留一段说明，而且说明里要给出正确写法（能靠报错自纠）。
     const errors = [...refHtml.matchAll(/<div class="figure-error">([^<]*)<\/div>/g)].map((m) => m[1]);
-    if (errors.length !== 2) throw new Error(`两个取不到的引用各该留一段说明，收到 ${errors.length}`);
+    if (errors.length !== 3) throw new Error(`两个取不到的引用加一个 chart 块，各该留一段说明，收到 ${errors.length}`);
     if (!errors[0].includes('nope.chart.svg') || !errors[0].includes('.data/')) {
       throw new Error(`说明里该指出写错的那一行并给出正确写法：${errors[0]}`);
     }
-    if (/!\[[^\]]*\]\(/.test(refHtml)) throw new Error('图片语法不该以字面文本出现在正文里');
+    // chart 块已经不接受：说明要指回去（先画一次、再把那一行放进正文），而不是静默变成代码块。
+    if (!errors.some((text) => text.includes('oks_chart'))) {
+      throw new Error(`chart 块被拒时应当指路：${JSON.stringify(errors)}`);
+    }
+    if (refHtml.includes('language-chart')) throw new Error('chart 块不该退化成普通代码块');
+    // 说明块里会带着"正确写法"的例子（那本身就是图片语法），所以只在正文里查残留。
+    const prose = refHtml.replace(/<div class="figure-error">[\s\S]*?<\/div>/g, '');
+    if (/!\[[^\]]*\]\(/.test(prose)) throw new Error('图片语法不该以字面文本出现在正文里');
     if (refHtml.includes('evil.chart.svg</svg>')) throw new Error('越界的引用不该被读进来');
   }
 

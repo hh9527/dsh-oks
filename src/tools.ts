@@ -113,7 +113,7 @@ const resolveChartRows = (
 };
 
 /** 解析并校验报告素材。图的规格与取数都复用 oks_chart 那一套。 */
-/** 报告的素材：标题、副标题与正文 markdown。章节（`##`）与图的落点（```chart 块）都在正文里，
+/** 报告的素材：标题、副标题与正文 markdown。章节（`##`）与图的落点（独占一行的图片）都在正文里，
  *  所以不需要另外的结构——报告只认这一种写法。 */
 interface ReportSpec {
   title: string;
@@ -130,7 +130,7 @@ const parseReportSpec = (raw: unknown): { spec: ReportSpec } | { error: string }
   if (typeof title !== 'string' || title.trim() === '') return { error: 'spec.title 必填，且不能是空字符串' };
   const markdown = record.markdown;
   if (typeof markdown !== 'string' || markdown.trim() === '') {
-    return { error: 'spec.markdown 必填：用 ## 写章节，用 ```chart 块放图' };
+    return { error: 'spec.markdown 必填：用 ## 写章节，用 ![图注](路径) 放图' };
   }
   const unknown = Object.keys(record).filter((key) => !['title', 'subtitle', 'markdown'].includes(key));
   if (unknown.length > 0) return { error: `spec 里不认识的项：${unknown.join(', ')}` };
@@ -140,30 +140,6 @@ const parseReportSpec = (raw: unknown): { spec: ReportSpec } | { error: string }
       subtitle: record.subtitle === undefined || record.subtitle === null ? null : String(record.subtitle),
       markdown,
     },
-  };
-};
-
-/** 画报告里的一张图：解析规格、取数、列校验、渲染成内联 SVG。
- *  与 oks_chart 共用 parseChartSpec / resolveChartRows，所以两处的口径完全一致。 */
-const renderReportFigure = (
-  json: Record<string, unknown>,
-  root: string,
-): { html: string; caption: string | null } | { error: string } => {
-  const parsedChart = parseChartSpec(json);
-  if ('error' in parsedChart) return { error: parsedChart.error };
-  const chartSpec = parsedChart.spec;
-  const resolved = resolveChartRows({ src: json.src, data: json.data }, root, chartSpec);
-  if ('error' in resolved) return { error: resolved.error };
-  applyInferredXType(chartSpec, resolved.rows);
-  const issue = shapeProblem(resolved.rows, chartSpec);
-  if (issue !== null) return { error: issue };
-  // 来源逐图判定：这张图是从结果文件取数，还是用 agent 自填的行。
-  const sourceLabel = resolved.source === 'query' ? '基于查询结果' : 'agent 自主填写';
-  const { option, height } = buildOption(resolved.rows, { ...chartSpec, sourceLabel });
-  const svg = renderEchartsSvg(option, CHART_WIDTH, height);
-  return {
-    html: buildFigureHtml(svg, null),
-    caption: json.caption === undefined || json.caption === null ? null : String(json.caption),
   };
 };
 
@@ -299,7 +275,7 @@ const CHART_DATA_MAX_ROWS = 1000;
 const CHART_DATA_MAX_BYTES = 256 * 1024;
 
 /** 规格里引用的列（含图元专属字段指向的列）。
- *  oks_chart 与报告里的 chart 块共用这一份，否则会出现"工具接受、报告里报错"的半边差异。 */
+ *  oks_chart 与报告里的图共用这一份，否则会出现"工具接受、报告里报错"的半边差异。 */
 const referencedColumns = (spec: ChartSpec): string[] =>
   [spec.x, spec.value, spec.series, spec.size, spec.second?.value ?? null]
     // 空字符串表示"这个图元不需要这一项"（如 histogram 没有 x），不该被当成一个列名去核对。
@@ -599,7 +575,7 @@ const lineProblem = (rows: readonly Record<string, unknown>[], spec: ChartSpec):
 };
 
 /** 数据形状不满足图元的要求时报错：规格写对了、数据不对，同样画不出那张图。
- *  两个渲染入口（oks_chart 与报告里的 chart 块）共用这一份，免得各判一次、改的时候只想起一处。 */
+ *  oks_chart 是唯一的出图入口，这份判断也只此一处。 */
 const shapeProblem = (rows: readonly Record<string, unknown>[], spec: ChartSpec): string | null => {
   if (spec.kind === 'line') return lineProblem(rows, spec);
   if (spec.kind !== 'radar' || rows.length === 0) return null;
@@ -1332,7 +1308,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_report',
-      description: 'Assemble a self-contained HTML report from a markdown body. The markdown is parsed with a restricted subset — headings, paragraphs, lists, tables, bold/italic/inline code, links, blockquotes, rules and fenced code blocks — and embedded HTML is escaped rather than interpreted. A ```chart fenced block draws a figure: its body is a JSON object shaped like the spec of oks_chart, plus src or data and an optional caption. Figures are inlined as SVG, so the single file opens anywhere with no external assets. Hand the result to the user with the present tool — an HTML report does not render in the reply body itself.',
+      description: 'Assemble a self-contained HTML report from a markdown body. The markdown is parsed with a restricted subset — headings, paragraphs, lists, tables, bold/italic/inline code, links, blockquotes, rules, images and fenced code blocks — and embedded HTML is escaped rather than interpreted. Figures come in one way only: reference a figure you have already drawn, on a line of its own, as ![caption](.data/<file>.chart.svg) — the report reads that SVG back and inlines it, so the single file opens anywhere with no external assets. A ```chart fenced block is no longer accepted (it leaves a note telling you to draw first and reference the line). Hand the result to the user with the present tool — an HTML report does not render in the reply body itself.',
       parameters: {
         type: 'object',
         properties: {
@@ -1344,7 +1320,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
               subtitle: { type: 'string', description: 'Optional subtitle — usually the time window the report covers.' },
               markdown: {
                 type: 'string',
-                description: 'The report body in markdown. Use ## for sections (they become the table of contents). A figure goes in one of two ways. If it is already drawn, reference that line on a line of its own: ![caption](.data/<file>.chart.svg) — the file is read back and inlined, so the report stays a single self-contained file; either .data/<file>.chart.svg or <file>.chart.svg is accepted (the report itself lives in .data/), nothing else is. If the report should draw it, put a fenced ```chart block whose body is a JSON object such as {"kind":"bar","title":"…","x":"col","value":"col","src":".data/….json","caption":"…"} — give exactly one of src and data (there src is copied verbatim from a dataSrc, so it keeps its .data/ prefix), and the named columns must exist in that data. Both kinds share one figure numbering, in the order they appear. Other fenced blocks are rendered as plain code.',
+                description: 'The report body in markdown. Use ## for sections (they become the table of contents). A figure comes in one way only: draw it first with oks_chart, then put the line that receipt gave you on a line of its own — ![caption](.data/<file>.chart.svg). The report reads that SVG back and inlines it, so the file stays single and self-contained; either .data/<file>.chart.svg or <file>.chart.svg is accepted (the report itself lives in .data/), nothing else is. Figure numbers are assigned in the order the references appear. A ```chart fenced block is no longer accepted. Other fenced blocks are rendered as plain code.',
               },
             },
             required: ['title', 'markdown'],
@@ -1368,11 +1344,6 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           subtitle: parsed.spec.subtitle,
           generatedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
           markdown: parsed.spec.markdown,
-          figure: (json) => {
-            const rendered = renderReportFigure(json, entry.settings.workspaceRoot);
-            if ('html' in rendered) figureCount += 1;
-            return rendered;
-          },
           figureFile: (href) => {
             const rendered = renderReportFigureFile(entry.settings.workspaceRoot, href);
             if ('html' in rendered) figureCount += 1;

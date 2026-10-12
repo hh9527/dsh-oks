@@ -8,7 +8,7 @@
  *  以及行内的加粗、斜体、行内代码与链接。**内嵌 HTML 不在其中**。
  *
  *  围栏代码块与独占一行的图片都不在这里渲染：交给调用方（`onFence` / `onImage`），
- *  因为 `chart` 块要画成图、图片要把工作区里的素材读进来内联。 */
+ *  因为图片要把工作区里的素材读进来内联、围栏要按语言分类呈现。 */
 import type { Row } from './shared.ts';
 
 /** 围栏的语言标注：只保留字母数字与少数符号，其余丢弃。
@@ -213,27 +213,6 @@ export const renderMarkdown = (source: string, onFence: FenceHandler, onImage?: 
   }
 
   return out.join('\n');
-};
-
-/** 围栏 `chart` 块的 JSON 解析结果。 */
-export interface ChartFence {
-  json: Record<string, unknown>;
-}
-
-/** 解析 `chart` 围栏块的内容：必须是 JSON 对象。 */
-export const parseChartFence = (body: string): { fence: ChartFence } | { error: string } => {
-  const text = body.trim();
-  if (text === '') return { error: 'chart 块是空的' };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch (cause) {
-    return { error: `chart 块里的 JSON 解析失败：${cause instanceof Error ? cause.message : String(cause)}` };
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    return { error: 'chart 块里应当是一个 JSON 对象' };
-  }
-  return { fence: { json: parsed as Record<string, unknown> } };
 };
 
 /** 供类型使用：报告里的图最终要拿到的行。 */

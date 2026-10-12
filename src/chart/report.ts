@@ -7,13 +7,7 @@
  *  安全上只有一条规矩：**这份 HTML 全部由这里生成**。markdown 经白名单解析器转义后进入页面，
  *  内嵌 HTML 不被解释；图的规格交给调用方校验并渲染。脚本、样式、结构都是本文件里的常量。
  */
-import { escapeHtml, parseChartFence, renderMarkdown, safeLanguage } from './markdown.ts';
-
-/** 把 chart 块变成 HTML：返回 figure 元素（与图注），或一段说明（出错时不整份失败）。 */
-export type FigureRenderer = (
-  json: Record<string, unknown>,
-  index: number,
-) => { html: string; caption: string | null } | { error: string };
+import { escapeHtml, renderMarkdown, safeLanguage } from './markdown.ts';
 
 /** 把一行 `![图注](路径)` 变成 HTML：调用方负责解析路径、读文件、内联。
  *  图注由报告从 `alt` 取，所以这里只回 figure 元素本身。 */
@@ -28,8 +22,6 @@ export interface ReportInput {
   generatedAt: string;
   /** 正文 markdown：章节、叙述与图的落点都在这里。 */
   markdown: string;
-  /** 画图：由调用方负责取数与校验。 */
-  figure: FigureRenderer;
   /** 引用已经落盘的图：由调用方负责解析路径、读文件与内联。 */
   figureFile: FigureFileRenderer;
 }
@@ -135,8 +127,8 @@ const anchorHeadings = (body: string, headings: Array<{ level: number; text: str
 /** 生成一份自足的 HTML 报告。 */
 export const renderReportHtml = (input: ReportInput): string => {
   let figureIndex = 0;
-  // 图注编号由这里统一给，agent 只需要写文字。两种图（chart 块、引用的 SVG 文件）走同一个出口，
-  // 所以一份报告里混着写也对号。出错的那一张不占号：留一段说明，后面的图照常编号。
+  // 图注编号由这里统一给，agent 只需要写文字。出错的那一张不占号：留一段说明，
+  // 后面的图照常编号——不静默少一张，也不因为一张图废掉整份报告。
   const place = (rendered: { html: string; caption: string | null } | { error: string }): string => {
     if ('error' in rendered) return `<div class="figure-error">${escapeHtml(rendered.error)}</div>`;
     figureIndex += 1;
@@ -148,14 +140,14 @@ export const renderReportHtml = (input: ReportInput): string => {
   };
   const body = renderMarkdown(
     input.markdown,
-    (info, text, blockIndex) => {
-      // 只有 chart 块会被画成图；其它围栏（json / sql / text 之类）按代码块呈现，内容转义不解释。
-      if (info !== 'chart') {
-        return `<pre><code${safeLanguage(info)}>${escapeHtml(text)}</code></pre>`;
+    (info, text) => {
+      // 围栏按代码块呈现，内容转义不解释。`chart` 这条入口已经不接受——报告里的图只有一种来源：
+      // 工作区里**已经画好**的 SVG。所以这里不是"解析失败"，而是明确指回去该怎么做。
+      if (info === 'chart') {
+        return '<div class="figure-error">报告里的图不再用 chart 块：先用 oks_chart 画一次，'
+          + '再把回执给你的那一行 ![标题](.data/….chart.svg) 独占一行放进正文。</div>';
       }
-      const parsed = parseChartFence(text);
-      if ('error' in parsed) return `<div class="figure-error">图表 ${blockIndex + 1}：${escapeHtml(parsed.error)}</div>`;
-      return place(input.figure(parsed.fence.json, figureIndex));
+      return `<pre><code${safeLanguage(info)}>${escapeHtml(text)}</code></pre>`;
     },
     // 独占一行的图片：图注取 `alt`，元素由调用方从工作区里读出来内联。
     (alt, href) => {
