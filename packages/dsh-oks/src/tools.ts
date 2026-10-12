@@ -1418,7 +1418,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_pin',
-      description: 'Pin one artifact so keep-alive cleanup leaves it alone. Figures and reports in this workspace are temporary by default: an unpinned one is removed about an hour after it was produced, so pin whatever the user wants to keep — or asked to share. Pinning is about retention only: it does not change where the artifact appears, nor how it looks. src is the artifacts/… path from a receipt, copied verbatim.',
+      description: 'Pin one artifact so keep-alive cleanup leaves it alone. Reports in this workspace are temporary by design: an unpinned one is removed about an hour after it was produced, and that is the intended default — producing a report needs no follow-up action. Call this only when the user asks in conversation to keep or share a specific one (the user can also pin it themselves from the 产出 tab). Pinning is about retention only: it does not change where the artifact appears, nor how it looks. src is the artifacts/… path from a receipt, copied verbatim.',
       parameters: {
         type: 'object',
         properties: {
