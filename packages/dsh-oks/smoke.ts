@@ -16,7 +16,7 @@ import { applyOps, encode, parseMoment } from './src/time.ts';
 import { singleFlight } from './src/single-flight.ts';
 import { intentKey } from './src/key.ts';
 import { CHART_KINDS, supports } from './src/chart/shared.ts';
-// 端点测试要与工具走同一个落状态函数（`oks_pin` 用的就是它）。
+// 保留走的是 `pinBySrc`——界面端点与冒烟都直接调它（这条能力不在工具面里）。
 import { listArtifacts, openState, pinBySrc, syncArtifacts, VISIBLE } from './src/state.ts';
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -75,7 +75,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'oks_jaq_result', 'oks_chart', 'oks_report', 'oks_artifacts', 'oks_pin', 'oks_unpin', 'time_now', 'time_calc', 'va_ask'];
+const EXPECTED_TOOLS = ['oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'oks_jaq_result', 'oks_chart', 'oks_report', 'oks_artifacts', 'time_now', 'time_calc', 'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -2423,34 +2423,34 @@ console.log('=== 清单、pin 与保活清理 ===');
     entries.every((entry) => typeof entry.title === 'string' && entry.title.length > 0));
   ok('清单最新在前', entries.every((entry, index) => index === 0 || entries[index - 1].at >= entry.at));
 
-  // pin：只改存留、不改位置；回执把后果说出来。
+  // 保留：只改存留、不改位置。这条能力**不在工具面里**（界面端点直接调它），所以这里直接调函数。
   const target = entries.find((entry) => entry.file.endsWith('.report.html')) ?? entries[0];
   const src = `artifacts/${target.file}`;
   const indexBefore = entries.findIndex((entry) => entry.file === target.file);
-  const pinReceipt = await call('oks_pin', { src });
-  ok('pin 的回执说已保留、并说清它只影响存留',
-    pinReceipt.value.pinned === true && /已保留/.test(pinReceipt.text)
-    && /不改它在界面上出现的位置/.test(pinReceipt.text));
+  pinBySrc(DEV_ROOT, src, true);
   const afterPin = (await call('oks_artifacts', {})).value.entries;
-  ok('pin 之后清单里那一条是已保留', afterPin.find((entry) => entry.file === target.file)?.pinned === true);
-  ok('pin 不改变条目在清单里的位置', afterPin.findIndex((entry) => entry.file === target.file) === indexBefore);
-  const unpinReceipt = await call('oks_unpin', { src });
-  ok('unpin 的回执说它重新受保活约束',
-    unpinReceipt.value.pinned === false && /已取消保留/.test(unpinReceipt.text)
-    && /下一次清理就会删掉它/.test(unpinReceipt.text));
+  ok('保留之后清单里那一条是已保留', afterPin.find((entry) => entry.file === target.file)?.pinned === true);
+  ok('保留不改变条目在清单里的位置', afterPin.findIndex((entry) => entry.file === target.file) === indexBefore);
+  ok('取消保留之后回到未保留', pinBySrc(DEV_ROOT, src, false).pinned === false);
 
   // 非法 src 要有明确的话：越界、不是可见产物、找不到。
-  const refused = async (bad) => (await refusalOf(() => call('oks_pin', { src: bad }))) ?? '';
-  ok('pin 拒绝 artifacts/ 之外的路径', (await refused('.oks/state.db')).includes('只能指向工作区 artifacts/'));
-  ok('pin 拒绝不存在的产物', (await refused('artifacts/nope.chart.svg')).includes('找不到'));
+  const refused = (bad) => {
+    try {
+      pinBySrc(DEV_ROOT, bad, true);
+      return '';
+    } catch (cause) {
+      return String(cause?.message ?? cause);
+    }
+  };
+  ok('保留拒绝 artifacts/ 之外的路径', refused('.oks/state.db').includes('只能指向工作区 artifacts/'));
+  ok('保留拒绝不存在的产物', refused('artifacts/nope.chart.svg').includes('找不到'));
   const internals = readdirSync(join(DEV_ROOT, 'artifacts')).filter((name) => name.endsWith('.query.json'));
   ok('工作区里确实有内部制品（好让下一条有意义）', internals.length > 0);
-  ok('pin 拒绝内部制品（查询结果）', (await refused(`artifacts/${internals[0]}`)).includes('只有报表可以保留'));
+  ok('保留拒绝内部制品（查询结果）', refused(`artifacts/${internals[0]}`).includes('只有报表可以保留'));
   // 图表当前**不算制品**（它是一份报表里的图）：清单里没有它，也就不该能被保留。
   const figure = readdirSync(join(DEV_ROOT, 'artifacts')).find((name) => name.endsWith('.chart.svg'));
   ok('工作区里确实有图（好让下一条有意义）', typeof figure === 'string');
-  ok('pin 拒绝图（当前只有报表算制品）',
-    (await refused(`artifacts/${figure}`)).includes('只有报表可以保留'));
+  ok('保留拒绝图（当前只有报表算制品）', refused(`artifacts/${figure}`).includes('只有报表可以保留'));
 
   // 保活清理：种三份"过期"的东西——一份过期报告（该清）、一份过期但保留的报告（该留）、
   // 一份认不出的文件（不碰）；然后写一张图触发清理（清理发生在**写产物之前**）。
@@ -2464,7 +2464,7 @@ console.log('=== 清单、pin 与保活清理 ===');
   writeFileSync(join(DEV_ROOT, 'artifacts', oldReport), oldBody('old_report', '很久以前的报告'));
   writeFileSync(join(DEV_ROOT, 'artifacts', keptReport), oldBody('old_kept', '要留住的旧报告'));
   writeFileSync(join(DEV_ROOT, 'artifacts', stranger), '用户自己放在这里的东西');
-  await call('oks_pin', { src: `artifacts/${keptReport}` });
+  pinBySrc(DEV_ROOT, `artifacts/${keptReport}`, true);
   const logsBefore = logs.length;
   await call('oks_chart', { spec: { kind: 'bar', x: 'label', value: 'value' }, data: [{ label: 'A', value: 1 }], name: 'probe_prune' });
   ok('过期且未保留的产物被清理', !existsSync(join(DEV_ROOT, 'artifacts', oldReport)));

@@ -7,9 +7,9 @@ import { renderEchartsSvg } from './chart/echarts.ts';
 import { buildFigureHtml, renderReportHtml } from './chart/report.ts';
 import { CHART_KINDS, inferXType, supportedKinds, supports, toNumber } from './chart/shared.ts';
 import type { ChartKind, ExpressionSwitch, LayoutOverrides, MarkLine, SecondMetric, StyleOverrides } from './chart/shared.ts';
-import { OBJECT_OUTPUT, renderArtifacts, renderChart, renderCheck, renderJaq, renderJson, renderPin,
+import { OBJECT_OUTPUT, renderArtifacts, renderChart, renderCheck, renderJaq, renderJson,
   renderQuery, renderValue, withoutQueries } from './response.ts';
-import { KEEP_ALIVE_MINUTES, listArtifacts, pinBySrc, pruneArtifacts, syncArtifacts, openState } from './state.ts';
+import { KEEP_ALIVE_MINUTES, listArtifacts, pruneArtifacts, syncArtifacts, openState } from './state.ts';
 import type { Row } from './response.ts';
 import { REFERENCE_KINDS, referencesOf, renderReferences, renderSearch, searchIndex } from './retrieval.ts';
 import type { ReferencesArgs, SearchArgs } from './retrieval.ts';
@@ -25,10 +25,6 @@ import { intentKey } from './key.ts';
 import { ARTIFACT_DIR, nameProblem, readArtifact, readResult, saveArtifact, saveResult } from './results.ts';
 import type { ColumnInfo } from './results.ts';
 
-/** oks_pin / oks_unpin 的入参：产物在 artifacts/ 里的路径，从回执原样搬。 */
-interface PinArgs {
-  src?: unknown;
-}
 
 /** oks_info 的入参。 */
 interface InfoArgs {
@@ -1417,52 +1413,8 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       },
     },
     {
-      name: 'oks_pin',
-      description: 'Pin one artifact so keep-alive cleanup leaves it alone. Reports in this workspace are temporary by design: an unpinned one is removed about an hour after it was produced, and that is the intended default — producing a report needs no follow-up action. Call this only when the user asks in conversation to keep or share a specific one (the user can also pin it themselves from the 产出 tab). Pinning is about retention only: it does not change where the artifact appears, nor how it looks. src is the artifacts/… path from a receipt, copied verbatim.',
-      parameters: {
-        type: 'object',
-        properties: {
-          src: {
-            type: 'string',
-            description: 'The artifacts/… path of a figure or report, copied verbatim from the receipt that produced it (…​.chart.svg or …​.report.html).',
-          },
-        },
-        required: ['src'],
-        additionalProperties: false,
-      },
-      output: { schema: OBJECT_OUTPUT, render: renderPin },
-      async execute(args: PinArgs, exec: ToolExec) {
-        const entry = knowledge.ensureWorkspace(exec);
-        const { file, pinned } = pinBySrc(entry.settings.workspaceRoot, args?.src, true);
-        log(`[oks] pin ${file}`);
-        return { ok: true as const, pinned, file, keepAliveMinutes: KEEP_ALIVE_MINUTES };
-      },
-    },
-    {
-      name: 'oks_unpin',
-      description: 'Undo a pin: the artifact becomes subject to keep-alive cleanup again. This is not an undo of deletion — if its keep-alive window has already passed, the next cleanup removes it. src is the artifacts/… path from a receipt, copied verbatim.',
-      parameters: {
-        type: 'object',
-        properties: {
-          src: {
-            type: 'string',
-            description: 'The artifacts/… path of a pinned figure or report, copied verbatim from the receipt that produced it.',
-          },
-        },
-        required: ['src'],
-        additionalProperties: false,
-      },
-      output: { schema: OBJECT_OUTPUT, render: renderPin },
-      async execute(args: PinArgs, exec: ToolExec) {
-        const entry = knowledge.ensureWorkspace(exec);
-        const { file, pinned } = pinBySrc(entry.settings.workspaceRoot, args?.src, false);
-        log(`[oks] unpin ${file}`);
-        return { ok: true as const, pinned, file, keepAliveMinutes: KEEP_ALIVE_MINUTES };
-      },
-    },
-    {
       name: 'oks_artifacts',
-      description: 'List this workspace\'s artifacts — its figures and reports, newest first, each with its title, kind, time and whether it is pinned. Query results are internal and never appear here. Use it when the user asks what has been produced, or to find the path of something you did not produce in this session before pinning it.',
+      description: 'List this workspace\'s reports, newest first, each with its title, category, time and whether it is pinned. Figures live inside reports, and query results are internal: neither appears here. Use it when the user asks what has been produced in this workspace.',
       parameters: {
         type: 'object',
         properties: {},
