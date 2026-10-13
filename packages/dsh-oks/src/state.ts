@@ -34,6 +34,7 @@ export const VISIBLE = /\.report\.html$/;
 /** 我们写的几类产物的名字形状：`<时间>-<名字>[-<内容哈希>].<类别><扩展名>`。
  *  只有认得出的才可能被清理；`~` 是超长名字被截过的记号。 */
 const OURS = /^(\d{8}T\d{6}Z)-[0-9a-z_~]+(?:-[0-9a-f]{8})?\.(query\.json|transform\.json|derived\.json|data\.json|chart\.svg|table\.md|report\.html)$/;
+// `derived.json` 已经不再产生（读产物是就地读的）：留着它只为把早期留下的派生封装按保活回收。
 
 /** 清单里的一条制品：文件自述 + 只有状态才知道的 pin。 */
 export interface ArtifactEntry {

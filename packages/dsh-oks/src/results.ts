@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { errorText, isRecord } from './host.ts';
 import { capLine } from './text.ts';
@@ -53,7 +53,8 @@ export interface SavedResult {
 
 /** 来源链里的一个节点：一次操作的记录。查询与加工各用其中一部分字段。 */
 export interface OriginNode {
-  /** 产生这份数据的操作：查询、加工、agent 给定、从报告取出，或从某份产物派生出来的数据视图。 */
+  /** 产生这份数据的操作：查询、加工、agent 给定、从报告取出，或（早期版本的）派生视图。
+   *  `extract` 与 `derive` 都已经不再产生，读取时仍认——旧文件是可回收的内部材料，随保活消失。 */
   kind: 'query' | 'transform' | 'input' | 'extract' | 'derive' | 'report';
   /** query：实际提交并通过校验的意图（相对时间已解析成绝对边界）。 */
   intent?: unknown;
@@ -71,7 +72,7 @@ export interface OriginNode {
   /** extract：从哪份报告取的（文件名，不含目录）与报告内的第几项。 */
   report?: string;
   item?: number;
-  /** derive：派生自哪份产物（文件名，不含目录）——派生视图全都记着这一条。 */
+  /** derive：派生自哪份产物（文件名，不含目录）。早期版本写下的派生封装仍可读，不再产生。 */
   from?: string;
 }
 
@@ -112,6 +113,9 @@ export interface Envelope<T = unknown> {
 /** 自述写在原生元素里的那两种产物（图、报告）的材料块：只剩来源与数据。 */
 export type EnvelopeParts<T = unknown> = Pick<Envelope<T>, 'origin' | 'data'>;
 
+/** 读一份文件时默认取的那一段：`data` 本身。jq 的具名输入没有特别指定 `root` 时就是它。 */
+export const DEFAULT_ROOT = '.data';
+
 /** 查询结果的 data：行与列一起表达——"有哪些列"是这份数据的一部分，不是它的同级描述。 */
 export interface RowsData {
   rows: Array<Record<string, unknown>>;
@@ -131,14 +135,14 @@ export const resultStamp = (when: Date = new Date()): string =>
 
 /** artifacts/ 里的产物类别。它进文件名，与扩展名各管一件事。
  *  query / transform / data 都是数据材料（落在 .oks/data/），只有图与报告在文件里自述。 */
-export type ArtifactKind = 'query' | 'transform' | 'derived' | 'data' | 'chart' | 'table' | 'report';
+export type ArtifactKind = 'query' | 'transform' | 'data' | 'chart' | 'table' | 'report';
 
 /** 在文件里带自述的类别：图与报告各用一种原生写法，数据材料没有自述那一层。 */
 export type SelfDescribingKind = 'chart' | 'report';
 
 /** 类别的中文名，只用在报错里。 */
 const KIND_LABEL: Record<ArtifactKind, string> = {
-  query: '结果', transform: '加工结果', derived: '派生数据', data: '输入数据',
+  query: '结果', transform: '加工结果', data: '输入数据',
   chart: '图表', table: '表格', report: '报告',
 };
 
@@ -616,50 +620,6 @@ export function saveTableView(options: {
   return { src: `${VIEW_DIR}/${fileName}`, bytes };
 }
 
-/** 产物自带的那块数据（报表级结构 / 图与表的材料）物化成一份**派生封装**。
- *
- *  为什么可以自动物化：**源产物是 write-once 的**——同一份产物的内容不会变，所以派生结果
- *  也不会变；文件名里的时间取自**源产物**、内容哈希取自派生内容，于是同一份产物永远得到
- *  同一个文件名（幂等）。文件被保活回收、被删、被改坏都不打紧：下次用的时候重建，且逐字相同。
- *  它进来的目的是让"读数据"只有一条路：拿它的 `dataSrc` 交给 `jq_transform` 投影。 */
-export function saveDerived(options: {
-  root: string;
-  /** 源产物相对工作区根的路径（回执里给过的那个）。 */
-  sourceSrc: string;
-  /** 源产物里那块数据，原样写进派生封装的 `data`。 */
-  data: unknown;
-  /** 源产物的完整来源链：派生封装把它整份接过来，链在这个文件内闭合。 */
-  origin: DataOrigin;
-}): { dataSrc: string; bytes: number; origin: DataOrigin } {
-  const file = options.sourceSrc.split('/').pop() ?? 'derived';
-  const at = /^\d{8}T\d{6}Z/.exec(file)?.[0] ?? resultStamp();
-  // 名字沿用源产物的名字段（`-` 换成 `_`），类别段是 `derived`——一眼看出这是可重建的派生视图。
-  const name = file.replace(/\.[a-z.]+$/, '').replace(/^\d{8}T\d{6}Z-/, '').replace(/[^0-9a-z_]/g, '_');
-  const origin = appendNode([options.origin], {
-    kind: 'derive',
-    // from 给人看（从哪份产物派生的），inputs 让链闭合在文件内。
-    from: file,
-    inputs: { source: options.origin.root },
-  }, options.data);
-  const payload: Envelope = {
-    meta: { kind: 'derived', name, at },
-    origin,
-    data: options.data,
-  };
-  const body = `${JSON.stringify(payload, null, 2)}\n`;
-  const bytes = Buffer.byteLength(body);
-  if (bytes > ENVELOPE_MAX_BYTES) {
-    throw new Error(`这份派生数据 ${(bytes / 1024 / 1024).toFixed(1)} MB，超过单份封装的上限：`
-      + '报告或材料本身太大，先缩小它的展示数据，再读。');
-  }
-  const directory = join(options.root, DATA_DIR);
-  mkdirSync(directory, { recursive: true });
-  const fileName = artifactName({ at, name, kind: 'derived', extension: '.json', content: body });
-  const target = join(directory, fileName);
-  if (!existsSync(target)) writeExclusive(target, body, 'derived');
-  return { dataSrc: `${DATA_DIR}/${fileName}`, bytes, origin };
-}
-
 /** 把一份产物（图、报告）写成文件：与结果文件同一套命名与独占创建规则。
  *  返回的 src 是相对工作区根的路径，交给 agent 粘进回答引用。 */
 export function saveArtifact(options: {
@@ -752,7 +712,7 @@ export function nameParts(src: unknown): { at: string; name: string; kind: Artif
   const rest = at === '' ? file : file.slice(at.length + 1);
   const kind = /\.([a-z_]+)\.[a-z]+$/.exec(rest)?.[1] ?? '';
   const name = rest.replace(/\.([a-z_]+)\.[a-z]+$/, '').replace(/-[0-9a-f]{8}$/, '');
-  const kinds: ArtifactKind[] = ['query', 'transform', 'derived', 'data', 'chart', 'table', 'report'];
+  const kinds: ArtifactKind[] = ['query', 'transform', 'data', 'chart', 'table', 'report'];
   return {
     at: at === '' ? resultStamp() : at,
     name: name === '' ? 'unnamed' : name,

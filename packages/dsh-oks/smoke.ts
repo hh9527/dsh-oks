@@ -79,7 +79,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'create_data', 'jq_transform', 'jq_transform_into', 'oks_chart', 'oks_view', 'oks_report', 'oks_origin', 'oks_artifacts', 'time_now', 'time_calc', 'va_ask'];
+const EXPECTED_TOOLS = ['oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'create_data', 'jq_transform', 'jq_transform_into', 'oks_chart', 'oks_view', 'oks_report', 'oks_artifacts', 'time_now', 'time_calc', 'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -3317,25 +3317,24 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
   console.log(`  jq 读图 → ${JSON.stringify(viaChart.value.data)}`);
   ok('jq 直接吃图：拿到 { rows, spec }',
     viaChart.value.ok !== false && viaChart.value.data?.kind === 'bar' && viaChart.value.data?.rows === 1);
-  const chartOrigin = await call('oks_origin', { src: figure.value.svgSrc });
-  ok('读来源时图也会物化数据形态（同一份数据形态两条路共用）',
-    typeof chartOrigin.value.derivedSrc === 'string' && chartOrigin.value.derivedSrc.endsWith('.derived.json'));
+
+  // 读产物是**就地**的：图、表、报告的材料块在读的那一刻解析，不落派生文件。
+  const dataFilesBefore = readdirSync(resolve(DEV_ROOT, '.oks', 'data')).length;
+  const chartOrigin = await call('jq_transform', {
+    inputs: { c: figure.value.svgSrc },
+    root: '.origin',
+    snip: '{root: .c.root, kinds: [.c.nodes[].kind]}',
+  });
+  const dataFilesAfter = readdirSync(resolve(DEV_ROOT, '.oks', 'data')).length;
+  console.log(`  图的来源链 → 根 ${chartOrigin.value.data?.root} · ${JSON.stringify(chartOrigin.value.data?.kinds)}`);
+  ok('读来源只取 root ".origin"，而且就地读：.oks/data/ 里不多出任何文件',
+    chartOrigin.value.ok !== false && chartOrigin.value.data?.kinds?.includes('query')
+    && dataFilesAfter === dataFilesBefore);
 
   for (const gone of [rowsSrc, view.value.viewSrc, figure.value.svgSrc]) {
     rmSync(resolve(DEV_ROOT, gone), { force: true });
   }
-  // 材料已经全部回收：读这份报告只有一条路——jq 投影它的 data（首次读到时懒物化一份派生视图）。
-  const items = await call('oks_origin', { src: reportSrc });
-  const itemList = items.value.items ?? [];
-  console.log(`  展示项：${itemList.map((item) => `${item.index}(${item.label})`).join('、')}`);
-  const tableRef = itemList.find((item) => item.kind === 'table')?.label;
-  const figureRef = itemList.find((item) => item.kind === 'chart')?.label;
-  ok('oks_origin 列出报告的展示项：序号、报告上印的编号、类型与形状',
-    items.value.ok === true && itemList.length === 2
-    && itemList[0].index === 1 && tableRef === '表 1' && figureRef === '图 1'
-    && itemList.every((item) => item.shape.length > 0));
-
-  // 章节骨架与展示项数据都在 data 里：jq 直接读，行数据不进模型上下文。
+  // 材料已经全部回收：读这份报告只有一条路——jq 投影它的 data。
   const viaReport = await call('jq_transform', {
     inputs: { r: reportSrc },
     snip: '{chapters: [.r.chapters[] | .caption], level1: .r.chapters[1].level, '
@@ -3343,111 +3342,150 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
       + 'table: ([.r.items[] | select(.kind == "table")][0] | {no: .no, rows: (.data | length)})}',
   });
   console.log(`  jq 读报告 → ${JSON.stringify(viaReport.value.data).slice(0, 200)}`);
-  ok('jq 直接吃报告：章节骨架（含 level）、图元与展示项数据都在（读报告不再需要专用读接口）',
+  ok('jq 直接吃报告：章节骨架（含 level）、图元与展示项数据都在',
     viaReport.value.ok !== false
     && JSON.stringify(viaReport.value.data?.chapters) === JSON.stringify(['一、级别与清除', '1.1 明细'])
     && viaReport.value.data?.level1 === 'h3'
     && viaReport.value.data?.figure?.kind === 'bar' && viaReport.value.data?.figure?.no === 1
     && viaReport.value.data?.table?.no === 1 && viaReport.value.data?.table?.rows > 0);
 
-  // whole: true：交给 snip 的是整份文件 { meta, origin, data }——读自述与来源链用它。
+  // 展示项清单（原来由专门的读工具给）：现在就是从报告自己的 data 里投影出来的一段。
+  const itemList = await call('jq_transform', {
+    inputs: { r: reportSrc },
+    root: '.data.items',
+    snip: '[.r[] | {kind, no, caption}]',
+  });
+  console.log(`  展示项：${JSON.stringify(itemList.value.data)}`);
+  ok('展示项清单由 jq 从报告的 data 里投影：类型、报告上印的编号与注解都在',
+    itemList.value.ok !== false && itemList.value.data?.length === 2
+    && itemList.value.data[0].kind === 'table' && itemList.value.data[0].no === 1
+    && itemList.value.data[1].kind === 'chart' && itemList.value.data[1].no === 1);
+
+  // root: "."：交给 snip 的是整份文件 { meta, origin, data }——读自述与来源链用它。
   const whole = await call('jq_transform', {
     inputs: { r: reportSrc },
-    whole: true,
+    root: '.',
     snip: '{kind: .r.meta.kind, nodes: (.r.origin.nodes | keys | length), '
       + 'kinds: [.r.origin.nodes[].kind], root: .r.origin.nodes[.r.origin.root].kind, '
       + 'chapters: (.r.data.chapters | length)}',
   });
-  console.log(`  whole: true → ${JSON.stringify(whole.value.data)}`);
-  ok('whole: true 交出整份文件（自述 + 来源链 + 数据）',
+  console.log(`  root "." → ${JSON.stringify(whole.value.data)}`);
+  ok('root "." 交出整份文件（自述 + 来源链 + 数据）',
     whole.value.ok !== false && whole.value.data?.kind === 'report' && whole.value.data?.root === 'report'
     && whole.value.data?.chapters === 2 && whole.value.data?.nodes >= 2
     && (whole.value.data?.kinds ?? []).includes('query'));
 
-  // 数据封装（.oks/data/ 里的 JSON）自己就是数据：读它不再派生一份。
-  const probe = await call('create_data', {
-    name: 'origin_probe', motivation: '冒烟：数据封装读来源时不派生', data: [{ n: 1 }],
+  // root 只取一段：只要来源链 / 只要骨架，都不必把整份文件交给 jaq；回执里带上实际用的 root。
+  const onlyOrigin = await call('jq_transform', {
+    inputs: { r: reportSrc },
+    root: '.origin',
+    snip: '{nodes: (.r.nodes | keys | length), root: .r.root}',
   });
-  const probeOrigin = await call('oks_origin', { src: probe.value.dataSrc });
+  const onlyChapters = await call('jq_transform', {
+    inputs: { r: reportSrc },
+    root: '.data.chapters',
+    snip: '[.r[] | .caption]',
+  });
+  ok('root 只取一段：来源链与章节骨架各自单独可读，回执写明用了哪个 root',
+    onlyOrigin.value.ok !== false && onlyOrigin.value.root === '.origin'
+    && onlyOrigin.value.data?.nodes >= 2 && typeof onlyOrigin.value.data?.root === 'string'
+    && JSON.stringify(onlyChapters.value.data) === JSON.stringify(['一、级别与清除', '1.1 明细']));
+  const badRoot = await (async () => {
+    try {
+      await call('jq_transform', { inputs: { r: reportSrc }, root: '.nope', snip: '.' });
+      return '';
+    } catch (cause) {
+      return String(cause?.message ?? cause);
+    }
+  })();
+  const badSyntax = await (async () => {
+    try {
+      await call('jq_transform', { inputs: { r: reportSrc }, root: '.data | keys', snip: '.' });
+      return '';
+    } catch (cause) {
+      return String(cause?.message ?? cause);
+    }
+  })();
+  console.log(`  root 不存在 → ${badRoot.slice(0, 100)}`);
+  ok('root 指向不存在的段时报出该层可用的键；写成表达式则明确拒绝',
+    /\.data/.test(badRoot) && /\.meta/.test(badRoot) && /\.origin/.test(badRoot)
+    && /只接受点路径/.test(badSyntax));
+
+  // 数据封装（.oks/data/ 里的 JSON）自己就是数据：读它就是读它，不派生也不再写文件。
+  const probe = await call('create_data', {
+    name: 'origin_probe', motivation: '冒烟：读封装就是读它自己', data: [{ n: 1 }],
+  });
+  const beforeProbe = readdirSync(resolve(DEV_ROOT, '.oks', 'data')).length;
   const probeJq = await call('jq_transform', { inputs: { p: probe.value.dataSrc }, snip: '.p[0].n' });
-  ok('数据封装读来源时不派生数据视图，jq 拿到的就是它的 data',
-    probeOrigin.value.derivedSrc === undefined && probeJq.value.data === 1);
+  const probeOrigin = await call('jq_transform', {
+    inputs: { p: probe.value.dataSrc },
+    root: '.origin',
+    snip: '.p.nodes[.p.root].motivation',
+  });
+  ok('读数据封装：jq 拿到的就是它的 data，读来源就地取 .origin，都不落新文件',
+    probeJq.value.data === 1 && probeOrigin.value.data === '冒烟：读封装就是读它自己'
+    && readdirSync(resolve(DEV_ROOT, '.oks', 'data')).length === beforeProbe);
   rmSync(resolve(DEV_ROOT, probe.value.dataSrc), { force: true });
 
-  // 图、表、报告自带的数据块：首次读到时自动物化成派生视图，之后读数据一律用 jq 投影它。
-  const derivedOfReport = await call('oks_origin', { src: reportSrc });
-  const derivedSrc = derivedOfReport.value.derivedSrc;
-  console.log(`  数据视图：${derivedSrc}`);
-  ok('读来源时自动物化出数据视图（.oks/data/ 下的派生封装）',
-    typeof derivedSrc === 'string' && derivedSrc.startsWith('.oks/data/') && derivedSrc.endsWith('.derived.json')
-    && existsSync(resolve(DEV_ROOT, derivedSrc)));
-  const derivedAgain = await call('oks_origin', { src: reportSrc });
-  ok('派生视图是幂等的（同一份产物永远同一个文件名）', derivedAgain.value.derivedSrc === derivedSrc);
-  const derivedBytes = readFileSync(resolve(DEV_ROOT, derivedSrc));
-  rmSync(resolve(DEV_ROOT, derivedSrc), { force: true });
-  const rebuilt = await call('oks_origin', { src: reportSrc });
-  ok('派生视图被删掉后自动重建，且逐字相同',
-    rebuilt.value.derivedSrc === derivedSrc
-    && readFileSync(resolve(DEV_ROOT, derivedSrc)).equals(derivedBytes));
-  const derivedFile = readEnvelope(DEV_ROOT, derivedSrc);
-  const derivedRoot = derivedFile.origin.nodes[derivedFile.origin.root];
-  ok('派生封装记着它派生自哪份产物，而且整条链在文件内闭合',
-    derivedRoot?.kind === 'derive' && derivedRoot.from === reportSrc.split('/').pop()
-    && derivedRoot.inputs?.source !== undefined
-    && derivedFile.origin.nodes[derivedRoot.inputs.source]?.kind === 'report'
-    && Object.keys(derivedFile.origin.nodes).length >= 3);
-  // 用 jq 读它：报告的数据在 data 里，来源链在 origin 里
-  const viaJq = await call('jq_transform', {
-    inputs: { d: derivedSrc },
-    snip: '{chapters: (.d.chapters | length), first: (.d.items[0].data | length), '
-      + 'figures: ([.d.items[] | select(.kind == "chart")] | length)}',
-  });
-  ok('派生视图能用 jq 投影出报告的骨架与展示数据',
-    viaJq.value.ok !== false && viaJq.value.data?.chapters === 2
-    && viaJq.value.data?.first > 0 && viaJq.value.data?.figures === 1);
-  // 完整 intent 也在里面（数据接口不再截断）
-  const fullIntent = await call('jq_transform', {
-    inputs: { d: derivedSrc },
-    whole: true,
-    snip: '[.d.origin.nodes[] | select(.kind == "query") | .intent] | .[0]',
-  });
-  console.log(`  jq 读到的 intent：${JSON.stringify(fullIntent.value.data).slice(0, 120)}`);
-  ok('jq 从派生视图里读到完整 intent（不带省略号）',
-    typeof fullIntent.value.data === 'object' && !JSON.stringify(fullIntent.value.data).includes('…'));
+  // 报表来源块是"理解面"的权威：逐项带着最终展示数据、规格与根节点（工具的读法只是 jq 投影）。
+  const reportProvenance = readReportProvenance(readFileSync(resolve(DEV_ROOT, reportSrc), 'utf8'));
+  const provenanceItems = reportProvenance?.data.items ?? [];
+  ok('来源块逐项带着展示数据与根节点，根节点在节点表里可解析',
+    provenanceItems.length === 2
+    && provenanceItems.every((item) => item.root in (reportProvenance?.origin.nodes ?? {}))
+    && Array.isArray(provenanceItems[1]?.data) && provenanceItems[1].data.length > 0);
 
-  const reportOrigin = await call('oks_origin', { src: reportSrc });
-  const reportNodes = reportOrigin.value.nodes ?? [];
-  const refs = (reportOrigin.value.items ?? []).map((item) => item.label);
-  console.log(`  报告 origin：根 ${reportOrigin.value.root} · ${reportNodes.length} 个节点`
-    + ` · 组装节点的输入 ${JSON.stringify(reportNodes.find((node) => node.kind === 'report')?.inputs ?? {})}`);
-  ok('报表整体的 origin 是**一个**：根是组装节点，上游是所有展示项的链',
-    reportOrigin.value.items?.length === 2
-    && reportNodes.length >= 2
-    && reportNodes[reportNodes.length - 1]?.id === reportOrigin.value.root
-    && reportNodes[reportNodes.length - 1]?.kind === 'report'
-    && Object.keys(reportNodes[reportNodes.length - 1]?.inputs ?? {}).join() === refs.join());
-  const itemOrigin = await call('oks_origin', { src: reportSrc, item: figureRef });
-  ok('跟踪报告里某一项（用清单给的 ref）：给出那一项的链',
-    (itemOrigin.value.nodes ?? []).some((node) => node.kind === 'query')
-    && /图 1/.test(itemOrigin.value.summary));
+  // 报表整体的 origin 是**一个**：根是组装节点，inputs 指向各展示项。
+  const reportOrigin = await call('jq_transform', {
+    inputs: { r: reportSrc },
+    root: '.origin',
+    snip: '{root: .r.root, rootKind: .r.nodes[.r.root].kind, inputs: .r.nodes[.r.root].inputs, '
+      + 'nodes: (.r.nodes | keys | length)}',
+  });
+  const refs = provenanceItems.map((item) => `${item.kind === 'table' ? '表' : '图'} ${item.no}`);
+  console.log(`  报表 origin：根 ${reportOrigin.value.data?.root} · ${reportOrigin.value.data?.nodes} 个节点`
+    + ` · 组装节点的输入 ${JSON.stringify(reportOrigin.value.data?.inputs ?? {})}`);
+  ok('报表整体的 origin 是**一个**：根是组装节点，inputs 指向所有展示项的链',
+    reportOrigin.value.ok !== false && reportOrigin.value.data?.rootKind === 'report'
+    && reportOrigin.value.data?.nodes >= 2
+    && Object.keys(reportOrigin.value.data?.inputs ?? {}).join() === refs.join());
 
-  // 漂移核对要能真的发现变化：手写一份封装，让它的查询指向一个随后被删掉的文件
-  const gone = resolve(DEV_ROOT, '.oks-smoke', 'gone.sqlite');
-  mkdirSync(resolve(DEV_ROOT, '.oks-smoke'), { recursive: true });
-  writeFileSync(gone, 'x');
-  const fakeSrc = `${resultStamp()}-drift_probe.query.json`;
+  // 从一个数据元关联到 origin 上的来源解释：链上每一项的可读字段都在，不必另有读接口。
+  const figureChain = await call('jq_transform', {
+    inputs: { r: reportSrc },
+    root: '.origin',
+    snip: '[.r.nodes[] | select(.kind == "query") | {intent, source}] | .[0]',
+  });
+  const fileIntent = (() => {
+    const queryNode = Object.values(reportProvenance?.origin.nodes ?? {}).find((node) => node.kind === 'query');
+    return JSON.stringify(queryNode?.intent);
+  })();
+  console.log(`  链上的来路：intent ${JSON.stringify(figureChain.value.data?.intent).slice(0, 90)}`
+    + ` · source ${JSON.stringify(figureChain.value.data?.source).slice(0, 80)}`);
+  ok('从 root ".origin" 读到每一项背后的查询意图与实际数据来源（逐字完整，不带省略号）',
+    typeof figureChain.value.data?.intent === 'object'
+    && JSON.stringify(figureChain.value.data.intent) === fileIntent
+    && !JSON.stringify(figureChain.value.data.intent).includes('…')
+    && typeof figureChain.value.data?.source?.dataFile === 'string');
+
+  // 链里记着"当时观察到的数据文件"，读得到；**不做核对**——链解释过去、不承诺现状。
+  const fakeSrc = `${resultStamp()}-observed_probe.query.json`;
   writeFileSync(resolve(DEV_ROOT, '.oks', 'data', fakeSrc), `${JSON.stringify({
-    origin: { version: 1, root: 'aaaaaaaaaaaa', nodes: { aaaaaaaaaaaa: {
+    meta: { kind: 'query', name: 'observed_probe', at: resultStamp() },
+    origin: { root: 'aaaaaaaaaaaa', nodes: { aaaaaaaaaaaa: {
       kind: 'query', intent: { op: 'Graph' },
-      source: { dataFile: gone, bytes: 1, modifiedAt: '2020-01-01T00:00:00Z' },
+      source: { dataFile: '/nowhere/gone.sqlite', bytes: 1, modifiedAt: '2020-01-01T00:00:00Z' },
     } } },
-    data: [],
+    data: { rows: [], columns: [] },
   }, null, 2)}\n`);
-  rmSync(gone, { force: true });
-  const drift = await call('oks_origin', { src: `.oks/data/${fakeSrc}` });
-  console.log(`  漂移核对 → ${(drift.value.drift ?? []).join(' ').slice(0, 120)}`);
-  ok('漂移核对：当时的数据文件不在了就直说',
-    (drift.value.drift ?? []).some((line) => /不在了/.test(line)));
+  const observed = await call('jq_transform', {
+    inputs: { o: `.oks/data/${fakeSrc}` },
+    root: '.origin',
+    snip: '.o.nodes[.o.root].source',
+  });
+  console.log(`  当时观察到的事实 → ${JSON.stringify(observed.value.data)}`);
+  ok('当时的数据文件与观察时刻仍写在链里（读得到；是否还算数由调用方重新查）',
+    observed.value.data?.dataFile === '/nowhere/gone.sqlite' && observed.value.data?.bytes === 1);
   rmSync(resolve(DEV_ROOT, '.oks', 'data', fakeSrc), { force: true });
 }
 

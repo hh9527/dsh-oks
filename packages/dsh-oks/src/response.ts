@@ -1,5 +1,6 @@
 import { basename } from 'node:path';
 import { capLine } from './text.ts';
+import { DEFAULT_ROOT } from './results.ts';
 import type { DiagnosticEntry, OkPayload, RenderBlock, ServiceResponse, TraceStep } from './host.ts';
 
 // 模型可见文本的预算：留在宿主 tool-result pruner 的阈值（8192 字符）以下，否则结果会被
@@ -124,78 +125,14 @@ export function renderView(_args: unknown, value: ViewValue | null | undefined):
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 
-/** oks_origin 渲染读到的值（来源跟踪）。 */
-/** 一个节点的**完整**记录：数据接口不截断，字段原样交出（intent / snip / source 都是文件里的值）。 */
-export interface OriginNodeView {
-  id: string;
-  kind: string;
-  motivation?: string;
-  intent?: unknown;
-  snip?: string;
-  /** transform：这次执行产出了几个值。 */
-  outputs?: number;
-  source?: unknown;
-  inputs?: Record<string, string>;
-  report?: string;
-  item?: number;
-  /** derive：派生自哪份产物。 */
-  from?: string;
-}
-
-export interface OriginValue {
-  ok?: boolean;
-  src?: string;
-  summary?: string;
-  items?: ReadonlyArray<{ index: number; label: string; kind: string; caption: string; shape: string }>;
-  /** 本产物来源链上的全部节点，按依赖顺序（输入在前）。 */
-  nodes?: readonly OriginNodeView[];
-  root?: string;
-  /** 产物自带数据块的**派生视图**（首次读取时自动物化；读数据就用 jq 投影它）。 */
-  derivedSrc?: string;
-  drift?: readonly string[];
-}
-
 const textBlock = (lines: readonly string[]): RenderBlock[] => [{ type: 'text', text: `${lines.join('\n')}\n` }];
-
-/** oks_origin：这是什么 + 链上每个节点的**完整记录** + 漂移核对。
- *  数据接口不截断：intent / snip / source 原样印出（一个字段一行），不做 capLine。 */
-export function renderOrigin(_args: unknown, value: OriginValue | null | undefined): RenderBlock[] {
-  if (value?.ok !== true) return textBlock([JSON.stringify(value ?? { ok: false, error: { code: 'origin_unreadable' } })]);
-  const lines = [`${value.summary ?? ''}`, `产物：${value.src ?? ''}`];
-  if ((value.items ?? []).length > 0) {
-    lines.push('', '展示项（每一项都能当 item 用，也可以只取某一项的链）：',
-      ...(value.items ?? []).map((item) => `  #${item.index} ${item.label} · ${item.kind} · ${item.caption === '' ? '(没有注解)' : item.caption} · ${item.shape}`));
-  }
-  if ((value.nodes ?? []).length > 0) {
-    lines.push('', `来源链（${(value.nodes ?? []).length} 个节点，输入在前；字段都是文件里的原值）：`);
-    for (const node of value.nodes ?? []) {
-      lines.push(`  [${node.id}] ${node.kind}${node.id === value.root ? '（本次操作）' : ''}`);
-      if (node.motivation !== undefined) lines.push(`    动机：${node.motivation}`);
-      if (node.intent !== undefined) lines.push(`    intent：${JSON.stringify(node.intent)}`);
-      if (node.snip !== undefined) lines.push(`    snip：${node.snip}`);
-      if (node.outputs !== undefined) lines.push(`    输出：${node.outputs} 个值`);
-      if (node.source !== undefined) lines.push(`    source：${JSON.stringify(node.source)}`);
-      if (node.inputs !== undefined) {
-        lines.push(`    输入：${Object.entries(node.inputs).map(([name, id]) => `${name}=[${id}]`).join('、')}`);
-      }
-      if (node.report !== undefined) lines.push(`    取自报告：${node.report} 第 ${node.item ?? '?'} 项`);
-      if (node.from !== undefined) lines.push(`    派生自：${node.from}`);
-    }
-  }
-  if (value.derivedSrc !== undefined) {
-    lines.push('', '数据（派生视图，读数据用 jq 投影它；它由源产物决定，删了会自动重建）：',
-      `  ${value.derivedSrc}`,
-      '  例：它是一份 { meta, origin, data } ——snip = ".d.data"（数据本身）、'
-      + '".d.data.rows"（表格行）、".d.data.chapters"（报告的章节骨架）或 ".d.origin"（来源链）');
-  }
-  if ((value.drift ?? []).length > 0) lines.push('', '核对（只核对当时记下的数据文件，不重算）：', ...(value.drift ?? []).map((line) => `  ${line}`));
-  return textBlock(lines);
-}
 
 /** jq_transform 渲染读到的值（探索：只看，不落盘）。 */
 export interface TransformValue {
   ok?: boolean;
   snip: string;
+  /** 交给 snip 的是每份输入的哪一段（jq 点路径）。 */
+  root?: string;
   inputs: ReadonlyArray<{ name: string; src: string; shape: string }>;
   /** 表达式产出了几个值。 */
   outputs: number;
@@ -525,9 +462,10 @@ const streamOf = (value: { outputs?: number; data?: unknown } | null | undefined
 export function renderJqTransform(_args: unknown, value: TransformValue | null | undefined): RenderBlock[] {
   if (value?.ok === false) return textBlock([JSON.stringify(value)]);
   const inputs = value?.inputs ?? [];
+  const pick = value?.root === undefined || value.root === DEFAULT_ROOT ? '' : ` · root ${value.root}`;
   const lines = [
     `表达式产出 ${value?.outputs ?? 0} 个值`
-    + `${value?.truncated === true ? '（到达输出上限，已截断）' : ''} · ${value?.ms ?? 0} ms`,
+    + `${value?.truncated === true ? '（到达输出上限，已截断）' : ''}${pick} · ${value?.ms ?? 0} ms`,
     ...inputs.map((input) => `输入 ${input.name} ← ${input.src}（${input.shape}）`),
     inputs.length === 0 ? '输入：（无：表达式看到的是 {}）' : '',
     `形状：${shapeOf(value?.data)}`,
