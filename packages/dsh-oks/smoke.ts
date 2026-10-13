@@ -22,7 +22,8 @@ import { readReportProvenance } from './src/chart/report.ts';
 import { KEEP_ALIVE_MINUTES, MATERIAL_KEEP_ALIVE_MINUTES, VISIBLE, listArtifacts, openState, pinBySrc, pruneMaterials, syncArtifacts } from './src/state.ts';
 // 来源链的读取与易读视图：冒烟直接调这一层，验证编码与边界（不经工具）。
 import { chainLines, readChartInput, readEnvelope, readTableView, rowsOf } from './src/results.ts';
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync,
+  utimesSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -3186,7 +3187,8 @@ console.log('=== 目录看不见时不清空 ===');
   const dir = mkdtempSync(join(tmpdir(), 'oks-sync-'));
   const report = readdirSync(join(DEV_ROOT, 'artifacts')).find((name) => VISIBLE.test(name));
   mkdirSync(join(dir, 'artifacts'), { recursive: true });
-  copyFileSync(join(DEV_ROOT, 'artifacts', String(report)), join(dir, 'artifacts', String(report)));
+  const target = join(dir, 'artifacts', String(report));
+  copyFileSync(join(DEV_ROOT, 'artifacts', String(report)), target);
   const state = openState(dir);
   try {
     syncArtifacts(state, dir);
@@ -3194,15 +3196,29 @@ console.log('=== 目录看不见时不清空 ===');
     rmSync(join(dir, 'artifacts'), { recursive: true, force: true });
     const removed = syncArtifacts(state, dir);
     ok('目录不在时不同步（一次看不见不该清空）',
-      removed.length === 0 && listArtifacts(state).length === 1);
+      removed.removed.length === 0 && listArtifacts(state).length === 1);
     mkdirSync(join(dir, 'artifacts'), { recursive: true });
-    copyFileSync(join(DEV_ROOT, 'artifacts', String(report)), join(dir, 'artifacts', String(report)));
+    copyFileSync(join(DEV_ROOT, 'artifacts', String(report)), target);
     syncArtifacts(state, dir);
     ok('目录回来之后清单照旧', listArtifacts(state).length === 1);
+    // 文件还在、只是这一轮读不出自述（正被写入、正好被清理、头解析不出）：留着那一行，
+    // 连同它的保留状态——"这一轮没读到"与"文件不在了"是两回事。
+    pinBySrc(dir, `artifacts/${String(report)}`, true);
+    writeFileSync(target, '<!doctype html><html><head><title>只写了一半');
+    const half = syncArtifacts(state, dir);
+    const keptRows = listArtifacts(state);
+    ok('文件还在、自述读不出时：那一行留着，保留状态也留着',
+      half.removed.length === 0 && half.unreadable.length === 1
+      && keptRows.length === 1 && keptRows[0]?.pinned === true);
+    copyFileSync(join(DEV_ROOT, 'artifacts', String(report)), target);
+    syncArtifacts(state, dir);
+    const back = listArtifacts(state);
+    ok('自述回来之后还是那一行、保留状态没丢',
+      back.length === 1 && back[0]?.pinned === true && back[0]?.title !== undefined);
     // 文件真的没了时才移除那一行。
-    rmSync(join(dir, 'artifacts', String(report)), { force: true });
+    rmSync(target, { force: true });
     const gone = syncArtifacts(state, dir);
-    ok('文件真的不在时才移除行', gone.length === 1 && listArtifacts(state).length === 0);
+    ok('文件真的不在时才移除行', gone.removed.length === 1 && listArtifacts(state).length === 0);
   } finally {
     state.close();
     rmSync(dir, { recursive: true, force: true });
@@ -3285,6 +3301,24 @@ console.log('=== 界面那两条端点 ===');
   const after = (again.body.value as { entries: { file: string; pinned: boolean }[] }).entries;
   ok('再问一次清单：状态已经变了（界面重读即见）', after.find((item) => item.file === target?.file)?.pinned === true);
   ok('两条端点都按 sessionId 找过工作区', asked.join(',') === 'probe,probe,probe');
+
+  // 同步这一步失败不该让这次刷新变成"读不到清单"：清单是**投影**，库里已有的行照旧给出。
+  // （这里把 artifacts 换成一个同名文件，让扫描报 ENOTDIR——现场更常见的是撞上清理或写锁。）
+  const artifactsDir = join(DEV_ROOT, 'artifacts');
+  const stashed = `${artifactsDir}.stash`;
+  renameSync(artifactsDir, stashed);
+  writeFileSync(artifactsDir, '不是一个目录\n');
+  try {
+    const degraded = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
+    const entries = (degraded.body.value as { entries: unknown[] } | undefined)?.entries;
+    ok('同步失败不吞掉清单：按库里已有的照常回执',
+      degraded.status === 200 && Array.isArray(entries) && entries.length > 0);
+  } finally {
+    rmSync(artifactsDir, { force: true });
+    renameSync(stashed, artifactsDir);
+  }
+  const restored = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
+  ok('恢复之后清单照旧', ((restored.body.value as { entries: unknown[] }).entries).length > 0);
 
   // 边界：这两条端点很窄，不能被当成通用入口
   ok('清单只接受 GET', (await call(artifacts, 'POST', '/oks/artifacts?sessionId=probe')).status === 405);

@@ -77,6 +77,8 @@ export function openState(root: string): State {
   const directory = join(root, STATE_DIR);
   mkdirSync(directory, { recursive: true });
   const db = new DatabaseSync(join(directory, 'state.db'));
+  // 清单端点与工具调用各开一次库，撞上写锁是常态（一次刷新不该因为 SQLITE_BUSY 变成"读不到清单"）。
+  db.exec('pragma busy_timeout = 2000');
   db.exec(`create table if not exists artifacts (
     file text primary key,
     name text not null,
@@ -95,37 +97,47 @@ export function openState(root: string): State {
   return { db, close: () => db.close() };
 }
 
-/** 把清单对齐到目录：读每个可见产物的自述写进库，删掉文件已经不在的行。
+/** 把清单对齐到目录：读每个可见产物的自述写进库；**删只删文件已经不在目录里的行**。
+ *  两种"读不到"要分开：文件还在、只是这一轮读不出自述（正被写入、正好被清理删掉、head 解析不出）
+ *  —— 留着它原来那一行；文件真的不在目录里了 —— 才删（连同它的保留）。
+ *  单个文件出问题不影响其余文件：一个坏文件不该让整份清单读不出来。
  *  **pin 不在这一步里动**——它只由 `pin` / `unpin` 改。
- *  返回这次从清单里移除的文件名（调用方爱记就记一行，便于事后自证）。 */
-export function syncArtifacts(state: State, root: string): string[] {
+ *  返回这次从清单里移除的文件名与这一轮读不出自述的文件名（调用方爱记就记一行，便于事后自证）。 */
+export function syncArtifacts(state: State, root: string): { removed: string[]; unreadable: string[] } {
   const directory = join(root, ARTIFACT_DIR);
   // 目录不在时**什么都不做**。还没写过产物是常态；而"这一次看不见目录"绝不该把库里的行清光
   // ——那样清单会凭空变空，得刷新页面（重新挂载、重新读）才回来。
-  if (!existsSync(directory)) return [];
+  if (!existsSync(directory)) return { removed: [], unreadable: [] };
   const files = readdirSync(directory).filter((file) => VISIBLE.test(file));
+  const present = new Set(files);
   const upsert = state.db.prepare(`insert into artifacts (file, name, kind, at, title, category)
     values (?, ?, ?, ?, ?, ?)
     on conflict(file) do update set name = excluded.name, kind = excluded.kind,
       at = excluded.at, title = excluded.title, category = excluded.category`);
   state.db.exec('begin');
   try {
-    const seen = new Set<string>();
+    const unreadable: string[] = [];
     for (const file of files) {
-      const meta = readArtifactMeta(readHead(join(directory, file)));
-      if (meta === null) continue; // 没有自述的产物不进清单（老产物或形状不符）
-      seen.add(file);
-      upsert.run(file, meta.name, meta.kind, meta.at, meta.title, meta.category ?? null);
+      try {
+        const meta = readArtifactMeta(readHead(join(directory, file)));
+        if (meta === null) {
+          unreadable.push(file); // 没有自述的产物进不了清单（老产物、形状不符、还没写完）
+          continue;
+        }
+        upsert.run(file, meta.name, meta.kind, meta.at, meta.title, meta.category ?? null);
+      } catch {
+        unreadable.push(file); // 读的这一刻文件没了、或被别的东西占着：这一轮跳过，下一次再说
+      }
     }
     const removed: string[] = [];
     for (const row of state.db.prepare('select file from artifacts').all() as Array<{ file: string }>) {
-      if (!seen.has(row.file)) {
+      if (!present.has(row.file)) {
         state.db.prepare('delete from artifacts where file = ?').run(row.file);
         removed.push(row.file);
       }
     }
     state.db.exec('commit');
-    return removed;
+    return { removed, unreadable };
   } catch (cause) {
     state.db.exec('rollback');
     throw cause;

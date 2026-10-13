@@ -14,6 +14,7 @@
 // 产物目录），所以它不成为通用写入口。
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { errorText } from './host.ts';
 import { ARTIFACT_DIR } from './results.ts';
 import { KEEP_ALIVE_MINUTES, listArtifacts, openState, pinBySrc, syncArtifacts, VISIBLE } from './state.ts';
 
@@ -96,9 +97,18 @@ export function createArtifactsEndpoint(deps: PanelDeps): PanelHandler {
       const root = deps.rootFor(sessionId);
       const state = openState(root);
       try {
-        const removed = syncArtifacts(state, root);
-        if (removed.length > 0) {
-          deps.log?.(`[oks] 清单里移除了 ${removed.length} 行（文件已经不在 artifacts/ 里）`);
+        // 清单是**投影**：同步这一步失败（撞上写锁、正被清理、目录一时读不了）不该让这次刷新
+        // 什么都拿不到——库里已有的那些行照旧给它，问题记一行日志。
+        try {
+          const synced = syncArtifacts(state, root);
+          if (synced.removed.length > 0) {
+            deps.log?.(`[oks] 清单里移除了 ${synced.removed.length} 行（文件已经不在 artifacts/ 里）`);
+          }
+          if (synced.unreadable.length > 0) {
+            deps.log?.(`[oks] 清单里有 ${synced.unreadable.length} 份产物这一轮读不出自述，先留着它们原来的行`);
+          }
+        } catch (cause) {
+          deps.log?.(`[oks] 清单同步这一步失败了（这次的清单按库里已有的给出）：${errorText(cause)}`);
         }
         const entries = listArtifacts(state);
         reply(res, 200, { ok: true, value: { keepAliveMinutes: KEEP_ALIVE_MINUTES, entries } });

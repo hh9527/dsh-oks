@@ -74,6 +74,30 @@ assert.match(requests[0].url, /^\/oks\/artifacts\?sessionId=session-1$/, '清单
 globalThis.fetch = async () => ({ ok: false, status: 400, text: async () => JSON.stringify({ ok: false, message: '找不到会话' }) });
 await assert.rejects(() => module.readListing('session-1'), /找不到会话/);
 
+// —— 5b. 一次失败不当作结论：隔一瞬再问一次，成功就用它；两次都失败才把错误交出来
+//      （端点会撞上后台清理与状态库占用；页签因此拿不到清单就是"看不懂为什么空了"）
+{
+  let attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      throw new Error('Failed to fetch');
+    }
+    return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, value: listing }) };
+  };
+  assert.deepEqual(await module.readListingWithRetry('session-1', 1), listing, '第一次失败、第二次成功就应当拿到清单');
+  assert.equal(attempts, 2, '重试恰好一次');
+
+  attempts = 0;
+  globalThis.fetch = async () => {
+    attempts += 1;
+    return { ok: false, status: 400, text: async () => JSON.stringify({ ok: false, message: `第 ${attempts} 次也不行` }) };
+  };
+  await assert.rejects(() => module.readListingWithRetry('session-1', 1), /第 1 次也不行/,
+    '两次都失败时抛第一次的原因（它说明这次刷新的起点）');
+  assert.equal(attempts, 2, '失败也只重试一次');
+}
+
 // —— 6. 机械通道：★ 直接打后台端点（不经过 agent）
 globalThis.fetch = async (url, init) => {
   requests.push({ url, init });

@@ -65,6 +65,8 @@ interface ModuleExports {
   inject: string[];
   /** 给本地测试用：读清单。 */
   readListing: (sessionId: string) => Promise<Listing>;
+  /** 给本地测试用：读清单，失败隔一瞬再读一次（端点的一时失败不该让页签看起来是空的）。 */
+  readListingWithRetry: (sessionId: string, waitMs?: number) => Promise<Listing>;
   /** 给本地测试用：那条机械通道的写。 */
   postPin: (sessionId: string, src: string, pinned: boolean) => Promise<void>;
   /** 给本地测试用：一份产物的资源地址（点条目会用它在右栏新开页签）。 */
@@ -96,6 +98,8 @@ window.__ModuleLoader__.load({
     const inject = ['slots', 'sidebarRightTabs', 'sidebarRight'];
     /** 清单的刷新间隔：够快（新产物几秒内出现），又够省（本地端点、一次扫描）。 */
     const REFRESH_MS = 4000;
+    /** 一次刷新失败后隔多久再问一次（端点会撞上后台清理与状态库占用，这是常态）。 */
+    const RETRY_WAIT_MS = 250;
 
     /** 出错时打成**一行**：贴到聊天里就能定位（浏览器控制台会把对象折叠成 `Object`）。 */
     const describe = (value: unknown): string => {
@@ -186,6 +190,21 @@ window.__ModuleLoader__.load({
     const readListing = async (sessionId: string): Promise<Listing> =>
       await callEndpoint(`${ARTIFACTS_ENDPOINT}?sessionId=${encodeURIComponent(sessionId)}`) as Listing;
 
+    /** 读一次清单，失败就短等一下再读一次：端点的失败多是**一时**的（后台正在清理、状态库被占、
+     *  会话刚挂上还没登记），隔一瞬再问就过去了。两次都失败才抛，抛第一次的原因——它说明起点。 */
+    const readListingWithRetry = async (sessionId: string, waitMs: number = RETRY_WAIT_MS): Promise<Listing> => {
+      try {
+        return await readListing(sessionId);
+      } catch (first) {
+        await new Promise((resolve) => { setTimeout(resolve, waitMs); });
+        try {
+          return await readListing(sessionId);
+        } catch {
+          throw first;
+        }
+      }
+    };
+
     /** 下载一份报表的 URL：插件那条字节端点（浏览器拿它当一个普通链接用）。 */
     const downloadHref = (sessionId: string, file: string): string =>
       `${DOWNLOAD_ENDPOINT}?sessionId=${encodeURIComponent(sessionId)}&file=${encodeURIComponent(file)}`;
@@ -258,17 +277,18 @@ window.__ModuleLoader__.load({
             return;
           }
           try {
-            let fresh = await readListing(sessionId);
+            let fresh = await readListingWithRetry(sessionId);
             // 一次"清单变空"可能是宿主那边一次误判（例如目录一时看不见）。再问一次，
             // 只有第二次也是空才接受——否则用户会看到清单凭空清空、要刷新才回来。
             const held = heldListing.current;
             if (fresh.entries.length === 0 && held !== null && held.entries.length > 0) {
               console.warn(`[oks-ui] 清单从 ${held.entries.length} 条变成 0 条，立刻再问一次`);
-              fresh = await readListing(sessionId);
+              fresh = await readListingWithRetry(sessionId);
             }
             setListing((current) => (sameListing(current, fresh) ? current : fresh));
             setError(null);
           } catch (cause) {
+            // 读不到**不**动清单：手上那份继续显示，这一行只是提示（下一次刷新还会再问）。
             console.warn(`[oks-ui] 读不到清单（session=${sessionId}）：${describe(cause)}`);
             setError(String((cause as Error)?.message ?? cause));
           }
@@ -303,17 +323,24 @@ window.__ModuleLoader__.load({
           }
         };
 
-        if (error !== null) {
-          return createElement('p', { className: 'oks-artifacts-error', style: { fontSize: '13px' } }, error);
-        }
+        /** 刷新失败只提示一行，**不顶掉**手上的清单：一时的读不到不该让页签看起来是空的。 */
+        const warnLine = (): ReactElement | null => (error === null ? null : createElement('p', {
+          className: 'oks-artifacts-error',
+          style: { fontSize: '12px', opacity: 0.75, margin: '0 0 6px' },
+        }, listing === null
+          ? `还没读到清单（${error}），正在重试…`
+          : `这次没读到清单（${error}），下面是上一次读到的。`));
+        const statusLine = (text: string): ReactElement => createElement('p', {
+          className: 'oks-artifacts-status',
+          style: { fontSize: '13px' },
+        }, text);
+
         if (listing === null) {
-          return createElement('p', { className: 'oks-artifacts-status', style: { fontSize: '13px' } }, '正在读取产出…');
+          return createElement('div', { className: 'oks-artifacts' }, warnLine(), statusLine('正在读取产出…'));
         }
         if (listing.entries.length === 0) {
-          return createElement('p', {
-            className: 'oks-artifacts-status',
-            style: { fontSize: '13px', opacity: 0.8 },
-          }, `这个工作区还没有图或报告。未保留的产物会在 ${listing.keepAliveMinutes} 分钟后被清理。`);
+          return createElement('div', { className: 'oks-artifacts' }, warnLine(), statusLine(
+            `这个工作区还没有图或报告。未保留的产物会在 ${listing.keepAliveMinutes} 分钟后被清理。`));
         }
 
         /** 点条目：在右栏**新开一个页签**打开这份产物（与文件面板同一个地址格式）。 */
@@ -379,6 +406,7 @@ window.__ModuleLoader__.load({
         }, '📌')));
 
         return createElement('div', { className: 'oks-artifacts' },
+          warnLine(),
           createElement('div', { style: { fontSize: '12px', opacity: 0.7, padding: '2px 0 6px' } },
             `${listing.entries.length} 条 · 未保留的在 ${listing.keepAliveMinutes} 分钟后清理`),
           ...rows);
@@ -394,6 +422,7 @@ window.__ModuleLoader__.load({
     exports.apply = apply;
     exports.inject = inject;
     exports.readListing = readListing;
+    exports.readListingWithRetry = readListingWithRetry;
     exports.postPin = postPin;
     exports.artifactAddress = artifactAddress;
     exports.downloadHref = downloadHref;
