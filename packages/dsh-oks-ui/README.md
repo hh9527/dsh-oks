@@ -6,8 +6,10 @@
 - 它只有**浏览器半边**。宿主侧入口（`lib/index.mjs`）是空的——它存在的意义是让 profile 能挂上
   这一条 entry，从而让 `dsh-client-modules` 扫到 `dsh.client` 声明、把页签打进页面加载清单。
 - 数据来自**插件自己开的两条同源端点**（`packages/dsh-oks/src/endpoint.ts`）：
-  `GET /oks/artifacts?sessionId=…` 拿清单、`POST /oks/pin` 落保留、`GET /oks/download?…` 下载报表。前端**不读文件、不碰工作区布局**：
-  清单是插件知道的事实，问它最直接；保留是机械操作，直接落后台——都不经过 agent。
+  `GET /oks/artifacts?sessionId=…` 拿清单、`POST /oks/pin` 落保留、`POST /oks/delete` 删除、
+  `GET /oks/download?…` 下载报表。前端**不读文件、不碰工作区布局**：
+  清单是插件知道的事实，问它最直接；保留与删除是机械操作，直接落后台——都不经过 agent。
+  删除只在**未保留**的条目上可点（保留中的那份按钮置灰、服务端同样拒绝）。
 - 为什么不是 Typert Remote：那个路径上游目前不支持第三方（装饰器出处要落在 workspace 的
   `packages/*` 注册包里）。同源端点是我们自己的接口，形状由我们定。
 - 类型只用**自己的最小声明**：DSH 的客户端类型包依赖一个没有发布的内部包

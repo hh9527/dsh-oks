@@ -69,6 +69,8 @@ interface ModuleExports {
   readListingWithRetry: (sessionId: string, waitMs?: number) => Promise<Listing>;
   /** 给本地测试用：那条机械通道的写。 */
   postPin: (sessionId: string, src: string, pinned: boolean) => Promise<void>;
+  /** 给本地测试用：删掉一份未保留的产物。 */
+  postDelete: (sessionId: string, src: string) => Promise<void>;
   /** 给本地测试用：一份产物的资源地址（点条目会用它在右栏新开页签）。 */
   artifactAddress: (sessionId: string, file: string) => string;
   /** 给本地测试用：下载一份报表的 URL。 */
@@ -93,6 +95,7 @@ window.__ModuleLoader__.load({
     /** 与 `packages/dsh-oks/src/endpoint.ts` 约定的两条路径。 */
     const ARTIFACTS_ENDPOINT = '/oks/artifacts';
     const PIN_ENDPOINT = '/oks/pin';
+    const DELETE_ENDPOINT = '/oks/delete';
     const DOWNLOAD_ENDPOINT = '/oks/download';
     /** 我们真正用到的服务：槽与右栏 tab 注册表（清单与保留走 fetch，不占服务）。 */
     const inject = ['slots', 'sidebarRightTabs', 'sidebarRight'];
@@ -151,6 +154,10 @@ window.__ModuleLoader__.load({
       '.oks-artifact-pin{opacity:.35;filter:grayscale(1);cursor:pointer}',
       '.oks-artifact-pin[data-pinned="true"]{opacity:1;filter:none}',
       '.oks-artifact-pin:hover{opacity:1;filter:none}',
+      '.oks-artifact-delete{opacity:.35;cursor:pointer;background:none;border:none;color:inherit;'
+      + 'padding:2px;font:inherit;line-height:1}',
+      '.oks-artifact-delete:hover{opacity:.9}',
+      '.oks-artifact-delete[data-disabled="true"]{opacity:.15;cursor:not-allowed}',
     ].join('\n');
 
     const installCss = (): void => {
@@ -239,6 +246,14 @@ window.__ModuleLoader__.load({
       });
     };
 
+    const postDelete = async (sessionId: string, src: string): Promise<void> => {
+      await callEndpoint(DELETE_ENDPOINT, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId, src }),
+      });
+    };
+
     const module = { exports: {} as ModuleExports };
     const exports = module.exports;
     const React = require('react') as typeof import('react');
@@ -306,6 +321,27 @@ window.__ModuleLoader__.load({
             globalThis.removeEventListener?.('focus', onFocus);
           };
         }, [load]);
+
+        /** 删掉一份**未保留**的产物：文件与清单一起去。保留中的那条界面上点不动，服务端也会拒。 */
+        const remove = async (entry: ArtifactEntry): Promise<void> => {
+          if (typeof sessionId !== 'string' || sessionId.length === 0) {
+            setError('拿不到当前会话，因此不知道删哪个工作区的产物。');
+            return;
+          }
+          if (entry.pinned) {
+            setError('这份产物已经保留，先取消保留再删除。');
+            return;
+          }
+          setBusy(true);
+          try {
+            await postDelete(sessionId, `artifacts/${entry.file}`);
+            await load();   // 删完重读一次，列表立刻少一条
+          } catch (cause) {
+            setError(String((cause as Error)?.message ?? cause));
+          } finally {
+            setBusy(false);
+          }
+        };
 
         const toggle = async (entry: ArtifactEntry): Promise<void> => {
           if (typeof sessionId !== 'string' || sessionId.length === 0) {
@@ -403,7 +439,20 @@ window.__ModuleLoader__.load({
             flex: 'none', fontSize: '14px', lineHeight: '1', padding: '2px',
             background: 'none', border: 'none', color: 'inherit',
           },
-        }, '📌')));
+        }, '📌'),
+        // 删除在最右：保留中的那份点不动（`disabled` + tooltip 说明为什么），服务端同样会拒。
+        createElement('button', {
+          key: 'delete',
+          type: 'button',
+          className: 'oks-artifact-delete',
+          'data-disabled': String(entry.pinned),
+          disabled: busy || entry.pinned,
+          onClick: (event?: { stopPropagation?(): void }) => { event?.stopPropagation?.(); void remove(entry); },
+          title: entry.pinned
+            ? '已保留，先取消保留再删除'
+            : '删掉这份产物（未保留的产物本来也会在保活到期后清理）',
+          'aria-label': '删掉这份产物',
+        }, '✕')));
 
         return createElement('div', { className: 'oks-artifacts' },
           warnLine(),
@@ -424,6 +473,7 @@ window.__ModuleLoader__.load({
     exports.readListing = readListing;
     exports.readListingWithRetry = readListingWithRetry;
     exports.postPin = postPin;
+    exports.postDelete = postDelete;
     exports.artifactAddress = artifactAddress;
     exports.downloadHref = downloadHref;
     exports.sameListing = sameListing;

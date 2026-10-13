@@ -19,7 +19,8 @@ import { CHART_KINDS, supports } from './src/chart/shared.ts';
 import { tableMarkdown } from './src/view/table.ts';
 import { readReportProvenance } from './src/chart/report.ts';
 // 保留走的是 `pinBySrc`——界面端点与冒烟都直接调它（这条能力不在工具面里）。
-import { KEEP_ALIVE_MINUTES, MATERIAL_KEEP_ALIVE_MINUTES, VISIBLE, listArtifacts, openState, pinBySrc, pruneMaterials, syncArtifacts } from './src/state.ts';
+import { deleteArtifact, KEEP_ALIVE_MINUTES, MATERIAL_KEEP_ALIVE_MINUTES, VISIBLE, listArtifacts, openState,
+  pinBySrc, pruneMaterials, syncArtifacts } from './src/state.ts';
 // 来源链的读取与易读视图：冒烟直接调这一层，验证编码与边界（不经工具）。
 import { chainLines, readChartInput, readEnvelope, readTableView, rowsOf } from './src/results.ts';
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync,
@@ -3251,14 +3252,16 @@ console.log('=== 内部材料的回收 ===');
 
 console.log('=== 界面那两条端点 ===');
 {
-  const { createArtifactsEndpoint, createDownloadEndpoint, createPinEndpoint } = await import('./src/endpoint.ts');
+  const { createArtifactsEndpoint, createDeleteEndpoint, createDownloadEndpoint, createPinEndpoint } = await import('./src/endpoint.ts');
   const asked: string[] = [];
   const deps = {
     rootFor: (sessionId: string) => { asked.push(sessionId); return DEV_ROOT; },
     pin: (root: string, src: string, pinned: boolean) => pinBySrc(root, src, pinned),
+    remove: (root: string, src: string) => deleteArtifact(root, src),
   };
   const artifacts = createArtifactsEndpoint(deps);
   const pin = createPinEndpoint(deps);
+  const del = createDeleteEndpoint(deps);
   const download = createDownloadEndpoint(deps);
   const call = async (
     handler: (req: never, res: never) => Promise<void>,
@@ -3319,6 +3322,66 @@ console.log('=== 界面那两条端点 ===');
   }
   const restored = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
   ok('恢复之后清单照旧', ((restored.body.value as { entries: unknown[] }).entries).length > 0);
+
+  // 主动删除（界面每行那个 x）：只有未保留的能删；文件与行一起去掉。
+  const doomed = saveArtifact({
+    root: DEV_ROOT,
+    name: 'delete_probe',
+    content: '<!doctype html><html><head><title>待删的冒烟报告</title></head><body>删我</body></html>',
+    extension: '.html',
+    kind: 'report',
+    title: '待删的冒烟报告',
+  });
+  const doomedFile = doomed.src.slice(doomed.src.lastIndexOf('/') + 1);
+  const listFiles = async (): Promise<string[]> => {
+    const listing = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
+    return ((listing.body.value as { entries: { file: string }[] } | undefined)?.entries ?? [])
+      .map((entry) => entry.file);
+  };
+  {
+    const state = openState(DEV_ROOT);
+    try { syncArtifacts(state, DEV_ROOT); } finally { state.close(); }
+  }
+  ok('删除前：产物在磁盘上、也在清单里',
+    existsSync(join(DEV_ROOT, doomed.src)) && (await listFiles()).includes(doomedFile));
+  await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: doomed.src, pinned: true });
+  const pinnedDelete = await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: doomed.src });
+  ok('保留中的产物删不掉：报错，文件与那一行都还在',
+    pinnedDelete.status === 400 && /先取消保留/.test(String(pinnedDelete.body.message))
+    && existsSync(join(DEV_ROOT, doomed.src)) && (await listFiles()).includes(doomedFile));
+  await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: doomed.src, pinned: false });
+  const removed = await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: doomed.src });
+  ok('未保留的产物能删：文件与那一行一起没了',
+    removed.status === 200 && removed.body.ok === true
+    && !existsSync(join(DEV_ROOT, doomed.src)) && !(await listFiles()).includes(doomedFile));
+  // 文件已经不在磁盘上时，那一行仍然删得掉：用户点的是**清单上的那一行**，清单是权威。
+  // （这里不经过清单端点，避免读路径的同步先把那一行收掉。）
+  const orphan = saveArtifact({
+    root: DEV_ROOT,
+    name: 'orphan_probe',
+    content: '<!doctype html><html><head><title>文件先没了</title></head><body>删我</body></html>',
+    extension: '.html',
+    kind: 'report',
+    title: '文件先没了',
+  });
+  const orphanFile = orphan.src.slice(orphan.src.lastIndexOf('/') + 1);
+  {
+    const state = openState(DEV_ROOT);
+    try { syncArtifacts(state, DEV_ROOT); } finally { state.close(); }
+  }
+  rmSync(join(DEV_ROOT, orphan.src), { force: true });
+  const orphanGone = await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: orphan.src });
+  const orphanRows = (() => {
+    const state = openState(DEV_ROOT);
+    try { return listArtifacts(state); } finally { state.close(); }
+  })();
+  ok('文件已经不在时那一行照样能删掉（清单是权威，用户点的是清单上的行）',
+    orphanGone.status === 200 && !orphanRows.some((row) => row.file === orphanFile));
+
+  ok('再删一次明确报错（登记已经没了）',
+    (await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: doomed.src })).status === 400);
+  ok('删除只接受 POST', (await call(del, 'GET', '/oks/delete')).status === 405);
+  ok('删除缺字段明确报错', (await call(del, 'POST', '/oks/delete', { sessionId: 'probe' })).status === 400);
 
   // 边界：这两条端点很窄，不能被当成通用入口
   ok('清单只接受 GET', (await call(artifacts, 'POST', '/oks/artifacts?sessionId=probe')).status === 405);

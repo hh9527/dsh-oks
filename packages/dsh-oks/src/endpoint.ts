@@ -2,6 +2,7 @@
 //
 //   GET  /oks/artifacts?sessionId=…   → 这个工作区的制品清单（界面要的就这些）
 //   POST /oks/pin                     → 保留 / 取消保留（{ sessionId, src, pinned }）
+//   POST /oks/delete                  → 删掉一份**未保留**的产物（{ sessionId, src }）
 //
 // "点条目打开某一份产物"不走这里：那是**右栏的一个页签**（`dsh-resource://file/…` 资源地址），
 // 由界面直接交给宿主的文件页签去打开——产物内容因此从来不经过我们。
@@ -38,6 +39,7 @@ const MAX_BODY_BYTES = 4096;
 export const ARTIFACTS_ENDPOINT = '/oks/artifacts';
 export const PIN_ENDPOINT = '/oks/pin';
 export const DOWNLOAD_ENDPOINT = '/oks/download';
+export const DELETE_ENDPOINT = '/oks/delete';
 
 /** 下载的大小上限：报表远小于它（几十 KB）。 */
 const MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024;
@@ -55,6 +57,8 @@ export interface PanelDeps {
   log?(message: string): void;
   /** 落状态：与 `oks_pin` / `oks_unpin` 走的是同一个函数。 */
   pin(root: string, src: string, pinned: boolean): { file: string; pinned: boolean };
+  /** 删掉一份**未保留**的产物：工作区与清单一起去掉。 */
+  remove(root: string, src: string): { file: string };
 }
 
 /** 逐块读请求体；超过上限直接拒（不把请求体攒在内存里）。 */
@@ -124,6 +128,40 @@ export function createArtifactsEndpoint(deps: PanelDeps): PanelHandler {
 /** 下载端点：把一份报表**原样**交给浏览器（`content-disposition: attachment`），
  *  这样界面用一个普通 `<a download>` 就能下载——不需要把内容读进页面再拼 Blob。
  *  只认 `artifacts/` 里符合命名规则的报表：不接受路径、不读状态库。 */
+export function createDeleteEndpoint(deps: PanelDeps): PanelHandler {
+  return async (req, res) => {
+    if (req.method !== 'POST') {
+      reply(res, 405, { ok: false, message: '只接受 POST' });
+      return;
+    }
+    let body: Record<string, unknown>;
+    try {
+      const parsed = await readJsonBody(req);
+      if (parsed === null || typeof parsed !== 'object') throw new Error('请求体要是一个对象');
+      body = parsed as Record<string, unknown>;
+    } catch (cause) {
+      reply(res, 400, { ok: false, message: String((cause as Error)?.message ?? cause) });
+      return;
+    }
+    const { sessionId, src } = body;
+    if (typeof sessionId !== 'string' || sessionId.length === 0) {
+      reply(res, 400, { ok: false, message: 'sessionId 必需' });
+      return;
+    }
+    if (typeof src !== 'string' || src.length === 0) {
+      reply(res, 400, { ok: false, message: 'src 必需' });
+      return;
+    }
+    try {
+      const result = deps.remove(deps.rootFor(sessionId), src);
+      deps.log?.(`[oks] 删除产物 ${result.file}`);
+      reply(res, 200, { ok: true, value: { file: result.file } });
+    } catch (cause) {
+      reply(res, 400, { ok: false, message: String((cause as Error)?.message ?? cause) });
+    }
+  };
+}
+
 export function createDownloadEndpoint(deps: PanelDeps): PanelHandler {
   return async (req, res) => {
     if (req.method !== 'GET') {

@@ -10,7 +10,7 @@
 
 import { DatabaseSync } from 'node:sqlite';
 import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { ARTIFACT_DIR, artifactFileName, CHART_DIR, DATA_DIR, readArtifactMeta, VIEW_DIR } from './results.ts';
 
 /** 状态目录（相对工作区根）。 */
@@ -241,6 +241,40 @@ export function pinBySrc(root: string, src: unknown, pinned: boolean): { file: s
       throw new Error(`这份产物没有自述、进不了清单，因此无法保留：${JSON.stringify(src)}`);
     }
     return { file, pinned };
+  } finally {
+    state.close();
+  }
+}
+
+/** 主动删除一份产物（界面每行那个 x）。两条口径：
+ *   - **只有未保留的能删**：保留是保护、删除是销毁，两者不重叠，于是不存在"手滑毁掉想留的东西"；
+ *   - **先 unlink 再删行**：反过来的话，unlink 失败会留下"行没了、文件还在"，下一次收养会把它
+ *     补登回来，用户的删除看起来被撤销了；这个顺序下最坏只是"文件没了、行还在"，下一次清理顺手删行。
+ *  文件已经不在也照样把行删掉——用户点的是清单上的那一行，而清单是权威。
+ *  校验只看"路径在 `artifacts/` 内 + 是可见产物 + 登记过"：**不要求文件存在**（上面那条）。
+ *  材料不级联删：同一张图可能被别的报表引用，它们由保活按龄回收。 */
+export function deleteArtifact(root: string, src: unknown): { file: string } {
+  const text = typeof src === 'string' ? src : '';
+  const inside = relative(resolve(root, ARTIFACT_DIR), resolve(root, text));
+  if (inside.length === 0 || inside.startsWith('..') || isAbsolute(inside)) {
+    throw new Error(`只能删除工作区 ${ARTIFACT_DIR}/ 里的产物：${JSON.stringify(src)}`);
+  }
+  if (!VISIBLE.test(inside)) {
+    throw new Error(`只有报表可以删除（${VISIBLE.source}）：${JSON.stringify(src)}`);
+  }
+  const file = inside;
+  const state = openState(root);
+  try {
+    const row = state.db.prepare('select pinned from artifacts where file = ?').get(file) as { pinned: number } | undefined;
+    if (row === undefined) throw new Error(`这份产物没有登记，删不了：${JSON.stringify(src)}`);
+    if (row.pinned === 1) throw new Error(`这份产物已经保留，先取消保留再删除：${JSON.stringify(src)}`);
+    try {
+      unlinkSync(join(root, ARTIFACT_DIR, file));
+    } catch {
+      // 已经不在磁盘上了：这一行仍然要清掉。
+    }
+    state.db.prepare('delete from artifacts where file = ?').run(file);
+    return { file };
   } finally {
     state.close();
   }

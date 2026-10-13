@@ -72,8 +72,9 @@ import { createKnowledge } from './knowledge.ts';
 import { createTimeContext } from './time-context.ts';
 import { createTools } from './tools.ts';
 import { createVaRuntime } from './va.ts';
-import { ARTIFACTS_ENDPOINT, createArtifactsEndpoint, createDownloadEndpoint, createPinEndpoint, DOWNLOAD_ENDPOINT, PIN_ENDPOINT } from './endpoint.ts';
-import { pinBySrc } from './state.ts';
+import { ARTIFACTS_ENDPOINT, createArtifactsEndpoint, createDeleteEndpoint, createDownloadEndpoint,
+  createPinEndpoint, DELETE_ENDPOINT, DOWNLOAD_ENDPOINT, PIN_ENDPOINT } from './endpoint.ts';
+import { deleteArtifact, pinBySrc } from './state.ts';
 
 // 界面那条机械通道的两条路径（页签与插件约定同一对常量）。
 export { ARTIFACTS_ENDPOINT, DOWNLOAD_ENDPOINT, PIN_ENDPOINT };
@@ -122,6 +123,7 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
         return cwd;
       },
       pin: pinBySrc,
+      remove: deleteArtifact,
     };
     webCtx.effect(() => webServer.register({
       kind: 'exact', path: ARTIFACTS_ENDPOINT, handler: createArtifactsEndpoint(deps),
@@ -130,9 +132,12 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
       kind: 'exact', path: PIN_ENDPOINT, handler: createPinEndpoint(deps),
     }));
     webCtx.effect(() => webServer.register({
+      kind: 'exact', path: DELETE_ENDPOINT, handler: createDeleteEndpoint(deps),
+    }));
+    webCtx.effect(() => webServer.register({
       kind: 'exact', path: DOWNLOAD_ENDPOINT, handler: createDownloadEndpoint(deps),
     }));
-    log(`[oks] 面板端点已开：${ARTIFACTS_ENDPOINT} · ${PIN_ENDPOINT} · ${DOWNLOAD_ENDPOINT}`);
+    log(`[oks] 面板端点已开：${ARTIFACTS_ENDPOINT} · ${PIN_ENDPOINT} · ${DELETE_ENDPOINT} · ${DOWNLOAD_ENDPOINT}`);
   });
 
   ctx.effect(() => knowledge.dispose);

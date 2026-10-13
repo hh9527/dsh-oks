@@ -115,6 +115,23 @@ assert.deepEqual(JSON.parse(sent.init.body),
 globalThis.fetch = async () => ({ ok: false, status: 400, text: async () => JSON.stringify({ ok: false, message: '这份产物没有自述' }) });
 await assert.rejects(() => module.postPin('session-1', 'artifacts/a.chart.svg', true), /没有自述/);
 
+// —— 6b. 删除也是机械通道：同一个 src 形状，只删未保留的
+globalThis.fetch = async (url, init) => {
+  requests.push({ url, init });
+  return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, value: { file: 'a.report.html' } }) };
+};
+const beforeDelete = requests.length;
+await module.postDelete('session-1', 'artifacts/a.report.html');
+assert.equal(requests.length, beforeDelete + 1, 'postDelete 应当发一次请求');
+const sentDelete = requests[requests.length - 1];
+assert.equal(sentDelete.url, '/oks/delete', '打的是插件开的删除端点');
+assert.equal(sentDelete.init?.method, 'POST');
+assert.deepEqual(JSON.parse(sentDelete.init.body),
+  { sessionId: 'session-1', src: 'artifacts/a.report.html' }, '删除请求体是 sessionId 与 src 两个字段');
+
+globalThis.fetch = async () => ({ ok: false, status: 400, text: async () => JSON.stringify({ ok: false, message: '这份产物已经保留，先取消保留再删除' }) });
+await assert.rejects(() => module.postDelete('session-1', 'artifacts/a.report.html'), /先取消保留/);
+
 // —— 7. 点条目：在右栏新开一个页签打开它（地址格式与文件面板一致）
 assert.equal(module.artifactAddress('session-1', 'a.chart.svg'),
   'dsh-resource://file/session/session-1/artifacts/a.chart.svg', '资源地址的格式要与文件面板一致');
@@ -158,5 +175,5 @@ assert.equal(module.metaLine({ category: '周报', at }, stamp), '周报 · 刚�
 assert.equal(module.metaLine({ at }, stamp), '即时分析 · 刚刚', '缺分类要落到"即时分析"，不是"报表"');
 assert.equal(module.metaLine({ category: '月报', at }, stamp + 8 * 60_000), '月报 · 8 分钟前');
 
-console.log('client.mjs：交付形态、激活契约、三条端点都对 ✓');
+console.log('client.mjs：交付形态、激活契约、四条端点都对 ✓');
 console.log(`  inject = ${module.inject.join(', ')} · tab=${calls.tab.kind} · pane=${calls.pane}`);
