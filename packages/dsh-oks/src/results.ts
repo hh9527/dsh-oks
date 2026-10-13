@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync,
+  writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { errorText, isRecord } from './host.ts';
 import { capLine } from './text.ts';
@@ -402,25 +403,44 @@ export function readChartInput(content: string): ChartInput | null {
  *  查询结果那段是文件名前缀而不是内容哈希，所以撞名必须读出来核一遍——一致才认作同一份，
  *  不一致就报错。两条路都不覆盖任何已有的文件。 */
 const writeExclusive = (target: string, content: string, kind: ArtifactKind): void => {
-  let handle: number | null = null;
+  const problem = (cause: unknown): Error => new Error(`保存${KIND_LABEL[kind]}失败：${errorText(cause)}`);
+  const sameContent = (): boolean => {
+    try {
+      return contentHash(readFileSync(target, 'utf8')) === contentHash(content);
+    } catch {
+      return false;   // 读不到（正好被删掉）就不认作同一份
+    }
+  };
+  // 先写成同目录下的**临时文件**，再用 link 原子地认领目标名：读者要么看到完整的旧文件、
+  // 要么看到完整的新文件，不会看到半份（报告几 MB，直接写目标文件会留下一段可读的残片）。
+  // link 在目标已存在时失败，正好就是"不覆盖任何已有文件"那条规则。
+  const temp = `${target}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.part`;
   try {
-    // wx：独占创建。只有 fd 确实由我们拿到，才在失败时清理这个不完整的文件。
-    handle = openSync(target, 'wx');
-    writeSync(handle, content);
-    closeSync(handle);
-    handle = null;
-    return;
-  } catch (cause) {
-    if (handle !== null) {
-      try { closeSync(handle); } catch { /* 已经关掉就算了 */ }
-      try { unlinkSync(target); } catch { /* 清理失败不掩盖真正的原因 */ }
+    try {
+      writeFileSync(temp, content, { flag: 'wx' });
+    } catch (cause) {
+      throw problem(cause);
     }
-    if ((cause as NodeJS.ErrnoException).code !== 'EEXIST') {
-      throw new Error(`保存${KIND_LABEL[kind]}失败：${errorText(cause)}`);
+    try {
+      linkSync(temp, target);
+      return;
+    } catch (cause) {
+      const code = (cause as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST') {
+        if (!sameContent()) throw new Error(`保存${KIND_LABEL[kind]}失败：${target} 已存在且内容不同`);
+        return;
+      }
+      if (code !== 'EPERM' && code !== 'EOPNOTSUPP' && code !== 'ENOSYS') throw problem(cause);
     }
-    if (contentHash(readFileSync(target, 'utf8')) !== contentHash(content)) {
-      throw new Error(`保存${KIND_LABEL[kind]}失败：${target} 已存在且内容不同`);
+    // 文件系统不支持硬链接：退回独占创建（语义一样，只是少了"半份不可见"这一层）。
+    try {
+      writeFileSync(target, content, { flag: 'wx' });
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code === 'EEXIST' && sameContent()) return;
+      throw problem(cause);
     }
+  } finally {
+    try { unlinkSync(temp); } catch { /* 已经不在就算了 */ }
   }
 };
 
@@ -632,7 +652,7 @@ export function saveTableView(options: {
 
 /** 把一份产物（图、报告）写成文件：与结果文件同一套命名与独占创建规则。
  *  返回的 src 是相对工作区根的路径，交给 agent 粘进回答引用。 */
-export function saveArtifact(options: {
+export interface SaveArtifactOptions {
   root: string;
   name: string;
   content: string;
@@ -642,7 +662,9 @@ export function saveArtifact(options: {
   title: string;
   /** 更精确的分类（周报、月报、即时分析…）；没给就不写这一项。 */
   category?: string;
-}): { src: string; at: string } {
+}
+
+export function saveArtifact(options: SaveArtifactOptions): { src: string; at: string; meta: ArtifactMeta } {
   const problem = nameProblem(options.name);
   if (problem !== null) {
     throw new Error(`${KIND_LABEL[options.kind]}名不合法（${JSON.stringify(options.name)}）：${problem}`);
@@ -671,7 +693,9 @@ export function saveArtifact(options: {
     content,
   });
   writeExclusive(join(options.root, directory, fileName), content, options.kind);
-  return { src: `${directory}/${fileName}`, at };
+  // 把**同一个 meta 对象**交回调用方去记账：产出方手里本来就有它，不必再从文件里读回来
+  // （读回来还要解一遍 XML 转义、还要赌文件形状，而这两件事都会以"清单里少一条"收场）。
+  return { src: `${directory}/${fileName}`, at, meta };
 }
 
 /** 定位一个引用：它必须落在某个可读目录里（内部材料或交付物），并返回那个目录。

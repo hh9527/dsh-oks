@@ -17,7 +17,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { errorText } from './host.ts';
 import { ARTIFACT_DIR } from './results.ts';
-import { KEEP_ALIVE_MINUTES, listArtifacts, openState, pinBySrc, syncArtifacts, VISIBLE } from './state.ts';
+import { ensureLedger, KEEP_ALIVE_MINUTES, listArtifacts, openState, pinBySrc, VISIBLE } from './state.ts';
 
 /** 端点两头的**最小形状**：req 只要能给 method/url 与异步迭代出请求体，res 只要能 head/end。
  *  （宿主给的是 Node 的 IncomingMessage / ServerResponse，这两个形状是它们的子集。） */
@@ -101,18 +101,16 @@ export function createArtifactsEndpoint(deps: PanelDeps): PanelHandler {
       const root = deps.rootFor(sessionId);
       const state = openState(root);
       try {
-        // 清单是**投影**：同步这一步失败（撞上写锁、正被清理、目录一时读不了）不该让这次刷新
-        // 什么都拿不到——库里已有的那些行照旧给它，问题记一行日志。
+        // 读路径**不碰文件系统**：清单就是账本里的行（`SELECT`）。唯一的例外是"库空而目录非空"
+        // ——那一次收养扫描（新工作区、`.oks/` 被删、工作区被拷走），失败也只记一行日志，
+        // 照旧把库里已有的行给它。
         try {
-          const synced = syncArtifacts(state, root);
-          if (synced.removed.length > 0) {
-            deps.log?.(`[oks] 清单里移除了 ${synced.removed.length} 行（文件已经不在 artifacts/ 里）`);
-          }
-          if (synced.unreadable.length > 0) {
-            deps.log?.(`[oks] 清单里有 ${synced.unreadable.length} 份产物这一轮读不出自述，先留着它们原来的行`);
+          const { adopted } = ensureLedger(state, root);
+          if (adopted > 0) {
+            deps.log?.(`[oks] 账本是空的，从 artifacts/ 收养了 ${adopted} 份产物`);
           }
         } catch (cause) {
-          deps.log?.(`[oks] 清单同步这一步失败了（这次的清单按库里已有的给出）：${errorText(cause)}`);
+          deps.log?.(`[oks] 收养扫描失败了（这次的清单按库里已有的给出）：${errorText(cause)}`);
         }
         const entries = listArtifacts(state);
         reply(res, 200, { ok: true, value: { keepAliveMinutes: KEEP_ALIVE_MINUTES, entries } });

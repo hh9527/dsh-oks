@@ -1,6 +1,7 @@
 import { applyOps, encode, parseMoment, resolveZone } from './time.ts';
 import type { ContextTimeZone, TimeState } from './time.ts';
-import { statSync } from 'node:fs';
+import { statSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
 import { capLine } from './text.ts';
 import { runJaq } from './jaq.ts';
 import type { JaqOutcome } from './jaq.ts';
@@ -16,8 +17,8 @@ import type { ChartKind, ExpressionSwitch, LayoutOverrides, MarkLine, SecondMetr
 import { OBJECT_OUTPUT, renderArtifacts, renderChart, renderCheck, renderCreateData, renderJqInto, renderJqTransform,
   renderJson, renderQuery, renderValue, renderView, renderWorkEdit, renderWorkRead, renderWorkWrite,
   shapeOf, withoutQueries } from './response.ts';
-import { KEEP_ALIVE_MINUTES, listArtifacts, MATERIAL_KEEP_ALIVE_MINUTES, openState, pruneArtifacts, pruneMaterials,
-  syncArtifacts } from './state.ts';
+import { ensureLedger, KEEP_ALIVE_MINUTES, listArtifacts, MATERIAL_KEEP_ALIVE_MINUTES, openState,
+  pruneArtifacts, pruneMaterials, reconcileArtifacts, recordArtifact, VISIBLE } from './state.ts';
 import type { Row } from './response.ts';
 import { REFERENCE_KINDS, referencesOf, renderReferences, renderSearch, searchIndex } from './retrieval.ts';
 import type { ReferencesArgs, SearchArgs } from './retrieval.ts';
@@ -34,7 +35,7 @@ import { appendNode, ARTIFACT_DIR, chainLines, CHART_DIR, DEFAULT_ROOT, embedCha
   editWorkFile, listWorkFiles, readArtifact, readCodeFile, readWorkFile, WORK_DIR, writeWorkFile,
   readChartInput, readTableView, rowsOf, saveArtifact, saveInputData,
   saveResult, saveTableView, saveTransform, VIEW_DIR } from './results.ts';
-import type { ColumnInfo, DataOrigin, Envelope, OriginNode } from './results.ts';
+import type { ColumnInfo, DataOrigin, Envelope, OriginNode, SaveArtifactOptions } from './results.ts';
 
 
 /** oks_info 的入参。 */
@@ -1106,22 +1107,52 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
   const pruneBeforeWrite = (root: string): void => {
     const state = openState(root);
     try {
-      const { removed, kept, untouched } = pruneArtifacts(state, root, KEEP_ALIVE_MINUTES);
+      const { removed, kept, missing } = pruneArtifacts(state, root, KEEP_ALIVE_MINUTES);
       if (removed.length > 0) {
         log(`[oks] prune · 清理 ${removed.length} 个过期产物（保活 ${KEEP_ALIVE_MINUTES} 分钟；`
-          + `保留 ${kept} 个、认不出 ${untouched} 个不动）`);
+          + `保留 ${kept} 个、文件已经不在了 ${missing} 个）`);
       }
       const materials = pruneMaterials(state, root, MATERIAL_KEEP_ALIVE_MINUTES);
       if (materials.removed.length > 0) {
         log(`[oks] prune · 清理 ${materials.removed.length} 个过期内部材料`
           + `（保活 ${MATERIAL_KEEP_ALIVE_MINUTES} 分钟；认不出 ${materials.untouched} 个不动）`);
       }
-      // 顺手把清单同步一次：这样页签在**这次写产物之后**就能看到它，不必等一次清单调用。
-      syncArtifacts(state, root);
+      // 顺手把账本对齐一次（补登 + 清掉文件已不在的行）：这是写路径该做的事，
+      // 读路径因此可以完全不碰目录。人工放进 artifacts/ 的报告也在这里被收进清单。
+      const reconciled = reconcileArtifacts(state, root);
+      if (reconciled.adopted > 0 || reconciled.removed.length > 0) {
+        log(`[oks] 账本 · 补登 ${reconciled.adopted} 份、清掉 ${reconciled.removed.length} 条`
+          + `（文件已经不在了）`);
+      }
     } finally {
       state.close();
     }
   };
+  /** 产出一份文件，并在**同一处**记账（只对进清单的那一类）。
+   *  行与磁盘上的文件由这一次调用一起产生，于是不存在"文件在、账上没有"；记账失败就把文件删掉、
+   *  整个调用失败，也不留孤文件。图不进清单（它是报表里的材料），产出流程一样，只是不记账。 */
+  const saveAndRecord = (entry: WorkspaceEntry, options: Omit<SaveArtifactOptions, 'root'>): { src: string; at: string } => {
+    const root = entry.settings.workspaceRoot;
+    pruneBeforeWrite(root);
+    const saved = saveArtifact({ root, ...options });
+    const file = saved.src.slice(saved.src.lastIndexOf('/') + 1);
+    if (!VISIBLE.test(file)) return saved;
+    const state = openState(root);
+    try {
+      recordArtifact(state, file, saved.meta);
+    } catch (cause) {
+      try {
+        unlinkSync(join(root, saved.src));
+      } catch {
+        // 删不掉也不掩盖真正的原因：底下那句错误才是要看的。
+      }
+      throw new Error(`这份产物没能登记进清单（已把它删掉，不留孤文件）：${errorText(cause)}`);
+    } finally {
+      state.close();
+    }
+    return saved;
+  };
+
   /** 降一批 Intent。服务只在整批通过时才回 queries，所以被拒批次里没有报 Error 的子集
    *  会再提交一次——这样"5 个里坏了 1 个"仍能拿到其余 4 个的执行物。 */
   const lowerBatch = async (
@@ -1837,9 +1868,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         // 图把**自己用的那份材料**带上：画出来的行、绘图规格、完整来源链。
         // 于是图离开工作区（或工作区被回收）之后仍说得清这些数字从哪来。
         const content = embedChartInput(svg, { origin: file.origin, data: { rows, spec } });
-        pruneBeforeWrite(entry.settings.workspaceRoot);
-        const saved = saveArtifact({
-          root: entry.settings.workspaceRoot,
+        const saved = saveAndRecord(entry, {
           name: typeof args?.name === 'string' && args.name.length > 0 ? args.name : 'chart',
           content,
           extension: '.svg',
@@ -1955,9 +1984,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             return provenanceBlockHtml({ origin: assembled, data });
           },
         });
-        pruneBeforeWrite(entry.settings.workspaceRoot);
-        const saved = saveArtifact({
-          root: entry.settings.workspaceRoot,
+        const saved = saveAndRecord(entry, {
           name: typeof args?.name === 'string' && args.name.length > 0 ? args.name : 'report',
           content: html,
           extension: '.html',
@@ -1988,7 +2015,8 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         const root = entry.settings.workspaceRoot;
         const state = openState(root);
         try {
-          syncArtifacts(state, root);
+          // 读工具与端点走同一条路：账本就是清单；只在"库空而目录非空"时收养一次。
+          ensureLedger(state, root);
           const entries = listArtifacts(state);
           log(`[oks] artifacts · ${entries.length} 条（保留 ${entries.filter((item) => item.pinned).length}）`);
           return { ok: true as const, keepAliveMinutes: KEEP_ALIVE_MINUTES, entries };

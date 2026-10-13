@@ -12,6 +12,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { ARTIFACT_DIR, artifactFileName, CHART_DIR, DATA_DIR, readArtifactMeta, VIEW_DIR } from './results.ts';
+import type { ArtifactMeta } from './results.ts';
 
 /** 状态目录（相对工作区根）。 */
 export const STATE_DIR = '.oks';
@@ -97,47 +98,87 @@ export function openState(root: string): State {
   return { db, close: () => db.close() };
 }
 
-/** 把清单对齐到目录：读每个可见产物的自述写进库；**删只删文件已经不在目录里的行**。
- *  两种"读不到"要分开：文件还在、只是这一轮读不出自述（正被写入、正好被清理删掉、head 解析不出）
- *  —— 留着它原来那一行；文件真的不在目录里了 —— 才删（连同它的保留）。
- *  单个文件出问题不影响其余文件：一个坏文件不该让整份清单读不出来。
- *  **pin 不在这一步里动**——它只由 `pin` / `unpin` 改。
- *  返回这次从清单里移除的文件名与这一轮读不出自述的文件名（调用方爱记就记一行，便于事后自证）。 */
-export function syncArtifacts(state: State, root: string): { removed: string[]; unreadable: string[] } {
+/** 读一份可见产物的自述；读不出（正被写入、形状不符、老产物）就是 null。 */
+const metaOf = (directory: string, file: string): ArtifactMeta | null => {
+  try {
+    return readArtifactMeta(readHead(join(directory, file)));
+  } catch {
+    return null;   // 读的这一刻文件没了、或被别的东西占着：这一次跳过，下一次再说
+  }
+};
+
+const UPSERT = `insert into artifacts (file, name, kind, at, title, category)
+  values (?, ?, ?, ?, ?, ?)
+  on conflict(file) do update set name = excluded.name, kind = excluded.kind,
+    at = excluded.at, title = excluded.title, category = excluded.category`;
+
+/** 记一行产出。**产出方手里就有 meta**（`saveArtifact` 先造它、再嵌进文件），所以这一步不读文件
+ *  ——读回来还要解一遍 XML 转义、还要赌文件的形状，而两件事都会以"清单里少一条"收场。
+ *  与落盘在同一次工具调用里完成，这就是"有文件必有账"。 */
+export function recordArtifact(state: State, file: string, meta: ArtifactMeta): void {
+  state.db.prepare(UPSERT).run(file, meta.name, meta.kind, meta.at, meta.title, meta.category ?? null);
+}
+
+/** 库空而目录非空时**收养**一次：新工作区、`.oks/` 被删、工作区被拷走（只带走了 `artifacts/`）。
+ *  这是读路径唯一一次碰文件系统，而且一生只可能发生一次——表一旦非空，这里只剩一句 count 查询。 */
+export function ensureLedger(state: State, root: string): { adopted: number } {
+  const count = (state.db.prepare('select count(*) as n from artifacts').get() as { n: number }).n;
+  if (count > 0) return { adopted: 0 };
   const directory = join(root, ARTIFACT_DIR);
-  // 目录不在时**什么都不做**。还没写过产物是常态；而"这一次看不见目录"绝不该把库里的行清光
-  // ——那样清单会凭空变空，得刷新页面（重新挂载、重新读）才回来。
-  if (!existsSync(directory)) return { removed: [], unreadable: [] };
+  if (!existsSync(directory)) return { adopted: 0 };
   const files = readdirSync(directory).filter((file) => VISIBLE.test(file));
-  const present = new Set(files);
-  const upsert = state.db.prepare(`insert into artifacts (file, name, kind, at, title, category)
-    values (?, ?, ?, ?, ?, ?)
-    on conflict(file) do update set name = excluded.name, kind = excluded.kind,
-      at = excluded.at, title = excluded.title, category = excluded.category`);
+  let adopted = 0;
   state.db.exec('begin');
   try {
-    const unreadable: string[] = [];
     for (const file of files) {
-      try {
-        const meta = readArtifactMeta(readHead(join(directory, file)));
-        if (meta === null) {
-          unreadable.push(file); // 没有自述的产物进不了清单（老产物、形状不符、还没写完）
-          continue;
-        }
-        upsert.run(file, meta.name, meta.kind, meta.at, meta.title, meta.category ?? null);
-      } catch {
-        unreadable.push(file); // 读的这一刻文件没了、或被别的东西占着：这一轮跳过，下一次再说
-      }
-    }
-    const removed: string[] = [];
-    for (const row of state.db.prepare('select file from artifacts').all() as Array<{ file: string }>) {
-      if (!present.has(row.file)) {
-        state.db.prepare('delete from artifacts where file = ?').run(row.file);
-        removed.push(row.file);
-      }
+      const meta = metaOf(directory, file);
+      if (meta === null) continue;   // 读不出的这一次不收养；下一次写路径的补登会再看它一眼
+      recordArtifact(state, file, meta);
+      adopted += 1;
     }
     state.db.exec('commit');
-    return { removed, unreadable };
+  } catch (cause) {
+    state.db.exec('rollback');
+    throw cause;
+  }
+  return { adopted };
+}
+
+/** 把账本对齐到目录。**只在写路径调用**（写产物之前的那次懒惰清理、以及保留动作）：
+ *   - 补登还没有行的可读产物（半份刚写完、人工放进来的、收养那一刻读不出的）；
+ *   - 删掉行在而文件已经不在的条目（人工 `rm`、别处删掉）。
+ *  两种"读不到"照旧分开：读不出 = 只跳过（行留着，标题还是旧的那份）；文件不在 = 删行。
+ *  **保留不在这一步里动**——它只由 `pin` / `unpin` 改。 */
+export function reconcileArtifacts(state: State, root: string): { adopted: number; removed: string[]; unreadable: string[] } {
+  const directory = join(root, ARTIFACT_DIR);
+  // 目录不在时什么都不做：还没写过产物是常态，"这一次看不见目录"不该把库里的行清光。
+  if (!existsSync(directory)) return { adopted: 0, removed: [], unreadable: [] };
+  const files = readdirSync(directory).filter((file) => VISIBLE.test(file));
+  const present = new Set(files);
+  const known = new Set((state.db.prepare('select file from artifacts').all() as Array<{ file: string }>)
+    .map((row) => row.file));
+  let adopted = 0;
+  const unreadable: string[] = [];
+  state.db.exec('begin');
+  try {
+    for (const file of files) {
+      if (known.has(file)) continue;   // 有行的以行为准：不重新解析它，也就不覆盖它原来的标题
+      const meta = metaOf(directory, file);
+      if (meta === null) {
+        unreadable.push(file);
+        continue;
+      }
+      recordArtifact(state, file, meta);
+      adopted += 1;
+    }
+    const removed: string[] = [];
+    for (const file of known) {
+      if (present.has(file)) continue;
+      state.db.prepare('delete from artifacts where file = ?').run(file);
+      removed.push(file);
+    }
+    state.db.exec('commit');
+    return { adopted, removed, unreadable };
   } catch (cause) {
     state.db.exec('rollback');
     throw cause;
@@ -204,27 +245,43 @@ export function setPinned(state: State, file: string, pinned: boolean): boolean 
   return Number(info.changes) > 0;
 }
 
-/** 保活清理：删掉"我们写的 + 过了保活 + 没有 pin"的产物。
- *  认不出的文件只统计、不碰；返回三组数字，好让调用方留痕。 */
+/** 保活清理：删掉"过了保活 + 没有 pin"的产物——**遍历账本的行**，不遍历目录。
+ *  登记过才知道哪些是我们的，于是不再需要 `OURS` 正则去猜；过期就把文件与那一行一起去掉，
+ *  文件已经不在的（人工删过）顺手把行清掉。认不出的文件根本不在账本里，自然不碰。
+ *  目录看不见时什么都不做：那一次"看不见"不该被当成"产物都没了"。 */
 export function pruneArtifacts(
   state: State,
   root: string,
   keepAliveMinutes: number = KEEP_ALIVE_MINUTES,
-): { removed: string[]; kept: number; untouched: number } {
-  const directory = join(root, ARTIFACT_DIR);
-  if (!existsSync(directory)) return { removed: [], kept: 0, untouched: 0 };
+): { removed: string[]; kept: number; missing: number } {
+  if (!existsSync(join(root, ARTIFACT_DIR))) return { removed: [], kept: 0, missing: 0 };
   const pinned = pinnedFiles(state);
   const cutoff = Date.now() - keepAliveMinutes * 60_000;
+  const rows = state.db.prepare('select file, at from artifacts').all() as Array<{ file: string; at: string }>;
   const removed: string[] = [];
   let kept = 0;
-  let untouched = 0;
-  for (const file of readdirSync(directory)) {
-    if (!OURS.test(file)) { untouched += 1; continue; }
-    if (pinned.has(file) || stampMs(file.slice(0, 16)) > cutoff) { kept += 1; continue; }
-    unlinkSync(join(directory, file));
-    removed.push(file);
+  let missing = 0;
+  state.db.exec('begin');
+  try {
+    for (const row of rows) {
+      if (pinned.has(row.file) || stampMs(row.at) > cutoff) {
+        kept += 1;
+        continue;
+      }
+      try {
+        unlinkSync(join(root, ARTIFACT_DIR, row.file));
+      } catch {
+        missing += 1;   // 文件已经不在：行照样清掉
+      }
+      state.db.prepare('delete from artifacts where file = ?').run(row.file);
+      removed.push(row.file);
+    }
+    state.db.exec('commit');
+  } catch (cause) {
+    state.db.exec('rollback');
+    throw cause;
   }
-  return { removed, kept, untouched };
+  return { removed, kept, missing };
 }
 
 /** `pin` / `unpin` 的入口：把 src 解析成文件名、核对它是可见产物、再落状态。
@@ -236,7 +293,8 @@ export function pinBySrc(root: string, src: unknown, pinned: boolean): { file: s
   }
   const state = openState(root);
   try {
-    syncArtifacts(state, root);
+    // 保留是写路径：顺手把账本对齐一次（人工放进 artifacts/ 的报告也能就此被保留）。
+    reconcileArtifacts(state, root);
     if (!setPinned(state, file, pinned)) {
       throw new Error(`这份产物没有自述、进不了清单，因此无法保留：${JSON.stringify(src)}`);
     }

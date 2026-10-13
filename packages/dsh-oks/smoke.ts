@@ -12,6 +12,7 @@
 import { apply, artifactName, buildOption, CHART_WIDTH, embedArtifactMeta, NAME_MAX, readArtifactMeta,
   renderEchartsSvg, resultStamp, saveArtifact } from './lib/index.mjs';
 import { createHash } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { applyOps, encode, parseMoment } from './src/time.ts';
 import { singleFlight } from './src/single-flight.ts';
 import { intentKey } from './src/key.ts';
@@ -19,8 +20,8 @@ import { CHART_KINDS, supports } from './src/chart/shared.ts';
 import { tableMarkdown } from './src/view/table.ts';
 import { readReportProvenance } from './src/chart/report.ts';
 // 保留走的是 `pinBySrc`——界面端点与冒烟都直接调它（这条能力不在工具面里）。
-import { deleteArtifact, KEEP_ALIVE_MINUTES, MATERIAL_KEEP_ALIVE_MINUTES, VISIBLE, listArtifacts, openState,
-  pinBySrc, pruneMaterials, syncArtifacts } from './src/state.ts';
+import { deleteArtifact, ensureLedger, KEEP_ALIVE_MINUTES, MATERIAL_KEEP_ALIVE_MINUTES, VISIBLE, listArtifacts,
+  openState, pinBySrc, pruneArtifacts, pruneMaterials, reconcileArtifacts, recordArtifact } from './src/state.ts';
 // 来源链的读取与易读视图：冒烟直接调这一层，验证编码与边界（不经工具）。
 import { chainLines, readChartInput, readEnvelope, readTableView, rowsOf } from './src/results.ts';
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync,
@@ -3124,6 +3125,16 @@ console.log('=== 清单、pin 与保活清理 ===');
   writeFileSync(join(DEV_ROOT, 'artifacts', oldReport), oldBody('old_report', '很久以前的报告'));
   writeFileSync(join(DEV_ROOT, 'artifacts', keptReport), oldBody('old_kept', '要留住的旧报告'));
   writeFileSync(join(DEV_ROOT, 'artifacts', stranger), '用户自己放在这里的东西');
+  // 保活清理遍历**账本的行**，所以先给这两份记账（人工写进目录的文件不走这条路）。
+  {
+    const state = openState(DEV_ROOT);
+    try {
+      recordArtifact(state, oldReport, { name: 'old_report', kind: 'report', at: oldStamp, title: '很久以前的报告' });
+      recordArtifact(state, keptReport, { name: 'old_kept', kind: 'report', at: oldStamp, title: '要留住的旧报告' });
+    } finally {
+      state.close();
+    }
+  }
   pinBySrc(DEV_ROOT, `artifacts/${keptReport}`, true);
   const logsBefore = logs.length;
   const pruneRows = await call('create_data', {
@@ -3134,15 +3145,13 @@ console.log('=== 清单、pin 与保活清理 ===');
   await call('oks_chart', { spec: { kind: 'bar', x: 'label', value: 'value' }, src: pruneRows.value.dataSrc, name: 'probe_prune' });
   ok('过期且未保留的产物被清理', !existsSync(join(DEV_ROOT, 'artifacts', oldReport)));
   ok('保留过的产物不会被清理', existsSync(join(DEV_ROOT, 'artifacts', keptReport)));
-  ok('认不出的文件不动', existsSync(join(DEV_ROOT, 'artifacts', stranger)));
+  ok('没登记的文件不在清理范围里（清理只认账本上的行）', existsSync(join(DEV_ROOT, 'artifacts', stranger)));
   const pruneLog = logs.slice(logsBefore).find((line) => line.includes('prune'));
   console.log(`  清理留痕：${pruneLog ?? '(没有)'}`);
-  // 日志只说数量：至少清了一条；"认不出的"要等于目录里真正认不出的文件数（我们没碰它们）。
-  const oursPattern = /^\d{8}T\d{6}Z-[0-9a-z_~]+(?:-[0-9a-f]{8})?\.(query\.json|chart\.svg|report\.html)$/;
-  const strangerCount = readdirSync(join(DEV_ROOT, 'artifacts')).filter((name) => !oursPattern.test(name)).length;
+  // 日志只说数量：至少清了一条，保留了几个也报出来。
   const cleanedCount = typeof pruneLog === 'string' ? Number(/清理 (\d+) 个过期产物/.exec(pruneLog)?.[1] ?? 0) : 0;
-  ok('清理留痕（宿主日志里有一行、至少清了一条、认不出的一个没动）',
-    cleanedCount >= 1 && typeof pruneLog === 'string' && pruneLog.includes(`认不出 ${strangerCount} 个不动`));
+  ok('清理留痕（宿主日志里有一行、至少清了一条、保留数也报出来）',
+    cleanedCount >= 1 && typeof pruneLog === 'string' && /保留 \d+ 个/.test(pruneLog));
   const listedAfter = (await call('oks_artifacts', {})).value.entries;
   ok('清理之后清单里没有它了', !listedAfter.some((entry) => entry.file === oldReport));
   ok('保留的那条还在清单里', listedAfter.some((entry) => entry.file === keptReport && entry.pinned === true));
@@ -3189,47 +3198,106 @@ console.log('=== 分类与"当前只算报表" ===');
     described.includes('category') && described.includes('周报'));
 }
 
-// ── 界面那两条端点：清单 + 保留（都是机械操作，界面直接打它们，不经过 agent）────────────
-// ── 目录一时看不见，不该把清单清空 ──────────────────────────────────────────
-//   这是"清单过一会儿变空、刷新页面又回来"那个 bug 的根因：一次看不见 artifacts/ 就把库里
-//   的行全删了，于是那一次清单真的是空的。
-console.log('=== 目录看不见时不清空 ===');
+// ── 账本：清单只依赖数据库，不依赖文件系统 ────────────────────────────────────
+//   读路径一个字节的文件系统都不碰（只 `SELECT`），碰目录的三件事都在写路径：
+//   收养（只在库空时）、补登与清悬挂（写产物之前的懒惰清理里）、删除（用户点 ✕）。
+console.log('=== 账本：清单不依赖文件系统 ===');
 {
-  const dir = mkdtempSync(join(tmpdir(), 'oks-sync-'));
+  const dir = mkdtempSync(join(tmpdir(), 'oks-ledger-'));
   const report = readdirSync(join(DEV_ROOT, 'artifacts')).find((name) => VISIBLE.test(name));
-  mkdirSync(join(dir, 'artifacts'), { recursive: true });
+  const source = readFileSync(join(DEV_ROOT, 'artifacts', String(report)), 'utf8');
   const target = join(dir, 'artifacts', String(report));
+  mkdirSync(join(dir, 'artifacts'), { recursive: true });
   copyFileSync(join(DEV_ROOT, 'artifacts', String(report)), target);
   const state = openState(dir);
   try {
-    syncArtifacts(state, dir);
-    ok('先在临时工作区里建出清单', listArtifacts(state).length === 1);
+    // 收养：库空而目录非空时扫一次；库一旦非空，第二次不再扫。
+    ok('库空时收养目录里的产物', ensureLedger(state, dir).adopted === 1
+      && listArtifacts(state).length === 1);
+    const handDropped = `${resultStamp()}-hand_dropped.report.html`;
+    writeFileSync(join(dir, 'artifacts', handDropped), source);
+    ok('库非空时不再扫目录（第二次 ensureLedger 什么都不做）',
+      ensureLedger(state, dir).adopted === 0 && listArtifacts(state).length === 1);
+
+    // 读路径不写：同一个库**只读**打开也能出清单（`ensureLedger` 在表非空时只是一句 count）。
+    {
+      const readOnly = new DatabaseSync(join(dir, '.oks', 'state.db'), { readOnly: true });
+      try {
+        const state2 = { db: readOnly, close: () => { /* 只读的那份自己关 */ } };
+        ok('读路径不写：库只读打开也能出清单，收养也不动手',
+          ensureLedger(state2, dir).adopted === 0 && listArtifacts(state2).length === 1);
+      } finally {
+        readOnly.close();
+      }
+    }
+
+    // 目录整个看不见：清单照旧（读路径不碰目录，所以"看不见"不会变成"没有"）。
     rmSync(join(dir, 'artifacts'), { recursive: true, force: true });
-    const removed = syncArtifacts(state, dir);
-    ok('目录不在时不同步（一次看不见不该清空）',
-      removed.removed.length === 0 && listArtifacts(state).length === 1);
+    ok('目录不在时清单照旧（读路径不碰目录）', listArtifacts(state).length === 1);
+    ok('目录不在时补登/清悬挂都什么都不做',
+      reconcileArtifacts(state, dir).removed.length === 0 && listArtifacts(state).length === 1);
+
     mkdirSync(join(dir, 'artifacts'), { recursive: true });
     copyFileSync(join(DEV_ROOT, 'artifacts', String(report)), target);
-    syncArtifacts(state, dir);
-    ok('目录回来之后清单照旧', listArtifacts(state).length === 1);
-    // 文件还在、只是这一轮读不出自述（正被写入、正好被清理、头解析不出）：留着那一行，
-    // 连同它的保留状态——"这一轮没读到"与"文件不在了"是两回事。
+    writeFileSync(join(dir, 'artifacts', handDropped), source);
+
+    // 补登：目录里有、账上没有的可读产物（人工放进来、或收养那一刻读不出的）。
+    const reconciled = reconcileArtifacts(state, dir);
+    ok('补登目录里还没登记的产物', reconciled.adopted === 1 && listArtifacts(state).length === 2);
+
+    // 行是权威：文件还在、自述读不出时**不重新解析**，原来那一行（含标题与保留）照旧。
+    const before = listArtifacts(state).find((row) => row.file === String(report));
     pinBySrc(dir, `artifacts/${String(report)}`, true);
     writeFileSync(target, '<!doctype html><html><head><title>只写了一半');
-    const half = syncArtifacts(state, dir);
-    const keptRows = listArtifacts(state);
-    ok('文件还在、自述读不出时：那一行留着，保留状态也留着',
-      half.removed.length === 0 && half.unreadable.length === 1
-      && keptRows.length === 1 && keptRows[0]?.pinned === true);
+    const afterHalf = reconcileArtifacts(state, dir);
+    const kept = listArtifacts(state).find((row) => row.file === String(report));
+    ok('文件还在但读不出自述：那一行照旧，标题与保留都不动（不重新解析文件）',
+      afterHalf.unreadable.length === 0 && kept?.title === before?.title && kept?.pinned === true);
+
+    // 文件真的没了：行才被清掉（连同保留）。
     copyFileSync(join(DEV_ROOT, 'artifacts', String(report)), target);
-    syncArtifacts(state, dir);
-    const back = listArtifacts(state);
-    ok('自述回来之后还是那一行、保留状态没丢',
-      back.length === 1 && back[0]?.pinned === true && back[0]?.title !== undefined);
-    // 文件真的没了时才移除那一行。
     rmSync(target, { force: true });
-    const gone = syncArtifacts(state, dir);
-    ok('文件真的不在时才移除行', gone.removed.length === 1 && listArtifacts(state).length === 0);
+    const gone = reconcileArtifacts(state, dir);
+    ok('文件真的不在时才清掉那一行', gone.removed.length === 1 && listArtifacts(state).length === 1);
+
+    // 保活清理遍历**行**：过期的删文件 + 删行；保留的跳过。
+    const expiredMeta = (name: string, title: string) => ({ name, kind: 'report' as const, at: '20200101T000000Z', title });
+    const stale = '20200101T000000Z-stale_probe.report.html';
+    const keep = '20200101T000000Z-kept_probe.report.html';
+    writeFileSync(join(dir, 'artifacts', stale), source);
+    writeFileSync(join(dir, 'artifacts', keep), source);
+    recordArtifact(state, stale, expiredMeta('stale_probe', '过期的探针报告'));
+    recordArtifact(state, keep, expiredMeta('kept_probe', '留住的探针报告'));
+    pinBySrc(dir, `artifacts/${keep}`, true);
+    const pruned = pruneArtifacts(state, dir, KEEP_ALIVE_MINUTES);
+    ok('保活清理按行做：过期的文件与行一起没，保留的那份（行与文件）都不动',
+      pruned.removed.includes(stale) && !existsSync(join(dir, 'artifacts', stale))
+      && !listArtifacts(state).some((row) => row.file === stale)
+      && existsSync(join(dir, 'artifacts', keep))
+      && listArtifacts(state).some((row) => row.file === keep && row.pinned === true));
+    ok('目录看不见时保活清理什么都不做（那次"看不见"不当成"都没了"）',
+      (() => {
+        rmSync(join(dir, 'artifacts'), { recursive: true, force: true });
+        const idle = pruneArtifacts(state, dir, 0);   // 保活设成 0：所有行都过期
+        return idle.removed.length === 0 && listArtifacts(state).length >= 1;
+      })());
+
+    // 记账用的是**手里的那份 meta**，不是从文件里读回来的：标题里的 `&` 与引号在库里是原文。
+    const raw = '原文 & "引号" 的标题';
+    const written = saveArtifact({
+      root: dir,
+      name: 'raw_meta',
+      content: `<!doctype html><html><head><title>${raw}</title></head><body>x</body></html>`,
+      extension: '.html',
+      kind: 'report',
+      title: raw,
+    });
+    recordArtifact(state, written.src.slice(written.src.lastIndexOf('/') + 1), written.meta);
+    const onDisk = readFileSync(join(dir, written.src), 'utf8');
+    const row = listArtifacts(state).find((item) => item.file === written.src.slice(written.src.lastIndexOf('/') + 1));
+    ok('库里的标题是原文，文件里的自述是转义后的（不靠解析文件记账）',
+      row?.title === raw && onDisk.includes('&amp;') && onDisk.includes('&quot;')
+      && readArtifactMeta(onDisk)?.title === raw);
   } finally {
     state.close();
     rmSync(dir, { recursive: true, force: true });
@@ -3350,7 +3418,7 @@ console.log('=== 界面那两条端点 ===');
   };
   {
     const state = openState(DEV_ROOT);
-    try { syncArtifacts(state, DEV_ROOT); } finally { state.close(); }
+    try { reconcileArtifacts(state, DEV_ROOT); } finally { state.close(); }
   }
   ok('删除前：产物在磁盘上、也在清单里',
     existsSync(join(DEV_ROOT, doomed.src)) && (await listFiles()).includes(doomedFile));
@@ -3377,7 +3445,7 @@ console.log('=== 界面那两条端点 ===');
   const orphanFile = orphan.src.slice(orphan.src.lastIndexOf('/') + 1);
   {
     const state = openState(DEV_ROOT);
-    try { syncArtifacts(state, DEV_ROOT); } finally { state.close(); }
+    try { reconcileArtifacts(state, DEV_ROOT); } finally { state.close(); }
   }
   rmSync(join(DEV_ROOT, orphan.src), { force: true });
   const orphanGone = await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: orphan.src });
