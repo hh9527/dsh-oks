@@ -1,12 +1,18 @@
-// 产出层的状态：谁被保留了（pin），以及一份可从目录重建的清单。
+// 产出层的账本：清单与保留。
 //
-// 为什么单独一层：pin 是**唯一不能从产物重建**的东西——文件里只有自述，pin 是人的动作。
-// 所以它是真状态；清单只是投影，随时能从 artifacts/ 与产物自述重建（删了库也不会丢东西，
-// 只丢 pin）。状态住在工作区的 .oks/state.db（node:sqlite，零新依赖）：artifacts/ 会被保活
-// 清理，状态不能被清，所以两者分开放。
+// **清单的权威在账本**：`SELECT` 就是清单，读路径不依赖文件系统；文件是账本指向的 payload。
+// 写路径做三件事——产出时记账（`recordArtifact`，用产出方手里的 meta，不解析文件）、
+// 写产物之前的懒惰清理（`pruneArtifacts` 遍历行 + `reconcileArtifacts` 补登与清悬挂）、
+// 以及用户点 `✕`（`deleteArtifact`）。读路径只做一次**只补登、不删除**的对账
+// （`adoptArtifacts`），于是"文件在、账本上没有"这一类一次读就自愈。
 //
-// 清理只认"我们写的那三类产物"这个名字形状；**认不出的文件一概不碰**——工作区里可能有
-// 用户自己放的东西，我们不替人做删除决定。
+// 为什么这样分：pin 是**唯一不能从产物重建**的东西（文件里只有自述，pin 是人的动作），
+// 所以账本必须活着；而账本丢了也能重建——目录里每份产物都自述齐全，一次补登就都回来了
+// （只丢 pin）。状态住在工作区的 .oks/state.db（node:sqlite，零新依赖）：artifacts/ 会被
+// 保活清理，账本不能被清，所以两者分开放。
+//
+// 清理只碰**账本上的行**；没登记的文件一概不动——工作区里可能有用户自己放的东西，
+// 我们不替人做删除决定。
 
 import { DatabaseSync } from 'node:sqlite';
 import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -119,20 +125,30 @@ export function recordArtifact(state: State, file: string, meta: ArtifactMeta): 
   state.db.prepare(UPSERT).run(file, meta.name, meta.kind, meta.at, meta.title, meta.category ?? null);
 }
 
-/** 库空而目录非空时**收养**一次：新工作区、`.oks/` 被删、工作区被拷走（只带走了 `artifacts/`）。
- *  这是读路径唯一一次碰文件系统，而且一生只可能发生一次——表一旦非空，这里只剩一句 count 查询。 */
-export function ensureLedger(state: State, root: string): { adopted: number } {
-  const count = (state.db.prepare('select count(*) as n from artifacts').get() as { n: number }).n;
-  if (count > 0) return { adopted: 0 };
+/** 读路径的**补登**：目录里有、账本上没有的可读产物，就地登记。
+ *  只补登、**不删除**——所以"目录一时看不见"或"某个文件读不出来"都不会让清单少一条。
+ *  一行都不用补时（正常情况）连事务都不开：读路径照旧是纯读。
+ *  代价是每次读多一次 readdir（几十个名字，可忽略）；换来的是"文件在、账上没有"这一类
+ *  （过渡期的产物、写完文件就崩、人工放进来的、库被换过）**一次读就自愈**，不必等下一次写操作。
+ *  库被删的情形自然也在这里：表空，于是目录里的每一份都是"没有行的"。 */
+export function adoptArtifacts(state: State, root: string): { adopted: number; unreadable: string[] } {
   const directory = join(root, ARTIFACT_DIR);
-  if (!existsSync(directory)) return { adopted: 0 };
-  const files = readdirSync(directory).filter((file) => VISIBLE.test(file));
+  if (!existsSync(directory)) return { adopted: 0, unreadable: [] };
+  const known = new Set((state.db.prepare('select file from artifacts').all() as Array<{ file: string }>)
+    .map((row) => row.file));
+  const pending = readdirSync(directory)
+    .filter((file) => VISIBLE.test(file) && !known.has(file));
+  if (pending.length === 0) return { adopted: 0, unreadable: [] };
   let adopted = 0;
+  const unreadable: string[] = [];
   state.db.exec('begin');
   try {
-    for (const file of files) {
+    for (const file of pending) {
       const meta = metaOf(directory, file);
-      if (meta === null) continue;   // 读不出的这一次不收养；下一次写路径的补登会再看它一眼
+      if (meta === null) {
+        unreadable.push(file);   // 正被写入、形状不符、老产物：这一次不登记，下一次读再试
+        continue;
+      }
       recordArtifact(state, file, meta);
       adopted += 1;
     }
@@ -141,7 +157,7 @@ export function ensureLedger(state: State, root: string): { adopted: number } {
     state.db.exec('rollback');
     throw cause;
   }
-  return { adopted };
+  return { adopted, unreadable };
 }
 
 /** 把账本对齐到目录。**只在写路径调用**（写产物之前的那次懒惰清理、以及保留动作）：

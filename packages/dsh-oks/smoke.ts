@@ -20,7 +20,7 @@ import { CHART_KINDS, supports } from './src/chart/shared.ts';
 import { tableMarkdown } from './src/view/table.ts';
 import { readReportProvenance } from './src/chart/report.ts';
 // 保留走的是 `pinBySrc`——界面端点与冒烟都直接调它（这条能力不在工具面里）。
-import { deleteArtifact, ensureLedger, KEEP_ALIVE_MINUTES, MATERIAL_KEEP_ALIVE_MINUTES, VISIBLE, listArtifacts,
+import { adoptArtifacts, deleteArtifact, KEEP_ALIVE_MINUTES, MATERIAL_KEEP_ALIVE_MINUTES, VISIBLE, listArtifacts,
   openState, pinBySrc, pruneArtifacts, pruneMaterials, reconcileArtifacts, recordArtifact } from './src/state.ts';
 // 来源链的读取与易读视图：冒烟直接调这一层，验证编码与边界（不经工具）。
 import { chainLines, readChartInput, readEnvelope, readTableView, rowsOf } from './src/results.ts';
@@ -3211,21 +3211,23 @@ console.log('=== 账本：清单不依赖文件系统 ===');
   copyFileSync(join(DEV_ROOT, 'artifacts', String(report)), target);
   const state = openState(dir);
   try {
-    // 收养：库空而目录非空时扫一次；库一旦非空，第二次不再扫。
-    ok('库空时收养目录里的产物', ensureLedger(state, dir).adopted === 1
+    // 补登（读路径）：目录里有、账本上没有的可读产物就地登记；只加不删。
+    ok('库空时把目录里的产物补登进来', adoptArtifacts(state, dir).adopted === 1
       && listArtifacts(state).length === 1);
     const handDropped = `${resultStamp()}-hand_dropped.report.html`;
     writeFileSync(join(dir, 'artifacts', handDropped), source);
-    ok('库非空时不再扫目录（第二次 ensureLedger 什么都不做）',
-      ensureLedger(state, dir).adopted === 0 && listArtifacts(state).length === 1);
+    ok('文件在、账本上没有：一次读就补进来（不必等写操作）',
+      adoptArtifacts(state, dir).adopted === 1 && listArtifacts(state).length === 2);
+    ok('补登不重复：再补一次什么都不做', adoptArtifacts(state, dir).adopted === 0
+      && listArtifacts(state).length === 2);
 
     // 读路径不写：同一个库**只读**打开也能出清单（`ensureLedger` 在表非空时只是一句 count）。
     {
       const readOnly = new DatabaseSync(join(dir, '.oks', 'state.db'), { readOnly: true });
       try {
         const state2 = { db: readOnly, close: () => { /* 只读的那份自己关 */ } };
-        ok('读路径不写：库只读打开也能出清单，收养也不动手',
-          ensureLedger(state2, dir).adopted === 0 && listArtifacts(state2).length === 1);
+        ok('读路径不写：库只读打开也能出清单，没有要补登的就不动手',
+          adoptArtifacts(state2, dir).adopted === 0 && listArtifacts(state2).length === 2);
       } finally {
         readOnly.close();
       }
@@ -3233,17 +3235,21 @@ console.log('=== 账本：清单不依赖文件系统 ===');
 
     // 目录整个看不见：清单照旧（读路径不碰目录，所以"看不见"不会变成"没有"）。
     rmSync(join(dir, 'artifacts'), { recursive: true, force: true });
-    ok('目录不在时清单照旧（读路径不碰目录）', listArtifacts(state).length === 1);
+    ok('目录不在时清单照旧（补登也不凭空加行、更不删行）',
+      adoptArtifacts(state, dir).adopted === 0 && listArtifacts(state).length === 2);
     ok('目录不在时补登/清悬挂都什么都不做',
-      reconcileArtifacts(state, dir).removed.length === 0 && listArtifacts(state).length === 1);
+      reconcileArtifacts(state, dir).removed.length === 0 && listArtifacts(state).length === 2);
 
     mkdirSync(join(dir, 'artifacts'), { recursive: true });
     copyFileSync(join(DEV_ROOT, 'artifacts', String(report)), target);
     writeFileSync(join(dir, 'artifacts', handDropped), source);
+    // 一个**从没被读过**的新产物：写路径的对账也要能补登它（人工放进来、或刚好错过一次读）。
+    const writeOnly = `${resultStamp()}-write_only.report.html`;
+    writeFileSync(join(dir, 'artifacts', writeOnly), source);
 
-    // 补登：目录里有、账上没有的可读产物（人工放进来、或收养那一刻读不出的）。
     const reconciled = reconcileArtifacts(state, dir);
-    ok('补登目录里还没登记的产物', reconciled.adopted === 1 && listArtifacts(state).length === 2);
+    ok('写路径的对账也补登目录里还没登记的产物',
+      reconciled.adopted === 1 && listArtifacts(state).length === 3);
 
     // 行是权威：文件还在、自述读不出时**不重新解析**，原来那一行（含标题与保留）照旧。
     const before = listArtifacts(state).find((row) => row.file === String(report));
@@ -3258,7 +3264,7 @@ console.log('=== 账本：清单不依赖文件系统 ===');
     copyFileSync(join(DEV_ROOT, 'artifacts', String(report)), target);
     rmSync(target, { force: true });
     const gone = reconcileArtifacts(state, dir);
-    ok('文件真的不在时才清掉那一行', gone.removed.length === 1 && listArtifacts(state).length === 1);
+    ok('文件真的不在时才清掉那一行', gone.removed.length === 1 && listArtifacts(state).length === 2);
 
     // 保活清理遍历**行**：过期的删文件 + 删行；保留的跳过。
     const expiredMeta = (name: string, title: string) => ({ name, kind: 'report' as const, at: '20200101T000000Z', title });
@@ -3400,6 +3406,16 @@ console.log('=== 界面那两条端点 ===');
   }
   const restored = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
   ok('恢复之后清单照旧', ((restored.body.value as { entries: unknown[] }).entries).length > 0);
+
+  // 现场那个形态：文件在磁盘上（能打开），账本里没有它那一行——**一次读**就该补进来，
+  // 而不是等下一次写产物。以前只在"库空"时收养，于是这种产物会一直不可见。
+  const unlisted = `${resultStamp()}-adopted_by_read.report.html`;
+  copyFileSync(join(DEV_ROOT, 'artifacts', String(target?.file)), join(DEV_ROOT, 'artifacts', unlisted));
+  const adoptedRead = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
+  const adoptedEntries = (adoptedRead.body.value as { entries: { file: string }[] }).entries;
+  ok('文件在、账本上没有时：一次读就补进来（不必等写操作）',
+    adoptedEntries.some((entry) => entry.file === unlisted));
+  await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: `artifacts/${unlisted}` });
 
   // 主动删除（界面每行那个 x）：只有未保留的能删；文件与行一起去掉。
   const doomed = saveArtifact({

@@ -17,7 +17,7 @@ import type { ChartKind, ExpressionSwitch, LayoutOverrides, MarkLine, SecondMetr
 import { OBJECT_OUTPUT, renderArtifacts, renderChart, renderCheck, renderCreateData, renderJqInto, renderJqTransform,
   renderJson, renderQuery, renderValue, renderView, renderWorkEdit, renderWorkRead, renderWorkWrite,
   shapeOf, withoutQueries } from './response.ts';
-import { ensureLedger, KEEP_ALIVE_MINUTES, listArtifacts, MATERIAL_KEEP_ALIVE_MINUTES, openState,
+import { adoptArtifacts, KEEP_ALIVE_MINUTES, listArtifacts, MATERIAL_KEEP_ALIVE_MINUTES, openState,
   pruneArtifacts, pruneMaterials, reconcileArtifacts, recordArtifact, VISIBLE } from './state.ts';
 import type { Row } from './response.ts';
 import { REFERENCE_KINDS, referencesOf, renderReferences, renderSearch, searchIndex } from './retrieval.ts';
@@ -2015,8 +2015,8 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         const root = entry.settings.workspaceRoot;
         const state = openState(root);
         try {
-          // 读工具与端点走同一条路：账本就是清单；只在"库空而目录非空"时收养一次。
-          ensureLedger(state, root);
+          // 读工具与端点走同一条路：账本就是清单，外加一次"只补登、不删除"的对账。
+          adoptArtifacts(state, root);
           const entries = listArtifacts(state);
           log(`[oks] artifacts · ${entries.length} 条（保留 ${entries.filter((item) => item.pinned).length}）`);
           return { ok: true as const, keepAliveMinutes: KEEP_ALIVE_MINUTES, entries };
