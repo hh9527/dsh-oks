@@ -1,24 +1,24 @@
-// dsh-oks —— DSH 能力扩展：把"某个领域的知识服务（OKS）"接成十六个原生工具。
+// dsh-oks —— DSH 能力扩展：把"某个领域的知识服务（OKS）"接成十三个原生工具。
 // 插件不认识任何模型：开放哪个模型、模型在哪，由**会话所在工作区**根目录的 oks.json 声明
 // （{"domain":"...","model":"...wasm","dataFile":"...sqlite"}）。
 // 工作区是会话属性，所以一份插件能服务任意多工作区。
 //
-// 十六个工具：oks_search（按名词/说法在词汇表里找到 key）、
+// 十三个工具：oks_search（按名词/说法在词汇表里找到 key）、
 // oks_references（按 key 反向找到引用它的节点）、
 // oks_info（按服务给出的不透明 key 读节点，入口是 key "index"）、
 // oks_check_intent（只校验命名 Intent；通过的项给出该项的 key）、
 // oks_query（核 key 后**只读查询**数据文件，成功项落盘、回结构回执；SQL/bindings 只在这一条路径上出现）、
 // create_data（把 agent 自己给的数据落成一份封装——给定数据的唯一入口）、
-// jq_transform（在具名输入上做加工：只看、不落盘）、
+// jq_transform（在具名输入上做加工：只看、不落盘；默认拿那份文件的 data，whole: true 拿整份
+//   {meta, origin, data}）、
 // jq_transform_into（同一套求值，结果物化成封装数据——新来源链由工具组装）、
 // oks_chart（在服务端把图画成 SVG 存进工作区：只从一份封装取数，图自带绘图材料与来源链，
 //   回执给出可直接粘进回答的引用）、
 // oks_view（把数据变成展示件并落成 markdown：先支持表格；流里与报表里都能渲染）、
 // oks_report（把 markdown 组装成自足的 HTML 报告：图与表内联，展示项的最终数据与完整来源链
 //   并进页面里的报表级来源结构；缺件或超限整份失败）、
-// 报告侧还有四个：oks_report_items（列出报告里的展示项）、
-// oks_extract_report_data / _into（把某一项的最终数据取出来看 / 物化成普通封装）、
-// oks_origin（摊开任何一份产出自带的来源链，只核对不重算）。
+// oks_origin（摊开任何一份产出自带的来源链：四种产物归一到同一份 { meta, origin, data }，
+//   只核对不重算；报告的展示项清单也在回执里）。
 // oks_artifacts（列出这个工作区产出过什么）。
 //
 // **保留（pin）不在工具面里**：那是用户在右侧栏「产出」页签里点一下的动作（走插件自己的端点），

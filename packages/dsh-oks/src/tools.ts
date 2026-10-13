@@ -6,14 +6,16 @@ import { runJaq } from './jaq.ts';
 import { buildOption, CHART_WIDTH } from './chart/option.ts';
 import { renderEchartsSvg } from './chart/echarts.ts';
 import { tableMarkdown } from './view/table.ts';
-import { itemChain, parseArtifactOrigin, resolveItem, driftLines } from './report/read.ts';
-import type { ArtifactOrigin } from './report/read.ts';
+import { itemChain, parseArtifactOrigin, reportChapters, reportItems, resolveItem, driftLines } from './report/read.ts';
+import type { ReportItemView } from './report/read.ts';
+import type { ArtifactView } from './report/read.ts';
+import type { OriginNodeView } from './response.ts';
 import { buildFigureHtml, provenanceBlockHtml, renderReportHtml, REPORT_PROVENANCE_MAX_BYTES } from './chart/report.ts';
-import type { DisplaySource } from './chart/report.ts';
+import type { DisplaySource, ReportData } from './chart/report.ts';
 import { CHART_KINDS, inferXType, supportedKinds, supports, toNumber } from './chart/shared.ts';
 import type { ChartKind, ExpressionSwitch, LayoutOverrides, MarkLine, SecondMetric, StyleOverrides } from './chart/shared.ts';
 import { OBJECT_OUTPUT, renderArtifacts, renderChart, renderCheck, renderCreateData, renderJqInto, renderJqTransform,
-  renderExtractData, renderExtractInto, renderJson, renderOrigin, renderQuery, renderReportItems, renderValue,
+  renderJson, renderOrigin, renderQuery, renderValue,
   renderView, shapeOf, withoutQueries } from './response.ts';
 import { KEEP_ALIVE_MINUTES, listArtifacts, MATERIAL_KEEP_ALIVE_MINUTES, openState, pruneArtifacts, pruneMaterials,
   syncArtifacts } from './state.ts';
@@ -29,10 +31,10 @@ import { isArray, isRecord } from './host.ts';
 import { errorText } from './host.ts';
 import type { DiagnosticEntry, LogFn, ServiceResponse, ToolDefinition, ToolExec, TraceStep } from './host.ts';
 import { intentKey } from './key.ts';
-import { ARTIFACT_DIR, chainLines, CHART_DIR, embedChartInput, mergeChains, nameProblem, readArtifact,
-  readArtifactMeta, readChartInput, readEnvelope, readResult, readTableView, saveArtifact, saveInputData, saveResult,
-  saveTableView, saveTransform, VIEW_DIR } from './results.ts';
-import type { ColumnInfo, DataEnvelope } from './results.ts';
+import { appendNode, ARTIFACT_DIR, chainLines, CHART_DIR, embedChartInput, nameProblem, readArtifact,
+  readChartInput, readTableView, rowsOf, saveArtifact, saveDerived, saveInputData,
+  saveResult, saveTableView, saveTransform, VIEW_DIR } from './results.ts';
+import type { ColumnInfo, DataOrigin, OriginNode } from './results.ts';
 
 
 /** oks_info 的入参。 */
@@ -163,25 +165,29 @@ const resolveReportDisplay = (root: string, href: string): { source: DisplaySour
     };
   }
   if (isTable) {
-    const view = readTableView(content);
-    if (view === null) return { error: `报告里引用的表不是本插件写的（文件头没有来源材料）：${href}` };
+    const material = readTableView(content);
+    if (material === null) return { error: `报告里引用的表不是本插件写的（文件头没有来源材料）：${href}` };
     return {
       source: {
         kind: 'table',
-        markdown: view.markdown,
-        origin: view.material.origin,
-        data: view.material.data,
-        spec: view.material.spec,
+        markdown: material.markdown,
+        origin: material.material.origin,
+        data: material.material.data.rows,
+        spec: material.material.data.spec,
       },
     };
   }
   if (!/<svg[\s>]/i.test(content)) return { error: `报告里引用的图不是 SVG：${href}` };
-  const material = readChartInput(content);
-  if (material === null) return { error: `报告里引用的图没有来源材料（不是本插件画的？）：${href}` };
+  const chart = readChartInput(content);
+  if (chart === null) return { error: `报告里引用的图没有来源材料（不是本插件画的？）：${href}` };
   // 图自带的那份材料**搬进**报表级结构：内联的这一份不再重复带（工作区里的图文件仍自带，
   // 那是图自己的契约；报表里只留一份，共享祖先也才只存一份）。
   const svg = content.replace(/<metadata id="dsh-oks-chart-input">[^<]*<\/metadata>/, '');
-  return { source: { kind: 'chart', svg, origin: material.origin, data: material.data, spec: material.spec } };
+  return {
+    source: {
+      kind: 'chart', svg, origin: chart.origin, data: chart.data.rows, spec: chart.data.spec,
+    },
+  };
 };
 
 /** oks_chart 的入参：图表规格 + 恰好一个数据路径（src 或 data）。 */
@@ -295,18 +301,75 @@ const parseViewSpec = (raw: unknown): { spec: { kind: 'table'; src: string; titl
   return { spec: { kind: 'table', src: raw.src, title, columns } };
 };
 
-/** 报告路径：必须是回执里给过的那一份（以 .report.html 结尾的相对路径）。 */
-function requireReportSrc(raw: unknown, tool: string): string {
-  const src = typeof raw === 'string' ? raw.trim() : '';
-  if (src === '' || !src.endsWith('.report.html')) {
-    throw new Error(`${tool} 需要 src：一份报告的路径（以 .report.html 结尾），`
-      + '原样抄前面回执里给的那个。');
-  }
-  return src;
+/** 数据接口的单次返回上限（字节）。**不是分页机制，是安全阀**：
+ *  数据接口要么返回**完整数据**，要么返回一个合法 JSON 的错误——绝不截断。 */
+export const PAYLOAD_MAX_BYTES = 16 * 1024;
+
+/** 超限时交出去的错误（合法 JSON，调用方可直接解析）。 */
+export interface PayloadError {
+  ok: false;
+  error: {
+    code: 'payload_too_large' | 'evaluation_truncated';
+    tool: string;
+    limitBytes: number;
+    actualBytes: number | null;
+    hint: string;
+  };
 }
 
-/** 读一份自带来源的产物：按扩展名选读取方式（路径校验仍走 readArtifact）。 */
-function readOriginArtifact(root: string, src: string): { content: string; parsed: ArtifactOrigin } | { error: string } {
+/** 数据接口返回前的守门：完整就放行，超限就把数据换成错误（不返回半份数据）。 */
+function payloadGuard<T extends { ok: true }>(tool: string, value: T, hint: string): T | PayloadError {
+  const actualBytes = Buffer.byteLength(JSON.stringify(value) ?? '');
+  if (actualBytes <= PAYLOAD_MAX_BYTES) return value;
+  return {
+    ok: false,
+    error: { code: 'payload_too_large', tool, limitBytes: PAYLOAD_MAX_BYTES, actualBytes, hint },
+  };
+}
+
+/** 求值本身被截断（求值器到上限）时同样不返回半份数据，而是报错——调用方收窄 snip。 */
+const truncatedError = (tool: string, hint: string): PayloadError => ({
+  ok: false,
+  error: { code: 'evaluation_truncated', tool, limitBytes: PAYLOAD_MAX_BYTES, actualBytes: null, hint },
+});
+
+/** 按依赖顺序（输入在前、本次操作在最后）摊开链上的**完整**节点记录。
+ *  这是数据接口的负载：不截断、不改写，字段就是文件里的值。 */
+function originNodes(origin: DataOrigin): OriginNodeView[] {
+  const seen = new Set<string>();
+  const out: OriginNodeView[] = [];
+  const visit = (id: string): void => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    const node = origin.nodes[id];
+    if (node === undefined) return;
+    for (const upstream of Object.values(node.inputs ?? {})) visit(upstream);
+    out.push({
+      id,
+      kind: node.kind,
+      ...(node.motivation === undefined ? {} : { motivation: node.motivation }),
+      ...(node.intent === undefined ? {} : { intent: node.intent }),
+      ...(node.snip === undefined ? {} : { snip: node.snip }),
+      ...(node.outputs === undefined ? {} : { outputs: node.outputs }),
+      ...(node.source === undefined ? {} : { source: node.source }),
+      ...(node.inputs === undefined ? {} : { inputs: node.inputs }),
+      ...(node.report === undefined ? {} : { report: node.report }),
+      ...(node.item === undefined ? {} : { item: node.item }),
+      ...(node.from === undefined ? {} : { from: node.from }),
+    });
+  };
+  visit(origin.root);
+  return out;
+}
+
+/** 一份图的实际图元（column / pie / heatmap…）：从绘图规格里取；取不到就给 `?`。 */
+function chartKindOf(spec: unknown): string {
+  return isRecord(spec) && typeof spec.kind === 'string' ? spec.kind : '?';
+}
+
+/** 读一份产物（数据封装、图、表、报告）：四种写法都在这一层归一成同一份
+ *  `{ meta, origin, data }`，路径校验仍走 readArtifact（可读目录 + 真实路径复核）。 */
+function readProduct(root: string, src: string): ArtifactView {
   const extension = src.endsWith('.report.html') ? '.html'
     : src.endsWith('.chart.svg') ? '.svg'
       : src.endsWith('.table.md') ? '.md' : '.json';
@@ -314,11 +377,16 @@ function readOriginArtifact(root: string, src: string): { content: string; parse
   try {
     content = readArtifact(root, src, extension);
   } catch (cause) {
-    return { error: `读不到这份产物：${src}（${errorText(cause)}）` };
+    throw new Error(`读不到这份产物：${src}（${errorText(cause)}）`);
   }
   const parsed = parseArtifactOrigin(src, content);
-  return 'error' in parsed ? { error: parsed.error } : { content, parsed };
+  if ('error' in parsed) throw new Error(parsed.error);
+  return parsed;
 }
+
+/** 它是不是一份落盘的**数据封装**（`.oks/data/` 里的 JSON）：那些文件本身就是可读的数据，
+ *  读它们不需要再派生一份；图、表、报告里的数据块则要先物化出来才成为数据。 */
+const isDataEnvelope = (src: string): boolean => src.endsWith('.json');
 
 /** oks_chart 的返回值（渲染与 presentationMeta 读它）。 */
 interface ChartAnswer {
@@ -722,19 +790,17 @@ interface TimeArgs {
 interface TransformArgs {
   inputs?: unknown;
   snip?: unknown;
+  /** 真时把整份文件 `{ meta, origin, data }` 交给 snip，而不是只有 data。 */
+  whole?: unknown;
   /** 物化的落点名。 */
   name?: unknown;
   motivation?: unknown;
 }
 
-/** 报告侧四个工具的入参：报告路径 + 展示项地址（序号或「表 1」）。 */
+/** oks_origin 的入参：产物路径 + 展示项地址（序号或「表 1」，只对报告有意义）。 */
 interface ReportReadArgs {
   src?: unknown;
   item?: unknown;
-}
-interface ExtractIntoArgs extends ReportReadArgs {
-  name?: unknown;
-  motivation?: unknown;
 }
 
 /** oks_view 的入参：把一个展示件（先支持表格）落成文件。 */
@@ -754,16 +820,43 @@ interface CreateDataArgs {
 /** jq 输出的字符上限：到点终止求值并标记截断（模型可见文本另有预算）。 */
 const JAQ_MAX_CHARS = 256 * 1024;
 
-/** 一份具名输入：名字是 snip 里引用它的变量名，envelope 是那份封装数据。 */
+/** 一份具名输入：名字是 snip 里引用它的变量名，`value` 是交给 jq 的那份数据。
+ *  数据封装直接给它的 `data`；图 / 表 / **报告**先懒物化成"数据形态"再给——于是
+ *  "读任何产物的数据"只有一条路：具名输入 + jq 投影。 */
 interface NamedInput {
   name: string;
   src: string;
-  envelope: DataEnvelope;
+  value: unknown;
+  origin: DataOrigin;
+}
+
+/** 一个产物的**数据形态**：jq 默认看到的那一份（`data`），以及它的来源链。
+ *  `whole` 为真时交给 snip 的是**整份文件** `{ meta, origin, data }`——读结构、读来源用它。
+ *
+ *  图、表、报告里的数据块首次被读到时自动物化成一份派生封装：之后"读数据"只有一条路——
+ *  拿它的 dataSrc 交给 jq。数据封装本身已经是数据，直接读，不再派生。 */
+function dataFormOf(root: string, src: string, whole: boolean): { value: unknown; origin: DataOrigin } {
+  const product = readProduct(root, src);
+  // 整份文件就是三段：把读回来时多出来的展示项视图留在这一层，交出去的形状与文件一致。
+  if (whole) {
+    return { value: { meta: product.meta, origin: product.origin, data: product.data }, origin: product.origin };
+  }
+  if (isDataEnvelope(src)) return { value: product.data, origin: product.origin };
+  const derived = saveDerived({ root, sourceSrc: src, data: product.data, origin: product.origin });
+  return { value: product.data, origin: derived.origin };
+}
+
+/** 从一份 data 里取列名：查询结果带着列信息，其余数据按第一行现取。 */
+function columnsOf(data: unknown, rows: readonly Record<string, unknown>[]): string[] {
+  if (isRecord(data) && Array.isArray(data.columns)) {
+    return (data.columns as ColumnInfo[]).map((column) => column.name);
+  }
+  return Object.keys(rows[0] ?? {});
 }
 
 /** 解析具名输入：`{ 名字: dataSrc }`。每个输入都要真读到——读不到就报出是哪一个，
  *  而不是让 snip 去面对一个缺失的键（那会变成一句看不懂的求值错误）。 */
-function readInputs(root: string, inputs: unknown): NamedInput[] {
+function readInputs(root: string, inputs: unknown, whole: boolean): NamedInput[] {
   if (inputs === undefined || inputs === null) return [];
   if (!isRecord(inputs)) {
     throw new Error('inputs 要写成"名字 → dataSrc"的对象，例如 {"events": ".oks/data/xxx.query.json"}；'
@@ -776,7 +869,7 @@ function readInputs(root: string, inputs: unknown): NamedInput[] {
       throw new Error(`输入 ${name} 的 dataSrc 必须是字符串（前面回执里给的那个相对路径）。`);
     }
     try {
-      entries.push({ name, src, envelope: readEnvelope(root, src) });
+      entries.push({ name, src, ...dataFormOf(root, src, whole) });
     } catch (cause) {
       throw new Error(`读不到输入 ${name}（${src}）：${errorText(cause)}`);
     }
@@ -804,7 +897,7 @@ async function runSnip(
   signal?: AbortSignal,
 ): Promise<{ data: unknown; outputs: number; truncated: boolean }> {
   const document: Record<string, unknown> = {};
-  for (const input of inputs) document[input.name] = input.envelope.data;
+  for (const input of inputs) document[input.name] = input.value;
   const outcome = await runJaq(snip, {
     input: document,
     // 求值沿用查询的超时约束：jaq 是纯函数，但表达式可以写得很 explosive。
@@ -1329,12 +1422,13 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'jq_transform',
-      description: 'Explore data with a jaq (jq-compatible) expression without saving anything. inputs maps a name of your choosing to a dataSrc a previous receipt gave you; the snip then sees one object whose keys are those names, so write ".events[] | select(.count > 100)" or "{total: ([.events[].n] | add)}". Leave inputs out and the snip sees {} — that is how a constant is computed. A jq program produces a stream of values: exactly one value comes back as that value, several come back as an array, none comes back as []. The receipt reports every input, the shape of the result and the values themselves within a length budget, so look before you save; an expression that fails comes back with the evaluator\'s own message. To keep a result for a later step or for a figure, materialise it with jq_transform_into.',
+      description: 'Explore data with a jaq (jq-compatible) expression without saving anything. inputs maps a name of your choosing to a dataSrc a previous receipt gave you; the snip then sees one object whose keys are those names, so write ".events.rows[] | select(.count > 100)" or "{total: ([.events.rows[].n] | add)}"; an input\'s value is that file\'s data field (a query result is {rows, columns}; a transform is the value it produced; a figure or table is {rows, spec}; a report is {chapters, plainTables, items}), and with whole: true the value is the entire file {meta, origin, data} — that is how you read a record\'s structure or its provenance. Leave inputs out and the snip sees {} — that is how a constant is computed. A jq program produces a stream of values: exactly one value comes back as that value, several come back as an array, none comes back as []. The receipt reports every input, the shape of the result and the values themselves, so look before you save; an expression that fails comes back with the evaluator\'s own message. To keep a result for a later step or for a figure, materialise it with jq_transform_into.',
       parameters: {
         type: 'object',
         properties: {
-          inputs: { type: 'object', description: 'Named inputs, {"events": "<dataSrc>", "thresholds": "<dataSrc>"}: each name becomes a key your snip reads, and each dataSrc is copied verbatim from an earlier receipt (a workspace-relative path under .oks/data/). Omit it when the snip needs no input.', additionalProperties: { type: 'string' } },
-          snip: { type: 'string', description: 'The jaq/jq expression. Its input is one object whose keys are the input names, e.g. ".events[] | select(.count > 100)".' },
+          inputs: { type: 'object', description: 'Named inputs, {"events": "<dataSrc>", "thresholds": "<dataSrc>"}: each name becomes a key your snip reads, and each dataSrc is copied verbatim from an earlier receipt (a workspace-relative path under .oks/data/, .oks/charts/, .oks/views/ or artifacts/). Omit it when the snip needs no input.', additionalProperties: { type: 'string' } },
+          snip: { type: 'string', description: 'The jaq/jq expression. Its input is one object whose keys are the input names, e.g. ".events.rows[] | select(.count > 100)".' },
+          whole: { type: 'boolean', description: 'Give the snip each input\'s whole file {meta, origin, data} instead of only its data. Use it to read a report\'s chapters or a record\'s provenance; the default (false) is the data itself.' },
         },
         required: ['snip'],
         additionalProperties: false,
@@ -1342,38 +1436,45 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       output: { schema: OBJECT_OUTPUT, render: renderJqTransform },
       async execute(args: TransformArgs, exec: ToolExec) {
         const entry = knowledge.ensureWorkspace(exec);
-        const inputs = readInputs(entry.settings.workspaceRoot, args?.inputs);
+        const whole = args?.whole === true;
+        const inputs = readInputs(entry.settings.workspaceRoot, args?.inputs, whole);
         const snip = requireSnip(args?.snip, 'jq_transform');
         const started = Date.now();
         const outcome = await runSnip(entry, inputs, snip, exec?.signal);
         const ms = Date.now() - started;
         // 探索留痕：读过什么、算了什么、产出几个值——探索不进来源链，日志是唯一的记录。
         log(`[oks] jq_transform · ${inputs.length} 份输入 → ${outcome.outputs} 个值`
-          + `${outcome.truncated ? '（截断）' : ''} · ${ms} ms · snip=${capLine(snip, 200)}`);
-        return {
+          + `${outcome.truncated ? '（求值到上限）' : ''} · ${ms} ms · snip=${capLine(snip, 200)}`);
+        // 求值到上限＝数据不完整：报错，不返回半份（调用方收窄 snip）。
+        if (outcome.truncated) {
+          return truncatedError('jq_transform', '把 snip 收窄（只取你真正要的那部分：聚合、投影或前 N 项）。');
+        }
+        return payloadGuard('jq_transform', {
+          ok: true as const,
           snip,
+          whole,
           inputs: inputs.map((input) => ({
             name: input.name,
             src: input.src,
-            shape: shapeOf(input.envelope.data),
+            shape: shapeOf(input.value),
           })),
           outputs: outcome.outputs,
           data: outcome.data,
-          truncated: outcome.truncated,
           ms,
-        };
+        }, '把 snip 收窄（聚合、投影或前 N 项），不要一次取整份数据。');
       },
     },
     {
       name: 'jq_transform_into',
-      description: 'Compute with a jaq (jq-compatible) expression and save the result as data a later step or a figure can read. inputs maps a name to a dataSrc from an earlier receipt; the snip sees one object whose keys are those names. The tool builds the provenance itself: it reads each input, runs the snip, and writes {origin, data} into .oks/data/ — the new origin carries this operation (snip, motivation, which name used which input) plus the complete source chain of every input, while the inputs\' own data stays out of it. A value stream is collected the same way as in jq_transform: one value is that value, several are an array, none is []. The receipt gives you the dataSrc, the shape and the whole source chain — it does not repeat the values, so explore with jq_transform when you want to see them. Data the agent supplies itself does not come in here: create_data makes it an envelope first, so that the numbers have a recorded reason.',
+      description: 'Compute with a jaq (jq-compatible) expression and save the result as data a later step or a figure can read. inputs maps a name to a dataSrc from an earlier receipt; the snip sees one object whose keys are those names, and each value is that file\'s data field (query → {rows, columns}, transform → its value, figure/table → {rows, spec}, report → {chapters, plainTables, items}); whole: true hands over each whole file {meta, origin, data} instead. The tool builds the provenance itself: it reads each input, runs the snip, and writes {meta, origin, data} into .oks/data/ — the new origin carries this operation (snip, motivation, output count, which name used which input) plus the complete source chain of every input, while the inputs\' own data stays out of it. A value stream is collected the same way as in jq_transform: one value is that value, several are an array, none is []. The receipt gives you the dataSrc, the shape and the whole source chain — it does not repeat the values, so explore with jq_transform when you want to see them. Data the agent supplies itself does not come in here: create_data makes it an envelope first, so that the numbers have a recorded reason.',
       parameters: {
         type: 'object',
         properties: {
           name: { type: 'string', description: 'Name of the saved result — an identifier, not a title: 0-9, _ and a-z only, at most 60 characters, e.g. events_by_level. The file is named <time>-<name>-<content hash>.transform.json under .oks/data/; an existing file is never overwritten.' },
           motivation: { type: 'string', description: 'Why this step is being done — one short natural-language sentence, recorded on this operation\'s node so the numbers can be explained later.' },
           inputs: { type: 'object', description: 'Named inputs, {"events": "<dataSrc>", "thresholds": "<dataSrc>"}: each name becomes a key your snip reads, and each dataSrc is copied verbatim from an earlier receipt. Omit it when the snip needs no input (a constant).', additionalProperties: { type: 'string' } },
-          snip: { type: 'string', description: 'The jaq/jq expression. Its input is one object whose keys are the input names, e.g. ".events[] | {level, count}".' },
+          snip: { type: 'string', description: 'The jaq/jq expression. Its input is one object whose keys are the input names, e.g. ".events.rows[] | {level, count}".' },
+          whole: { type: 'boolean', description: 'Give the snip each input\'s whole file {meta, origin, data} instead of only its data. Use it to read a report\'s chapters or a record\'s provenance; the default (false) is the data itself.' },
         },
         required: ['name', 'snip'],
         additionalProperties: false,
@@ -1385,7 +1486,8 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         if (name === '') {
           throw new Error('jq_transform_into 需要 name：这次加工结果的落点名（0-9、_ 与 a-z），例如 events_by_level。');
         }
-        const inputs = readInputs(entry.settings.workspaceRoot, args?.inputs);
+        const whole = args?.whole === true;
+        const inputs = readInputs(entry.settings.workspaceRoot, args?.inputs, whole);
         const snip = requireSnip(args?.snip, 'jq_transform_into');
         const started = Date.now();
         const outcome = await runSnip(entry, inputs, snip, exec?.signal);
@@ -1405,13 +1507,14 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             kind: 'transform',
             ...(motivation === undefined ? {} : { motivation }),
             snip,
+            // 输出个数记在**这个操作的节点**上：它是"这次执行产出了什么"的一部分。
+            outputs: outcome.outputs,
             ...(inputs.length === 0 ? {} : {
-              inputs: Object.fromEntries(inputs.map((input) => [input.name, input.envelope.origin.root])),
+              inputs: Object.fromEntries(inputs.map((input) => [input.name, input.origin.root])),
             }),
           },
-          inputs: inputs.map((input) => input.envelope.origin),
+          inputs: inputs.map((input) => input.origin),
           data: outcome.data,
-          outputs: outcome.outputs,
         });
         const ms = Date.now() - started;
         log(`[oks] jq_transform_into ${name} · ${inputs.length} 份输入 → ${outcome.outputs} 个值`
@@ -1429,7 +1532,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_view',
-      description: 'Turn saved data into a display piece and write it as a markdown file — a table, for now. Give spec.kind "table" and spec.src (a dataSrc copied verbatim from an earlier receipt; the envelope\'s data must be an array of row objects). spec.columns picks and orders the columns to show (omit for every column in the order the data has); spec.title is the caption. Numeric columns are right-aligned. The receipt gives you two things: the line ![caption](.oks/views/<file>.table.md) for the markdown of a report, and the same table as ready-to-paste markdown for your reply. Paste the table itself into your reply — the ![caption](...) line belongs in a report body only, because nothing renders a .table.md as an image. The file holds the table plus the source chain of the data it shows, so the report can inline it and still explain where the numbers came from.',
+      description: 'Turn saved data into a display piece and write it as a markdown file — a table, for now. Give spec.kind "table" and spec.src (a src copied verbatim from an earlier receipt — any product works, as long as its data are row objects, either an array or under rows). spec.columns picks and orders the columns to show (omit for every column in the order the data has); spec.title is the caption. Numeric columns are right-aligned. The receipt gives you two things: the line ![caption](.oks/views/<file>.table.md) for the markdown of a report, and the same table as ready-to-paste markdown for your reply. Paste the table itself into your reply — the ![caption](...) line belongs in a report body only, because nothing renders a .table.md as an image. The file holds the table plus the source chain of the data it shows, so the report can inline it and still explain where the numbers came from.',
       parameters: {
         type: 'object',
         properties: {
@@ -1438,7 +1541,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             description: 'What to display. kind is required and only "table" exists for now.',
             properties: {
               kind: { type: 'string', enum: ['table'], description: 'Which display piece: table.' },
-              src: { type: 'string', description: 'A dataSrc copied verbatim from an earlier receipt — the envelope whose data are the rows (an array of objects).' },
+              src: { type: 'string', description: 'A src copied verbatim from an earlier receipt — any product whose data are the rows to show: a query result ({rows, columns}), a computed result, rows from create_data, or a figure/table/report reused as a table.' },
               title: { type: 'string', description: 'Caption for the table — it becomes the alt text of the reference line and the table caption in a report, e.g. 各级别告警数量.' },
               columns: { type: 'array', items: { type: 'string' }, description: 'Columns to show, in this order. Omit to show every column the data has, in its own order. At most 12.' },
             },
@@ -1457,9 +1560,10 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         const parsed = parseViewSpec(args?.spec);
         if ('error' in parsed) throw new Error(parsed.error);
         const view = parsed.spec;
-        // 消费边界：表要行对象数组，和图同一套读取与校验（readResult 会明确拒绝别的形状）。
-        const file = readResult(entry.settings.workspaceRoot, view.src);
-        const drawn = tableMarkdown(file.data, {
+        // 消费边界：表要行对象数组，和图同一套读取（rowsOf 会明确拒绝别的形状）。
+        const file = readProduct(entry.settings.workspaceRoot, view.src);
+        const rows = rowsOf(file.data, view.src);
+        const drawn = tableMarkdown(rows, {
           ...(view.columns === null ? {} : { columns: view.columns }),
           ...(view.title === null ? {} : { title: view.title }),
         });
@@ -1469,14 +1573,16 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         const saved = saveTableView({
           root: entry.settings.workspaceRoot,
           name: typeof args?.name === 'string' && args.name.length > 0 ? args.name : 'table',
-          material: { version: 1, origin: file.origin, data: file.data, spec: { ...view, title } },
+          title,
+          origin: file.origin,
+          data: { rows, spec: { ...view, title } },
           markdown: drawn.markdown,
         });
         const markdown = `![${title.replace(/[[\]]/g, '')}](${saved.src})`;
         // 回执里带不带表本体，看它多大：表本来就是给人看的，但大表塞进上下文不划算。
-        const body = drawn.markdown.length <= 4000 && file.data.length <= 20 ? drawn.markdown : null;
+        const body = drawn.markdown.length <= 4000 && rows.length <= 20 ? drawn.markdown : null;
         const note = typeof args?.note === 'string' && args.note.length > 0 ? args.note : null;
-        log(`[oks] view table ${title} · ${file.data.length} 行 · ${(saved.bytes / 1024).toFixed(1)} KB`
+        log(`[oks] view table ${title} · ${rows.length} 行 · ${(saved.bytes / 1024).toFixed(1)} KB`
           + ` · src=${view.src} → ${saved.src}`);
         return {
           ok: true as const,
@@ -1486,7 +1592,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           viewSrc: saved.src,
           markdown,
           table: body,
-          rowCount: file.data.length,
+          rowCount: rows.length,
           columns: drawn.columns,
           bytes: saved.bytes,
           note,
@@ -1570,7 +1676,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             required: ['kind'],
             additionalProperties: false,
           },
-          src: { type: 'string', description: 'A dataSrc copied verbatim from an earlier receipt — the envelope whose data are the rows to draw (an array of objects). oks_query returns queried rows, jq_transform_into a computed result, create_data rows you supplied yourself. Rows cannot be written inline.' },
+          src: { type: 'string', description: 'A src copied verbatim from an earlier receipt — any product whose data are the rows to draw: oks_query returns queried rows ({rows, columns}), jq_transform_into a computed result, create_data rows you supplied yourself, and a figure, table or report can be drawn from again (its data form is {rows, spec} or a report\'s {chapters, items}). Rows cannot be written inline.' },
           name: { type: 'string', description: 'Optional name for the saved SVG; defaults to "chart". A name is an identifier, not a title: 0-9, _ and a-z only, at most 60 characters (longer ones are cut and tagged with a ~ plus a short hash), and the file is named <time>-<name>-<content hash>.chart.svg.' },
           category: { type: 'string', description: 'The precise kind of report, as a short noun phrase the reader recognizes — 周报 / 月报 / 即时分析 / 复盘 and the like. It is the text next to the type icon in the artifacts list, so keep it to a few characters; omit it for a one-off analysis and it defaults to 即时分析.' },
           note: { type: 'string', description: 'Optional short note carried in the receipt — your own narration, kept apart from the system source label.' },
@@ -1585,14 +1691,15 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         if ('error' in parsedSpec) throw new Error(parsedSpec.error);
         const spec = parsedSpec.spec;
         if (typeof args?.src !== 'string' || args.src.length === 0) {
-          throw new Error('oks_chart 需要 src：前面回执里给的那份封装数据（查询结果、加工结果或 create_data 的输入数据）。'
+          throw new Error('oks_chart 需要 src：前面回执里给过的一份产物（查询结果、加工结果、create_data 的输入数据，'
+            + '或一份图/表/报告——它们的数据块也能当表格用）。'
             + '行不能直接填在图里——要让一组自己组织的行成为图的数据，先用 create_data 把它们落成一份封装。');
         }
-        // src 走同一套读取与路径校验：只认工作区可读目录里的封装数据（readResult 另要求 data 是行对象数组）。
-        const file = readResult(entry.settings.workspaceRoot, args.src);
-        const rows = file.data;
-        const columns = (file.columns ?? Object.keys(rows[0] ?? {}).map((name) => ({ name })))
-          .map((column) => column.name);
+        // src 走同一套读取与路径校验：任何产物（封装数据、图、表、报告）都能当数据用，
+        // rowsOf 另要求它的 data 是行对象数组。
+        const file = readProduct(entry.settings.workspaceRoot, args.src);
+        const rows = rowsOf(file.data, args.src);
+        const columns = columnsOf(file.data, rows);
         const missing = missingColumns(spec, columns, rows.length);
         if (missing.length > 0) {
           throw new Error(`这些列不在数据里：${missing.join(', ')}。可用的列：${columns.join(', ') || '(没有列)'}`);
@@ -1609,7 +1716,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         const title = chartTitle(spec);
         // 图把**自己用的那份材料**带上：画出来的行、绘图规格、完整来源链。
         // 于是图离开工作区（或工作区被回收）之后仍说得清这些数字从哪来。
-        const content = embedChartInput(svg, { origin: file.origin, data: rows, spec });
+        const content = embedChartInput(svg, { origin: file.origin, data: { rows, spec } });
         pruneBeforeWrite(entry.settings.workspaceRoot);
         const saved = saveArtifact({
           root: entry.settings.workspaceRoot,
@@ -1682,27 +1789,50 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           display: (href) => resolveReportDisplay(entry.settings.workspaceRoot, href),
           // 展示项的来源链在正文渲染完之后合并：每个展示项的原链都整份带过来，
           // 共享祖先按记录身份只留一个节点，节点引用在这个文件内闭合。
-          provenanceBlock: (items) => {
-            figureCount = items.filter((item) => item.kind === 'chart').length;
-            tableCount = items.filter((item) => item.kind === 'table').length;
-            const payload = {
-              version: 1,
-              nodes: mergeChains(items.map((item) => item.origin)),
-              items: items.map((item) => ({
-                kind: item.kind,
-                no: item.no,
-                caption: item.caption,
-                root: item.origin.root,
-                spec: item.spec,
-                data: item.data,
+          provenanceBlock: (placed, body) => {
+            figureCount = placed.filter((item) => item.kind === 'chart').length;
+            tableCount = placed.filter((item) => item.kind === 'table').length;
+            const records: ReportData['items'] = placed.map((item) => ({
+              kind: item.kind,
+              no: item.no,
+              caption: item.caption,
+              root: item.origin.root,
+              spec: item.spec,
+              data: item.data,
+            }));
+            // 章节骨架从渲染出的正文里取：哪张图在哪一章下，只有正文的顺序能回答。
+            const structure = reportChapters(body, reportItems(records));
+            // 报告自己也是一个操作：根指向"组装这份报告"，inputs 是各展示项的根。
+            const assembled = appendNode(placed.map((item) => item.origin), {
+              kind: 'report',
+              inputs: Object.fromEntries(placed.map((item) => [
+                `${item.kind === 'table' ? '表' : '图'} ${item.no}`,
+                item.origin.root,
+              ])),
+            }, records.map((record) => ({
+              ref: `${record.kind === 'table' ? '表' : '图'} ${record.no}`,
+              root: record.root,
+            })));
+            const data: ReportData = {
+              chapters: structure.chapters.map((chapter) => ({
+                caption: chapter.caption,
+                level: chapter.level,
+                figures: chapter.items
+                  .filter((item) => item.kind === 'chart')
+                  .map((item) => ({ ref: item.label, kind: chartKindOf(item.spec), caption: item.caption })),
+                tables: chapter.items
+                  .filter((item) => item.kind === 'table')
+                  .map((item) => ({ ref: item.label, caption: item.caption })),
               })),
+              plainTables: structure.plainTables,
+              items: records,
             };
-            const bytes = Buffer.byteLength(JSON.stringify(payload));
+            const bytes = Buffer.byteLength(JSON.stringify({ origin: assembled, data }));
             if (bytes > REPORT_PROVENANCE_MAX_BYTES) {
               throw new Error(`报表要带的来源材料 ${(bytes / 1024 / 1024).toFixed(1)} MB，超过上限 `
                 + `${REPORT_PROVENANCE_MAX_BYTES / 1024 / 1024} MB：先缩小展示数据（聚合或投影），再出报表。`);
             }
-            return provenanceBlockHtml(payload);
+            return provenanceBlockHtml({ origin: assembled, data });
           },
         });
         pruneBeforeWrite(entry.settings.workspaceRoot);
@@ -1725,137 +1855,13 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       },
     },
     {
-      name: 'oks_report_items',
-      description: 'List what a report displays, so you can address one item. src is the report file (the path a receipt gave you, e.g. .oks/demo... no — artifacts/<file>.report.html, copied verbatim). For every display item the reply gives its index in the report, the number printed on it (图 N / 表 N), its kind (chart or table), its caption and the shape of the data behind it. Address an item by either number in the other report tools — the page prints 表 1 while this list also gives an index, and both work. A table typed straight into the markdown is not an item: no caption chip, no number, nothing here.',
-      parameters: {
-        type: 'object',
-        properties: {
-          src: { type: 'string', description: 'The report file, copied verbatim from a receipt (a workspace-relative path ending in .report.html).' },
-        },
-        required: ['src'],
-        additionalProperties: false,
-      },
-      output: { schema: OBJECT_OUTPUT, render: renderReportItems },
-      async execute(args: ReportReadArgs, exec: ToolExec) {
-        const entry = knowledge.ensureWorkspace(exec);
-        const src = requireReportSrc(args?.src, 'oks_report_items');
-        const read = readOriginArtifact(entry.settings.workspaceRoot, src);
-        if ('error' in read) throw new Error(read.error);
-        if (read.parsed.kind !== 'report') throw new Error(`这不是一份报告：${src}`);
-        const meta = readArtifactMeta(read.content);
-        log(`[oks] report_items ${src} · ${read.parsed.items.length} 个展示项`);
-        return {
-          ok: true as const,
-          src,
-          title: meta?.title ?? null,
-          at: meta?.at ?? null,
-          items: read.parsed.items.map((item) => ({
-            index: item.index,
-            label: item.label,
-            kind: item.kind,
-            caption: item.caption,
-            shape: shapeOf(item.data),
-            root: item.root,
-          })),
-        };
-      },
-    },
-    {
-      name: 'oks_extract_report_data',
-      description: 'Read the data a report displays, without saving anything. src is the report file, item picks the display item by its index or by the number printed on it (4 or "表 1"). The reply gives that item\'s final display data — the same data the report carries, so it works even after the workspace materials it was built from have been reclaimed. Values come back within a length budget; to keep them, or to work on them with jq_transform, materialise them with oks_extract_report_data_into instead.',
-      parameters: {
-        type: 'object',
-        properties: {
-          src: { type: 'string', description: 'The report file, copied verbatim (a workspace-relative path ending in .report.html).' },
-          item: { oneOf: [{ type: 'number' }, { type: 'string' }], description: 'Which display item: its index from oks_report_items (4) or the number printed on it ("表 1" / "图 4").' },
-        },
-        required: ['src', 'item'],
-        additionalProperties: false,
-      },
-      output: { schema: OBJECT_OUTPUT, render: renderExtractData },
-      async execute(args: ReportReadArgs, exec: ToolExec) {
-        const entry = knowledge.ensureWorkspace(exec);
-        const src = requireReportSrc(args?.src, 'oks_extract_report_data');
-        const read = readOriginArtifact(entry.settings.workspaceRoot, src);
-        if ('error' in read) throw new Error(read.error);
-        if (read.parsed.kind !== 'report') throw new Error(`这不是一份报告：${src}`);
-        const found = resolveItem(read.parsed.items, args?.item);
-        if ('error' in found) throw new Error(found.error);
-        log(`[oks] extract_report_data ${src} · ${found.item.label}（#${found.item.index}）`);
-        return {
-          ok: true as const,
-          src,
-          label: found.item.label,
-          caption: found.item.caption,
-          data: found.item.data,
-        };
-      },
-    },
-    {
-      name: 'oks_extract_report_data_into',
-      description: 'Take the data a report displays and save it as an envelope in the workspace, so it becomes data you can work on again: give src (the report file), item (the index or the number printed on the report) and name (the identifier to save it under). The new file lands in .oks/data/ like any other envelope, which means jq_transform can read it, oks_chart can draw from it and oks_view can turn it into a table. Its source chain is the item\'s own chain plus one node saying "taken from this report, item n" — the extraction is recorded, never disguised as the original query. The receipt gives the dataSrc, the shape and the whole chain.',
-      parameters: {
-        type: 'object',
-        properties: {
-          src: { type: 'string', description: 'The report file, copied verbatim (a workspace-relative path ending in .report.html).' },
-          item: { oneOf: [{ type: 'number' }, { type: 'string' }], description: 'Which display item: its index from oks_report_items (4) or the number printed on it ("表 1" / "图 4").' },
-          name: { type: 'string', description: 'Name to save the extracted data under — an identifier, not a title: 0-9, _ and a-z only, at most 60 characters. The file is <time>-<name>-<content hash>.transform.json under .oks/data/; an existing file is never overwritten.' },
-          motivation: { type: 'string', description: 'Why this data is being taken out of the report — one short natural-language sentence, recorded on the extraction node.' },
-        },
-        required: ['src', 'item', 'name'],
-        additionalProperties: false,
-      },
-      output: { schema: OBJECT_OUTPUT, render: renderExtractInto },
-      async execute(args: ExtractIntoArgs, exec: ToolExec) {
-        const entry = knowledge.ensureWorkspace(exec);
-        const src = requireReportSrc(args?.src, 'oks_extract_report_data_into');
-        const name = typeof args?.name === 'string' ? args.name.trim() : '';
-        if (name === '') {
-          throw new Error('oks_extract_report_data_into 需要 name：取出的数据存成什么名字（0-9、_ 与 a-z）。');
-        }
-        const read = readOriginArtifact(entry.settings.workspaceRoot, src);
-        if ('error' in read) throw new Error(read.error);
-        if (read.parsed.kind !== 'report') throw new Error(`这不是一份报告：${src}`);
-        const found = resolveItem(read.parsed.items, args?.item);
-        if ('error' in found) throw new Error(found.error);
-        const item = found.item;
-        const motivation = typeof args?.motivation === 'string' && args.motivation.trim() !== ''
-          ? args.motivation.trim() : undefined;
-        pruneBeforeWrite(entry.settings.workspaceRoot);
-        const saved = saveTransform({
-          root: entry.settings.workspaceRoot,
-          name,
-          node: {
-            kind: 'extract',
-            ...(motivation === undefined ? {} : { motivation }),
-            report: src.split('/').pop() ?? src,
-            item: item.index,
-            inputs: { from: item.root },
-          },
-          inputs: [itemChain(read.parsed.nodes, item)],
-          data: item.data,
-        });
-        log(`[oks] extract_report_data_into ${name} ← ${src} ${item.label} · ${(saved.bytes / 1024).toFixed(1)} KB`
-          + ` · ${saved.dataSrc}`);
-        return {
-          ok: true as const,
-          dataSrc: saved.dataSrc,
-          name,
-          label: item.label,
-          shape: shapeOf(item.data),
-          bytes: saved.bytes,
-          chain: chainLines(saved.origin),
-        };
-      },
-    },
-    {
       name: 'oks_origin',
       description: 'Explain where a product\'s numbers came from: give src — a data envelope (.oks/data/...), a figure (.oks/charts/...), a table (.oks/views/...) or a report (artifacts/...report.html) — and the reply reads the source chain that product carries inside itself and lays it out in order (every query\'s Intent, every snip, every motivation and how the named inputs relate). For a report it also lists its display items; add item (index or the printed number) to see that one item\'s chain. Alongside the chain it re-checks the data file each query recorded at execution time: still there? changed since? That check only compares file size and mtime — it never re-runs anything, because the chain explains the past rather than promising to reproduce it.',
       parameters: {
         type: 'object',
         properties: {
           src: { type: 'string', description: 'The product to explain, copied verbatim from a receipt: a workspace-relative path under .oks/data/, .oks/charts/, .oks/views/ or artifacts/.' },
-          item: { oneOf: [{ type: 'number' }, { type: 'string' }], description: 'Reports only: which display item to show the chain of — its index from oks_report_items or the number printed on the report. Omit to just list the items.' },
+          item: { oneOf: [{ type: 'number' }, { type: 'string' }], description: 'Reports only: which display item to show the chain of — its index (1-based, in the order the report shows it) or the number printed on the report ("表 1" / "图 4"). Omit to just list the items.' },
         },
         required: ['src'],
         additionalProperties: false,
@@ -1865,39 +1871,55 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         const entry = knowledge.ensureWorkspace(exec);
         const src = typeof args?.src === 'string' ? args.src.trim() : '';
         if (src === '') throw new Error('oks_origin 需要 src：要解释来路的那份产物（回执里给过的路径）。');
-        const read = readOriginArtifact(entry.settings.workspaceRoot, src);
-        if ('error' in read) throw new Error(read.error);
-        const parsed = read.parsed;
-        const meta = readArtifactMeta(read.content);
-        log(`[oks] origin ${src} · ${parsed.kind}`);
-        if (parsed.kind === 'report') {
-          const summary = `${meta?.title ?? '(没有标题)'} · 报告来源结构（${Object.keys(parsed.nodes).length} 个节点）`;
+        const product = readProduct(entry.settings.workspaceRoot, src);
+        // 产物自带的数据块**首次使用时**自动物化成一份派生封装：之后读数据只有一条路——
+        // 拿它的 dataSrc 交给 jq 投影（write-once 的源 ⇒ 这个名字是幂等的）。
+        const derivedSrc = isDataEnvelope(src)
+          ? null
+          : saveDerived({
+            root: entry.settings.workspaceRoot,
+            sourceSrc: src,
+            data: product.data,
+            origin: product.origin,
+          }).dataSrc;
+        log(`[oks] origin ${src} · ${product.meta.kind}`
+          + `${derivedSrc === null ? '' : ` · 数据视图 ${derivedSrc}`}`);
+        if (product.items.length > 0) {
+          // 报告的 origin 是**一个**：根是"组装这份报告"那个节点，上游是所有展示项的链。
+          const summary = `${product.meta.title ?? '(没有标题)'} · 报告来源结构（${Object.keys(product.origin.nodes).length} 个节点）`;
+          const shared = {
+            ok: true as const, src,
+            ...(derivedSrc === null ? {} : { derivedSrc }),
+          };
           if (args?.item === undefined) {
-            return {
-              ok: true as const, src, summary,
-              items: parsed.items.map((item) => ({
+            return payloadGuard('oks_origin', {
+              ...shared, summary,
+              items: product.items.map((item) => ({
                 index: item.index, label: item.label, kind: item.kind, caption: item.caption, shape: shapeOf(item.data),
               })),
-              chain: [], drift: [],
-            };
+              nodes: originNodes(product.origin), root: product.origin.root,
+              drift: driftLines(product.origin),
+            }, '这份报告太大：用 item 只看某一项的链。');
           }
-          const found = resolveItem(parsed.items, args.item);
+          const found = resolveItem(product.items, args.item);
           if ('error' in found) throw new Error(found.error);
-          const chain = chainLines(itemChain(parsed.nodes, found.item));
-          return {
-            ok: true as const, src,
-            summary: `${meta?.title ?? '(没有标题)'} · ${found.item.label}${found.item.caption === '' ? '' : ` · ${found.item.caption}`}`,
-            items: [], chain, drift: driftLines(itemChain(parsed.nodes, found.item)),
-          };
+          const chain = itemChain(product.origin.nodes, found.item);
+          return payloadGuard('oks_origin', {
+            ...shared,
+            summary: `${product.meta.title ?? '(没有标题)'} · ${found.item.label}`
+              + `${found.item.caption === '' ? '' : ` · ${found.item.caption}`}`,
+            items: [], nodes: originNodes(chain), root: chain.root, drift: driftLines(chain),
+          }, '这一项的来源链太大：用 jq 只取你要的那几个节点（jq_transform 的 whole: true 拿到整份记录）。');
         }
-        const root = parsed.origin.nodes[parsed.origin.root];
-        return {
+        const root = product.origin.nodes[product.origin.root];
+        return payloadGuard('oks_origin', {
           ok: true as const, src,
-          summary: `这是${parsed.kind === 'chart' ? '一张图' : parsed.kind === 'table' ? '一张表' : '一份数据'}`
+          summary: `这是${product.meta.kind === 'chart' ? '一张图' : product.meta.kind === 'table' ? '一张表' : '一份数据'}`
             + `（${root?.kind ?? '?'}${root?.motivation === undefined ? '' : ` · ${root.motivation}`}）`
-            + ` · 来源结构 ${Object.keys(parsed.origin.nodes).length} 个节点`,
-          items: [], chain: chainLines(parsed.origin), drift: driftLines(parsed.origin),
-        };
+            + ` · 来源结构 ${Object.keys(product.origin.nodes).length} 个节点`,
+          items: [], nodes: originNodes(product.origin), root: product.origin.root,
+          ...(derivedSrc === null ? {} : { derivedSrc }), drift: driftLines(product.origin),
+        }, '这份产物的来源链太大：用 jq 只取你要的那几个节点（jq_transform 的 whole: true 拿到整份记录）。');
       },
     },
     {

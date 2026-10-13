@@ -8,7 +8,7 @@
  *  内嵌 HTML 不被解释；图的规格交给调用方校验并渲染。脚本、样式、结构都是本文件里的常量。
  */
 import { escapeHtml, renderMarkdown, safeLanguage } from './markdown.ts';
-import type { OriginNode, DataOrigin } from '../results.ts';
+import type { DataOrigin, EnvelopeParts } from '../results.ts';
 
 /** 报告里的一个**展示项**：图或表。报表级的来源结构里一条就是一项。 */
 export interface DisplayItem {
@@ -38,12 +38,24 @@ export type DisplayRenderer = (href: string) => { source: DisplaySource } | { er
 export const PROVENANCE_KEY = 'dsh-oks-provenance';
 export const REPORT_PROVENANCE_MAX_BYTES = 4 * 1024 * 1024;
 
-/** 报表级来源结构：所有展示项的节点合并成一张表（共享祖先只存一份）+ 展示项清单。 */
-export interface ReportProvenance {
-  version: number;
-  nodes: Record<string, OriginNode>;
+/** 报表级的 data：章节骨架（`chapters`）+ 展示项（`items`，各自带着最终展示数据与规格）。
+ *  骨架与数据都进文件，于是读结构、读数据都能用 jq 投影，不必再解析 HTML。 */
+export interface ReportData {
+  chapters: Array<{
+    caption: string | null;
+    level: string | null;
+    figures: Array<{ ref: string; kind: string; caption: string }>;
+    tables: Array<{ ref: string; caption: string }>;
+  }>;
+  /** 正文里手打的表（没有编号 chip、没有来源的那种）的个数。 */
+  plainTables: number;
   items: Array<{ kind: string; no: number; caption: string; root: string; spec: unknown; data: unknown }>;
 }
+
+/** 报表级来源结构：**报表自己也是一个操作**——根指向"组装这份报告"那个节点，
+ *  它的 `inputs` 是各展示项的根；于是"一件产物恰好一个 origin"对报告也成立。
+ *  自述写在页面的 `<meta name="dsh-oks-artifact">` 里，这一块于是只有来源与数据。 */
+export type ReportProvenance = EnvelopeParts<ReportData>;
 
 /** 把来源结构包成页面里的一块：`type="application/json"` 不是脚本，浏览器不执行它。
  *
@@ -64,7 +76,7 @@ export function readReportProvenance(html: string): ReportProvenance | null {
     // 写进去时把 `<` 换成 JSON 的 `\u003c` 转义，JSON.parse 自己会还原成 `<`——
     // 不能再手工替换一遍：数据里真有一段字面量 `\u003c` 时，那会把 JSON 改坏。
     const value = JSON.parse(raw) as ReportProvenance;
-    return value?.nodes === undefined || value?.items === undefined ? null : value;
+    return value?.origin === undefined || value?.data === undefined ? null : value;
   } catch {
     return null;
   }
@@ -81,8 +93,8 @@ export interface ReportInput {
   markdown: string;
   /** 引用已经落盘的展示件（图 / 表）：由调用方负责解析路径、读文件与取材料。 */
   display: DisplayRenderer;
-  /** 正文渲染完之后，用收集到的展示项拼出要嵌进页面的来源结构。 */
-  provenanceBlock: (items: readonly DisplayItem[]) => string;
+  /** 正文渲染完之后，用收集到的展示项与渲染出的正文拼出要嵌进页面的来源结构。 */
+  provenanceBlock: (items: readonly DisplayItem[], body: string) => string;
 }
 
 /**
@@ -254,7 +266,7 @@ export const renderReportHtml = (input: ReportInput): string => {
 <style>
 ${STYLE}
 </style>
-${input.provenanceBlock(items)}
+${input.provenanceBlock(items, anchored)}
 </head>
 <body>
 <header>
