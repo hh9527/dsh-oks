@@ -38,6 +38,8 @@ interface ArtifactEntry {
 interface Listing {
   keepAliveMinutes: number;
   entries: ArtifactEntry[];
+  /** 这份清单是哪个工作区的（端点回执里带的）：页签据此说清自己在看哪里。 */
+  root?: string;
 }
 
 interface Context {
@@ -81,6 +83,8 @@ interface ModuleExports {
   friendlyTime: (at: string, now: number) => string;
   /** 给本地测试用：一行下面那行的文案（精确分类 + 友好时间）。 */
   metaLine: (entry: { category?: string; at: string }, now: number) => string;
+  /** 给本地测试用：工作区路径的紧凑写法。 */
+  workspaceLabel: (path: string) => string;
 }
 
 declare const window: {
@@ -141,6 +145,12 @@ window.__ModuleLoader__.load({
     const metaLine = (entry: { category?: string; at: string }, now: number): string =>
       `${entry.category ?? '即时分析'} · ${friendlyTime(entry.at, now)}`;
 
+    /** 工作区路径的紧凑写法：只留最后两段，前面用 `…/`（页签底部那行放得下）。 */
+    const workspaceLabel = (path: string): string => {
+      const parts = path.split('/').filter((part) => part.length > 0);
+      return parts.length <= 2 ? path : `…/${parts.slice(-2).join('/')}`;
+    };
+
     /** 大颗粒类型用图标说（当前只有报表算制品；图是一份报表里的图）。 */
     const kindIcon: Record<string, string> = { report: '📄', chart: '📈' };
 
@@ -173,6 +183,7 @@ window.__ModuleLoader__.load({
     const sameListing = (a: Listing | null, b: Listing): boolean => {
       if (a === null) return false;
       if (a.keepAliveMinutes !== b.keepAliveMinutes) return false;
+      if (a.root !== b.root) return false;   // 换工作区了就得重画
       if (a.entries.length !== b.entries.length) return false;
       return a.entries.every((entry, index) => {
         const other = b.entries[index];
@@ -359,13 +370,33 @@ window.__ModuleLoader__.load({
           }
         };
 
-        /** 刷新失败只提示一行，**不顶掉**手上的清单：一时的读不到不该让页签看起来是空的。 */
-        const warnLine = (): ReactElement | null => (error === null ? null : createElement('p', {
-          className: 'oks-artifacts-error',
-          style: { fontSize: '12px', opacity: 0.75, margin: '0 0 6px' },
-        }, listing === null
-          ? `还没读到清单（${error}），正在重试…`
-          : `这次没读到清单（${error}），下面是上一次读到的。`));
+        /** 刷新失败：手上有清单就只提示一行、**不顶掉**它；手上什么都没有时把原因说清楚——
+         *  "读不到"与"这个工作区没有产出"是两回事，页签不该长得一样。 */
+        const warnLine = (): ReactElement | null => {
+          if (error === null) return null;
+          if (listing !== null) {
+            return createElement('p', {
+              className: 'oks-artifacts-error',
+              style: { fontSize: '12px', opacity: 0.75, margin: '0 0 6px' },
+            }, `这次没读到清单（${error}），下面是上一次读到的。`);
+          }
+          return createElement('div', {
+            className: 'oks-artifacts-error',
+            style: { fontSize: '13px', margin: '0 0 8px' },
+          },
+          createElement('div', { key: 'head', style: { fontWeight: 600 } }, '读不到「产出」清单'),
+          createElement('div', { key: 'why', style: { opacity: 0.8, marginTop: '2px' } }, error),
+          createElement('div', { key: 'hint', style: { opacity: 0.6, fontSize: '12px', marginTop: '4px' } },
+            '每 4 秒自动重试一次；刚重启过、或这个会话很旧时，刷新页面通常就好。'));
+        };
+
+        /** 这份清单是哪个工作区——没有它，"清单空"与"看错了工作区"长得一模一样。 */
+        const workspaceLine = (): ReactElement | null => (listing?.root === undefined ? null : createElement('p', {
+          className: 'oks-artifacts-status',
+          title: listing.root,
+          style: { fontSize: '11.5px', opacity: 0.55, margin: '4px 0 0' },
+        }, `工作区：${workspaceLabel(listing.root)}`));
+
         const statusLine = (text: string): ReactElement => createElement('p', {
           className: 'oks-artifacts-status',
           style: { fontSize: '13px' },
@@ -375,8 +406,9 @@ window.__ModuleLoader__.load({
           return createElement('div', { className: 'oks-artifacts' }, warnLine(), statusLine('正在读取产出…'));
         }
         if (listing.entries.length === 0) {
-          return createElement('div', { className: 'oks-artifacts' }, warnLine(), statusLine(
-            `这个工作区还没有图或报告。未保留的产物会在 ${listing.keepAliveMinutes} 分钟后被清理。`));
+          return createElement('div', { className: 'oks-artifacts' }, warnLine(),
+            statusLine(`这个工作区还没有图或报告。未保留的产物会在 ${listing.keepAliveMinutes} 分钟后被清理。`),
+            workspaceLine());
         }
 
         /** 点条目：在右栏**新开一个页签**打开这份产物（与文件面板同一个地址格式）。 */
@@ -458,7 +490,8 @@ window.__ModuleLoader__.load({
           warnLine(),
           createElement('div', { style: { fontSize: '12px', opacity: 0.7, padding: '2px 0 6px' } },
             `${listing.entries.length} 条 · 未保留的在 ${listing.keepAliveMinutes} 分钟后清理`),
-          ...rows);
+          ...rows,
+          workspaceLine());
       };
 
       // 正文挂在 pane 这个 keyed 槽上，key 就是我们注册的 tab id（与 files / terminal 同样的路子）。
@@ -479,6 +512,7 @@ window.__ModuleLoader__.load({
     exports.sameListing = sameListing;
     exports.friendlyTime = friendlyTime;
     exports.metaLine = metaLine;
+    exports.workspaceLabel = workspaceLabel;
     return module.exports;
   },
 });

@@ -61,7 +61,7 @@ assert.equal(calls.paneDefinition?.key, 'oks-artifacts', '槽的 key 应当是 t
 assert.ok(calls.effects >= 1, 'apply 没有用 ctx.effect 注册（清理函数会拿不到）');
 
 // —— 5. 清单走插件端点
-const listing = { keepAliveMinutes: 60, entries: [{ file: 'a.chart.svg', kind: 'chart', pinned: false }] };
+const listing = { keepAliveMinutes: 60, root: '/home/u/ws/oks-demo', entries: [{ file: 'a.chart.svg', kind: 'chart', pinned: false }] };
 const requests = [];
 globalThis.fetch = async (url, init) => {
   requests.push({ url, init });
@@ -157,6 +157,7 @@ assert.equal(module.sameListing(base, { ...base, keepAliveMinutes: 30 }), false,
 assert.equal(module.sameListing(base, { ...base, entries: [...base.entries, { ...base.entries[0], file: 'b.chart.svg' }] }), false, '多了一条要更新');
 assert.equal(module.sameListing(base, { ...base, entries: [{ ...base.entries[0], pinned: true }] }), false, '保留状态变了要更新');
 assert.equal(module.sameListing(base, { ...base, entries: [{ ...base.entries[0], title: '改了' }] }), false, '标题变了要更新');
+assert.equal(module.sameListing(base, { ...base, root: '/home/u/ws/other' }), false, '工作区变了要更新');
 
 // —— 9. 时间说法（本地时区：从文件名那段 UTC 换算过来）
 const at = '20261012T092654Z';
@@ -169,6 +170,11 @@ assert.equal(module.friendlyTime(at, stamp + 26 * 3600_000), '昨天 17:26', '�
 assert.equal(module.friendlyTime(at, stamp + 5 * 86400_000), '10月12日 17:26', '同年给月日 + 时刻');
 assert.equal(module.friendlyTime(at, stamp + 400 * 86400_000), '2026年10月12日', '跨年给年月日');
 assert.equal(module.friendlyTime('不是时间戳', stamp), '不是时间戳', '认不出就原样返回');
+
+// —— 9b. 工作区路径的紧凑写法（页签底部那行放得下；"清单空"与"看错工作区"要靠它分开）
+assert.equal(module.workspaceLabel('/home/u/ws/oks-demo'), '…/ws/oks-demo');
+assert.equal(module.workspaceLabel('/tmp'), '/tmp', '段数少就原样给');
+assert.equal(module.workspaceLabel('a/b'), 'a/b');
 
 // —— 10. 第二行：精确分类（缺了就"即时分析"）+ 友好时间；不再重复大类"报表"
 assert.equal(module.metaLine({ category: '周报', at }, stamp), '周报 · 刚刚');
