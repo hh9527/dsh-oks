@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { closeSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeSync } from 'node:fs';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { errorText, isRecord } from './host.ts';
 import { capLine } from './text.ts';
 
@@ -26,6 +26,8 @@ export const DATA_DIR = '.oks/data';
 export const CHART_DIR = '.oks/charts';
 /** 其他展示件（表）：同样是报表的组成材料，可回收。 */
 export const VIEW_DIR = '.oks/views';
+/** agent 的**代码**工作区：jq 程序这类"内容"放这里，工具按引用读——见 readCodeFile。 */
+export const WORK_DIR = '.work';
 
 /** 一类产物落在哪个目录。将来的加工结果（transform）与查询结果同属数据材料。 */
 export const dirForKind = (kind: ArtifactKind): string =>
@@ -62,8 +64,13 @@ export interface OriginNode {
   motivation?: string;
   /** query：执行时**实际**用的数据来源（与 intent 的"请求什么"形成对照）。 */
   source?: unknown;
-  /** transform：实际执行的 snip。 */
+  /** transform：实际执行的 snip（**程序正文**；来自文件的也记正文，`.work/` 被清掉也不影响来路）。
+   *  省略 `byFile` 时它是恒等投影 `.`。 */
   snip?: string;
+  /** transform：这段程序来自哪份代码文件（`byFile` 给出的那一份）。 */
+  snipFile?: string;
+  /** transform：从结果里取回的那一段（jq 点路径，`snip` 是 `.` 时它就是这次操作的全部内容）。 */
+  pick?: string;
   /** transform：表达式产出了几个值。它把"恰好一个数组值"与"多个输出"分开，
    *  于是 `data: []` 是"一个空数组"还是"没有输出"有据可查。 */
   outputs?: number;
@@ -189,6 +196,9 @@ export function originOf(node: OriginNode, data: unknown): DataOrigin {
 export function chainLines(origin: DataOrigin, limit = 24): string[] {
   const lines: string[] = [];
   const seen = new Set<string>();
+  /** 一次 transform 实际做了什么：恒等投影时全部内容都在 `pick` 上，所以那份程序先亮出来。 */
+  const program = (node: OriginNode): string =>
+    (node.snip === undefined || node.snip === '.' ? node.pick ?? node.snip ?? '' : node.snip);
   const detail = (node: OriginNode): string => (node.kind === 'query'
     ? `query ${node.intent === undefined ? '' : capLine(canonicalJson(node.intent), 96)}`
     : node.kind === 'input' ? '输入数据（agent 给定）'
@@ -198,7 +208,7 @@ export function chainLines(origin: DataOrigin, limit = 24): string[] {
           ? `派生自 ${node.from ?? '(未知)'}`
           : node.kind === 'report'
             ? `组装这份报告（${Object.keys(node.inputs ?? {}).length} 项）`
-            : `transform ${capLine(node.snip ?? '', 96)}`);
+            : `transform ${capLine(program(node), 96)}`);
   const visit = (id: string): void => {
     if (seen.has(id)) return;
     seen.add(id);
@@ -702,6 +712,187 @@ function artifactPath(root: string, src: unknown): string {
     throw new Error(`引用指向的路径不在工作区 ${directory}/ 里：${JSON.stringify(src)}`);
   }
   return real;
+}
+
+/** 单份代码文件的字节上限：它是**能被 `snip` 引用为程序**的上限——一份这么大的程序说明该拆开。 */
+export const CODE_MAX_BYTES = 64 * 1024;
+
+/** `.work/` 里单份文本文件的上限（存得住的上限，比"能当程序引用的上限"宽）。 */
+export const WORK_MAX_BYTES = 256 * 1024;
+
+/** `.work/` 下的路径解析：接受 `x.jq` 与 `.work/x.jq` 两种写法，并保证落在 `.work/` 内。
+ *
+ *  它是**执行层面的约束**：不看提示词、不猜意图，越界一律拒绝。`..` 与绝对路径在词法上就被挡下；
+ *  目标或其父目录若是符号链接，再用真实路径复核一遍（挡住"链接指向外面"这种绕法）。 */
+export function workPath(root: string, raw: unknown, tool: string): { rel: string; full: string } {
+  const given = typeof raw === 'string' ? raw.trim() : '';
+  if (given === '') throw new Error(`${tool} 需要 path：${WORK_DIR}/ 下的相对路径，例如 analysis.jq`);
+  const rel = given.startsWith(`${WORK_DIR}/`) ? given.slice(WORK_DIR.length + 1) : given;
+  if (rel === '' || rel.endsWith('/')) {
+    throw new Error(`${tool} 的 path 要指向一个文件：收到 ${JSON.stringify(raw)}`);
+  }
+  if (isAbsolute(given) || isAbsolute(rel)) {
+    throw new Error(`${tool} 的 path 是 ${WORK_DIR}/ 下的相对路径，不能是绝对路径：${JSON.stringify(raw)}`);
+  }
+  const base = resolve(root, WORK_DIR);
+  const full = resolve(base, rel);
+  const inside = relative(base, full);
+  if (inside === '' || inside.startsWith('..') || isAbsolute(inside)) {
+    throw new Error(`${tool} 只能读写工作区 ${WORK_DIR}/ 下的文件（不能越出这一层）：${JSON.stringify(raw)}`);
+  }
+  return { rel: `${WORK_DIR}/${rel}`, full };
+}
+
+/** `.work/` 里的现有文件（按名字排序）：agent 换会话回来时先看这个。 */
+export function listWorkFiles(root: string): Array<{ name: string; bytes: number; modifiedAt: string }> {
+  const base = join(root, WORK_DIR);
+  let entries: string[];
+  try {
+    entries = readdirSync(base, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    return [];
+  }
+  return entries.map((name) => {
+    const info = statSync(join(base, name));
+    return {
+      name: `${WORK_DIR}/${name}`,
+      bytes: info.size,
+      modifiedAt: new Date(info.mtimeMs).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    };
+  });
+}
+
+/** 把父目录建出来，再做一次真实路径复核（父目录若是符号链接指向 `.work/` 外面，这里就挡住）。 */
+function ensureInsideWork(root: string, target: string): void {
+  mkdirSync(dirname(target), { recursive: true });
+  const base = realpathSync(resolve(root, WORK_DIR));
+  const real = realpathSync(dirname(target));
+  const inside = relative(base, real);
+  if (inside.length > 0 && (inside.startsWith('..') || isAbsolute(inside))) {
+    throw new Error(`${WORK_DIR}/ 里的父目录指向了外面，拒绝写入：${JSON.stringify(target)}`);
+  }
+  if (existsSync(target) && !realpathSync(target).startsWith(base)) {
+    throw new Error(`${WORK_DIR}/ 里的这个文件指向了外面，拒绝写入`);
+  }
+}
+
+/** 写一份 `.work/` 下的文本文件：父目录按需创建，已存在就覆盖（它是 agent 自己的工作区，
+ *  没有"独占创建"这条规矩——`edit` 与重写是它迭代代码的方式）。 */
+export function writeWorkFile(root: string, path: unknown, content: unknown, tool: string): {
+  file: string; bytes: number; created: boolean;
+} {
+  const { rel, full } = workPath(root, path, tool);
+  if (typeof content !== 'string') throw new Error(`${tool} 需要 content（要写入的文本）`);
+  const bytes = Buffer.byteLength(content);
+  if (bytes > WORK_MAX_BYTES) {
+    throw new Error(`这份内容 ${(bytes / 1024).toFixed(0)} KB，超过 ${WORK_DIR}/ 单份文件的上限 `
+      + `${WORK_MAX_BYTES / 1024} KB：拆成几份。`);
+  }
+  const created = !existsSync(full);
+  ensureInsideWork(root, full);
+  writeFileSync(full, content);
+  return { file: rel, bytes, created };
+}
+
+/** 改一份 `.work/` 下的文本文件：字面替换。`old` 必须原样出现——找不到、或出现多次而没开
+ *  `replaceAll`，都报出来（改错地方的代价比多问一句高）。 */
+export function editWorkFile(root: string, path: unknown, old: unknown, next: unknown, replaceAll: unknown, tool: string): {
+  file: string; replaced: number; bytes: number;
+} {
+  const { rel, full } = workPath(root, path, tool);
+  if (typeof old !== 'string' || old === '') throw new Error(`${tool} 需要 old：要替换掉的原样文本`);
+  if (typeof next !== 'string') throw new Error(`${tool} 需要 new：替换成什么`);
+  let text: string;
+  try {
+    text = readFileSync(full, 'utf8');
+  } catch {
+    throw new Error(`读不到 ${rel}：${WORK_DIR}/ 里现有 ${listWorkFiles(root).map((f) => f.name).join('、') || '（空）'}`);
+  }
+  const parts = text.split(old);
+  const replaced = parts.length - 1;
+  if (replaced === 0) {
+    throw new Error(`${rel} 里没有出现要替换的那段文本（${JSON.stringify(capLine(old, 60))}）：`
+      + 'old 必须与文件里的内容逐字相同（含空格与缩进）。');
+  }
+  if (replaced > 1 && replaceAll !== true) {
+    throw new Error(`${rel} 里出现了 ${replaced} 次：要么把 old 写得更长以唯一定位，要么传 replaceAll: true 全部替换。`);
+  }
+  const body = parts.join(next);
+  const bytes = Buffer.byteLength(body);
+  if (bytes > WORK_MAX_BYTES) {
+    throw new Error(`改完是 ${(bytes / 1024).toFixed(0)} KB，超过 ${WORK_DIR}/ 单份文件的上限。`);
+  }
+  writeFileSync(full, body);
+  return { file: rel, replaced, bytes };
+}
+
+/** 读一份 `.work/` 下的文本文件：按行给（带行号），可以分页——这是"代码看得见"的那一半。 */
+export function readWorkFile(root: string, path: unknown, offset: unknown, limit: unknown, tool: string): {
+  file: string; lines: string[]; from: number; total: number; bytes: number;
+} {
+  const { rel, full } = workPath(root, path, tool);
+  let text: string;
+  try {
+    text = readFileSync(full, 'utf8');
+  } catch {
+    throw new Error(`读不到 ${rel}：${WORK_DIR}/ 里现有 ${listWorkFiles(root).map((f) => f.name).join('、') || '（空）'}`);
+  }
+  const all = text.replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n');
+  const from = offset === undefined ? 1 : offset;
+  if (typeof from !== 'number' || !Number.isInteger(from) || from < 1) {
+    throw new Error(`${tool} 的 offset 是起始行号（从 1 开始），收到 ${JSON.stringify(offset)}`);
+  }
+  const count = limit === undefined ? 400 : limit;
+  if (typeof count !== 'number' || !Number.isInteger(count) || count < 1 || count > 2000) {
+    throw new Error(`${tool} 的 limit 是一次给多少行（1..2000），收到 ${JSON.stringify(limit)}`);
+  }
+  return {
+    file: rel,
+    lines: all.slice(from - 1, from - 1 + count),
+    from,
+    total: all.length,
+    bytes: Buffer.byteLength(text),
+  };
+}
+
+/** `.work/` 里现有的代码文件（报错时列给 agent 看，免得它反复猜文件名）。 */
+function codeFiles(root: string): string {
+  try {
+    const names = readdirSync(join(root, WORK_DIR)).filter((name) => name.endsWith('.jq')).sort();
+    return names.length === 0 ? `（${WORK_DIR}/ 里还没有 .jq 文件）` : names.map((name) => `${WORK_DIR}/${name}`).join('、');
+  } catch {
+    return `（还没有 ${WORK_DIR}/ 目录）`;
+  }
+}
+
+export const isCodeFile = (name: string): boolean => name.endsWith('.jq');
+
+/** 读一份代码文件：`.work/` 下的 `.jq`，`jq_transform` 的 `by` 指向它。
+ *
+ *  为什么代码只走文件、不进参数：内层语言（jq）与外层序列化（JSON）的语法长得像，模型一进
+ *  "代码模式"就会把 jq 的 `{a: b}` 直接写成 JSON 值（实测 13 次整轮失败里有 3 次是这样）。
+ *  参数里只留一个文件名，两侧语法就不再相邻；程序本身用 `work_write` 写、`work_edit` 增量改，
+ *  还能回读、报错能带上下文。 */
+export function readCodeFile(root: string, raw: unknown): { text: string; file: string } {
+  const { rel, full } = workPath(root, raw, 'by');
+  if (!isCodeFile(rel)) {
+    throw new Error(`by 指向的是一段 jq 程序：文件名要以 .jq 结尾（收到 ${JSON.stringify(rel)}）`);
+  }
+  let text: string;
+  try {
+    text = readFileSync(full, 'utf8');
+  } catch {
+    throw new Error(`读不到 ${rel}：${WORK_DIR}/ 里现有 ${codeFiles(root)}`);
+  }
+  const bytes = Buffer.byteLength(text);
+  if (bytes > CODE_MAX_BYTES) {
+    throw new Error(`${rel} 有 ${(bytes / 1024).toFixed(0)} KB，超过单份代码的上限 `
+      + `${CODE_MAX_BYTES / 1024} KB：把它拆成几份，或改用别的办法。`);
+  }
+  return { text, file: rel };
 }
 
 /** 文件名的三段：时间、类别、名字。它与 `artifactName` 互为反函数——

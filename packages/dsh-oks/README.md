@@ -1,6 +1,6 @@
 # dsh-oks
 
-把**某个领域的知识服务（OKS）**接进 DSH，成为十二个原生工具 + 三个辅助工具 — 用于在 Harness Web 里
+把**某个领域的知识服务（OKS）**接进 DSH，成为十五个原生工具 + 三个辅助工具 — 用于在 Harness Web 里
 **亲手体验**「业务问句 → 实际查询结果」这条链路。查询在**只读**连接上执行；命中的结果写进工作区
 `.oks/data/` 下的结果文件，**默认不进模型上下文**，要看形状或取数时用 `jq_transform` 在它上面做加工、
 要留作下一步输入时用 `jq_transform_into` 物化成新的封装数据。
@@ -51,9 +51,10 @@ Node 按 URL 缓存 ESM 模块，所以：
 | `oks_info` | `{key:"<不透明字符串>"}` | 按 key 读一个知识节点（每次都向服务要，插件不缓存节点）。**入口是 `key:"index"`**（唯一可以凭记忆给出的 key）；之后按返回内容给出的 key 逐级继续——怎么继续、到哪一层，节点自己的说明会回答。key 一律原样传递，**不要构造、切分或解码** |
 | `oks_check_intent` | `{intents:{<名>:Intent}}` | **只校验**：按名字回结论，通过的项给出 `key`（该项 Intent 的标识，提交查询时原样带回）。每个 Intent 必须带顶层 `limit`（1..100）：它是 Intent 的一部分、也参与哈希。不回查询语句，也不碰数据——迭代 Intent 形状时用它 |
 | `oks_query` | `{intents:{<名>:{intent,key}}}` | 核 key 后**只读执行**：每个成功项写进 `<工作区>/.oks/data/<时间>-<名>-<内容哈希>.query.json`，回执只给 `dataSrc`、列信息与行数——**数据行与语句都不进这段对话**（数据按需读回，语句在执行记录与呈现记录里）；失败项按 `key_mismatch` / `rejected` / `query_error` / `save_error` 分别报告 |
-| `jq_transform` | `{inputs?, snip, root?}` | 在具名输入上做**加工**（只看，不落盘）：`inputs` 是「名字 → `src`」——每个 `src` 原样取自前面的回执、限定在工作区可读目录内（`.oks/data/`、`.oks/charts/`、`.oks/views/`、`artifacts/` 都收，图/表/报告的材料块**就地**解析，不落任何中间文件）；`snip` 是 jaq（与 jq 兼容）表达式，它的作用范围是一个**对象**，键就是那些名字。`root` 是**jq 点路径**，指出每份输入交出哪一段：默认 `.data`（那份数据本身）——查询结果是 `{rows, columns}`（写 `.q.rows[] \| select(.count > 100)`），加工结果是它产出的值本身，图与表是 `{rows, spec}`，报告是 `{chapters, plainTables, items}`；`.origin` 是来源链 `{root, nodes}`，`.meta` 是自述，`.` 是整份 `{meta, origin, data}`，更深如 `.data.items` 也收。只认点路径，路径不存在时报出该层可用的键。不给 `inputs` 时表达式看到 `{}`（常量这么算）。结果是一个**值流**：一个输出就是那个值，多个输出是值的数组，零输出是空数组，回执里的 `outputs` 是个数。回执还给出每份输入与结果的形状，以及完整的值（超上限就报错，绝不截断） |
+| `jq_transform` | `{inputs?, pick?, byFile?}` | 在具名输入上做**加工**（只看，不落盘）：`inputs` 是「名字 → 数据来源」——条目给 `"<src>"` 就是那份数据本身，给 `{"src": "<src>", "root": ".data.rows"}` 就指明要其中的哪一段（`src` 原样取自前面的回执、限定在工作区可读目录内：`.oks/data/`、`.oks/charts/`、`.oks/views/`、`artifacts/` 都收，图/表/报告的材料块**就地**解析，不落任何中间文件）；程序的作用范围是一个**对象**，键就是那些名字。**代码一律在文件里**：程序写进 `.work/` 下的 `.jq`（`work_write`），参数 `byFile` 只给文件名——jq 语法于是永远不与调用的 JSON 相邻（见下文那条硬规则）；不写程序时结果就是那个「名字 → 那一段」的对象（`{"q": <那一份数据>}`，回执标出等价的恒等程序），要用裸名字读一份数据就写 `pick: ".q"`；
+  `root` 与 `pick` 是**同一套语法**（jq 点路径：不带引号、只走对象键），`byFile` 是另一种（`.work/` 下的文件名），`pick` 与 `byFile` 二选一。`root` 指出每份输入交出哪一段：默认 `.data`（那份数据本身）——查询结果是 `{rows, columns}`（写 `.q.rows[] \| select(.count > 100)`），加工结果是它产出的值本身，图与表是 `{rows, spec}`，报告是 `{chapters, plainTables, items}`；`.origin` 是来源链 `{root, nodes}`，`.meta` 是自述，`.` 是整份 `{meta, origin, data}`，更深如 `.data.items` 也收。只认点路径，路径不存在时报出该层可用的键。不给 `inputs` 时结果就是 `{}`（常量走程序文件）。结果是一个**值流**：一个输出就是那个值，多个输出是值的数组，零输出是空数组，回执里的 `outputs` 是个数。回执还给出每份输入（含它用的 `root`）与结果的形状，以及完整的值（超上限就报错，绝不截断） |
 | `create_data` | `{name, motivation, data}` | 把 **agent 自己给的数据**落成一份封装（`<工作区>/.oks/data/<时间>-<name>-<内容哈希>.data.json`），于是它可以像查询结果一样被引用：当 `jq_transform` 的具名输入、当 `oks_chart` 的 `src`。`name` 是落点名（`0-9`、`_`、`a-z`，同名不覆盖），`motivation` **必填**——来源链里这个节点只记着"这份数据是给定的"与这句话，给定数据没有别的解释。`data` 是任意 JSON，行对象数组才是图能画的形状。来自数据文件或上游加工的数字不要走这里，走 `oks_query` 与 `jq_transform_into` |
-| `jq_transform_into` | `{name, inputs?, snip, root?, motivation?}` | 同一套求值，**结果物化**成 `<工作区>/.oks/data/<时间>-<name>-<内容哈希>.transform.json`（`name` 是落点名：`0-9`、`_`、`a-z`，同名不覆盖）——回执给 `dataSrc`、形状、输出个数与**完整来源链**（易读视图：输入在前、本次操作在最后），不重复值。`root` 的取值与 `jq_transform` 同一个语义。来源链由工具组装：本次的 `snip`、`motivation`、输出个数与「哪个名字用了哪份输入的根节点」，加上各输入的全部上游；**上游的 `data` 不跟过来**。求值到上限被截断时明确失败、不落盘（残缺的结果不进链） |
+| `jq_transform_into` | `{name, inputs?, pick?, byFile?, motivation?}` | 同一套求值，**结果物化**成 `<工作区>/.oks/data/<时间>-<name>-<内容哈希>.transform.json`（`name` 是落点名：`0-9`、`_`、`a-z`，同名不覆盖）——回执给 `dataSrc`、形状、输出个数与**完整来源链**（易读视图：输入在前、本次操作在最后），不重复值。`inputs` / `root` / `pick` / `byFile` 的语义与 `jq_transform` 完全一致。来源链由工具组装：本次的程序正文（不写程序时记 `pick` 那段投影）、`motivation`、输出个数与「哪个名字用了哪份输入的根节点」，加上各输入的全部上游；**上游的 `data` 不跟过来**。求值到上限被截断时明确失败、不落盘（残缺的结果不进链） |
 | `oks_chart` | `{spec, src, name?, note?}` | 把图画成 **SVG 存进工作区**：数据**只从 `src` 来**——那是前面回执里给的一份封装（`oks_query` 的查询结果、`jq_transform_into` 的加工结果、`create_data` 的输入数据），行不内联进调用。图不再画"来源标识"这类标签（标签说不清：同一份数据经过几层加工就归不到一个入口了），要说来源就看随图带走的来源链。图把**自己用的那份材料**（画出来的行、实际绘图规格、完整来源链）嵌在 SVG 里，所以工作区被回收之后它仍旧说得清这些数字从哪来。十种图元都用 `x`（类别/横轴列）与 `value`（数值列）作底（`histogram` 只给 `value`）：**分组柱** `column`，可选 `series`（组内分组）；**横条** `bar`（可选 `series`：横向的分组条）；**饼图** `pie`（只取正数）；**多序列折线** `line`、**面积图** `area`（可选 `series`，`xType` 不填按数据推断）；**散点** `scatter`（可选 `size` 当第三维）；**直方图** `histogram`（可选 `bins`）；**箱线图** `box`；**矩阵** `heatmap` 与**雷达** `radar`（两者都要 `series`：矩阵的纵轴类别 / 雷达的被比较对象）。要看明细表，直接在回答里写 markdown 表格。回执给出一行 `![标题](路径)`，agent 把它放进回答，图就显示在那里 |
 | `oks_view` | `{spec:{kind,src,title?,columns?}, name?, note?}` | 把数据变成**展示件**并落成 markdown 文件，先支持表格（`kind:"table"`）：`src` 是要展示的那份封装（行对象数组），`columns` 选列与顺序，`title` 是表注；数字列右对齐。回执给两份——`![表注](.oks/views/<文件>.table.md)`（**只放进报告正文**）与可直接粘进回答的 markdown 表本体（表太大时不给本体，只给引用）。文件是 markdown，打开就是张表；来源链、最终数据与展示规格藏在文件头的一行 HTML 注释里，报表内联时读它 |
 | `oks_report` | `{spec, name?, note?}` | 把叙述与图组织成一份**自足的 HTML 报告**存进工作区：`spec` 给 `title`、可选 `subtitle` 与一段 **markdown 正文**。正文用 `##` 分章节（成为目录），支持列表、表格、加粗、行内代码、引用、分隔线与换行（`<br>` / 行尾两空格 / 行尾 `\`），**除 `<br>` 外的 HTML 会转义**；**图写在它该出现的位置，只有一种写法：先画再引**——用 `oks_chart` 画出来（回执给的就是那一行），再把 `![图注](.oks/charts/<文件>.chart.svg)` **独占一行**放进正文；报告把那份 SVG 读进来**内联**（路径写 `.oks/charts/x.chart.svg` 或 `x.chart.svg` 都认），图注编号按出现顺序由系统给；
@@ -63,6 +64,9 @@ Node 按 URL 缓存 ESM 模块，所以：
   节点合成的一张表（共享祖先只存一份）+ 一个"组装这份报告"的根节点，`data` 是 `{ chapters, plainTables, items }`
   ——章节骨架与展示项数据都在里面，于是读报告用 `jq_transform` 就够；每个内联块带 `data-oks-item="n"` 与展示项对应）。**取不到材料或来源结构超限时整份失败**并说清是哪个引用——
   报表是交付物，缺件不该悄悄少一张。语言标为 `chart` 的围栏块**不再接受**（会在原处留一段说明指回去）——于是报告正文里不带任何 JSON 片段。图以**内联 SVG** 嵌在页面里，单文件可以发给任何人打开。报告**不出现在回答正文**：回执给出一行 markdown 链接，agent 用 `present` 交付，用户点开在右侧栏阅读 |
+| `work_write` | `{file_path, content}` | 在 `.work/` 下**创建或覆盖**一份文本文件（父目录按需建）：写 jq 程序的地方，之后由 `byFile` 按文件名引用、用 `work_edit` 增量改。越界与超限（256 KB）一律拒绝 |
+| `work_read` | `{file_path, offset?, limit?}` | 读 `.work/` 下的一份文本文件（带行号，可 `offset`/`limit` 翻页）；`path: "."` 列出目录里有哪些文件与大小 |
+| `work_edit` | `{file_path, old_string, new_string, replace_all?}` | 字面替换改一份 `.work/` 下的文件：`old` 必须原样出现且唯一（否则要 `replaceAll: true`），报错时说清是没找到还是出现了几次 |
 | `oks_artifacts` | `{}` | 列出本工作区的**图与报告**（最新在前）：标题、类别、时间、是否保留。查询结果是内部制品、不出现。用它回答"产出过什么"，或在保留别的东西之前先找到它的路径 |
 | `va_ask` | `{query}` | 咨询本会话的**词汇助手**：给一个说法（词/短语/一句话，中英不限），拿回词表里等价或相近的说法——回答是**一行一个字符串**，每个字符串都是词表原文。助手是插件自己建、自己收的**顶层 agent**（preset `oks`、与调用方同一工作区、共用同一份进程内索引），平时归档，被咨询时临时恢复。它给的是线索，检索口径仍由 `oks_search` / `oks_info` 决定。**整份词表由插件渲染成助手系统提示词里的一个 section**（模板 + 全部词条），助手一个工具都没有。装配**不发任何消息**；每个说法才是一次回合，拿到回答后插件把表面上的节点全部收进一个固定文本的标记，所以助手每次只看到「系统提示词里的词表 + 一个标记 + 当前这个说法」（会话日志保持 append-only，标记节点用 `sourceEventSeqs` 记下遮蔽范围）|
 | `time_now` | `{timeZone?}` | 当前时刻的**各种标准表示**（epoch 毫秒/秒、UTC 文本、RFC 3339、带偏移的本地文本、日期、ISO 周）+ 实际用的时区。服务不读时钟，所以相对时间必须在这里换成绝对边界 |
@@ -118,12 +122,40 @@ key 模式，以及 `vocabulary`（哪些 kind 进词汇表、每类词条的归
   （哈希相同即去重，内容不同则报错）；写失败会清掉不完整的文件。加工结果同一套规则，
   落点类别是 `.transform.json`；`create_data` 给的输入数据写 `.data.json`。按需取数由 `jq_transform` 负责——每个 `dataSrc` 限定在
   可读目录（`.oks/data/`、`.oks/charts/`、`.oks/views/`、`artifacts/`）内，并检查真实路径不越界。
+- **代码区 `.work/`**：jq 程序放在 `<工作区>/.work/`，参数 `byFile` 给文件名（`byFile: "分析.jq"`）；不写程序时结果就是「名字 → 那一段」的对象，再用 `pick: ".名字"` 把它取回来；
+  写、读、改由本插件自己的三个工具负责——`work_write` / `work_read` / `work_edit`，**只作用在
+  `.work/` 内**。为什么不用宿主的 `read` / `write` / `edit`：那三个工具的沙箱根是**整个工作区**
+  （`dsh-fs-sandbox` 只按 workspace root 判定），给不出"只能 `.work/`"；而"给模型的能力边界写在
+  执行层、不写在提示词里"是这个项目一贯的做法。三个工具的形状：`work_write {file_path, content}`
+  （父目录按需创建、已存在就覆盖）、`work_read {file_path, offset?, limit?}`（按行给、可翻页；
+  `file_path: "."` 列出目录）、`work_edit {file_path, old_string, new_string, replace_all?}`
+  （字面替换，`old_string` 必须唯一或显式 `replace_all`）。越界（`..`、绝对路径、符号链接绕出）一律拒绝；单份文件上限 256 KB，
+  其中能被 `byFile` 引用的程序上限 64 KB。
+  来源链记**程序正文**另附 `snipFile`，所以 `.work/` 被清掉之后链照样解释得了那次执行。
+
+  **参数名与宿主那套一致**（`file_path` / `content` / `old_string` / `new_string` / `replace_all`），
+  所以模型已经掌握的那套形状照样能用；只有工具名不同——而名字恰好承载"作用域只在 `.work/`"这条信息。
+  三者只作用在 `.work/` 内，越界（`..`、绝对路径、符号链接绕出）在**执行层**被拒。
+
+  **试过但走不通的两条路**（记在这里，免得再试一遍）：
+  - *策略插件*（包一层 fs provider，让原生 `read`/`write`/`edit` 绑到围栏上）：Cordis 的服务语义不允许
+    子作用域 `provide` 一个祖先已提供的服务名（实测抛 `service "fs" has been registered at <root>`），
+    而 `isolate` 会把外层 provider 切断——组里的 `tool-fs` 于是永远等一个没人提供的 `fs`
+    （新建会话报 `agent-preset/invalid: tool-fs: waiting for fs`）。真要走这条，得自己实现一整套
+    provider（`resolve`/`stat`/`writeText`/`editText`/`listDir`/`watch`…），代价与收益不成比例。
+  - *hook*（`PreToolUse` 匹配这三个工具名，路径越界就 deny）：协议是现成的，但 `runHook` 走
+    `bash.execute`——**每次匹配到的事件起一个进程、还要同步等**，对每轮几十次文件操作不划算。
 - **读产物是就地的（读数据只有一条路）**：`jq_transform` 的具名输入直接吃**任何产物**——数据封装、图、
-  表、报告——图与表的材料块、报告的骨架与展示数据都在读的那一刻从文件里解析出来，`root` 再选一段
-  （`.data` / `.origin` / `.meta` / `.`）。于是既没有中间文件要维护，也没有专门的读接口：
+  表、报告——图与表的材料块、报告的骨架与展示数据都在读的那一刻从文件里解析出来，每个条目再用它自己的
+  `root` 选一段（`.data` / `.origin` / `.meta` / `.`）。于是既没有中间文件要维护，也没有专门的读接口：
   报告的结构读 `root ".data.chapters"` / `".data.items"`，来源链读 `root ".origin"`，
-  "这一项背后的查询与 snip"就是 `.origin.nodes` 上的一次投影。早期版本留下的
+  "这一项背后的查询与那段程序"就是 `.origin.nodes` 上的一次投影。早期版本留下的
   `.derived.json` 不再产生（旧文件按保活回收）。
+- **硬规则：内层语言不与外层 JSON 相邻**。工具调用的参数是 JSON，而 jq 的 `{a: .b}` 与 JSON 的
+  `{a: .b}` 几乎一样——实测里 13 次整轮失败（`MALFORMED_RESPONSE`）中有 3 次正是模型把 jq 的对象构造
+  直接写成了 JSON 值。对照之下，`bash` / `write` / `edit` / 报告正文这些"内容在一个字符串值里"的调用
+  （3200+ 次，含平均 517 个转义引号的报告正文）**一次都没坏**。所以：**凡是"内容"，一律走字符串值
+  或文件引用**（`.work/*.jq`），绝不把内容的语法暴露成参数结构；给工具加参数时也照这条办。
 - **文件的三段**：每份文件都是 `{ meta, origin, data }`——`meta` 回答"这是什么"（类别、名字、时刻，
   图与报告还带标题与分类），`origin` 回答"数据从哪来"，`data` 就是那份数据（jq 的默认输入）。
   形状靠结构认，**没有版本号**。各 `data` 的形态：查询结果是 `{ rows, columns }`（列名取自 SQL 元数据、
@@ -159,7 +191,7 @@ key 模式，以及 `vocabulary`（哪些 kind 进词汇表、每类词条的归
   `TZ=UTC` / `LC_ALL=C` / `LANG=C`，以及求值前按标识符拒掉那些名字）记在
   [issue #18](https://github.com/hh9527/dsh-oks/issues/18)，**尚未实现**。
 - **不承诺跨引擎版本复现**：来源链用来解释来路（输入、动作、理由），不是复算环境；
-  换求值器或换引擎版本，同一段 snip 的结果允许不同。
+  换求值器或换引擎版本，同一段程序的结果允许不同。
 
 ### 自带引导（技能与工具一起走）
 

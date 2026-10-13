@@ -127,13 +127,72 @@ export function renderView(_args: unknown, value: ViewValue | null | undefined):
 
 const textBlock = (lines: readonly string[]): RenderBlock[] => [{ type: 'text', text: `${lines.join('\n')}\n` }];
 
+/** work_read：`.work/` 下的文件正文（带行号）或目录清单。
+ *  分页是明说的：给出"共 N 行、这是第 from 行起"，不是悄悄截断。 */
+export interface WorkReadValue {
+  ok?: boolean;
+  file?: string;
+  entries?: ReadonlyArray<{ name: string; bytes: number; modifiedAt: string }>;
+  lines?: readonly string[];
+  from?: number;
+  total?: number;
+  bytes?: number;
+}
+
+export function renderWorkRead(_args: unknown, value: WorkReadValue | null | undefined): RenderBlock[] {
+  if (value?.ok !== true) return textBlock([JSON.stringify(value ?? { ok: false, error: { code: 'work_unreadable' } })]);
+  const entries = value.entries ?? [];
+  if (entries.length > 0 || (value.lines ?? []).length === 0) {
+    const lines = [`${value.file ?? ''}：${entries.length} 个文件`];
+    for (const entry of entries) lines.push(`  ${entry.name} · ${entry.bytes} B · ${entry.modifiedAt}`);
+    if (entries.length === 0) lines.push(`（${value.file ?? ''} 里还没有文件：用 work_write 建一份。）`);
+    return textBlock(lines);
+  }
+  const from = value.from ?? 1;
+  const shown = value.lines ?? [];
+  const total = value.total ?? 0;
+  const width = String(from + shown.length - 1).length;
+  const lines = [
+    `${value.file ?? ''} · 共 ${total} 行 · ${((value.bytes ?? 0) / 1024).toFixed(1)} KB`
+    + `（这里是第 ${from}–${from + shown.length - 1} 行）`,
+    ...shown.map((line, at) => `${String(from + at).padStart(width, ' ')}  ${line}`),
+  ];
+  if (from + shown.length - 1 < total) {
+    lines.push(`…（还有 ${total - (from + shown.length - 1)} 行：用 offset 从第 ${from + shown.length} 行继续）`);
+  }
+  return textBlock(lines);
+}
+
+/** work_write / work_edit：落点与尺寸。 */
+export interface WorkWriteValue {
+  ok?: boolean;
+  file?: string;
+  bytes?: number;
+  created?: boolean;
+  replaced?: number;
+}
+
+export function renderWorkWrite(_args: unknown, value: WorkWriteValue | null | undefined): RenderBlock[] {
+  if (value?.ok !== true) return textBlock([JSON.stringify(value ?? { ok: false, error: { code: 'work_unwritable' } })]);
+  return textBlock([`${value.file ?? ''} · ${value.created === true ? '已创建' : '已覆盖'} · ${value.bytes ?? 0} B`]);
+}
+
+export function renderWorkEdit(_args: unknown, value: WorkWriteValue | null | undefined): RenderBlock[] {
+  if (value?.ok !== true) return textBlock([JSON.stringify(value ?? { ok: false, error: { code: 'work_unwritable' } })]);
+  return textBlock([`${value.file ?? ''} · 已替换 ${value.replaced ?? 0} 处 · 现在 ${value.bytes ?? 0} B`]);
+}
+
 /** jq_transform 渲染读到的值（探索：只看，不落盘）。 */
 export interface TransformValue {
   ok?: boolean;
   snip: string;
-  /** 交给 snip 的是每份输入的哪一段（jq 点路径）。 */
-  root?: string;
-  inputs: ReadonlyArray<{ name: string; src: string; shape: string }>;
+  /** 从结果里取回的那一段（jq 点路径）；没给就整个结果都是。 */
+  pick?: string;
+  /** 这段程序来自哪份代码文件（`byFile` 给出的那一份）。 */
+  snipFile?: string;
+  /** 省略 `byFile` 时程序是恒等投影：结果是「名字 → 各输入那一段」的对象。 */
+  generated?: boolean;
+  inputs: ReadonlyArray<{ name: string; src: string; root?: string; shape: string }>;
   /** 表达式产出了几个值。 */
   outputs: number;
   /** 结果本身：恰好一个输出时是那个值，多个输出时是值的数组，零输出时是空数组。 */
@@ -431,7 +490,7 @@ function compact(value: unknown): string {
 }
 
 /** 一个 JSON 值的一行形状描述：先让 agent 认出"这是什么形状"，值本身另有采样。
- *  深层的细节不去猜——它由 snip 决定，要看就读一次。 */
+ *  深层的细节不去猜——它由那段程序决定，要看就读一次。 */
 export function shapeOf(value: unknown): string {
   if (Array.isArray(value)) {
     const keys = [...new Set(value.flatMap((item) => (
@@ -462,11 +521,16 @@ const streamOf = (value: { outputs?: number; data?: unknown } | null | undefined
 export function renderJqTransform(_args: unknown, value: TransformValue | null | undefined): RenderBlock[] {
   if (value?.ok === false) return textBlock([JSON.stringify(value)]);
   const inputs = value?.inputs ?? [];
-  const pick = value?.root === undefined || value.root === DEFAULT_ROOT ? '' : ` · root ${value.root}`;
+  const picked = value?.pick === undefined ? '' : ` · pick ${value.pick}`;
+  const from = value?.snipFile === undefined ? '' : ` · 程序来自 ${value.snipFile}`;
   const lines = [
     `表达式产出 ${value?.outputs ?? 0} 个值`
-    + `${value?.truncated === true ? '（到达输出上限，已截断）' : ''}${pick} · ${value?.ms ?? 0} ms`,
-    ...inputs.map((input) => `输入 ${input.name} ← ${input.src}（${input.shape}）`),
+    + `${value?.truncated === true ? '（到达输出上限，已截断）' : ''}${picked}${from} · ${value?.ms ?? 0} ms`,
+    ...inputs.map((input) => `输入 ${input.name} ← ${input.src}（${input.root ?? DEFAULT_ROOT} · ${input.shape}）`),
+    value?.generated === true
+      ? `无程序：结果是「名字 → 各输入那一段」的对象${value.pick === undefined ? '' : `，再取 ${value.pick}`}`
+        + `（等价 jq：${value.pick ?? '.'}）`
+      : '',
     inputs.length === 0 ? '输入：（无：表达式看到的是 {}）' : '',
     `形状：${shapeOf(value?.data)}`,
   ].filter((line) => line !== '');

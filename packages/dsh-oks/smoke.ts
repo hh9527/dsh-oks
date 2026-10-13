@@ -79,7 +79,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'create_data', 'jq_transform', 'jq_transform_into', 'oks_chart', 'oks_view', 'oks_report', 'oks_artifacts', 'time_now', 'time_calc', 'va_ask'];
+const EXPECTED_TOOLS = ['work_read', 'work_write', 'work_edit', 'oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'create_data', 'jq_transform', 'jq_transform_into', 'oks_chart', 'oks_view', 'oks_report', 'oks_artifacts', 'time_now', 'time_calc', 'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -111,6 +111,16 @@ const call = async (name, args, cwd = DEV_ROOT) => {
     ? tool.output.presentationMeta(args, value)
     : undefined;
   return { value, text, meta };
+};
+
+// 程序夹具：工具现在**只认文件**（参数是 `by`），所以测试也把 jq 程序写进 `.work/` 再引用。
+const progDir = resolve(DEV_ROOT, '.work');
+let progSeq = 0;
+const prog = (program) => {
+  mkdirSync(progDir, { recursive: true });
+  const name = `smoke_p${++progSeq}.jq`;
+  writeFileSync(resolve(progDir, name), program.endsWith('\n') ? program : `${program}\n`);
+  return name;
 };
 const foundOf = (value) => value?.trace?.[0]?.response?.ok?.Document?.Found;
 // 每个实例一套独立的假 ctx：工具表、事件表（按名字收全部监听器）、日志。disposer 统一在最后收尾。
@@ -1285,8 +1295,8 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
     }
   };
 
-  // 具名输入：snip 读到的是一个对象，键就是 inputs 里的名字
-  const one = await call('jq_transform', { inputs: { q: dataSrc }, snip: `.q.rows[0].${column}` });
+  // 具名输入：程序读到的是一个对象，键就是 inputs 里的名字
+  const one = await call('jq_transform', { inputs: { q: dataSrc }, byFile: prog(`.q.rows[0].${column}`) });
   console.log(`  .q.rows[0].${column} → ${JSON.stringify(one.value.data)} · outputs=${one.value.outputs}`);
   ok('探索：恰好一个输出时 data 就是那个值',
     one.value.outputs === 1 && !Array.isArray(one.value.data) && one.value.inputs?.[0]?.name === 'q');
@@ -1295,29 +1305,132 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
     one.value.inputs?.[0]?.shape.startsWith('对象 · 字段 rows, columns') && one.value.inputs?.[0]?.src === dataSrc);
 
   // 一个数组值 vs 多个输出：data 形状一样，靠 outputs 分开（这就是约定要消掉的那个歧义）
-  const arrayValue = await call('jq_transform', { snip: '[range(3)]' });
-  const stream = await call('jq_transform', { snip: 'range(3)' });
+  const arrayValue = await call('jq_transform', { byFile: prog('[range(3)]') });
+  const stream = await call('jq_transform', { byFile: prog('range(3)') });
   console.log(`  [range(3)] → outputs=${arrayValue.value.outputs} · range(3) → outputs=${stream.value.outputs}`);
   ok('探索：一个数组值与多个输出靠 outputs 分开',
     arrayValue.value.outputs === 1 && JSON.stringify(arrayValue.value.data) === '[0,1,2]'
     && stream.value.outputs === 3 && JSON.stringify(stream.value.data) === '[0,1,2]');
 
   // 零输出：data 是空数组，回执明说没有产出值
-  const none = await call('jq_transform', { inputs: { q: dataSrc }, snip: 'empty' });
+  const none = await call('jq_transform', { inputs: { q: dataSrc }, byFile: prog('empty') });
   console.log(`  empty → outputs=${none.value.outputs} · data=${JSON.stringify(none.value.data)}`);
   ok('探索：零输出是 outputs=0 且 data 为空数组',
     none.value.outputs === 0 && Array.isArray(none.value.data) && none.value.data.length === 0);
 
-  // 无输入的 snip 看到 {}：常量也这么算
-  const constant = await call('jq_transform', { snip: '{threshold: 100, unit: "ms"}' });
+  // 无输入的程序看到 {}：常量也这么算
+  const constant = await call('jq_transform', { byFile: prog('{threshold: 100, unit: "ms"}') });
   console.log(`  无输入常量 → ${JSON.stringify(constant.value.data)}`);
-  ok('探索：无输入的 snip 看到 {}（常量）',
+  ok('探索：无输入的程序看到 {}（常量）',
     constant.value.outputs === 1 && constant.value.data?.threshold === 100 && constant.value.inputs.length === 0);
+
+  // 代码区的三个工具：写、读、改都只在 .work/ 内（宿主那三个通用工具不在这个 profile 里，
+  // 而它们的沙箱根是整个工作区——"只能 .work/" 这条约束只能由插件自己在执行层给出）。
+  const workWritten = await call('work_write', {
+    file_path: 'smoke_prog.jq',
+    content: '.q.rows | length\n',
+  });
+  const workListed = await call('work_read', { file_path: '.' });
+  const workReadBack = await call('work_read', { file_path: '.work/smoke_prog.jq' });
+  console.log(workReadBack.text.split('\n').slice(0, 3).map((line) => `  ${line}`).join('\n'));
+  ok('work_write / work_read：写进 .work/、能按行读回、用 "." 能列出目录',
+    workWritten.value.ok === true && workWritten.value.file === '.work/smoke_prog.jq'
+    && workWritten.value.created === true
+    && (workListed.value.entries ?? []).some((e) => e.name === '.work/smoke_prog.jq')
+    && (workReadBack.value.lines ?? []).join('\n') === '.q.rows | length'
+    && workReadBack.value.total === 1);
+  const workEdited = await call('work_edit', {
+    file_path: 'smoke_prog.jq', old_string: '| length', new_string: '| length # 改过',
+  });
+  const workReadAgain = await call('work_read', { file_path: 'smoke_prog.jq' });
+  ok('work_edit：字面替换后就地生效（改一句不必重发整份文件）',
+    workEdited.value.replaced === 1 && (workReadAgain.value.lines ?? []).join('') === '.q.rows | length # 改过');
+  const failureOfTool = async (name, args) => {
+    try { await call(name, args); return ''; } catch (cause) { return String(cause?.message ?? cause); }
+  };
+  const scoped = await Promise.all([
+    failureOfTool('work_read', { file_path: '../../etc/passwd' }),
+    failureOfTool('work_write', { file_path: '/tmp/x.jq', content: 'x' }),
+    failureOfTool('work_write', { file_path: '.work/../evil.jq', content: 'x' }),
+    failureOfTool('work_edit', { file_path: 'nope.jq', old_string: 'a', new_string: 'b' }),
+    failureOfTool('work_write', { file_path: 'big.jq', content: 'x'.repeat(300 * 1024) }),
+  ]);
+  console.log(`  代码区越界 → ${scoped[0].slice(0, 60)} / ${scoped[1].slice(0, 50)}`);
+  ok('代码区只在 .work/ 内：越界、绝对路径、`..`、读不到、超限各自明确报错',
+    /只能读写工作区 \.work\//.test(scoped[0]) && /不能是绝对路径/.test(scoped[1])
+    && /不能越出这一层|只能读写工作区/.test(scoped[2]) && /读不到/.test(scoped[3])
+    && /超过 \.work\/ 单份文件的上限/.test(scoped[4]));
+
+  // jq 程序也可以写进 .work/ 下的 .jq 文件、由 byFile 交进来：jq 语法于是不和调用的 JSON 相邻
+  // （实测的整轮失败正是模型把 jq 的 {a: b} 直接写成了 JSON 值）。
+  const workDir = resolve(DEV_ROOT, '.work');
+  mkdirSync(workDir, { recursive: true });
+  const progFile = 'snip_probe.jq';
+  writeFileSync(resolve(workDir, progFile), '# 冒烟：程序正文来自 .work/\n.q.rows\n| length\n');
+  rmSync(resolve(workDir, 'smoke_prog.jq'), { force: true });
+  const viaFile = await call('jq_transform', { inputs: { q: dataSrc }, byFile: progFile });
+  console.log(`  byFile: ${progFile} → ${JSON.stringify(viaFile.value.data)} · snipFile=${viaFile.value.snipFile}`);
+  ok('by 指向 .work/ 下的程序文件，回执写明程序来自哪份文件',
+    viaFile.value.ok !== false && viaFile.value.data === rowTotal && viaFile.value.snipFile === `.work/${progFile}`);
+  const intoViaFile = await call('jq_transform_into', {
+    name: 'from_code_file',
+    motivation: '冒烟：程序来自 .work/ 里的文件',
+    inputs: { q: dataSrc },
+    byFile: progFile,
+  });
+  const intoViaFileBody = JSON.parse(readFileSync(resolve(DEV_ROOT, intoViaFile.value.dataSrc), 'utf8'));
+  const intoViaFileRoot = intoViaFileBody.origin.nodes[intoViaFileBody.origin.root];
+  ok('来源链记的是程序正文（另附 snipFile）：.work/ 被清掉也不影响来路',
+    intoViaFileRoot?.snip?.startsWith('# 冒烟') === true
+    && intoViaFileRoot?.snipFile === `.work/${progFile}` && intoViaFileBody.data === rowTotal);
+  rmSync(resolve(DEV_ROOT, intoViaFile.value.dataSrc), { force: true });
+
+  // 引用的三种不合规：不存在（要列出 .work/ 里现有的）、越界、超过单份代码上限
+  writeFileSync(resolve(workDir, 'huge.jq'), `# ${'x'.repeat(70 * 1024)}\n`);
+  const missingCode = await failureOf({ inputs: { q: dataSrc }, byFile: 'nope.jq' });
+  const outsideCode = await failureOf({ inputs: { q: dataSrc }, byFile: '../evil.jq' });
+  const hugeCode = await failureOf({ inputs: { q: dataSrc }, byFile: 'huge.jq' });
+  const notCode = await failureOf({ inputs: { q: dataSrc }, byFile: 'notes.txt' });
+  console.log(`  代码引用不存在 → ${missingCode.slice(0, 110)}`);
+  ok('代码引用不存在时报出 .work/ 里现有哪些文件',
+    /读不到/.test(missingCode) && missingCode.includes(`.work/${progFile}`));
+  ok('程序文件不能越过 .work/、必须是 .jq、超过单份代码上限时明确报错',
+    /只能读写工作区 \.work\//.test(outsideCode) && /超过单份代码的上限/.test(hugeCode)
+    && /要以 \.jq 结尾/.test(notCode));
+  rmSync(resolve(workDir, 'huge.jq'), { force: true });
+  rmSync(resolve(workDir, progFile), { force: true });
+  // 不写程序时结果就是「名字 → 那一段」的对象；pick 再从它里面取回一段。
+  const shortForm = await call('jq_transform', { inputs: { q: dataSrc } });
+  const explicit = await call('jq_transform', { inputs: { q: { src: dataSrc, root: '.data' } } });
+  const picked = await call('jq_transform', { inputs: { q: dataSrc }, pick: '.q' });
+  const rowsSlice = await call('jq_transform', { inputs: { q: { src: dataSrc, root: '.data.rows' } } });
+  console.log(`  短写法 → ${JSON.stringify(shortForm.value.data).slice(0, 60)}`
+    + ` · pick → ${JSON.stringify(picked.value.data).slice(0, 60)}`);
+  ok('不写程序：结果是「名字 → 那一段」的对象，短写法与 {src, root: ".data"} 等价',
+    shortForm.value.ok !== false && shortForm.value.generated === true
+    && Array.isArray(shortForm.value.data?.q?.rows) && shortForm.value.data.q.rows.length === rowTotal
+    && JSON.stringify(shortForm.value.data) === JSON.stringify(explicit.value.data));
+  ok('pick 从结果里取回一段：单份输入于是能按裸名字读出来，回执写明取的是哪一段',
+    picked.value.ok !== false && picked.value.pick === '.q'
+    && Array.isArray(picked.value.data?.rows) && picked.value.data.rows.length === rowTotal);
+  ok('每个输入条目各带自己的 root：只把那一段交出去',
+    Array.isArray(rowsSlice.value.data?.q) && rowsSlice.value.data.q.length === rowTotal
+    && rowsSlice.value.inputs?.[0]?.root === '.data.rows');
+  const zeroInput = await call('jq_transform', {});
+  ok('零输入：结果是 {}（常量走程序文件）',
+    zeroInput.value.ok !== false && JSON.stringify(zeroInput.value.data) === '{}'
+    && zeroInput.value.inputs.length === 0);
+  const bothWays = await failureOf({ inputs: { q: dataSrc }, pick: '.q', byFile: prog('.') });
+  const strayBy = await failureOf({ inputs: { q: dataSrc }, by: 'peek.jq' });
+  const strayRoot = await failureOf({ inputs: { q: dataSrc }, root: '.origin' });
+  console.log(`  取法互斥 → ${bothWays.slice(0, 90)}`);
+  ok('pick 与 byFile 二选一；退场的 by 与顶层 root 各自指到现在的写法',
+    /二选一/.test(bothWays) && /byFile/.test(strayBy) && /pick/.test(strayRoot));
 
   // 嵌套结构：加工结果是通用 JSON，投影只产出选中的字段
   const projected = await call('jq_transform', {
     inputs: { q: dataSrc },
-    snip: `{n: (.q.rows | length), first: (.q.rows[0] | {${column}, ${numeric}})}`,
+    byFile: prog(`{n: (.q.rows | length), first: (.q.rows[0] | {${column}, ${numeric}})}`),
   });
   const keys = Object.keys(projected.value.data?.first ?? {});
   const expectedKeys = [...new Set([column, numeric])];
@@ -1332,16 +1445,16 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
     /输入 q ← /.test(none.text) && /形状：/.test(none.text) && /没有产出值/.test(none.text));
 
   // 明确回执：语法错误带求值器自己的话；读不到的输入报出是哪一个；越界引用被拒
-  const syntax = await failureOf({ inputs: { q: dataSrc }, snip: '.q.rows[] |' });
+  const syntax = await failureOf({ inputs: { q: dataSrc }, byFile: prog('.q.rows[] |') });
   console.log(`  表达式错误 → ${syntax.split('\n')[0].slice(0, 96)}`);
   ok('探索：表达式错误带回求值器自己的报错', /jaq 表达式执行失败/.test(syntax));
-  const missing = await failureOf({ inputs: { rows: '.oks/data/20260101T000000Z-nope.query.json' }, snip: '.' });
+  const missing = await failureOf({ inputs: { rows: '.oks/data/20260101T000000Z-nope.query.json' }, byFile: prog('.') });
   console.log(`  读不到的输入 → ${missing.slice(0, 120)}`);
   ok('探索：读不到的输入报出是哪一个', /读不到输入 rows/.test(missing));
-  const outside = await failureOf({ inputs: { rows: '../oks.json' }, snip: '.' });
+  const outside = await failureOf({ inputs: { rows: '../oks.json' }, byFile: prog('.') });
   ok('探索：越界的 dataSrc 被拒', /只能指向/.test(outside));
-  const noSnip = await failureOf({ inputs: { rows: dataSrc } });
-  ok('探索：缺 snip 明确报错', /需要 snip/.test(noSnip));
+  // 不填 by 的语义见后面的「纯读取」断言：缺程序不再是错误。
+
 
   // agent 自填的数据经 create_data 变成一份封装：它与查询结果平级，于是也能被加工与图引用
   const created = await call('create_data', {
@@ -1381,7 +1494,7 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
     name: 'with_thresholds',
     motivation: '冒烟：查询结果与给定数据一起用',
     inputs: { q: dataSrc, thresholds: created.value.dataSrc },
-    snip: '{n: (.q.rows | length), warn: .thresholds.warn}',
+    byFile: prog('{n: (.q.rows | length), warn: .thresholds.warn}'),
   });
   const mixedFile = JSON.parse(readFileSync(resolve(DEV_ROOT, mixed.value.dataSrc), 'utf8'));
   const mixedRoot = mixedFile.origin.nodes[mixedFile.origin.root];
@@ -1412,7 +1525,7 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
     name: 'twin_use',
     motivation: '冒烟：把两份同定义的数据一起用上',
     inputs: { a: twinA.value.dataSrc, b: twinB.value.dataSrc },
-    snip: '{sum: (.a.v + .b.v)}',
+    byFile: prog('{sum: (.a.v + .b.v)}'),
   });
   const twinFile = JSON.parse(readFileSync(resolve(DEV_ROOT, twinUse.value.dataSrc), 'utf8'));
   const twinRoot = twinFile.origin.nodes[twinFile.origin.root];
@@ -1426,7 +1539,7 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
   const derived = await call('jq_transform_into', {
     name: 'thresholds_by_snip',
     motivation: '冒烟：用 snip 算出来的常量',
-    snip: '{warn: 70, crit: 90}',
+    byFile: prog('{warn: 70, crit: 90}'),
   });
   const derivedFile = JSON.parse(readFileSync(resolve(DEV_ROOT, derived.value.dataSrc), 'utf8'));
   const derivedRoot = derivedFile.origin.nodes[derivedFile.origin.root];
@@ -1437,13 +1550,13 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
 
   // 截断：按行边界截断，绝不留下半个 JSON 值；这一条在物化那边必须变成失败
   // 数据接口不截断：求值到上限 → 报错（合法 JSON）；返回体超上限 → 报错（合法 JSON）。
-  const bulk = await call('jq_transform', { inputs: { rows: dataSrc }, snip: 'range(1; 200000)' });
+  const bulk = await call('jq_transform', { inputs: { rows: dataSrc }, byFile: prog('range(1; 200000)') });
   console.log(`  求值到上限 → ${bulk.text.trim().slice(0, 150)}`);
   ok('探索：求值到上限时报错而不是返回半份数据（错误本身是合法 JSON）',
     bulk.value.ok === false && bulk.value.error?.code === 'evaluation_truncated'
     && bulk.value.error?.limitBytes === 16 * 1024
     && (() => { try { JSON.parse(bulk.text.trim()); return true; } catch { return false; } })());
-  const big = await call('jq_transform', { snip: 'range(1; 8000)' });
+  const big = await call('jq_transform', { byFile: prog('range(1; 8000)') });
   console.log(`  返回体超上限 → ${big.text.trim().slice(0, 150)}`);
   ok('探索：返回体超上限时报错（带上限与实测字节数，错误本身是合法 JSON）',
     big.value.ok === false && big.value.error?.code === 'payload_too_large'
@@ -1457,7 +1570,7 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
     name: 'snap',
     motivation: '物化：取第一行',
     inputs: { q: dataSrc },
-    snip: '.q.rows[0]',
+    byFile: prog('.q.rows[0]'),
   });
   console.log(`  物化 snap → ${snap.value.dataSrc} · ${snap.value.shape} · outputs=${snap.value.outputs}`);
   const snapFile = JSON.parse(readFileSync(resolve(DEV_ROOT, snap.value.dataSrc), 'utf8'));
@@ -1482,7 +1595,7 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
     name: 'both',
     motivation: '物化：两份输入一起用',
     inputs: { raw: dataSrc, snapshot: snap.value.dataSrc },
-    snip: `{rows: (.raw.rows | length), value: .snapshot.${column}}`,
+    byFile: prog(`{rows: (.raw.rows | length), value: .snapshot.${column}}`),
   });
   const bothFile = JSON.parse(readFileSync(resolve(DEV_ROOT, both.value.dataSrc), 'utf8'));
   const bothRoot = bothFile.origin.nodes[bothFile.origin.root];
@@ -1497,7 +1610,7 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
     name: 'again',
     motivation: '物化：再加工一级',
     inputs: { prev: both.value.dataSrc },
-    snip: '.prev.rows',
+    byFile: prog('.prev.rows'),
   });
   const againFile = JSON.parse(readFileSync(resolve(DEV_ROOT, again.value.dataSrc), 'utf8'));
   console.log(`  物化 again · ${Object.keys(againFile.origin.nodes).length} 个节点 · data=${JSON.stringify(againFile.data)}`);
@@ -1511,7 +1624,7 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
   // 明确回执：名字不合法、缺 name、截断的结果不物化
   const badName = await (async () => {
     try {
-      await call('jq_transform_into', { name: '告警-分布', inputs: { q: dataSrc }, snip: '.q.rows[0]' });
+      await call('jq_transform_into', { name: '告警-分布', inputs: { q: dataSrc }, byFile: prog('.q.rows[0]') });
       return '';
     } catch (cause) {
       return String(cause?.message ?? cause);
@@ -1521,7 +1634,7 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
   ok('物化：名字不合法时明确报错', /名字只能是/.test(badName));
   const noName = await (async () => {
     try {
-      await call('jq_transform_into', { inputs: { q: dataSrc }, snip: '.q.rows[0]' });
+      await call('jq_transform_into', { inputs: { q: dataSrc }, byFile: prog('.q.rows[0]') });
       return '';
     } catch (cause) {
       return String(cause?.message ?? cause);
@@ -1530,7 +1643,7 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
   ok('物化：缺 name 明确报错', /需要 name/.test(noName));
   const truncatedInto = await (async () => {
     try {
-      await call('jq_transform_into', { name: 'bulk', inputs: { rows: dataSrc }, snip: 'range(1; 200000)' });
+      await call('jq_transform_into', { name: 'bulk', inputs: { rows: dataSrc }, byFile: prog('range(1; 200000)') });
       return '';
     } catch (cause) {
       return String(cause?.message ?? cause);
@@ -3312,7 +3425,7 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
   // 图的读路径先验（下面就把它的材料删掉，用来验"报告自足"）。
   const viaChart = await call('jq_transform', {
     inputs: { c: figure.value.svgSrc },
-    snip: '{kind: .c.spec.kind, rows: (.c.rows | length)}',
+    byFile: prog('{kind: .c.spec.kind, rows: (.c.rows | length)}'),
   });
   console.log(`  jq 读图 → ${JSON.stringify(viaChart.value.data)}`);
   ok('jq 直接吃图：拿到 { rows, spec }',
@@ -3321,9 +3434,8 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
   // 读产物是**就地**的：图、表、报告的材料块在读的那一刻解析，不落派生文件。
   const dataFilesBefore = readdirSync(resolve(DEV_ROOT, '.oks', 'data')).length;
   const chartOrigin = await call('jq_transform', {
-    inputs: { c: figure.value.svgSrc },
-    root: '.origin',
-    snip: '{root: .c.root, kinds: [.c.nodes[].kind]}',
+    inputs: { c: { src: figure.value.svgSrc, root: '.origin' } },
+    byFile: prog('{root: .c.root, kinds: [.c.nodes[].kind]}'),
   });
   const dataFilesAfter = readdirSync(resolve(DEV_ROOT, '.oks', 'data')).length;
   console.log(`  图的来源链 → 根 ${chartOrigin.value.data?.root} · ${JSON.stringify(chartOrigin.value.data?.kinds)}`);
@@ -3337,9 +3449,9 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
   // 材料已经全部回收：读这份报告只有一条路——jq 投影它的 data。
   const viaReport = await call('jq_transform', {
     inputs: { r: reportSrc },
-    snip: '{chapters: [.r.chapters[] | .caption], level1: .r.chapters[1].level, '
+    byFile: prog('{chapters: [.r.chapters[] | .caption], level1: .r.chapters[1].level, '
       + 'figure: ([.r.items[] | select(.kind == "chart")][0] | {no: .no, kind: .spec.kind}), '
-      + 'table: ([.r.items[] | select(.kind == "table")][0] | {no: .no, rows: (.data | length)})}',
+      + 'table: ([.r.items[] | select(.kind == "table")][0] | {no: .no, rows: (.data | length)})}'),
   });
   console.log(`  jq 读报告 → ${JSON.stringify(viaReport.value.data).slice(0, 200)}`);
   ok('jq 直接吃报告：章节骨架（含 level）、图元与展示项数据都在',
@@ -3351,9 +3463,8 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
 
   // 展示项清单（原来由专门的读工具给）：现在就是从报告自己的 data 里投影出来的一段。
   const itemList = await call('jq_transform', {
-    inputs: { r: reportSrc },
-    root: '.data.items',
-    snip: '[.r[] | {kind, no, caption}]',
+    inputs: { r: { src: reportSrc, root: '.data.items' } },
+    byFile: prog('[.r[] | {kind, no, caption}]'),
   });
   console.log(`  展示项：${JSON.stringify(itemList.value.data)}`);
   ok('展示项清单由 jq 从报告的 data 里投影：类型、报告上印的编号与注解都在',
@@ -3361,13 +3472,12 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
     && itemList.value.data[0].kind === 'table' && itemList.value.data[0].no === 1
     && itemList.value.data[1].kind === 'chart' && itemList.value.data[1].no === 1);
 
-  // root: "."：交给 snip 的是整份文件 { meta, origin, data }——读自述与来源链用它。
+  // root "."：交给程序的是整份文件 { meta, origin, data }——读自述与来源链用它。
   const whole = await call('jq_transform', {
-    inputs: { r: reportSrc },
-    root: '.',
-    snip: '{kind: .r.meta.kind, nodes: (.r.origin.nodes | keys | length), '
+    inputs: { r: { src: reportSrc, root: '.' } },
+    byFile: prog('{kind: .r.meta.kind, nodes: (.r.origin.nodes | keys | length), '
       + 'kinds: [.r.origin.nodes[].kind], root: .r.origin.nodes[.r.origin.root].kind, '
-      + 'chapters: (.r.data.chapters | length)}',
+      + 'chapters: (.r.data.chapters | length)}'),
   });
   console.log(`  root "." → ${JSON.stringify(whole.value.data)}`);
   ok('root "." 交出整份文件（自述 + 来源链 + 数据）',
@@ -3377,22 +3487,20 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
 
   // root 只取一段：只要来源链 / 只要骨架，都不必把整份文件交给 jaq；回执里带上实际用的 root。
   const onlyOrigin = await call('jq_transform', {
-    inputs: { r: reportSrc },
-    root: '.origin',
-    snip: '{nodes: (.r.nodes | keys | length), root: .r.root}',
+    inputs: { r: { src: reportSrc, root: '.origin' } },
+    byFile: prog('{nodes: (.r.nodes | keys | length), root: .r.root}'),
   });
   const onlyChapters = await call('jq_transform', {
-    inputs: { r: reportSrc },
-    root: '.data.chapters',
-    snip: '[.r[] | .caption]',
+    inputs: { r: { src: reportSrc, root: '.data.chapters' } },
+    byFile: prog('[.r[] | .caption]'),
   });
-  ok('root 只取一段：来源链与章节骨架各自单独可读，回执写明用了哪个 root',
-    onlyOrigin.value.ok !== false && onlyOrigin.value.root === '.origin'
+  ok('root 只取一段：来源链与章节骨架各自单独可读，回执写明每份输入用了哪个 root',
+    onlyOrigin.value.ok !== false && onlyOrigin.value.inputs?.[0]?.root === '.origin'
     && onlyOrigin.value.data?.nodes >= 2 && typeof onlyOrigin.value.data?.root === 'string'
     && JSON.stringify(onlyChapters.value.data) === JSON.stringify(['一、级别与清除', '1.1 明细']));
   const badRoot = await (async () => {
     try {
-      await call('jq_transform', { inputs: { r: reportSrc }, root: '.nope', snip: '.' });
+      await call('jq_transform', { inputs: { r: { src: reportSrc, root: '.nope' } }, byFile: prog('.') });
       return '';
     } catch (cause) {
       return String(cause?.message ?? cause);
@@ -3400,7 +3508,7 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
   })();
   const badSyntax = await (async () => {
     try {
-      await call('jq_transform', { inputs: { r: reportSrc }, root: '.data | keys', snip: '.' });
+      await call('jq_transform', { inputs: { r: { src: reportSrc, root: '.data | keys' } }, byFile: prog('.') });
       return '';
     } catch (cause) {
       return String(cause?.message ?? cause);
@@ -3416,11 +3524,10 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
     name: 'origin_probe', motivation: '冒烟：读封装就是读它自己', data: [{ n: 1 }],
   });
   const beforeProbe = readdirSync(resolve(DEV_ROOT, '.oks', 'data')).length;
-  const probeJq = await call('jq_transform', { inputs: { p: probe.value.dataSrc }, snip: '.p[0].n' });
+  const probeJq = await call('jq_transform', { inputs: { p: probe.value.dataSrc }, byFile: prog('.p[0].n') });
   const probeOrigin = await call('jq_transform', {
-    inputs: { p: probe.value.dataSrc },
-    root: '.origin',
-    snip: '.p.nodes[.p.root].motivation',
+    inputs: { p: { src: probe.value.dataSrc, root: '.origin' } },
+    byFile: prog('.p.nodes[.p.root].motivation'),
   });
   ok('读数据封装：jq 拿到的就是它的 data，读来源就地取 .origin，都不落新文件',
     probeJq.value.data === 1 && probeOrigin.value.data === '冒烟：读封装就是读它自己'
@@ -3437,10 +3544,9 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
 
   // 报表整体的 origin 是**一个**：根是组装节点，inputs 指向各展示项。
   const reportOrigin = await call('jq_transform', {
-    inputs: { r: reportSrc },
-    root: '.origin',
-    snip: '{root: .r.root, rootKind: .r.nodes[.r.root].kind, inputs: .r.nodes[.r.root].inputs, '
-      + 'nodes: (.r.nodes | keys | length)}',
+    inputs: { r: { src: reportSrc, root: '.origin' } },
+    byFile: prog('{root: .r.root, rootKind: .r.nodes[.r.root].kind, inputs: .r.nodes[.r.root].inputs, '
+      + 'nodes: (.r.nodes | keys | length)}'),
   });
   const refs = provenanceItems.map((item) => `${item.kind === 'table' ? '表' : '图'} ${item.no}`);
   console.log(`  报表 origin：根 ${reportOrigin.value.data?.root} · ${reportOrigin.value.data?.nodes} 个节点`
@@ -3452,9 +3558,8 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
 
   // 从一个数据元关联到 origin 上的来源解释：链上每一项的可读字段都在，不必另有读接口。
   const figureChain = await call('jq_transform', {
-    inputs: { r: reportSrc },
-    root: '.origin',
-    snip: '[.r.nodes[] | select(.kind == "query") | {intent, source}] | .[0]',
+    inputs: { r: { src: reportSrc, root: '.origin' } },
+    byFile: prog('[.r.nodes[] | select(.kind == "query") | {intent, source}] | .[0]'),
   });
   const fileIntent = (() => {
     const queryNode = Object.values(reportProvenance?.origin.nodes ?? {}).find((node) => node.kind === 'query');
@@ -3479,9 +3584,8 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
     data: { rows: [], columns: [] },
   }, null, 2)}\n`);
   const observed = await call('jq_transform', {
-    inputs: { o: `.oks/data/${fakeSrc}` },
-    root: '.origin',
-    snip: '.o.nodes[.o.root].source',
+    inputs: { o: { src: `.oks/data/${fakeSrc}`, root: '.origin' } },
+    byFile: prog('.o.nodes[.o.root].source'),
   });
   console.log(`  当时观察到的事实 → ${JSON.stringify(observed.value.data)}`);
   ok('当时的数据文件与观察时刻仍写在链里（读得到；是否还算数由调用方重新查）',

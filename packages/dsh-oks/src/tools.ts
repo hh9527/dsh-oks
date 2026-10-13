@@ -13,8 +13,8 @@ import type { DisplaySource, ReportData } from './chart/report.ts';
 import { CHART_KINDS, inferXType, supportedKinds, supports, toNumber } from './chart/shared.ts';
 import type { ChartKind, ExpressionSwitch, LayoutOverrides, MarkLine, SecondMetric, StyleOverrides } from './chart/shared.ts';
 import { OBJECT_OUTPUT, renderArtifacts, renderChart, renderCheck, renderCreateData, renderJqInto, renderJqTransform,
-  renderJson, renderQuery, renderValue,
-  renderView, shapeOf, withoutQueries } from './response.ts';
+  renderJson, renderQuery, renderValue, renderView, renderWorkEdit, renderWorkRead, renderWorkWrite,
+  shapeOf, withoutQueries } from './response.ts';
 import { KEEP_ALIVE_MINUTES, listArtifacts, MATERIAL_KEEP_ALIVE_MINUTES, openState, pruneArtifacts, pruneMaterials,
   syncArtifacts } from './state.ts';
 import type { Row } from './response.ts';
@@ -29,7 +29,8 @@ import { isArray, isRecord } from './host.ts';
 import { errorText } from './host.ts';
 import type { DiagnosticEntry, LogFn, ServiceResponse, ToolDefinition, ToolExec, TraceStep } from './host.ts';
 import { intentKey } from './key.ts';
-import { appendNode, ARTIFACT_DIR, chainLines, CHART_DIR, DEFAULT_ROOT, embedChartInput, nameProblem, readArtifact,
+import { appendNode, ARTIFACT_DIR, chainLines, CHART_DIR, DEFAULT_ROOT, embedChartInput, nameProblem,
+  editWorkFile, listWorkFiles, readArtifact, readCodeFile, readWorkFile, WORK_DIR, writeWorkFile,
   readChartInput, readTableView, rowsOf, saveArtifact, saveInputData,
   saveResult, saveTableView, saveTransform, VIEW_DIR } from './results.ts';
 import type { ColumnInfo, DataOrigin, Envelope, OriginNode } from './results.ts';
@@ -325,7 +326,7 @@ function payloadGuard<T extends { ok: true }>(tool: string, value: T, hint: stri
   };
 }
 
-/** 求值本身被截断（求值器到上限）时同样不返回半份数据，而是报错——调用方收窄 snip。 */
+/** 求值本身被截断（求值器到上限）时同样不返回半份数据，而是报错——调用方收窄程序。 */
 const truncatedError = (tool: string, hint: string): PayloadError => ({
   ok: false,
   error: { code: 'evaluation_truncated', tool, limitBytes: PAYLOAD_MAX_BYTES, actualBytes: null, hint },
@@ -751,15 +752,36 @@ interface TimeArgs {
   operations?: unknown;
 }
 
-/** 两个 jq 工具的入参：具名输入 + snip；物化那一个另有落点与动机。 */
+/** 两个 jq 工具的入参：具名输入 + 两种取法（`pick` 取路径 / `byFile` 跑程序）；物化那一个另有落点与动机。 */
 interface TransformArgs {
+  /** 名字 → 数据来源：`"<src>"` 或 `{"src": "<src>", "root": "<点路径>"}`（默认 `.data`）。 */
   inputs?: unknown;
-  snip?: unknown;
-  /** 交给 snip 的是文件里的哪一段：jq 点路径，默认 `.data`。 */
-  root?: unknown;
+  /** 从结果里取一段：jq 点路径，与 `byFile` 二选一。 */
+  pick?: unknown;
+  /** 程序写在 `.work/` 下的哪份文件里。 */
+  byFile?: unknown;
   /** 物化的落点名。 */
   name?: unknown;
   motivation?: unknown;
+}
+
+/** 代码区三个工具的入参：名字与宿主那套完全一致（`file_path` / `content` / `old_string` /
+ *  `new_string` / `replace_all`），只有工具名不同——名字承载"作用域只在 `.work/`"，参数形状
+ *  沿用模型已经掌握的那套，于是习惯不浪费。 */
+interface WorkReadArgs {
+  file_path?: unknown;
+  offset?: unknown;
+  limit?: unknown;
+}
+interface WorkWriteArgs {
+  file_path?: unknown;
+  content?: unknown;
+}
+interface WorkEditArgs {
+  file_path?: unknown;
+  old_string?: unknown;
+  new_string?: unknown;
+  replace_all?: unknown;
 }
 
 /** oks_view 的入参：把一个展示件（先支持表格）落成文件。 */
@@ -779,44 +801,44 @@ interface CreateDataArgs {
 /** jq 输出的字符上限：到点终止求值并标记截断（模型可见文本另有预算）。 */
 const JAQ_MAX_CHARS = 256 * 1024;
 
-/** 一份具名输入：名字是 snip 里引用它的变量名，`value` 是交给它的那一段，`origin` 是这份产物的来源链。 */
+/** 一份具名输入：名字是程序里引用它的变量名，`value` 是交给程序的那一段，`root` 是取那一段的点路径，
+ *  `origin` 是这份产物的来源链。 */
 interface NamedInput {
   name: string;
   src: string;
+  root: string;
   value: unknown;
   origin: DataOrigin;
 }
 
-/** 解析 `root`：**jq 点路径**，指出交给 snip 的是这份文件里的哪一段。
- *  它是选择器、不是程序——只认点路径，别的一律报错并给出正确写法。 */
-function parseRoot(raw: unknown, tool: string): { path: string[]; text: string } | { error: string } {
-  if (raw === undefined || raw === null) return { path: ['data'], text: DEFAULT_ROOT };
+/** 点路径的两种写法共用一句提示：它是选择器、不是程序。 */
+const PATH_HINT = '（"." 整份 / ".data" 那份数据本身 / ".origin" 来源链 / ".data.items" 更深的键）';
+
+/** 解析一段**点路径**：jq 的选择器语法。它出现在两处——每个输入条目自带的 `root`（把这份文件的
+ *  哪一段交给程序）与 `pick`（从结果里取回哪一段）——两处都只认点路径，别的一律报错并给出正确写法。 */
+function parsePath(raw: unknown, where: string): { path: string[]; text: string } | { error: string } {
   if (typeof raw !== 'string') {
-    return { error: `${tool} 的 root 要是点路径（"." / ".data" / ".origin" / ".data.items"…）` };
+    return { error: `${where} 要写成点路径${PATH_HINT}` };
   }
   const text = raw.trim();
   if (text === '.') return { path: [], text: '.' };
   if (!/^\.[^.\s[\]]+(\.[^.\s[\]]+)*$/.test(text)) {
-    return {
-      error: `${tool} 的 root 只接受点路径：默认 ".data"（那份数据本身），`
-        + '取整份文件用 "."，只要来源链用 ".origin"，只要自述用 ".meta"。'
-        + `收到 ${JSON.stringify(raw)}`,
-    };
+    return { error: `${where} 只接受点路径${PATH_HINT}，收到 ${JSON.stringify(raw)}` };
   }
   return { path: text.slice(1).split('.'), text };
 }
 
-/** 按点路径取一段；走过的那一段缺键就报出该层可用的键，而不是把 null 交给 snip
- *  （那只会变成一句看不懂的求值错误）。 */
-function selectPath(document: Record<string, unknown>, path: readonly string[]): { value: unknown } | { error: string } {
-  let current: unknown = document;
+/** 按点路径取一段；走过的那一段缺键就报出该层可用的键，而不是把 null 交出去
+ *  （那只会变成一句看不懂的求值错误，或者一个看起来像"没有这个键"的空值）。`what` 说明取的是谁。 */
+function selectPath(value: unknown, path: readonly string[], what: string): { value: unknown } | { error: string } {
+  let current: unknown = value;
   const walked: string[] = [];
   for (const key of path) {
     if (!isRecord(current) || !(key in current)) {
       const available = isRecord(current) ? Object.keys(current).map((name) => `.${name}`).join(' / ') : '(不是对象)';
       return {
-        error: `这份文件里没有 ${JSON.stringify(`.${[...walked, key].join('.')}`)}：`
-          + `${walked.length === 0 ? '顶层' : JSON.stringify(`.${walked.join('.')}`)} 有的是 ${available || '(空)'}`,
+        error: `${what}没有 ${JSON.stringify(`.${[...walked, key].join('.')}`)}：`
+          + `${walked.length === 0 ? '这一层' : JSON.stringify(`.${walked.join('.')}`)} 有的是 ${available || '(空)'}`,
       };
     }
     current = (current as Record<string, unknown>)[key];
@@ -825,16 +847,12 @@ function selectPath(document: Record<string, unknown>, path: readonly string[]):
   return { value: current };
 }
 
-/** 一份输入交给 snip 的那一段：产物读成本来的三段（`{ meta, origin, data }`，
- *  图/表/报告的材料块就地解析），再按 `root` 选。于是"读任何产物"只有一条路——具名输入 + jq 投影，
- *  既不需要派生封装，也不需要专门的读接口。 */
-function dataFormOf(root: string, src: string, path: readonly string[]): { value: unknown; origin: DataOrigin } {
+/** 读一份产物、摊成本来的三段（`{ meta, origin, data }`；图/表/报告的材料块就地解析）。
+ *  于是"读任何产物"只有一条路——具名输入 + 点路径，既不需要派生封装，也不需要专门的读接口。 */
+function readDocument(root: string, src: string): { document: Record<string, unknown>; origin: DataOrigin } {
   const product = readProduct(root, src);
   // 交出去的形状与文件一致：把读回来时多出来的展示项视图留在这一层。
-  const document = { meta: product.meta, origin: product.origin, data: product.data };
-  const picked = selectPath(document, path);
-  if ('error' in picked) throw new Error(picked.error);
-  return { value: picked.value, origin: product.origin };
+  return { document: { meta: product.meta, origin: product.origin, data: product.data }, origin: product.origin };
 }
 
 /** 从一份 data 里取列名：查询结果带着列信息，其余数据按第一行现取。 */
@@ -845,37 +863,120 @@ function columnsOf(data: unknown, rows: readonly Record<string, unknown>[]): str
   return Object.keys(rows[0] ?? {});
 }
 
-/** 解析具名输入：`{ 名字: dataSrc }`。每个输入都要真读到——读不到就报出是哪一个，
- *  而不是让 snip 去面对一个缺失的键（那会变成一句看不懂的求值错误）。 */
-function readInputs(root: string, inputs: unknown, path: readonly string[]): NamedInput[] {
+/** 解析具名输入：`{ 名字: 来源 }`，来源是 `"<src>"` 或 `{"src": "<src>", "root": "<点路径>"}`。
+ *  每个输入都要真读到——读不到就报出是哪一个，而不是让程序去面对一个缺失的键
+ *  （那会变成一句看不懂的求值错误）。 */
+function readInputs(root: string, inputs: unknown, tool: string): NamedInput[] {
   if (inputs === undefined || inputs === null) return [];
   if (!isRecord(inputs)) {
-    throw new Error('inputs 要写成"名字 → dataSrc"的对象，例如 {"events": ".oks/data/xxx.query.json"}；'
-      + '没有输入就省略这一项。');
+    throw new Error(`${tool} 的 inputs 要写成"名字 → 数据来源"的对象，例如 {"events": ".oks/data/xxx.query.json"}；`
+      + '每个条目可以是 dataSrc 字符串，也可以是 {"src": "<dataSrc>", "root": ".data.rows"}；没有输入就省略这一项。');
   }
   const entries: NamedInput[] = [];
-  for (const [name, src] of Object.entries(inputs)) {
-    if (name.trim() === '') throw new Error('inputs 里的名字不能是空串：它同时是 snip 里引用这份数据的变量名。');
-    if (typeof src !== 'string' || src === '') {
-      throw new Error(`输入 ${name} 的 dataSrc 必须是字符串（前面回执里给的那个相对路径）。`);
+  for (const [name, entry] of Object.entries(inputs)) {
+    if (name.trim() === '') throw new Error('inputs 里的名字不能是空串：它同时是程序里引用这份数据的变量名。');
+    let src: string;
+    let path: string[] = DEFAULT_ROOT.slice(1).split('.');
+    let rootText = DEFAULT_ROOT;
+    if (typeof entry === 'string') {
+      src = entry;
+    } else if (isRecord(entry)) {
+      if (entry.src === undefined) throw new Error(`输入 ${name} 少了 src：它要写成 {"src": "<dataSrc>", "root": ".data.rows"}。`);
+      if (typeof entry.src !== 'string' || entry.src === '') {
+        throw new Error(`输入 ${name} 的 src 必须是字符串（前面回执里给的那个相对路径）。`);
+      }
+      src = entry.src;
+      const extra = Object.keys(entry).filter((key) => key !== 'src' && key !== 'root');
+      if (extra.length > 0) {
+        throw new Error(`输入 ${name} 只认 src 与 root，多了 ${extra.map((key) => JSON.stringify(key)).join(' / ')}。`);
+      }
+      if (entry.root !== undefined && entry.root !== null) {
+        const parsed = parsePath(entry.root, `输入 ${name} 的 root`);
+        if ('error' in parsed) throw new Error(parsed.error);
+        path = parsed.path;
+        rootText = parsed.text;
+      }
+    } else {
+      throw new Error(`输入 ${name} 要写成 dataSrc 字符串，或 {"src": "<dataSrc>", "root": ".data.rows"}。`);
     }
+    if (src === '') throw new Error(`输入 ${name} 的 dataSrc 不能是空串。`);
+    let read: { document: Record<string, unknown>; origin: DataOrigin };
     try {
-      entries.push({ name, src, ...dataFormOf(root, src, path) });
+      read = readDocument(root, src);
     } catch (cause) {
       throw new Error(`读不到输入 ${name}（${src}）：${errorText(cause)}`);
     }
+    // 取那一段失败与"读不到这份文件"是两回事：这里报的是这份文件里没有那个键。
+    const picked = selectPath(read.document, path, `输入 ${name}（${src}）里`);
+    if ('error' in picked) throw new Error(picked.error);
+    entries.push({ name, src, root: rootText, value: picked.value, origin: read.origin });
   }
   return entries;
 }
 
-/** snip：两个工具共用同一套求值语义，差别只在结果的去向。 */
-function requireSnip(raw: unknown, tool: string): string {
-  const snip = typeof raw === 'string' ? raw.trim() : '';
-  if (snip === '') {
-    throw new Error(`${tool} 需要 snip：作用在具名输入上的 jaq 表达式——它的输入是一个对象，`
-      + '键就是 inputs 里的名字，例如 ".events[] | select(.count > 100)"；没有输入时看到的是 {}。');
+/** `byFile`：程序写在 `.work/` 下的哪份文件里（见 `readCodeFile`）。省略（或 null）时程序是恒等投影 `.`——
+ *  于是结果就是「名字 → 各输入那一段」这个对象本身，`pick` 再从它里面取回一段。两条路都不把代码写进参数，
+ *  于是 jq 的语法永远不会和外层 JSON 相邻。 */
+function programFor(raw: unknown, root: string): { snip: string; generated?: boolean; file?: string } {
+  if (raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '')) {
+    return { snip: '.', generated: true };
   }
-  return snip;
+  const code = readCodeFile(root, raw);
+  return { snip: code.text.trim(), file: code.file };
+}
+
+/** 一次读的参数都解析好之后的样子：具名输入、要跑的程序、以及从结果里取哪一段。 */
+interface TransformPlan {
+  inputs: NamedInput[];
+  /** 实际交给求值器的程序：给了 byFile 是那份文件里的程序，否则是恒等投影 `.`。 */
+  snip: string;
+  /** 程序来自 `.work/` 下的哪份文件。 */
+  file?: string;
+  /** 程序是省略 byFile 时的恒等投影。 */
+  generated?: boolean;
+  /** `pick` 的点路径（原样写进回执的那一份）与它拆出来的键。 */
+  pick?: string;
+  pickPath?: readonly string[];
+}
+
+/** 两个 jq 工具共用的入参解析：具名输入（各带 `root`）+ 两种取法（`pick` 取路径 / `byFile` 跑程序）。
+ *  取法二选一——要在程序的结果上再取一段，就把那一步写进程序。 */
+function planTransform(args: TransformArgs | undefined, tool: string, root: string): TransformPlan {
+  const stray = args as Record<string, unknown> | undefined;
+  if (stray?.by !== undefined) {
+    throw new Error(`${tool} 的程序文件名给 byFile，例如 "byFile": "analysis.jq"。`);
+  }
+  if (stray?.root !== undefined) {
+    throw new Error(`${tool} 的每一份输入各带自己的 root：写进条目里`
+      + '（{"inputs": {"d": {"src": "…", "root": ".data.rows"}}}）；要从结果里取一段用 pick（"pick": ".d"）。');
+  }
+  const inputs = readInputs(root, args?.inputs, tool);
+  const code = programFor(args?.byFile, root);
+  let pick: { path: string[]; text: string } | undefined;
+  if (args?.pick !== undefined && args?.pick !== null) {
+    if (code.file !== undefined) {
+      throw new Error(`${tool} 的 pick 与 byFile 二选一：pick 从结果里取一段（不跑程序），byFile 跑程序文件；`
+        + '要在程序的结果上再取一段，就把那一步写进程序（"| .key"）。');
+    }
+    const parsed = parsePath(args.pick, `${tool} 的 pick`);
+    if ('error' in parsed) throw new Error(parsed.error);
+    pick = parsed;
+  }
+  return {
+    inputs,
+    snip: code.snip,
+    ...(code.file === undefined ? {} : { file: code.file }),
+    ...(code.generated === true ? { generated: true } : {}),
+    ...(pick === undefined ? {} : { pick: pick.text, pickPath: pick.path }),
+  };
+}
+
+/** 按 `pick` 从求值结果里取一段；没给 pick 就是整个结果。取不到键时报出这一层有的键。 */
+function applyPick(plan: TransformPlan, data: unknown): unknown {
+  if (plan.pickPath === undefined) return data;
+  const picked = selectPath(data, plan.pickPath, '这次求值的结果里');
+  if ('error' in picked) throw new Error(picked.error);
+  return picked.value;
 }
 
 /** 求值一次 snip：把各输入的 `data` 按键绑成一个对象交给求值器。
@@ -1413,62 +1514,66 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'jq_transform',
-      description: 'Explore data with a jaq (jq-compatible) expression without saving anything. inputs maps a name of your choosing to a src a previous receipt gave you; the snip then sees one object whose keys are those names, so write ".events.rows[] | select(.count > 100)" or "{total: ([.events.rows[].n] | add)}". Each input is a whole file {meta, origin, data} (a query result is {rows, columns}; a transform is the value it produced; a figure or table is {rows, spec}; a report is {chapters, plainTables, items}) and root picks which part of it the snip gets: the default ".data" is that data itself, ".origin" is the source chain {root, nodes}, ".meta" is the record\'s self-description and "." is the whole file — so reading a record\'s provenance takes no separate tool. Leave inputs out and the snip sees {} — that is how a constant is computed. A jq program produces a stream of values: exactly one value comes back as that value, several come back as an array, none comes back as []. The receipt reports every input, the shape of the result and the values themselves, so look before you save; an expression that fails comes back with the evaluator\'s own message. To keep a result for a later step or for a figure, materialise it with jq_transform_into.',
+      description: 'Run a jaq (jq-compatible) program over saved data without saving anything, so a result can be looked at before it is kept. inputs maps a name of your choosing to a src a previous receipt gave you; each entry is either that src or {"src": "<src>", "root": "<jq dot path>"}, where root is which slice of the file the program gets — the default ".data" is that record\'s own data (a query result is {rows, columns}; a transform is the value it produced; a figure or table is {rows, spec}; a report is {chapters, plainTables, items}), ".origin" is the source chain {root, nodes}, ".meta" is the record\'s self-description, "." is the whole {meta, origin, data}, and deeper paths like ".data.rows" work too — so reading a record\'s provenance takes no separate tool. A path that does not exist fails with the keys that do. The program lives in a file under .work/ and byFile names it — "byFile": "analysis.jq", written first with work_write — so jq syntax never sits next to the JSON of the call itself. The program sees one object whose keys are the input names, so write ".events.rows[] | select(.count > 100)" or "{total: ([.events.rows[].n] | add)}". Leave byFile out and the result is that object itself ({"events": <slice>}); pick then takes one part of the result back, as a jq dot path without quotes ("pick": ".events"), which is how a single input is read under its bare name. With no inputs that object is {}, so a constant arrives through a program file. A jq program produces a stream of values: exactly one value comes back as that value, several come back as an array, none comes back as []. The receipt reports every input, the shape of the result and the values themselves, so look before you save; an expression that fails comes back with the evaluator\'s own message. To keep a result for a later step or for a figure, materialise it with jq_transform_into.',
       parameters: {
         type: 'object',
         properties: {
-          inputs: { type: 'object', description: 'Named inputs, {"events": "<src>", "thresholds": "<src>"}: each name becomes a key your snip reads, and each src is copied verbatim from an earlier receipt (a workspace-relative path under .oks/data/, .oks/charts/, .oks/views/ or artifacts/). Omit it when the snip needs no input.', additionalProperties: { type: 'string' } },
-          snip: { type: 'string', description: 'The jaq/jq expression. Its input is one object whose keys are the input names, e.g. ".events.rows[] | select(.count > 100)".' },
-          root: { type: 'string', description: 'Which part of each input file the snip gets, as a jq dot path: ".data" (default) is that record\'s data itself, ".origin" its source chain {root, nodes}, ".meta" its self-description, "." the whole {meta, origin, data}, and deeper paths like ".data.items" work too. A path that does not exist fails with the keys that do.' },
+          inputs: { type: 'object', description: 'Named inputs, {"events": "<src>"} or {"events": {"src": "<src>", "root": ".data.rows"}}: each name becomes a key the program reads, each src is copied verbatim from an earlier receipt (a workspace-relative path under .oks/data/, .oks/charts/, .oks/views/ or artifacts/), and root picks the slice of that file. Omit it when the program needs no input.', additionalProperties: { oneOf: [{ type: 'string' }, { type: 'object', properties: { src: { type: 'string' }, root: { type: 'string' } }, required: ['src'], additionalProperties: false }] } },
+          byFile: { type: 'string', description: 'Which .work/ file holds the program: "analysis.jq" (write it there first with work_write). Its input is one object whose keys are the input names, e.g. a program ".events.rows[] | select(.count > 100)". Leave it out to read the inputs unchanged, and use pick to take one part of that result.' },
+          pick: { type: 'string', description: 'A jq dot path into the result, without quotes: ".events" gives one input back under its bare name, ".events.rows" goes deeper. It is for taking a part of the result back, so it stands alone — with byFile given, write that step into the program instead ("| .events").' },
         },
-        required: ['snip'],
+        required: [],
         additionalProperties: false,
       },
       output: { schema: OBJECT_OUTPUT, render: renderJqTransform },
       async execute(args: TransformArgs, exec: ToolExec) {
         const entry = knowledge.ensureWorkspace(exec);
-        const pick = parseRoot(args?.root, 'jq_transform');
-        if ('error' in pick) throw new Error(pick.error);
-        const inputs = readInputs(entry.settings.workspaceRoot, args?.inputs, pick.path);
-        const snip = requireSnip(args?.snip, 'jq_transform');
+        const plan = planTransform(args, 'jq_transform', entry.settings.workspaceRoot);
+        const snip = plan.snip;
         const started = Date.now();
-        const outcome = await runSnip(entry, inputs, snip, exec?.signal);
+        const outcome = await runSnip(entry, plan.inputs, snip, exec?.signal);
+        const data = applyPick(plan, outcome.data);
         const ms = Date.now() - started;
         // 探索留痕：读过什么、算了什么、产出几个值——探索不进来源链，日志是唯一的记录。
-        log(`[oks] jq_transform · ${inputs.length} 份输入 → ${outcome.outputs} 个值`
-          + `${outcome.truncated ? '（求值到上限）' : ''} · ${ms} ms · snip=${capLine(snip, 200)}`);
-        // 求值到上限＝数据不完整：报错，不返回半份（调用方收窄 snip）。
+        log(`[oks] jq_transform · ${plan.inputs.length} 份输入 → ${outcome.outputs} 个值`
+          + `${plan.pick === undefined ? '' : ` · pick ${plan.pick}`}`
+          + `${outcome.truncated ? '（求值到上限）' : ''} · ${ms} ms`
+          + ` · ${plan.file === undefined ? '' : `${plan.file} `}snip=${capLine(snip, 200)}`);
+        // 求值到上限＝数据不完整：报错，不返回半份（调用方让程序少取一点）。
         if (outcome.truncated) {
-          return truncatedError('jq_transform', '把 snip 收窄（只取你真正要的那部分：聚合、投影或前 N 项）。');
+          return truncatedError('jq_transform', '让程序少取一点（只取你真正要的那部分：聚合、投影或前 N 项）。');
         }
         return payloadGuard('jq_transform', {
           ok: true as const,
           snip,
-          root: pick.text,
-          inputs: inputs.map((input) => ({
+          ...(plan.file === undefined ? {} : { snipFile: plan.file }),
+          ...(plan.generated === true ? { generated: true } : {}),
+          ...(plan.pick === undefined ? {} : { pick: plan.pick }),
+          inputs: plan.inputs.map((input) => ({
             name: input.name,
             src: input.src,
+            root: input.root,
             shape: shapeOf(input.value),
           })),
           outputs: outcome.outputs,
-          data: outcome.data,
+          data,
           ms,
-        }, '把 snip 收窄（聚合、投影或前 N 项），不要一次取整份数据。');
+        }, '让程序少取一点（聚合、投影或前 N 项），不要一次取整份数据。');
       },
     },
     {
       name: 'jq_transform_into',
-      description: 'Compute with a jaq (jq-compatible) expression and save the result as data a later step or a figure can read. inputs maps a name to a src from an earlier receipt; the snip sees one object whose keys are those names, and root picks which part of each file it gets — the default ".data" is that record\'s data itself (query → {rows, columns}, transform → its value, figure/table → {rows, spec}, report → {chapters, plainTables, items}), ".origin" is the source chain and "." the whole {meta, origin, data}. The tool builds the provenance itself: it reads each input, runs the snip, and writes {meta, origin, data} into .oks/data/ — the new origin carries this operation (snip, motivation, output count, which name used which input) plus the complete source chain of every input, while the inputs\' own data stays out of it. A value stream is collected the same way as in jq_transform: one value is that value, several are an array, none is []. The receipt gives you the dataSrc, the shape and the whole source chain — it does not repeat the values, so explore with jq_transform when you want to see them. Data the agent supplies itself does not come in here: create_data makes it an envelope first, so that the numbers have a recorded reason.',
+      description: 'Run a jaq (jq-compatible) program over saved data and save the result as data a later step or a figure can read. inputs maps a name of your choosing to a src from an earlier receipt; each entry is either that src or {"src": "<src>", "root": "<jq dot path>"}, and the program sees one object whose keys are those names — the default ".data" is the record\'s own data (query → {rows, columns}, transform → its value, figure/table → {rows, spec}, report → {chapters, plainTables, items}), ".origin" is the source chain and "." the whole {meta, origin, data}. Leave byFile out and the result is that object itself; pick takes one part of it back as a jq dot path without quotes ("pick": ".events"). With no inputs the object is {}, so a constant arrives through a program file. The tool builds the provenance itself: it reads each input, runs the program, and writes {meta, origin, data} into .oks/data/ — the new origin carries this operation (snip, motivation, output count, which name used which input) plus the complete source chain of every input, while the inputs\' own data stays out of it. A value stream is collected the same way as in jq_transform: one value is that value, several are an array, none is []. The receipt gives you the dataSrc, the shape and the whole source chain — it does not repeat the values, so explore with jq_transform when you want to see them. Data the agent supplies itself does not come in here: create_data makes it an envelope first, so that the numbers have a recorded reason.',
       parameters: {
         type: 'object',
         properties: {
           name: { type: 'string', description: 'Name of the saved result — an identifier, not a title: 0-9, _ and a-z only, at most 60 characters, e.g. events_by_level. The file is named <time>-<name>-<content hash>.transform.json under .oks/data/; an existing file is never overwritten.' },
           motivation: { type: 'string', description: 'Why this step is being done — one short natural-language sentence, recorded on this operation\'s node so the numbers can be explained later.' },
-          inputs: { type: 'object', description: 'Named inputs, {"events": "<src>", "thresholds": "<src>"}: each name becomes a key your snip reads, and each src is copied verbatim from an earlier receipt. Omit it when the snip needs no input (a constant).', additionalProperties: { type: 'string' } },
-          snip: { type: 'string', description: 'The jaq/jq expression. Its input is one object whose keys are the input names, e.g. ".events.rows[] | {level, count}".' },
-          root: { type: 'string', description: 'Which part of each input file the snip gets, as a jq dot path: ".data" (default) is that record\'s data itself, ".origin" its source chain {root, nodes}, ".meta" its self-description, "." the whole {meta, origin, data}, and deeper paths like ".data.items" work too. A path that does not exist fails with the keys that do.' },
+          inputs: { type: 'object', description: 'Named inputs, {"events": "<src>"} or {"events": {"src": "<src>", "root": ".data.rows"}}: each name becomes a key the program reads, each src is copied verbatim from an earlier receipt, and root picks the slice of that file. Omit it when the program needs no input (a constant).', additionalProperties: { oneOf: [{ type: 'string' }, { type: 'object', properties: { src: { type: 'string' }, root: { type: 'string' } }, required: ['src'], additionalProperties: false }] } },
+          byFile: { type: 'string', description: 'Which .work/ file holds the program: "analysis.jq" (write it there first with work_write). Its input is one object whose keys are the input names, e.g. a program ".events.rows[] | {level, count}". Leave it out to save the inputs object itself, and use pick to take one part of it.' },
+          pick: { type: 'string', description: 'A jq dot path into the result, without quotes: ".events" saves one input under its bare name, ".events.rows" goes deeper. It is for taking a part of the result back, so it stands alone — with byFile given, write that step into the program instead ("| .events").' },
         },
-        required: ['name', 'snip'],
+        required: ['name'],
         additionalProperties: false,
       },
       output: { schema: OBJECT_OUTPUT, render: renderJqInto },
@@ -1478,12 +1583,11 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         if (name === '') {
           throw new Error('jq_transform_into 需要 name：这次加工结果的落点名（0-9、_ 与 a-z），例如 events_by_level。');
         }
-        const pick = parseRoot(args?.root, 'jq_transform_into');
-        if ('error' in pick) throw new Error(pick.error);
-        const inputs = readInputs(entry.settings.workspaceRoot, args?.inputs, pick.path);
-        const snip = requireSnip(args?.snip, 'jq_transform_into');
+        const plan = planTransform(args, 'jq_transform_into', entry.settings.workspaceRoot);
+        const snip = plan.snip;
         const started = Date.now();
-        const outcome = await runSnip(entry, inputs, snip, exec?.signal);
+        const outcome = await runSnip(entry, plan.inputs, snip, exec?.signal);
+        const data = applyPick(plan, outcome.data);
         // 截断的结果是**不完整**的结果：物化它等于把一份残缺数据写进来源链，所以这里明确失败。
         if (outcome.truncated) {
           throw new Error(`表达式产出超过求值上限（${JAQ_MAX_CHARS} 字符），这份结果不完整，没有物化：`
@@ -1500,23 +1604,26 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             kind: 'transform',
             ...(motivation === undefined ? {} : { motivation }),
             snip,
+            ...(plan.file === undefined ? {} : { snipFile: plan.file }),
+            ...(plan.pick === undefined ? {} : { pick: plan.pick }),
             // 输出个数记在**这个操作的节点**上：它是"这次执行产出了什么"的一部分。
             outputs: outcome.outputs,
-            ...(inputs.length === 0 ? {} : {
-              inputs: Object.fromEntries(inputs.map((input) => [input.name, input.origin.root])),
+            ...(plan.inputs.length === 0 ? {} : {
+              inputs: Object.fromEntries(plan.inputs.map((input) => [input.name, input.origin.root])),
             }),
           },
-          inputs: inputs.map((input) => input.origin),
-          data: outcome.data,
+          inputs: plan.inputs.map((input) => input.origin),
+          data,
         });
         const ms = Date.now() - started;
-        log(`[oks] jq_transform_into ${name} · ${inputs.length} 份输入 → ${outcome.outputs} 个值`
+        log(`[oks] jq_transform_into ${name} · ${plan.inputs.length} 份输入 → ${outcome.outputs} 个值`
+          + `${plan.pick === undefined ? '' : ` · pick ${plan.pick}`}`
           + ` · ${(saved.bytes / 1024).toFixed(1)} KB · ${ms} ms · ${saved.dataSrc} · snip=${capLine(snip, 200)}`);
         return {
           dataSrc: saved.dataSrc,
           name,
           outputs: outcome.outputs,
-          shape: shapeOf(outcome.data),
+          shape: shapeOf(data),
           bytes: saved.bytes,
           ms,
           chain: chainLines(saved.origin),
@@ -1741,7 +1848,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_report',
-      description: 'Assemble a self-contained HTML report from a markdown body. The markdown is parsed with a restricted subset — headings, paragraphs, lists, tables, bold/italic/inline code, links, blockquotes, rules, images and fenced code blocks — and embedded HTML is escaped rather than interpreted. Figures come in one way only: reference a figure you have already drawn, on a line of its own, as ![caption](.oks/charts/<file>.chart.svg) — the report reads that SVG back and inlines it, so the single file opens anywhere with no external assets. A ```chart fenced block is no longer accepted (it leaves a note telling you to draw first and reference the line). Hand the result to the user with the present tool — an HTML report does not render in the reply body itself.',
+      description: 'Assemble a self-contained HTML report from a markdown body. The markdown is parsed with a restricted subset — headings, paragraphs, lists, tables, bold/italic/inline code, links, blockquotes, rules, images and fenced code blocks — and embedded HTML is escaped rather than interpreted. Figures come in one way only: reference a figure you have already drawn, on a line of its own, as ![caption](.oks/charts/<file>.chart.svg) — the report reads that SVG back and inlines it, so the single file opens anywhere with no external assets. Hand the result to the user with the present tool — an HTML report does not render in the reply body itself.',
       parameters: {
         type: 'object',
         properties: {
@@ -1753,7 +1860,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
               subtitle: { type: 'string', description: 'Optional subtitle — usually the time window the report covers.' },
               markdown: {
                 type: 'string',
-                description: 'The report body in markdown. Use ## for sections (they become the table of contents). A figure comes in one way only: draw it first with oks_chart, then put the line that receipt gave you on a line of its own — ![caption](.oks/charts/<file>.chart.svg). The report reads that SVG back and inlines it, so the file stays single and self-contained; either .oks/charts/<file>.chart.svg or <file>.chart.svg is accepted (the figure itself lives in .oks/charts/), nothing else is. Figure numbers are assigned in the order the references appear. A ```chart fenced block is no longer accepted. Other fenced blocks are rendered as plain code.',
+                description: 'The report body in markdown. Use ## for sections (they become the table of contents). A figure comes in one way only: draw it first with oks_chart, then put the line that receipt gave you on a line of its own — ![caption](.oks/charts/<file>.chart.svg). The report reads that SVG back and inlines it, so the file stays single and self-contained; either .oks/charts/<file>.chart.svg or <file>.chart.svg is accepted (the figure itself lives in .oks/charts/), nothing else is. Figure numbers are assigned in the order the references appear. Other fenced blocks are rendered as plain code.',
               },
             },
             required: ['title', 'markdown'],
@@ -1868,6 +1975,76 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         } finally {
           state.close();
         }
+      },
+    },
+    {
+      name: 'work_read',
+      description: `Read a UTF-8 text file under ${WORK_DIR}/ and return line-numbered content — the same shape as the usual read tool (file_path / offset / limit), except that only ${WORK_DIR}/ is reachable: that is enforced, not requested. ${WORK_DIR}/ is your own code area in this workspace, the place for jq programs you will reference and re-edit. Pass "." as file_path to list what is in ${WORK_DIR}/ instead, so a fresh session can see what it left behind.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string', description: `Path under ${WORK_DIR}/, either "analysis.jq" or "${WORK_DIR}/analysis.jq". Use "." to list the directory.` },
+          offset: { type: 'number', description: 'First line to return, 1-based. Default 1.' },
+          limit: { type: 'number', description: 'How many lines to return, 1..2000. Default 400.' },
+        },
+        required: ['file_path'],
+        additionalProperties: false,
+      },
+      output: { schema: OBJECT_OUTPUT, render: renderWorkRead },
+      async execute(args: WorkReadArgs, exec: ToolExec) {
+        const entry = knowledge.ensureWorkspace(exec);
+        const root = entry.settings.workspaceRoot;
+        const given = typeof args?.file_path === 'string' ? args.file_path.trim() : '';
+        if (given === '.' || given === `${WORK_DIR}/` || given === WORK_DIR) {
+          return { ok: true as const, file: WORK_DIR, entries: listWorkFiles(root), lines: [], from: 1, total: 0, bytes: 0 };
+        }
+        const read = readWorkFile(root, args?.file_path, args?.offset, args?.limit, 'work_read');
+        log(`[oks] work_read ${read.file} · 第 ${read.from} 行起 ${read.lines.length} 行`
+          + `（共 ${read.total} 行 · ${(read.bytes / 1024).toFixed(1)} KB）`);
+        return { ok: true as const, ...read, entries: [] };
+      },
+    },
+    {
+      name: 'work_write',
+      description: `Write a UTF-8 text file under ${WORK_DIR}/, creating or overwriting it — the same shape as the usual write tool (file_path / content), except that only ${WORK_DIR}/ is reachable. It is how a jq program gets somewhere a transform can name it: write "${WORK_DIR}/peek.jq" here, then give "byFile": "peek.jq", and edit the program later without resending the whole thing. Parent directories are created. Keep data out of here: rows and tables belong in .oks/data/ via create_data or jq_transform_into.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string', description: `Path under ${WORK_DIR}/, e.g. "analysis.jq" (or "${WORK_DIR}/analysis.jq").` },
+          content: { type: 'string', description: 'The text to write — the jq program itself, verbatim.' },
+        },
+        required: ['file_path', 'content'],
+        additionalProperties: false,
+      },
+      output: { schema: OBJECT_OUTPUT, render: renderWorkWrite },
+      async execute(args: WorkWriteArgs, exec: ToolExec) {
+        const entry = knowledge.ensureWorkspace(exec);
+        const saved = writeWorkFile(entry.settings.workspaceRoot, args?.file_path, args?.content, 'work_write');
+        log(`[oks] work_write ${saved.file} · ${(saved.bytes / 1024).toFixed(1)} KB · ${saved.created ? '新建' : '覆盖'}`);
+        return { ok: true as const, ...saved };
+      },
+    },
+    {
+      name: 'work_edit',
+      description: `Replace a literal passage in a text file under ${WORK_DIR}/ — the same shape as the usual edit tool (file_path / old_string / new_string / replace_all), except that only ${WORK_DIR}/ is reachable. It is how a jq program gets iterated: write it once, then fix one line at a time instead of resending the file. old_string must appear in the file exactly as given (whitespace included); it must be unique unless replace_all is true.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string', description: `Path under ${WORK_DIR}/, e.g. "analysis.jq".` },
+          old_string: { type: 'string', description: 'The exact text to replace (must occur verbatim).' },
+          new_string: { type: 'string', description: 'What to put in its place.' },
+          replace_all: { type: 'boolean', description: 'Replace every occurrence instead of requiring uniqueness. Default false.' },
+        },
+        required: ['file_path', 'old_string', 'new_string'],
+        additionalProperties: false,
+      },
+      output: { schema: OBJECT_OUTPUT, render: renderWorkEdit },
+      async execute(args: WorkEditArgs, exec: ToolExec) {
+        const entry = knowledge.ensureWorkspace(exec);
+        const saved = editWorkFile(entry.settings.workspaceRoot, args?.file_path, args?.old_string,
+      args?.new_string, args?.replace_all, 'work_edit');
+        log(`[oks] work_edit ${saved.file} · 替换 ${saved.replaced} 处 · ${(saved.bytes / 1024).toFixed(1)} KB`);
+        return { ok: true as const, ...saved };
       },
     },
     {
