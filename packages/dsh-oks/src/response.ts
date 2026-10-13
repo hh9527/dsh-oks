@@ -65,18 +65,193 @@ export interface QueryValue {
   window?: { start: string; endExclusive: string } | null;
 }
 
-/** oks_jaq_result 渲染读到的值。 */
-export interface JaqValue {
-  src: string;
+/** create_data 渲染读到的值（把 agent 自己给的数据落成封装）。 */
+export interface CreateDataValue {
+  dataSrc: string;
   name: string;
-  /** 输入的行数（结果文件里的全部行）。 */
-  totalRows: number;
-  /** 表达式产出的值个数。 */
-  returned: number;
-  /** 输出是否到达上限而被截断。 */
+  shape: string;
+  bytes: number;
+  ms: number;
+}
+
+/** create_data 的模型可见渲染：落点、形状与尺寸。数据本身不重复——要看就再读一次。 */
+export function renderCreateData(_args: unknown, value: CreateDataValue | null | undefined): RenderBlock[] {
+  const lines = [
+    `dataSrc:  ${value?.dataSrc ?? ''}`,
+    `${value?.name ?? '输入数据'}：${value?.shape ?? ''}`
+    + ` · ${((value?.bytes ?? 0) / 1024).toFixed(1)} KB · ${value?.ms ?? 0} ms`,
+    '来源链里记着这份数据是给定的，动机与它放在一起。',
+  ];
+  return [{ type: 'text', text: `${lines.join('\n')}\n` }];
+}
+
+/** oks_view 渲染读到的值（表格这类展示件）。 */
+export interface ViewValue {
+  ok?: boolean;
+  kind?: string;
+  title?: string | null;
+  src?: string;
+  viewSrc?: string;
+  /** 报表正文里用的那一行 `![表注](路径)`。 */
+  markdown?: string;
+  /** 表本体（表不大时给；大表为 null，只说引用）。 */
+  table?: string | null;
+  rowCount?: number;
+  columns?: readonly string[];
+  bytes?: number;
+  note?: string | null;
+}
+
+/** oks_view 的模型可见回执：先说清"哪一行进报表、哪一段进回答"，再把表本体交出来。 */
+export function renderView(_args: unknown, value: ViewValue | null | undefined): RenderBlock[] {
+  if (value?.ok !== true) return [{ type: 'text', text: '展示件没有生成。\n' }];
+  const lines = [
+    `表格：${value.title ?? ''} · ${value.rowCount ?? 0} 行 · 列 ${(value.columns ?? []).join(', ')}`,
+    `来自：${value.src ?? ''}`,
+    `文件：${value.viewSrc ?? ''}`,
+    '',
+    '这一行**放进报告正文**（`oks_report` 的 markdown，独占一行）；它不会被渲染成图片，别粘进回答：',
+    '',
+    value.markdown ?? '',
+  ];
+  if (typeof value.table === 'string' && value.table !== '') {
+    lines.push('', '要在这段回答里显示这张表，直接粘下面这一段：', '', value.table.replace(/\n$/, ''));
+  } else {
+    lines.push('', `（表有 ${value.rowCount ?? 0} 行，正文形式没有放进这段回执：`
+      + '要在这里显示就先聚合或缩小范围，再出一张更小的表。）');
+  }
+  if (value.note !== null && value.note !== undefined) lines.push('', `说明：${value.note}`);
+  return [{ type: 'text', text: `${lines.join('\n')}\n` }];
+}
+
+/** oks_report_items 渲染读到的值（报告里的展示项清单）。 */
+export interface ReportItemsValue {
+  ok?: boolean;
+  src?: string;
+  title?: string | null;
+  at?: string | null;
+  items?: ReadonlyArray<{ index: number; label: string; kind: string; caption: string; shape: string; root: string }>;
+}
+
+/** oks_extract_report_data 渲染读到的值（把某项展示数据取出来看）。 */
+export interface ExtractDataValue {
+  ok?: boolean;
+  src?: string;
+  label?: string;
+  caption?: string;
+  data?: unknown;
+}
+
+/** oks_extract_report_data_into 渲染读到的值（取出来并物化）。 */
+export interface ExtractIntoValue {
+  ok?: boolean;
+  dataSrc?: string;
+  name?: string;
+  label?: string;
+  shape?: string;
+  bytes?: number;
+  chain?: readonly string[];
+}
+
+/** oks_origin 渲染读到的值（来源跟踪）。 */
+export interface OriginValue {
+  ok?: boolean;
+  src?: string;
+  summary?: string;
+  items?: ReadonlyArray<{ index: number; label: string; kind: string; caption: string; shape: string }>;
+  chain?: readonly string[];
+  drift?: readonly string[];
+}
+
+const textBlock = (lines: readonly string[]): RenderBlock[] => [{ type: 'text', text: `${lines.join('\n')}\n` }];
+
+/** oks_report_items：一行一项，序号与报告里印的编号都给。 */
+export function renderReportItems(_args: unknown, value: ReportItemsValue | null | undefined): RenderBlock[] {
+  if (value?.ok !== true) return textBlock(['报告读不出来。']);
+  const lines = [
+    `${value.title ?? '(没有标题)'}${value.at === null || value.at === undefined ? '' : ` · ${value.at}`}`,
+    `报告：${value.src ?? ''} · ${(value.items ?? []).length} 个展示项`,
+    '',
+    ...(value.items ?? []).map((item) => `  #${item.index} ${item.label} · ${item.kind} · ${item.caption === '' ? '(没有注解)' : item.caption} · ${item.shape}`),
+    '',
+    '取数据用 oks_extract_report_data（item 给序号或编号），要来源链用 oks_origin。',
+  ];
+  return textBlock(lines);
+}
+
+/** oks_extract_report_data：一条摘要 + 按预算截断的值（和 jq_transform 一样，值是要被看的）。 */
+export function renderExtractData(_args: unknown, value: ExtractDataValue | null | undefined): RenderBlock[] {
+  if (value?.ok !== true) return textBlock(['取数失败。']);
+  const data = value.data;
+  const stream = Array.isArray(data) ? data : [data];
+  const lines = [
+    `${value.label ?? ''}${value.caption === '' || value.caption === undefined ? '' : ` · ${value.caption}`}`
+    + ` · 形状：${shapeOf(data)}`,
+    `来自报告：${value.src ?? ''}`,
+    '',
+  ];
+  let used = lines.reduce((sum, line) => sum + line.length + 1, 0);
+  let shown = 0;
+  for (const item of stream) {
+    const text = compact(item);
+    if (used + text.length + 1 > RESULT_BUDGET_CHARS) break;
+    lines.push(text);
+    used += text.length + 1;
+    shown += 1;
+  }
+  if (shown < stream.length) {
+    lines.push(`（还有 ${stream.length - shown} 个值没放进这段回执：要完整数据就用 oks_extract_report_data_into 物化，再按需投影。）`);
+  }
+  return textBlock(lines);
+}
+
+/** oks_extract_report_data_into：落点、形状与完整来源链（值不重复，已经落盘）。 */
+export function renderExtractInto(_args: unknown, value: ExtractIntoValue | null | undefined): RenderBlock[] {
+  if (value?.ok !== true) return textBlock(['取数失败。']);
+  return textBlock([
+    `dataSrc:  ${value.dataSrc ?? ''}`,
+    `${value.name ?? ''} ← ${value.label ?? ''}：${value.shape ?? ''} · ${((value.bytes ?? 0) / 1024).toFixed(1)} KB`,
+    '来源链（输入在前，本次取数在最后）：',
+    ...(value.chain ?? []).map((line) => `  ${line}`),
+  ]);
+}
+
+/** oks_origin：这是什么 + 来源链 + 漂移核对。 */
+export function renderOrigin(_args: unknown, value: OriginValue | null | undefined): RenderBlock[] {
+  if (value?.ok !== true) return textBlock(['这份产物的来源读不出来。']);
+  const lines = [`${value.summary ?? ''}`, `产物：${value.src ?? ''}`];
+  if ((value.items ?? []).length > 0) {
+    lines.push('', '展示项（要看某一项的链就加 item）：',
+      ...(value.items ?? []).map((item) => `  #${item.index} ${item.label} · ${item.kind} · ${item.caption === '' ? '(没有注解)' : item.caption} · ${item.shape}`));
+  }
+  if ((value.chain ?? []).length > 0) lines.push('', '来源链（输入在前，本次操作在最后）：', ...(value.chain ?? []).map((line) => `  ${line}`));
+  if ((value.drift ?? []).length > 0) lines.push('', '核对（只核对当时记下的数据文件，不重算）：', ...(value.drift ?? []).map((line) => `  ${line}`));
+  return textBlock(lines);
+}
+
+/** jq_transform 渲染读到的值（探索：只看，不落盘）。 */
+export interface TransformValue {
+  snip: string;
+  inputs: ReadonlyArray<{ name: string; src: string; shape: string }>;
+  /** 表达式产出了几个值。 */
+  outputs: number;
+  /** 结果本身：恰好一个输出时是那个值，多个输出时是值的数组，零输出时是空数组。 */
+  data: unknown;
   truncated: boolean;
-  /** 表达式产出的值（每个已经是一个 JSON 值）。 */
-  result: readonly unknown[];
+  ms: number;
+}
+
+/** jq_transform_into 渲染读到的值（物化：结果写进 .oks/data/）。 */
+export interface IntoValue {
+  dataSrc: string;
+  name: string;
+  outputs: number;
+  /** 结果的一行形状描述。 */
+  shape: string;
+  bytes: number;
+  ms: number;
+  /** 本次操作与全部上游，按依赖顺序摊开（输入在前）。 */
+  chain: readonly string[];
 }
 
 /** oks_info 渲染读到的值。 */
@@ -283,7 +458,7 @@ export function renderQuery(_args: unknown, value: QueryValue | null | undefined
         + `${result.truncated ? `（已到行数上限 ${value!.queryMaxRows}，结果还有更多）` : ''}`);
       lines.push(`dataSrc:  ${result.dataSrc}`);
       lines.push(`columns:  ${result.columns.map((column) => `${column.name}:${column.types.join('|')}`).join(', ')}`);
-      lines.push('（数据行与语句都不在回执里：数据按需用 oks_jaq_result 取，语句在执行记录里）');
+      lines.push('（数据行与语句都不在回执里：数据按需用 jq_transform 取，语句在执行记录里）');
       if (result.rowCount === 0 && value?.window) {
         lines.push(`提示：这份数据的窗口是 [${value.window.start}, ${value.window.endExclusive})，被过滤掉的可能是时间落在窗口之外。`);
       }
@@ -313,7 +488,6 @@ export interface ChartValue {
   ok?: boolean;
   kind?: string;
   title?: string | null;
-  source?: string;
   src?: string | null;
   svgSrc?: string;
   markdown?: string;
@@ -329,7 +503,6 @@ export function renderChart(_args: unknown, value: ChartValue | null | undefined
   if (value?.ok !== true) return [{ type: 'text', text: '图表没有生成。\n' }];
   const lines = [
     `图表：${value.kind ?? '?'}${value.title === null || value.title === undefined ? '' : ` · ${value.title}`}`,
-    `来源：${value.source === 'query' ? '基于查询结果' : 'agent 自主填写'}`,
     `数据：${value.rowCount ?? 0} 行 · 列 ${(value.columns ?? []).join(', ')}`,
     `文件：${value.svgSrc ?? ''}`,
   ];
@@ -356,27 +529,70 @@ function compact(value: unknown): string {
   }
 }
 
-/** oks_jaq_result 的模型可见渲染：一条摘要 + 逐值紧凑渲染，整体落在文本预算内。
+/** 一个 JSON 值的一行形状描述：先让 agent 认出"这是什么形状"，值本身另有采样。
+ *  深层的细节不去猜——它由 snip 决定，要看就读一次。 */
+export function shapeOf(value: unknown): string {
+  if (Array.isArray(value)) {
+    const keys = [...new Set(value.flatMap((item) => (
+      item !== null && typeof item === 'object' && !Array.isArray(item) ? Object.keys(item) : []
+    )))];
+    const fields = keys.slice(0, 12).join(', ');
+    return `数组 ${value.length} 项`
+      + (keys.length === 0 ? '' : ` · 每项字段 ${fields}${keys.length > 12 ? ' …' : ''}`);
+  }
+  if (value !== null && typeof value === 'object') {
+    const keys = Object.keys(value);
+    return `对象 · 字段 ${keys.slice(0, 12).join(', ')}${keys.length > 12 ? ' …' : ''}`;
+  }
+  if (value === null) return 'null';
+  if (typeof value === 'string') return `字符串（${value.length} 字符）`;
+  return `标量（${typeof value}）`;
+}
+
+/** 表达式产出的值，按"一个值还是一个流"摊平：探索与物化共用这一条约定。 */
+const streamOf = (value: { outputs?: number; data?: unknown } | null | undefined): unknown[] => {
+  if (value === null || value === undefined) return [];
+  if (value.outputs === 1) return [value.data];
+  return Array.isArray(value.data) ? value.data : [value.data];
+};
+
+/** jq_transform 的模型可见渲染：输入、形状、以及按文本预算截断的采样值。
  *  值本身是 agent 用表达式选出来的，所以这一页不需要再约定列与分页。 */
-export function renderJaq(_args: unknown, value: JaqValue | null | undefined): RenderBlock[] {
-  const result = value?.result ?? [];
+export function renderJqTransform(_args: unknown, value: TransformValue | null | undefined): RenderBlock[] {
+  const inputs = value?.inputs ?? [];
   const lines = [
-    `${value?.name ?? '结果'}：输入 ${value?.totalRows ?? 0} 行 · 表达式产出 ${value?.returned ?? 0} 个值`
-    + `${value?.truncated === true ? '（到达输出上限，已截断）' : ''}`,
-    `src:      ${value?.src ?? ''}`,
-  ];
+    `表达式产出 ${value?.outputs ?? 0} 个值`
+    + `${value?.truncated === true ? '（到达输出上限，已截断）' : ''} · ${value?.ms ?? 0} ms`,
+    ...inputs.map((input) => `输入 ${input.name} ← ${input.src}（${input.shape}）`),
+    inputs.length === 0 ? '输入：（无：表达式看到的是 {}）' : '',
+    `形状：${shapeOf(value?.data)}`,
+  ].filter((line) => line !== '');
+  const stream = streamOf(value);
   let used = lines.reduce((sum, line) => sum + line.length + 1, 0);
   let shown = 0;
-  for (const item of result) {
+  for (const item of stream) {
     const text = compact(item);
     if (used + text.length + 1 > RESULT_BUDGET_CHARS) break;
     lines.push(text);
     used += text.length + 1;
     shown += 1;
   }
-  if (result.length === 0) lines.push('（表达式没有产出值。）');
-  else if (shown < result.length) {
-    lines.push(`（还有 ${result.length - shown} 个值没放进这段回执：用更精确的表达式或投影缩小结果。）`);
+  if (stream.length === 0) lines.push('（表达式没有产出值。）');
+  else if (shown < stream.length) {
+    lines.push(`（还有 ${stream.length - shown} 个值没放进这段回执：用更精确的表达式或投影缩小结果。）`);
   }
+  return [{ type: 'text', text: `${lines.join('\n')}\n` }];
+}
+
+/** jq_transform_into 的模型可见渲染：落点、形状、尺寸，以及完整的来源链。
+ *  值不在这里重复——它已经落在文件里，要看就再探索一次（jq_transform）。 */
+export function renderJqInto(_args: unknown, value: IntoValue | null | undefined): RenderBlock[] {
+  const lines = [
+    `dataSrc:  ${value?.dataSrc ?? ''}`,
+    `${value?.name ?? '加工结果'}：表达式产出 ${value?.outputs ?? 0} 个值 · ${value?.shape ?? ''}`
+    + ` · ${((value?.bytes ?? 0) / 1024).toFixed(1)} KB · ${value?.ms ?? 0} ms`,
+    '来源链（输入在前，本次操作在最后）：',
+    ...(value?.chain ?? []).map((line) => `  ${line}`),
+  ];
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }

@@ -32,7 +32,6 @@ interface ArtifactEntry {
   title: string;
   /** 更精确的分类（周报、月报、即时分析…）；自述里没有就不写这一项。 */
   category?: string;
-  source?: 'query' | 'agent';
   pinned: boolean;
 }
 

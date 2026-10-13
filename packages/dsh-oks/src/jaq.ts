@@ -1,10 +1,10 @@
-// 结构化查询的求值层：把「行对象数组」交给一个 jaq 表达式，取回结果。
+// 加工求值层：把一份 JSON 输入交给 jaq 表达式，取回它输出的值流。
 //
 // 为什么单独一层：**求值器从哪来**是实现细节，不该泄进工具契约。这一版走系统里的 jaq 可执行文件
 // （`spawn`，不经 shell，因此表达式里没有命令注入面）；将来换成内嵌求值器或内置子集，只改这个文件。
 //
-// 契约只到这里为止：输入是一个行对象数组，输出是若干 JSON 值。结果文件的内部结构
-// （name/key/at/intent/columns/rowCount）不进这一层，也不进 agent 的视野。
+// 契约只到这里为止：输入是一个 JSON 值（工具那一层把具名输入绑成一个对象），
+// 输出是若干 JSON 值、一行一个。封装与来源链的形状不进这一层，也不进 agent 的视野。
 
 import { spawn } from 'node:child_process';
 
@@ -16,7 +16,7 @@ export interface JaqOutcome {
 }
 
 export interface JaqOptions {
-  /** 表达式作用的输入值（这里始终是行对象数组）。 */
+  /** 表达式作用的输入值（工具那一层绑好的具名输入对象）。 */
   input: unknown;
   /** 墙钟上限，到点终止。 */
   timeoutMs: number;

@@ -17,3 +17,6 @@ AGENTS.md             在本仓库工作时的约定
 右侧栏的「产出」页签在 [`packages/dsh-oks-ui`](packages/dsh-oks-ui/README.md)：调插件开的两条
 同源端点（清单 + 保留），呈现制品（图与报告）而不是文件；`★` 一下就保留，不经过 agent。
 方案与边界见 [`rfc/0004-artifact-timeline.md`](rfc/0004-artifact-timeline.md)。
+
+加工的求值器与它的**能力边界**（当前走系统 `jaq`，确定性尚未在工具层收紧）写在
+[`packages/dsh-oks/README.md`](packages/dsh-oks/README.md) 的「加工是怎么跑的」一节。

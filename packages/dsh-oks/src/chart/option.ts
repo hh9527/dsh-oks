@@ -51,8 +51,6 @@ export const plotHeight = (kind: string, count: number, labelFont: number, overr
 export interface OptionInput {
   kind: ChartKind;
   title: string | null;
-  /** 系统来源标识（基于查询结果 / agent 自主填写），画在图内左下角。 */
-  sourceLabel: string;
   x: string;
   value: string;
   series: string | null;
@@ -113,13 +111,6 @@ const group = (
 };
 
 /** 来源标识：固定在图内左下角，由系统写，不由 agent 决定。 */
-const footnote = (sourceLabel: string, fontSize: number): unknown => ({
-  type: 'text',
-  left: 8,
-  bottom: 2,
-  style: { text: `来源：${sourceLabel}`, fontSize: Math.max(8, fontSize - 3), fill: '#8494a5' },
-  silent: true,
-});
 
 /** 轴上的短数字：分箱边界常是 10.568414634146341 这种，按量级留三到四位有效数字。 */
 const short = (value: number): string => {
@@ -151,7 +142,6 @@ const emptyOption = (spec: OptionInput, layout: ReturnType<typeof resolveLayout>
     textStyle: { fontSize: layout.titleFont, fontWeight: 'bold', color: '#1c2b3a' },
     subtextStyle: { fontSize: layout.labelFont, color: '#8494a5' },
   },
-  graphic: footnote(spec.sourceLabel, layout.labelFont),
 });
 
 /**
@@ -244,7 +234,6 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
       height,
       option: {
         title,
-        graphic: footnote(spec.sourceLabel, labelFont),
         grid: { left: 64, right: 28, top: spec.title === null ? 20 : 52, bottom: 48, containLabel: false },
         xAxis: { ...(valueAxis(axisName(spec.xLabel, null), 30, true) as object), axisLine: { show: true, lineStyle: { color: '#d8e0ea' } } },
         yAxis: valueAxis(axisName(spec.valueLabel, spec.unit), 52, true),
@@ -275,7 +264,6 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
       height,
       option: {
         title,
-        graphic: footnote(spec.sourceLabel, labelFont),
         series: [{
           type: 'pie',
           radius: ['0%', '68%'],
@@ -423,7 +411,6 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
       height,
       option: {
         title,
-        graphic: footnote(spec.sourceLabel, labelFont),
         grid,
         xAxis: {
           ...categoryAxis,
@@ -475,7 +462,6 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
       height,
       option: {
         title,
-        graphic: footnote(spec.sourceLabel, labelFont),
         grid,
         xAxis: { ...categoryAxis, data: categories },
         yAxis: measureAxis,
@@ -534,7 +520,6 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
       height,
       option: {
         title,
-        graphic: footnote(spec.sourceLabel, labelFont),
         // 纵轴是分组（可能是设备名或日期），左边留得比柱状图宽一些；底部留给颜色标尺。
         grid: { ...grid, left: 118, top: spec.title === null ? 24 : 56, bottom: 62 },
         xAxis: { ...categoryAxis, data: categories },
@@ -595,7 +580,6 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
       option: {
         title,
         legend,
-        graphic: footnote(spec.sourceLabel, labelFont),
         radar: {
           center: ['50%', spec.title === null ? '54%' : '57%'],
           radius: '64%',
@@ -678,7 +662,6 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
     option: {
       title,
       legend,
-      graphic: footnote(spec.sourceLabel, labelFont),
       // 右侧多了数值轴，留出位置。
       grid: secondAxis === null ? grid : { ...grid, right: 56 },
       xAxis,

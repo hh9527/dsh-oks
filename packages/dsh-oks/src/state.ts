@@ -9,9 +9,9 @@
 // 用户自己放的东西，我们不替人做删除决定。
 
 import { DatabaseSync } from 'node:sqlite';
-import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ARTIFACT_DIR, artifactFileName, readArtifactMeta } from './results.ts';
+import { ARTIFACT_DIR, artifactFileName, CHART_DIR, DATA_DIR, readArtifactMeta, VIEW_DIR } from './results.ts';
 
 /** 状态目录（相对工作区根）。 */
 export const STATE_DIR = '.oks';
@@ -20,13 +20,20 @@ export const STATE_DIR = '.oks';
  *  MVP 用固定值；配置项（`oks.json` 的 `data.keepAliveMinutes`）留到需要时再加。 */
 export const KEEP_ALIVE_MINUTES = 60;
 
-/** 进清单的两类可见产物：图与报告。查询结果（`.query.json`）是内部制品，不进清单。 */
-/** 可见产物（界面会呈现的那些）：图与报告。 */
+/** 内部材料（`.oks/data/`、`.oks/charts/`）的保活窗口：**比报表多 2 分钟**。
+ *  **这只是一个常数差，不构成时序保证**，而且两类用的**不是同一个时钟**：
+ *  报表按**文件名里的生成时刻**判龄（见 `pruneArtifacts`），内部材料按**文件 mtime** 判龄。
+ *  所以一张早先画好的图晚些被新报表引用时，仍可能比那份报表先过期。材料是可回收的中间件，
+ *  这样即可——报表在生成时已把图内联成 SVG，显示不受影响；若将来真要"被引用的材料不先回收"，
+ *  那要另立机制，不靠这个差值。 */
+export const MATERIAL_KEEP_ALIVE_MINUTES = KEEP_ALIVE_MINUTES + 2;
+
+/** 可见产物（界面会呈现的那些）：报表。图是报表里的材料，数据材料不进清单。 */
 export const VISIBLE = /\.report\.html$/;
 
-/** 我们写的三类产物的名字形状：`<时间>-<名字>[-<内容哈希>].<类别><扩展名>`。
+/** 我们写的几类产物的名字形状：`<时间>-<名字>[-<内容哈希>].<类别><扩展名>`。
  *  只有认得出的才可能被清理；`~` 是超长名字被截过的记号。 */
-const OURS = /^(\d{8}T\d{6}Z)-[0-9a-z_~]+(?:-[0-9a-f]{8})?\.(query\.json|chart\.svg|report\.html)$/;
+const OURS = /^(\d{8}T\d{6}Z)-[0-9a-z_~]+(?:-[0-9a-f]{8})?\.(query\.json|transform\.json|data\.json|chart\.svg|table\.md|report\.html)$/;
 
 /** 清单里的一条制品：文件自述 + 只有状态才知道的 pin。 */
 export interface ArtifactEntry {
@@ -37,7 +44,6 @@ export interface ArtifactEntry {
   title: string;
   /** 更精确的分类（周报、月报、即时分析…）；自述里没有就不写这一项。 */
   category?: string;
-  source?: 'query' | 'agent';
   pinned: boolean;
 }
 
@@ -77,7 +83,6 @@ export function openState(root: string): State {
     at text not null,
     title text not null,
     category text,
-    source text,
     pinned integer not null default 0,
     pinned_at text
   )`);
@@ -98,11 +103,10 @@ export function syncArtifacts(state: State, root: string): string[] {
   // ——那样清单会凭空变空，得刷新页面（重新挂载、重新读）才回来。
   if (!existsSync(directory)) return [];
   const files = readdirSync(directory).filter((file) => VISIBLE.test(file));
-  const upsert = state.db.prepare(`insert into artifacts (file, name, kind, at, title, category, source)
-    values (?, ?, ?, ?, ?, ?, ?)
+  const upsert = state.db.prepare(`insert into artifacts (file, name, kind, at, title, category)
+    values (?, ?, ?, ?, ?, ?)
     on conflict(file) do update set name = excluded.name, kind = excluded.kind,
-      at = excluded.at, title = excluded.title, category = excluded.category,
-      source = excluded.source`);
+      at = excluded.at, title = excluded.title, category = excluded.category`);
   state.db.exec('begin');
   try {
     const seen = new Set<string>();
@@ -110,7 +114,7 @@ export function syncArtifacts(state: State, root: string): string[] {
       const meta = readArtifactMeta(readHead(join(directory, file)));
       if (meta === null) continue; // 没有自述的产物不进清单（老产物或形状不符）
       seen.add(file);
-      upsert.run(file, meta.name, meta.kind, meta.at, meta.title, meta.category ?? null, meta.source ?? null);
+      upsert.run(file, meta.name, meta.kind, meta.at, meta.title, meta.category ?? null);
     }
     const removed: string[] = [];
     for (const row of state.db.prepare('select file from artifacts').all() as Array<{ file: string }>) {
@@ -129,10 +133,10 @@ export function syncArtifacts(state: State, root: string): string[] {
 
 /** 清单，最新在前。 */
 export function listArtifacts(state: State): ArtifactEntry[] {
-  const rows = state.db.prepare('select file, name, kind, at, title, category, source, pinned from artifacts'
+  const rows = state.db.prepare('select file, name, kind, at, title, category, pinned from artifacts'
     + ' order by at desc, file desc').all() as Array<{
       file: string; name: string; kind: 'chart' | 'report'; at: string;
-      title: string; category: string | null; source: string | null; pinned: number;
+      title: string; category: string | null; pinned: number;
     }>;
   return rows.map((row) => ({
     file: row.file,
@@ -141,9 +145,37 @@ export function listArtifacts(state: State): ArtifactEntry[] {
     at: row.at,
     title: row.title,
     ...(row.category === null ? {} : { category: row.category }),
-    ...(row.source === null ? {} : { source: row.source as 'query' | 'agent' }),
     pinned: row.pinned === 1,
   }));
+}
+
+/** 回收内部材料：按年龄丢，**不看保留**（保留只对报表有意义），认得清的才动。
+ *  返回与 `pruneArtifacts` 同形状的结果，便于调用方统一记一行日志。 */
+export function pruneMaterials(
+  state: State,
+  root: string,
+  keepAliveMinutes: number = MATERIAL_KEEP_ALIVE_MINUTES,
+): { removed: string[]; kept: number; untouched: number } {
+  void state;   // 材料没有保留状态；参数保留是为了与 pruneArtifacts 同形，调用处一致。
+  const removed: string[] = [];
+  let untouched = 0;
+  const cutoff = Date.now() - keepAliveMinutes * 60_000;
+  for (const directory of [DATA_DIR, CHART_DIR, VIEW_DIR]) {
+    const base = join(root, directory);
+    if (!existsSync(base)) continue;
+    for (const file of readdirSync(base)) {
+      if (!OURS.test(file)) { untouched += 1; continue; }
+      const target = join(base, file);
+      try {
+        if (statSync(target).mtimeMs >= cutoff) continue;
+        unlinkSync(target);
+        removed.push(`${directory}/${file}`);
+      } catch {
+        untouched += 1;   // 读不了、删不掉：留着，不动它
+      }
+    }
+  }
+  return { removed, kept: 0, untouched };
 }
 
 /** 被保留的文件名集合——清理靠它跳过。 */
