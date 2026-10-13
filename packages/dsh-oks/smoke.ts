@@ -1450,6 +1450,16 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
   const syntax = await failureOf({ inputs: { q: dataSrc }, byFile: prog('.q.rows[] |') });
   console.log(`  表达式错误 → ${syntax.split('\n')[0].slice(0, 96)}`);
   ok('探索：表达式错误带回求值器自己的报错', /jaq 表达式执行失败/.test(syntax));
+  // 语法错要**自足**：报错里指出是哪份文件的哪一行（`-f` 让 jaq 自己读文件，于是不是 `<inline>`），
+  // 再附上这次各输入交出的形状——照着改就行，不必先写一个探针程序去问。
+  console.log(`  语法错的定位 → ${(syntax.split('\n')[2] ?? '').trim().slice(0, 60)}`);
+  ok('语法错指出是哪份文件的哪一行（程序按文件交给求值器）',
+    /\.work\/smoke_p\d+\.jq/.test(syntax) && /\d+ │/.test(syntax));
+  ok('失败回执附上这次各输入交出的形状', /输入 q ← /.test(syntax) && /对象 · 字段 rows, columns/.test(syntax));
+  const shapeError = await failureOf({ inputs: { q: dataSrc }, byFile: prog('.q.rows | .foo') });
+  console.log(`  形状错 → ${shapeError.split('\n')[0].slice(0, 90)}`);
+  ok('取错键时：求值器原话 + 输入形状一起给（少写一个探针程序）',
+    /cannot index/.test(shapeError) && /输入 q ← /.test(shapeError) && /\.data/.test(shapeError));
   const missing = await failureOf({ inputs: { rows: '.oks/data/20260101T000000Z-nope.query.json' }, byFile: prog('.') });
   console.log(`  读不到的输入 → ${missing.slice(0, 120)}`);
   ok('探索：读不到的输入报出是哪一个', /读不到输入 rows/.test(missing));

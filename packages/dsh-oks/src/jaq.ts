@@ -25,13 +25,23 @@ export interface JaqOptions {
   /** 可执行文件名，默认 'jaq'。 */
   binary?: string;
   signal?: AbortSignal;
+  /** 程序来自哪个文件（`byFile` 给出的那一份）。给了它就让 jaq 自己读这个文件，于是报错里
+   *  写的是**文件名 + 行号 + 出错那一行**，而不是 `<inline>`——写程序的人一眼知道去哪一行改。 */
+  programFile?: string;
+  /** 跑 jaq 的工作目录。配 `programFile` 用：程序名写成工作区相对路径，报错里显示的就是
+   *  模型自己写的那个名字（`.work/peek.jq`），不是一长串绝对路径。 */
+  cwd?: string;
 }
 
-/** 跑一次 jaq：表达式从 stdin 取输入，结果从 stdout 读回。 */
+/** 跑一次 jaq：表达式写在参数里（或由 `programFile` 指定文件），输入从 stdin 取，结果从 stdout 读回。 */
 export const runJaq = (query: string, options: JaqOptions): Promise<JaqOutcome> =>
   new Promise<JaqOutcome>((resolve, reject) => {
     const binary = options.binary ?? 'jaq';
-    const child = spawn(binary, ['-c', query], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(
+      binary,
+      options.programFile === undefined ? ['-c', query] : ['-c', '-f', options.programFile],
+      { stdio: ['pipe', 'pipe', 'pipe'], ...(options.cwd === undefined ? {} : { cwd: options.cwd }) },
+    );
     let out = '';
     let err = '';
     let truncated = false;

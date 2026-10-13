@@ -3,6 +3,7 @@ import type { ContextTimeZone, TimeState } from './time.ts';
 import { statSync } from 'node:fs';
 import { capLine } from './text.ts';
 import { runJaq } from './jaq.ts';
+import type { JaqOutcome } from './jaq.ts';
 import { buildOption, CHART_WIDTH } from './chart/option.ts';
 import { renderEchartsSvg } from './chart/echarts.ts';
 import { tableMarkdown } from './view/table.ts';
@@ -979,24 +980,43 @@ function applyPick(plan: TransformPlan, data: unknown): unknown {
   return picked.value;
 }
 
+/** 失败回执里那几行输入形状：名字、来源、取的那一段、形状。 */
+function inputLines(inputs: readonly NamedInput[]): string {
+  if (inputs.length === 0) return '  （没有输入：程序看到的是 {}）';
+  return inputs
+    .map((input) => `  输入 ${input.name} ← ${input.src}（${input.root} · ${shapeOf(input.value)}）`)
+    .join('\n');
+}
+
 /** 求值一次 snip：把各输入的 `data` 按键绑成一个对象交给求值器。
  *  jq 的输出是一个**值流**：恰好一个输出时 data 就是那个值，多个输出时 data 是这些值的数组，
- *  零输出时 data 是空数组；`outputs` 记下个数，于是"一个空数组"与"没有输出"分得开。 */
+ *  零输出时 data 是空数组；`outputs` 记下个数，于是"一个空数组"与"没有输出"分得开。
+ *  失败时把**求值器原话 + 这次各输入交出的形状**一起交出去：语法错照着文件名与行号改，
+ *  "取错了键"这类错照着形状改，都不必再写一个探针程序去问。 */
 async function runSnip(
   entry: WorkspaceEntry,
   inputs: readonly NamedInput[],
   snip: string,
   signal?: AbortSignal,
+  programFile?: string,
 ): Promise<{ data: unknown; outputs: number; truncated: boolean }> {
   const document: Record<string, unknown> = {};
   for (const input of inputs) document[input.name] = input.value;
-  const outcome = await runJaq(snip, {
-    input: document,
-    // 求值沿用查询的超时约束：jaq 是纯函数，但表达式可以写得很 explosive。
-    timeoutMs: entry.settings.queryTimeoutMs,
-    maxChars: JAQ_MAX_CHARS,
-    signal,
-  });
+  let outcome: JaqOutcome;
+  try {
+    outcome = await runJaq(snip, {
+      input: document,
+      // 求值沿用查询的超时约束：jaq 是纯函数，但表达式可以写得很 explosive。
+      timeoutMs: entry.settings.queryTimeoutMs,
+      maxChars: JAQ_MAX_CHARS,
+      signal,
+      ...(programFile === undefined
+        ? {}
+        : { programFile, cwd: entry.settings.workspaceRoot }),
+    });
+  } catch (cause) {
+    throw new Error(`${errorText(cause)}\n这次程序看到的输入：\n${inputLines(inputs)}`);
+  }
   // jaq -c 一行一个值；不是 JSON 的行（例如原样输出的字符串）保留成字符串。
   const values: unknown[] = [];
   for (const line of outcome.text.split('\n')) {
@@ -1514,7 +1534,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'jq_transform',
-      description: 'Run a jaq (jq-compatible) program over saved data without saving anything, so a result can be looked at before it is kept. inputs maps a name of your choosing to a src a previous receipt gave you; each entry is either that src or {"src": "<src>", "root": "<jq dot path>"}, where root is which slice of the file the program gets — the default ".data" is that record\'s own data (a query result is {rows, columns}; a transform is the value it produced; a figure or table is {rows, spec}; a report is {chapters, plainTables, items}), ".origin" is the source chain {root, nodes}, ".meta" is the record\'s self-description, "." is the whole {meta, origin, data}, and deeper paths like ".data.rows" work too — so reading a record\'s provenance takes no separate tool. A path that does not exist fails with the keys that do. The program lives in a file under .work/ and byFile names it — "byFile": "analysis.jq", written first with work_write — so jq syntax never sits next to the JSON of the call itself. The program sees one object whose keys are the input names, so write ".events.rows[] | select(.count > 100)" or "{total: ([.events.rows[].n] | add)}". Leave byFile out and the result is that object itself ({"events": <slice>}); pick then takes one part of the result back, as a jq dot path without quotes ("pick": ".events"), which is how a single input is read under its bare name. With no inputs that object is {}, so a constant arrives through a program file. A jq program produces a stream of values: exactly one value comes back as that value, several come back as an array, none comes back as []. The receipt reports every input, the shape of the result and the values themselves, so look before you save; an expression that fails comes back with the evaluator\'s own message. To keep a result for a later step or for a figure, materialise it with jq_transform_into.',
+      description: 'Run a jaq (jq-compatible) program over saved data without saving anything, so a result can be looked at before it is kept. inputs maps a name of your choosing to a src a previous receipt gave you; each entry is either that src or {"src": "<src>", "root": "<jq dot path>"}, where root is which slice of the file the program gets — the default ".data" is that record\'s own data (a query result is {rows, columns}; a transform is the value it produced; a figure or table is {rows, spec}; a report is {chapters, plainTables, items}), ".origin" is the source chain {root, nodes}, ".meta" is the record\'s self-description, "." is the whole {meta, origin, data}, and deeper paths like ".data.rows" work too — so reading a record\'s provenance takes no separate tool. A path that does not exist fails with the keys that do. The program lives in a file under .work/ and byFile names it — "byFile": "analysis.jq", written first with work_write — so jq syntax never sits next to the JSON of the call itself. The program sees one object whose keys are the input names, so write ".events.rows[] | select(.count > 100)" or "{total: ([.events.rows[].n] | add)}". Leave byFile out and the result is that object itself ({"events": <slice>}); pick then takes one part of the result back, as a jq dot path without quotes ("pick": ".events"), which is how a single input is read under its bare name. With no inputs that object is {}, so a constant arrives through a program file. A jq program produces a stream of values: exactly one value comes back as that value, several come back as an array, none comes back as []. The receipt reports every input, the shape of the result and the values themselves, so look before you save; an expression that fails comes back with the evaluator\'s own message — which names the .work/ file and the line it stopped at, followed by the shape of each input the program saw, so one look at the error is usually enough to fix the program. To keep a result for a later step or for a figure, materialise it with jq_transform_into.',
       parameters: {
         type: 'object',
         properties: {
@@ -1531,7 +1551,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         const plan = planTransform(args, 'jq_transform', entry.settings.workspaceRoot);
         const snip = plan.snip;
         const started = Date.now();
-        const outcome = await runSnip(entry, plan.inputs, snip, exec?.signal);
+        const outcome = await runSnip(entry, plan.inputs, snip, exec?.signal, plan.file);
         const data = applyPick(plan, outcome.data);
         const ms = Date.now() - started;
         // 探索留痕：读过什么、算了什么、产出几个值——探索不进来源链，日志是唯一的记录。
@@ -1586,7 +1606,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         const plan = planTransform(args, 'jq_transform_into', entry.settings.workspaceRoot);
         const snip = plan.snip;
         const started = Date.now();
-        const outcome = await runSnip(entry, plan.inputs, snip, exec?.signal);
+        const outcome = await runSnip(entry, plan.inputs, snip, exec?.signal, plan.file);
         const data = applyPick(plan, outcome.data);
         // 截断的结果是**不完整**的结果：物化它等于把一份残缺数据写进来源链，所以这里明确失败。
         if (outcome.truncated) {
