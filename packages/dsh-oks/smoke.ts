@@ -12,6 +12,11 @@
 import { apply, artifactName, buildOption, CHART_WIDTH, embedArtifactMeta, NAME_MAX, readArtifactMeta,
   renderEchartsSvg, resultStamp, saveArtifact } from './lib/index.mjs';
 import { collectWindows, resolveSettings, retentionMinutes, windowText } from './src/config.ts';
+import { checkAuthorXhtml, extractStructure, shrinkStructure, stripChartMetadata } from './src/report/xhtml.ts';
+import { checkWellFormed, escapeText } from './src/report/xhtml.ts';
+import { assetKey, buildReportPage, extractAssets, readReportPage, renderStructure, restoreAssets,
+  REPORT_METADATA_ID } from './src/report/page.ts';
+import { assembleReport } from './src/report/assemble.ts';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { applyOps, encode, parseMoment } from './src/time.ts';
@@ -19,7 +24,6 @@ import { singleFlight } from './src/single-flight.ts';
 import { intentKey } from './src/key.ts';
 import { CHART_KINDS, supports } from './src/chart/shared.ts';
 import { tableMarkdown } from './src/view/table.ts';
-import { readReportProvenance } from './src/chart/report.ts';
 // 保留走的是 `pinBySrc`——界面端点与冒烟都直接调它（这条能力不在工具面里）。
 import { adoptArtifacts, collectMaterials, collectWithWindows, deleteArtifact, KEEP_ALIVE_MINUTES, markCleanup,
   listArtifacts, MATERIAL_KEEP_ALIVE_MINUTES, openState, pinBySrc, pruneArtifacts, reconcileArtifacts,
@@ -103,7 +107,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['work_read', 'work_write', 'work_edit', 'work_delete', 'oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'create_data', 'jq_transform', 'jq_transform_into', 'oks_chart', 'oks_view', 'oks_report', 'oks_artifacts', 'collect', 'time_now', 'time_calc', 'va_ask'];
+const EXPECTED_TOOLS = ['work_read', 'work_write', 'work_edit', 'work_list', 'work_delete', 'oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'create_data', 'jq_transform', 'jq_transform_into', 'oks_chart', 'oks_view', 'oks_report_check', 'oks_report', 'oks_artifacts', 'collect', 'time_now', 'time_calc', 'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -154,6 +158,73 @@ const prog = (program) => {
   writeFileSync(resolve(progDir, name), program.endsWith('\n') ? program : `${program}\n`);
   return name;
 };
+/** 冒烟里的报告正文：用例仍写"一段 markdown + ![](材料) 引用"，这里翻成 oks_report 的新入参
+ *  （`{ xhtml, inputs }`）。绕开的只有写法，走的仍是真实的 spec 形状。 */
+const reportBodies = [];
+const reportSpec = (markdown) => {
+  const inputs = {};
+  let items = 0;
+  const protect = (text) => text
+    .replace(/<br\s*\/?>/g, '\u0000br\u0000')
+    .replace(/\*\*([^*]+)\*\*/g, '\u0000b\u0000$1\u0000/b\u0000')
+    .replace(/`([^`]+)`/g, '\u0000c\u0000$1\u0000/c\u0000');
+  const inline = (text) => escapeText(protect(text))
+    .replace(/\u0000br\u0000/g, '<br />')
+    .replace(/\u0000b\u0000/g, '<strong>').replace(/\u0000\/b\u0000/g, '</strong>')
+    .replace(/\u0000c\u0000/g, '<code>').replace(/\u0000\/c\u0000/g, '</code>');
+  const out = [];
+  let list = false;
+  let table = null;
+  let fence = null;
+  const closeList = () => { if (list) { out.push('</ul>'); list = false; } };
+  const cells = (row) => row.split('|').slice(1, -1).map((cell) => cell.trim());
+  const closeTable = () => {
+    if (table === null) return;
+    const rows = table;
+    table = null;
+    const head = cells(rows[0]);
+    const body = rows.slice(2).map(cells);
+    out.push('<table><thead><tr>' + head.map((cell) => `<th>${inline(cell)}</th>`).join('') + '</tr></thead><tbody>'
+      + body.map((row) => `<tr>${row.map((cell) => `<td>${inline(cell)}</td>`).join('')}</tr>`).join('')
+      + '</tbody></table>');
+  };
+  for (const line of markdown.split('\n')) {
+    if (/^```/.test(line)) {
+      if (fence === null) fence = [];
+      else { out.push(`<pre><code>${escapeText(fence.join('\n'))}</code></pre>`); fence = null; }
+      continue;
+    }
+    if (fence !== null) { fence.push(line); continue; }
+    const figure = /^!\[([^\]]*)\]\(([^)]+)\)$/.exec(line);
+    if (figure !== null) {
+      closeList(); closeTable();
+      const key = `item${items += 1}`;
+      inputs[key] = { src: figure[2], root: '.data' };
+      out.push(`<figure data-oks-ref="${key}">`
+        + (figure[1] === '' ? '' : `<figcaption>${escapeText(figure[1])}</figcaption>`) + '</figure>');
+      continue;
+    }
+    if (/^\|.*\|\s*$/.test(line)) { closeList(); (table ??= []).push(line); continue; }
+    closeTable();
+    const heading = /^(#{1,3})\s+(.*)$/.exec(line);
+    if (heading !== null) { closeList(); out.push(`<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`); continue; }
+    const bullet = /^-\s+(.*)$/.exec(line);
+    if (bullet !== null) { if (!list) { out.push('<ul>'); list = true; } out.push(`<li>${inline(bullet[1])}</li>`); continue; }
+    const quote = /^>\s?(.*)$/.exec(line);
+    if (quote !== null) { closeList(); out.push(`<blockquote><p>${inline(quote[1])}</p></blockquote>`); continue; }
+    if (/^---+$/.test(line)) { closeList(); out.push('<hr />'); continue; }
+    if (line.trim() === '') { closeList(); continue; }
+    closeList();
+    out.push(`<p>${inline(line)}</p>`);
+  }
+  closeList(); closeTable();
+  const file = `smoke_report_${reportBodies.length + 1}.xhtml`;
+  mkdirSync(resolve(DEV_ROOT, '.work'), { recursive: true });
+  writeFileSync(resolve(DEV_ROOT, '.work', file), `<article>${out.join('')}</article>`, 'utf8');
+  reportBodies.push(file);
+  return { articleFile: file, inputs };
+};
+
 const foundOf = (value) => value?.trace?.[0]?.response?.ok?.Document?.Found;
 // 每个实例一套独立的假 ctx：工具表、事件表（按名字收全部监听器）、日志。disposer 统一在最后收尾。
 const makeHarness = (config = {}) => {
@@ -2058,7 +2129,7 @@ console.log('=== oks_chart（服务端出图）===');
     spec: {
       title: '周报（冒烟）',
       subtitle: '2026-09-09 ~ 10-08',
-      markdown: [
+      ...reportSpec([
         '## 一、等级分布',
         '',
         '本周期共 **100** 条告警，其中：',
@@ -2093,7 +2164,7 @@ console.log('=== oks_chart（服务端出图）===');
         '<script>alert(1)</script>',
         '',
         '还有一段 <span>不该放行</span> 的标签。',
-      ].join('\n'),
+      ].join('\n')),
     },
     name: 'probe_report',
   });
@@ -2440,25 +2511,25 @@ console.log('=== oks_chart（服务端出图）===');
   console.log(`  表达开关（排序 + 标签 + 配色）：${styledSvg.includes('#8a6ad0') ? '配色生效' : '✗ 配色没生效'}`);
   if (!styledSvg.includes('#8a6ad0')) throw new Error('style.colors 应当覆盖色板');
 
-  // markdown 子集的几个要点：白名单语法要渲染出来，子集之外的一律当文本。
+  // 结构区的几个要点：白名单元素按写法渲染，子集之外的标签在创作侧就被拒（见上面那条）。
   if (!reportHtml.includes('<ul>')) throw new Error('列表应当渲染成 ul');
   if (!reportHtml.includes('<blockquote>')) throw new Error('引用应当渲染成 blockquote');
   if (!reportHtml.includes('<table>')) throw new Error('表格应当渲染成 table');
-  if (!reportHtml.includes('<hr>')) throw new Error('分隔线应当渲染成 hr');
+  if (!reportHtml.includes('<hr />')) throw new Error('分隔线应当渲染成 <hr />（XHTML 自闭合）');
   if (!reportHtml.includes('<strong>100</strong>')) throw new Error('加粗应当渲染成 strong');
   // 报告要能直接打印：打印样式里图与表不跨页、标题不落在页尾。
   if (!reportHtml.includes('@media print')) throw new Error('报告应当带打印样式');
   if (!/break-inside:\s*avoid/.test(reportHtml)) throw new Error('打印时图与表不应被分页截断');
-  if (!reportHtml.includes('class="language-sql"')) throw new Error('非 chart 围栏应当渲染成代码块，并带上语言标注');
-  // `<br>`、行尾两空格与行尾反斜杠都应当渲染成换行；软换行并成一行。
-  if ((reportHtml.match(/<br>/g) ?? []).length < 3) throw new Error('三种硬换行都应当渲染成 br');
+  if (!/select alarm_count from current_alarm/.test(reportHtml)) throw new Error('代码围栏应当原样渲染成代码块');
+  // 换行只有一种写法 `<br />`；每一行各自成段。
+  if ((reportHtml.match(/<br \/>/g) ?? []).length < 2) throw new Error('硬换行应当渲染成 <br />');
   if (!reportHtml.includes('第四行（软换行会并成一行）')) throw new Error('软换行应当并进同一段');
   if (!reportHtml.includes('&lt;script&gt;')) throw new Error('内嵌 HTML 应当被转义成文本，而不是解释成标签');
   if (/<script>alert/.test(reportHtml)) throw new Error('内嵌 HTML 绝不能穿透成真标签');
   if (!reportHtml.includes('&lt;span&gt;不该放行&lt;/span&gt;')) throw new Error('span 应当被转义成文本');
   if (reportHtml.includes('<span>不该放行')) throw new Error('只白名单 br，其它标签必须仍然转义');
   // 表格单元格里同样能换行——它走的是同一套行内渲染。
-  if (!/<td>甲站 96 条<br>乙站 78 条<\/td>/.test(reportHtml)) {
+  if (!/<td>甲站 96 条<br \/>乙站 78 条<\/td>/.test(reportHtml)) {
     throw new Error('表格单元格里的 br 应当渲染成换行');
   }
   // 手打的表不带编号 chip、也不进展示项清单：它没有来源，就不该看起来像有来源。
@@ -2476,7 +2547,7 @@ console.log('=== oks_chart（服务端出图）===');
   const mixed = await call('oks_report', {
     spec: {
       title: '多来源报告（冒烟）',
-      markdown: [
+      ...reportSpec([
         '## 多来源',
         '',
         `![自填的那张](${tuned.value.svgSrc})`,
@@ -2484,7 +2555,7 @@ console.log('=== oks_chart（服务端出图）===');
         `![查询结果的那张](${fromSrc.value.svgSrc})`,
         '',
         `![查询结果的表](${sharedView.value.viewSrc})`,
-      ].join('\n'),
+      ].join('\n')),
     },
     name: 'probe_report_mixed',
   });
@@ -2494,8 +2565,8 @@ console.log('=== oks_chart（服务端出图）===');
   if ((mixedHtml.match(/class="item-no"/g) ?? []).length !== 3) {
     throw new Error('每个有来源的展示项都该戴一枚编号 chip');
   }
-  if ((mixedHtml.match(/id="oks-item-\d+"/g) ?? []).length !== 3) {
-    throw new Error('每个展示项都要有可寻址的锚点（id="oks-item-N"）');
+  if ((mixedHtml.match(/<figure[^>]*data-oks-ref="[^"]+"/g) ?? []).length !== 3) {
+    throw new Error('每个展示项（图与表）都要带 data-oks-ref：它是正文里的稳定地址');
   }
   if (!/<span class="item-no">表 1<\/span>查询结果的表/.test(mixedHtml)) {
     throw new Error('表的编号应当是 chip 化的「表 1」');
@@ -2503,38 +2574,39 @@ console.log('=== oks_chart（服务端出图）===');
   if (/来源：agent 自主填写|来源：基于查询结果/.test(mixedHtml)) {
     throw new Error('图内来源脚注已经取消');
   }
-  const mixedProvenance = readReportProvenance(mixedHtml);
-  if (mixedProvenance === null) throw new Error('报告里应当有一份报表级来源结构');
-  if (JSON.stringify(mixedProvenance.data.items.map((item) => item.kind)) !== JSON.stringify(['chart', 'chart', 'table'])) {
-    throw new Error(`展示项清单不对：${JSON.stringify(mixedProvenance.data.items.map((item) => item.kind))}`);
+  const mixedReport = readReportPage(mixedHtml);
+  if ('error' in mixedReport) throw new Error(`报告读不回来：${mixedReport.error}`);
+  if (Object.keys(mixedReport.items).length !== 3) {
+    throw new Error(`展示项清单不对：${JSON.stringify(Object.keys(mixedReport.items))}`);
   }
   if ((mixedHtml.match(/<table>/g) ?? []).length !== 1) throw new Error('表应当内联成真 <table>');
   // 表与图共用同一份查询：报表级节点表里那个查询只该有一个节点（共享祖先只存一份）。
-  const queryNodes = Object.values(mixedProvenance.origin.nodes).filter((node) => node.kind === 'query');
-  console.log(`  报表级来源结构：${Object.keys(mixedProvenance.origin.nodes).length} 个节点 · 查询 ${queryNodes.length} 个`);
+  const mixedNodes = mixedReport.origin.nodes;
+  const queryNodes = Object.values(mixedNodes).filter((node) => node.kind === 'query');
+  console.log(`  报表级来源结构：${Object.keys(mixedNodes).length} 个节点 · 查询 ${queryNodes.length} 个`);
   if (queryNodes.length !== 1) throw new Error(`共用同一份查询时只该有一个查询节点，收到 ${queryNodes.length}`);
-  if (mixedProvenance.data.items[2]?.root !== mixedProvenance.data.items[1]?.root) {
+  const mixedInputs = mixedNodes[mixedReport.origin.root]?.inputs ?? {};
+  if (mixedInputs.item2 !== mixedInputs.item3) {
     throw new Error('表与图引用的同一份查询应当是同一个根节点');
   }
-  if (JSON.stringify(mixedProvenance.data.items[2]?.data) !== JSON.stringify(mixedProvenance.data.items[1]?.data)) {
+  if (JSON.stringify(mixedReport.items.item2?.rows) !== JSON.stringify(mixedReport.items.item3?.rows)) {
     throw new Error('展示项里该带着各自实际展示的数据');
   }
   // 报表整体的 origin 是**一个**：根是"组装这份报告"那个节点，各展示项的根是它的 inputs。
   ok('报表的来源是一个：根是组装节点，inputs 指向各展示项',
-    mixedProvenance.origin.nodes[mixedProvenance.origin.root]?.kind === 'report'
-    && Object.values(mixedProvenance.origin.nodes[mixedProvenance.origin.root]?.inputs ?? {}).length === 3);
-  // data 与 origin 分家：骨架与展示数据在 data 里，节点表在 origin 里。
-  ok('报表的 data 是 { chapters, plainTables, items }，没有节点表',
-    Array.isArray(mixedProvenance.data.chapters) && mixedProvenance.data.plainTables === 0
-    && mixedProvenance.data.chapters.length === 1
-    && mixedProvenance.data.chapters[0].figures.length === 2
-    && mixedProvenance.data.chapters[0].tables.length === 1
-    && mixedProvenance.data.nodes === undefined && mixedProvenance.data.version === undefined);
+    mixedNodes[mixedReport.origin.root]?.kind === 'report' && Object.keys(mixedInputs).length === 3);
+  // data 与 origin 分家：结构区与展示项在 data 里，节点表在 origin 里，源码资源在 data.assets 里。
+  ok('报表的 data 是 { assets, items, structure }，没有节点表',
+    mixedReport.structure.startsWith('<article')
+    && Object.keys(mixedReport.items).length === 3 && mixedReport.assets !== undefined
+    && (mixedReport.data === undefined || mixedReport.data.nodes === undefined));
   if (mixedHtml.includes('dsh-oks-chart-input')) {
     throw new Error('图自带的材料应当搬进报表级结构，而不是在内联的那份里重复一遍');
   }
-  if ((mixedHtml.match(/data-oks-item="/g) ?? []).length !== 3) {
-    throw new Error('每个展示项都要有 data-oks-item 把画面与展示项对上');
+  for (const key of Object.keys(mixedReport.items)) {
+    if (!mixedReport.structure.includes(`data-oks-ref="${key}"`)) {
+      throw new Error(`展示项 ${key} 在结构区里找不到引用：items 与正文必须一一对上`);
+    }
   }
 
 
@@ -2561,7 +2633,7 @@ console.log('=== oks_chart（服务端出图）===');
     const ref = await call('oks_report', {
       spec: {
         title: '引用图（冒烟）',
-        markdown: [
+        ...reportSpec([
           '## 一、引用的第一张',
           '',
           `![第一张](${extra.value.svgSrc})`,
@@ -2579,7 +2651,7 @@ console.log('=== oks_chart（服务端出图）===');
           '## 四、chart 块已经不接受',
           '',
           fence('老的写法'),
-        ].join('\n'),
+        ].join('\n')),
       },
       name: 'probe_report_ref',
     });
@@ -2593,30 +2665,27 @@ console.log('=== oks_chart（服务端出图）===');
       throw new Error(`编号应当按正文出现顺序走（取不到的图不占号），实际 ${JSON.stringify(captions)}`);
     }
     if (ref.value.figureCount !== 4) throw new Error(`回执的图数应当只数画出来的，收到 ${ref.value.figureCount}`);
-    // chart 块已经不接受：说明要指回去（先画一次、再把那一行放进正文），而不是静默变成代码块。
-    const errors = [...refHtml.matchAll(/<div class="figure-error">([^<]*)<\/div>/g)].map((m) => m[1]);
-    if (errors.length !== 1) throw new Error(`chart 块该留一段说明，收到 ${errors.length} 段`);
-    if (!errors[0].includes('oks_chart')) {
-      throw new Error(`chart 块被拒时应当指路：${JSON.stringify(errors)}`);
+    // 结构区里没有 markdown 围栏这回事：那段文字就是代码块，也不再需要"chart 块被拒"的说明位。
+    if (refHtml.includes('<div class="figure-error">')) {
+      throw new Error('结构区里不该再有说明位：正文只认 XHTML，围栏在创作侧就不存在');
     }
     // 取不到的展示件：**整份报告失败**，错误里要点出是哪一行引用、正确写法是什么。
     for (const broken of ['nope.bar.svg', 'nope.table.md', '../oks.json']) {
       let failure = '';
       try {
         await call('oks_report', {
-          spec: { title: '取不到材料', markdown: `正文\n\n![取不到](${broken})\n` },
+          spec: { title: '取不到材料', ...reportSpec(`正文\n\n![取不到](${broken})\n`) },
           name: 'probe_report_broken',
         });
       } catch (cause) {
         failure = String(cause?.message ?? cause);
       }
       console.log(`  引用 ${broken} → ${failure.slice(0, 96)}`);
-      if (!/取不到/.test(failure)) throw new Error(`取不到材料要整份失败并说清是哪一行：${broken} → ${failure}`);
+      if (!/取不到|读不到/.test(failure)) {
+        throw new Error(`取不到材料要整份失败并说清是哪一个：${broken} → ${failure}`);
+      }
     }
-    if (refHtml.includes('language-chart')) throw new Error('chart 块不该退化成普通代码块');
-    // 说明块里会带着"正确写法"的例子（那本身就是图片语法），所以只在正文里查残留。
-    const prose = refHtml.replace(/<div class="figure-error">[\s\S]*?<\/div>/g, '');
-    if (/!\[[^\]]*\]\(/.test(prose)) throw new Error('图片语法不该以字面文本出现在正文里');
+    if (!refHtml.includes('老的写法')) throw new Error('围栏内容应当原样出现在代码块里');
     if (refHtml.includes('evil.bar.svg</svg>')) throw new Error('越界的引用不该被读进来');
   }
 
@@ -3212,7 +3281,7 @@ console.log('=== 页签的交付形态 ===');
 console.log('=== 分类与"当前只算报表" ===');
 {
   const saved = await call('oks_report', {
-    spec: { title: '分类探针', markdown: '## 一\n\n正文。' },
+    spec: { title: '分类探针', ...reportSpec('## 一\n\n正文。') },
     name: 'probe_category',
     category: '周报',
   });
@@ -3825,7 +3894,7 @@ console.log('=== 报表自足（材料回收之后）===');
   const report = await call('oks_report', {
     spec: {
       title: '自足（冒烟）',
-      markdown: [`![自足用表](${view.value.viewSrc})`, '', `![自足用图](${figure.value.svgSrc})`].join('\n'),
+      ...reportSpec([`![自足用表](${view.value.viewSrc})`, '', `![自足用图](${figure.value.svgSrc})`].join('\n')),
     },
     name: 'probe_self_contained',
   });
@@ -3834,17 +3903,17 @@ console.log('=== 报表自足（材料回收之后）===');
     rmSync(resolve(DEV_ROOT, gone), { force: true });
   }
   const html = readFileSync(resolve(DEV_ROOT, report.value.htmlSrc), 'utf8');
-  const provenance = readReportProvenance(html);
-  console.log(`  材料清空后：${Object.keys(provenance?.origin.nodes ?? {}).length} 个节点 · `
-    + `${provenance?.data.items.length ?? 0} 个展示项 · 页面里 ${(html.match(/<table>/g) ?? []).length} 张表`);
+  const parts = readReportPage(html);
+  const itemValues = 'error' in parts ? [] : Object.values(parts.items);
+  console.log(`  材料清空后：${'error' in parts ? 0 : Object.keys(parts.origin.nodes).length} 个节点 · `
+    + `${itemValues.length} 个展示项 · 页面里 ${(html.match(/<table>/g) ?? []).length} 张表`);
   ok('材料回收后，页面上的表与图照旧显示',
     /<table>/.test(html) && /<svg class="chart"/.test(html) && report.value.tableCount === 1);
   ok('材料回收后，报表仍带着最终展示数据与每次操作',
-    provenance !== null && provenance.data.items.length === 2
-    && Array.isArray(provenance.data.items[1]?.data)
-    && typeof provenance.data.items[1]?.data?.[0]?.[column] === 'number'
-    && Object.values(provenance.origin.nodes).some((node) => node.kind === 'query')
-    && Object.values(provenance.origin.nodes).every((node) => node.data === undefined));
+    !('error' in parts) && itemValues.length === 2
+    && Array.isArray(itemValues[1]?.rows) && typeof itemValues[1]?.rows?.[0]?.[column] === 'number'
+    && Object.values(parts.origin.nodes).some((node) => node.kind === 'query')
+    && Object.values(parts.origin.nodes).every((node) => node.data === undefined));
 }
 
 // ── 报表里的 JSON 块：数据里的尖括号要挡住（`<script>` 是 raw text，实体不还原）──────
@@ -3862,15 +3931,16 @@ console.log('=== 来源结构的转义 ===');
     name: 'nasty_table',
   });
   const report = await call('oks_report', {
-    spec: { title: '转义（冒烟）', markdown: `![危险文本](${view.value.viewSrc})\n` },
+    spec: { title: '转义（冒烟）', ...reportSpec(`![危险文本](${view.value.viewSrc})\n`) },
     name: 'probe_report_escape',
   });
   const html = readFileSync(resolve(DEV_ROOT, report.value.htmlSrc), 'utf8');
-  const raw = /<script type="application\/json" id="dsh-oks-provenance">([\s\S]*?)<\/script>/.exec(html)?.[1] ?? '';
-  ok('JSON 块里没有裸的 <（`</script>` 挡得住）', raw !== '' && !raw.includes('<'));
-  const back = readReportProvenance(html);
+  const raw = new RegExp(`<script type="application/json" id="${REPORT_METADATA_ID}">([\\s\\S]*?)</script>`).exec(html)?.[1] ?? '';
+  ok('元数据块里没有裸的 <（`</script>` 挡得住）', raw !== '' && !raw.includes('<'));
+  const escaped = readReportPage(html);
+  const escapedRows = 'error' in escaped ? [] : (escaped.items.item1?.rows ?? []);
   ok('转义之后仍原样读回（含字面量 \\u003c 这种文本）',
-    back?.data?.items?.[0]?.data?.[0]?.text === nasty && back?.data?.items?.[0]?.data?.[1]?.text === literal);
+    escapedRows[0]?.text === nasty && escapedRows[1]?.text === literal);
   // 单元格里的危险文本要以**转义后的文本**出现：`onerror=` 作为文字留着没关系，
   // 关键是它前面没有真的标签（没有 <img / 没有可执行的 <script>）。
   ok('页面上的单元格是转义后的文本，没有变成标签',
@@ -3897,7 +3967,7 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
   const built = await call('oks_report', {
     spec: {
       title: '取数（冒烟）',
-      markdown: [
+      ...reportSpec([
         '## 一、级别与清除',
         '',
         `![取数用表](${view.value.viewSrc})`,
@@ -3909,7 +3979,7 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
         '### 1.1 明细',
         '',
         `![取数用图](${figure.value.svgSrc})`,
-      ].join('\n'),
+      ].join('\n')),
     },
     name: 'probe_extract_report',
   });
@@ -3941,40 +4011,40 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
   // 材料已经全部回收：读这份报告只有一条路——jq 投影它的 data。
   const viaReport = await call('jq_transform', {
     inputs: { r: reportSrc },
-    byFile: prog('{chapters: [.r.chapters[] | .caption], level1: .r.chapters[1].level, '
-      + 'figure: ([.r.items[] | select(.kind == "chart")][0] | {no: .no, kind: .spec.kind}), '
-      + 'table: ([.r.items[] | select(.kind == "table")][0] | {no: .no, rows: (.data | length)})}'),
+    byFile: prog('{structure: .r.structure, keys: (.r.items | keys), '
+      + 'figure: (.r.items.item2 | {kind: .spec.kind, rows: (.rows | length)}), '
+      + 'table: (.r.items.item1 | {rows: (.rows | length)})}'),
   });
   console.log(`  jq 读报告 → ${JSON.stringify(viaReport.value.data).slice(0, 200)}`);
-  ok('jq 直接吃报告：章节骨架（含 level）、图元与展示项数据都在',
+  ok('jq 直接吃报告：结构区、图元与各展示项的数据都在',
     viaReport.value.ok !== false
-    && JSON.stringify(viaReport.value.data?.chapters) === JSON.stringify(['一、级别与清除', '1.1 明细'])
-    && viaReport.value.data?.level1 === 'h3'
-    && viaReport.value.data?.figure?.kind === 'bar' && viaReport.value.data?.figure?.no === 1
-    && viaReport.value.data?.table?.no === 1 && viaReport.value.data?.table?.rows > 0);
+    && typeof viaReport.value.data?.structure === 'string'
+    && viaReport.value.data.structure.includes('一、级别与清除')
+    && viaReport.value.data.structure.includes('1.1 明细')
+    && viaReport.value.data?.figure?.kind === 'bar' && viaReport.value.data?.figure?.rows === 1
+    && viaReport.value.data?.table?.rows > 0 && viaReport.value.data?.keys?.length === 2);
 
   // 展示项清单（原来由专门的读工具给）：现在就是从报告自己的 data 里投影出来的一段。
   const itemList = await call('jq_transform', {
     inputs: { r: { src: reportSrc, root: '.data.items' } },
-    byFile: prog('[.r[] | {kind, no, caption}]'),
+    byFile: prog('{keys: (.r | keys), sizes: [.r[] | length]}'),
   });
   console.log(`  展示项：${JSON.stringify(itemList.value.data)}`);
-  ok('展示项清单由 jq 从报告的 data 里投影：类型、报告上印的编号与注解都在',
-    itemList.value.ok !== false && itemList.value.data?.length === 2
-    && itemList.value.data[0].kind === 'table' && itemList.value.data[0].no === 1
-    && itemList.value.data[1].kind === 'chart' && itemList.value.data[1].no === 1);
+  ok('展示项清单由 jq 从报告的 data 里投影：具名映射，每一项带着实际展示的数据',
+    itemList.value.ok !== false && itemList.value.data?.keys?.length === 2
+    && Array.isArray(itemList.value.data?.sizes));
 
   // root "."：交给程序的是整份文件 { meta, origin, data }——读自述与来源链用它。
   const whole = await call('jq_transform', {
     inputs: { r: { src: reportSrc, root: '.' } },
     byFile: prog('{kind: .r.meta.kind, nodes: (.r.origin.nodes | keys | length), '
       + 'kinds: [.r.origin.nodes[].kind], root: .r.origin.nodes[.r.origin.root].kind, '
-      + 'chapters: (.r.data.chapters | length)}'),
+      + 'items: (.r.data.items | length)}'),
   });
   console.log(`  root "." → ${JSON.stringify(whole.value.data)}`);
   ok('root "." 交出整份文件（自述 + 来源链 + 数据）',
     whole.value.ok !== false && whole.value.data?.kind === 'report' && whole.value.data?.root === 'report'
-    && whole.value.data?.chapters === 2 && whole.value.data?.nodes >= 2
+    && whole.value.data?.items === 2 && whole.value.data?.nodes >= 2
     && (whole.value.data?.kinds ?? []).includes('query'));
 
   // root 只取一段：只要来源链 / 只要骨架，都不必把整份文件交给 jaq；回执里带上实际用的 root。
@@ -3983,13 +4053,13 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
     byFile: prog('{nodes: (.r.nodes | keys | length), root: .r.root}'),
   });
   const onlyChapters = await call('jq_transform', {
-    inputs: { r: { src: reportSrc, root: '.data.chapters' } },
-    byFile: prog('[.r[] | .caption]'),
+    inputs: { r: { src: reportSrc, root: '.data.structure' } },
+    byFile: prog('(.r | contains("一、级别与清除"))'),
   });
   ok('root 只取一段：来源链与章节骨架各自单独可读，回执写明每份输入用了哪个 root',
     onlyOrigin.value.ok !== false && onlyOrigin.value.inputs?.[0]?.root === '.origin'
     && onlyOrigin.value.data?.nodes >= 2 && typeof onlyOrigin.value.data?.root === 'string'
-    && JSON.stringify(onlyChapters.value.data) === JSON.stringify(['一、级别与清除', '1.1 明细']));
+    && onlyChapters.value.data === true);
   const badRoot = await (async () => {
     try {
       await call('jq_transform', { inputs: { r: { src: reportSrc, root: '.nope' } }, byFile: prog('.') });
@@ -4027,12 +4097,14 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
   rmSync(resolve(DEV_ROOT, probe.value.dataSrc), { force: true });
 
   // 报表来源块是"理解面"的权威：逐项带着最终展示数据、规格与根节点（工具的读法只是 jq 投影）。
-  const reportProvenance = readReportProvenance(readFileSync(resolve(DEV_ROOT, reportSrc), 'utf8'));
-  const provenanceItems = reportProvenance?.data.items ?? [];
+  const reportParts = readReportPage(readFileSync(resolve(DEV_ROOT, reportSrc), 'utf8'));
+  const reportNodes = 'error' in reportParts ? {} : reportParts.origin.nodes;
+  const reportInputs = 'error' in reportParts ? {} : reportNodes[reportParts.origin.root]?.inputs ?? {};
+  const itemKeys = 'error' in reportParts ? [] : Object.keys(reportParts.items);
   ok('来源块逐项带着展示数据与根节点，根节点在节点表里可解析',
-    provenanceItems.length === 2
-    && provenanceItems.every((item) => item.root in (reportProvenance?.origin.nodes ?? {}))
-    && Array.isArray(provenanceItems[1]?.data) && provenanceItems[1].data.length > 0);
+    itemKeys.length === 2
+    && itemKeys.every((key) => reportInputs[key] in reportNodes)
+    && Array.isArray((('error' in reportParts ? {} : reportParts.items)[itemKeys[1]])?.rows));
 
   // 报表整体的 origin 是**一个**：根是组装节点，inputs 指向各展示项。
   const reportOrigin = await call('jq_transform', {
@@ -4040,7 +4112,7 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
     byFile: prog('{root: .r.root, rootKind: .r.nodes[.r.root].kind, inputs: .r.nodes[.r.root].inputs, '
       + 'nodes: (.r.nodes | keys | length)}'),
   });
-  const refs = provenanceItems.map((item) => `${item.kind === 'table' ? '表' : '图'} ${item.no}`);
+  const refs = itemKeys;
   console.log(`  报表 origin：根 ${reportOrigin.value.data?.root} · ${reportOrigin.value.data?.nodes} 个节点`
     + ` · 组装节点的输入 ${JSON.stringify(reportOrigin.value.data?.inputs ?? {})}`);
   ok('报表整体的 origin 是**一个**：根是组装节点，inputs 指向所有展示项的链',
@@ -4054,7 +4126,7 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
     byFile: prog('[.r.nodes[] | select(.kind == "query") | {intent, source}] | .[0]'),
   });
   const fileIntent = (() => {
-    const queryNode = Object.values(reportProvenance?.origin.nodes ?? {}).find((node) => node.kind === 'query');
+    const queryNode = Object.values(reportNodes).find((node) => node.kind === 'query');
     return JSON.stringify(queryNode?.intent);
   })();
   console.log(`  链上的来路：intent ${JSON.stringify(figureChain.value.data?.intent).slice(0, 90)}`
@@ -4125,6 +4197,362 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     rmSync(alone, { recursive: true, force: true });
   }
 }
+
+// 结构区 XHTML（RFC 0008 的地基）：校验、缩水与读回都只走 src/report/xhtml.ts 这一层。
+// 这里守的是三处输入各自的严格度：作者正文最严，我们自己的 .svg 与页面按词法进出。
+{
+  const good = '<article id="a"><!-- 先看趋势。 --><h2>趋势</h2>'
+    + '<p>同比 <span data-oks-ref="summary" data-oks-pick=".growth">12%</span>。</p>'
+    + '<figure data-oks-ref="trend"><figcaption>趋势</figcaption></figure>'
+    + '<p data-oks-shrink="">三月最高。</p><br /></article>';
+  const checked = checkAuthorXhtml(good);
+  ok('作者结构区：合规正文零错误', checked.errors.length === 0);
+  ok('作者结构区：引用被收集（含结论里的单值引用）',
+    checked.refs.includes('summary') && checked.refs.includes('trend'));
+  ok('作者结构区：意图注释被读到', checked.comments.some((text) => text.includes('先看趋势')));
+
+  const voidBad = checkAuthorXhtml('<article><p>换行<br>没写斜杠</p></article>');
+  ok('作者结构区：<br> 必须写 <br />（空元素靠标签名当闭合是错）',
+    voidBad.errors.some((error) => error.code === 'author-void'));
+
+  const entityBad = checkAuthorXhtml('<article><p>空&nbsp;格</p></article>');
+  ok('作者结构区：&nbsp; 报错（XML 只认五个预定义实体）',
+    entityBad.errors.some((error) => error.code === 'xhtml-not-well-formed'));
+  ok('作者结构区：报错带行列', entityBad.errors.every((error) => error.line >= 1 && error.column >= 1));
+
+  const prefixed = checkAuthorXhtml('<article><p><svg:path d="M0 0" /></p></article>');
+  ok('作者结构区：带前缀的名字按名字比对，不在白名单里就拒',
+    prefixed.errors.some((error) => error.code === 'author-element'));
+
+  ok('作者结构区：figure 必须带引用',
+    checkAuthorXhtml('<article><figure><figcaption>x</figcaption></figure></article>')
+      .errors.some((error) => error.code === 'author-figure-ref'));
+  ok('作者结构区：pick 只写在带引用的 span 上',
+    checkAuthorXhtml('<article><p data-oks-pick=".x">y</p></article>')
+      .errors.some((error) => error.code === 'author-pick-element')
+    && checkAuthorXhtml('<article><span data-oks-pick=".x">y</span></article>')
+      .errors.some((error) => error.code === 'author-pick-ref'));
+  ok('作者结构区：摘取路径只支持字段名与下标',
+    checkAuthorXhtml('<article><span data-oks-ref="s" data-oks-pick=".a[0]">y</span></article>')
+      .errors.some((error) => error.code === 'author-pick'));
+
+  const before = '<article><!-- 意图 --><p>同比 '
+    + '<span data-oks-ref="summary" data-oks-pick=".growth">12%</span>。</p>'
+    + '<figure data-oks-ref="trend"><figcaption>趋势</figcaption><div>图</div></figure>'
+    + '<p data-oks-shrink="">三月最高。</p></article>';
+  const shrunk = shrinkStructure(before).xml;
+  ok('缩水：span 里留下省略标记，元素与属性保留',
+    shrunk.includes('<span data-oks-ref="summary" data-oks-pick=".growth"><!-- omitted --></span>'));
+  ok('缩水：figure 的子节点换成省略标记（图注也随范围清掉）',
+    shrunk.includes('<figure data-oks-ref="trend"><!-- omitted --></figure>'));
+  ok('缩水：shrink 元素清空、属性保留', shrunk.includes('<p data-oks-shrink=""></p>'));
+  ok('缩水：范围外的注释原样保留', shrunk.includes('<!-- 意图 -->'));
+  ok('缩水：重复缩水结果相同', shrinkStructure(shrunk).xml === shrunk);
+  ok('缩水：嵌套按最外层决定',
+    shrinkStructure('<article><div data-oks-shrink=""><span data-oks-ref="x">1</span></div></article>').xml
+    === '<article><div data-oks-shrink=""></div></article>');
+
+  const page = '<html><head><script type="application/json" id="oks-metadata">{}</script></head>'
+    + '<body><header>外壳</header><article id="a"><p>正文</p></article><footer>页脚</footer></body></html>';
+  ok('读回：只取 article，外壳与页脚不进结构',
+    extractStructure(page, false).xml === '<article id="a"><p>正文</p></article>');
+  ok('读回：同一次重写里完成缩水',
+    extractStructure('<html><body><article><figure data-oks-ref="f"><div>图</div></figure></article></body></html>', true).xml
+    === '<article><figure data-oks-ref="f"><!-- omitted --></figure></article>');
+
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1 1">'
+    + '<metadata id="dsh-oks-artifact">{"name":"x"}</metadata>'
+    + '<style>.a{fill:red}</style><path d="M0 0"></path>'
+    + '<metadata id="dsh-oks-chart-input">{}</metadata></svg>';
+  const stripped = stripChartMetadata(svg).xml;
+  ok('内联 SVG：两段 metadata 整段剥掉', !stripped.includes('metadata'));
+  ok('内联 SVG：xmlns 与 xmlns:xlink 原样透传（命名空间不解释）',
+    stripped.includes('xmlns="http://www.w3.org/2000/svg"') && stripped.includes('xmlns:xlink='));
+  ok('内联 SVG：样式与路径保留',
+    stripped.includes('<style>.a{fill:red}</style>') && stripped.includes('<path d="M0 0"></path>'));
+}
+
+// 报告页面（RFC 0008 §3）：元数据区 + 结构区，写出来与读回来都走 src/report/page.ts。
+{
+  const origin = {
+    root: 'r1',
+    nodes: {
+      r1: { kind: 'report', inputs: { summary: 't1' } },
+      t1: { kind: 'transform', snip: 'map(.n)', snipFile: '.work/count.jq', motivation: '数一数', inputs: { src: 'q1' } },
+      q1: { kind: 'query', intent: { domain: 'd', note: '<x>' } },
+    },
+  };
+  const archived = extractAssets(origin);
+  const key = Object.keys(archived.assets)[0];
+  ok('资源归档：key 是「文件名主干-源码哈希前 16 位」', /^count-[0-9a-f]{16}$/.test(key ?? ''));
+  ok('资源归档：节点改成 asset:// 引用，正文只存在于 assets',
+    archived.origin.nodes.t1?.byFile === `asset://${key}` && archived.origin.nodes.t1?.snip === undefined);
+  ok('资源归档：还原后与提取前逐字段一致',
+    JSON.stringify(restoreAssets(archived.origin, archived.assets)) === JSON.stringify(origin));
+  ok('资源归档：没有程序的节点原样保留',
+    archived.origin.nodes.q1?.kind === 'query' && archived.origin.nodes.q1?.byFile === undefined);
+  const shared = extractAssets({ root: 'a', nodes: {
+    a: { kind: 'transform', snip: 'x', snipFile: 'p.jq' },
+    b: { kind: 'transform', snip: 'x', snipFile: 'p.jq' },
+  } });
+  ok('资源归档：同主干同源码只存一份', Object.keys(shared.assets).length === 1);
+  ok('资源归档：不同源码得到不同 key', assetKey('p.jq', 'x') !== assetKey('p.jq', 'y'));
+
+  const rendered = renderStructure({
+    xhtml: '<article><h2>趋势</h2><p>同比 <span data-oks-ref="summary" data-oks-pick=".growth"></span>。</p>'
+      + '<figure data-oks-ref="trend"><figcaption>趋势</figcaption></figure></article>',
+    outline: [{ level: 2, text: '趋势', id: 'section-1' }],
+    valueOf: (ref, pick) => `${ref}${pick ?? ''}`,
+    inlineOf: (ref) => (ref === 'trend' ? { html: '<div class="inline">图</div>', label: '图 1' } : undefined),
+  });
+  ok('渲染：span 填入绑定值',
+    rendered.article.includes('<span data-oks-ref="summary" data-oks-pick=".growth">summary.growth</span>'));
+  ok('渲染：图内联进 figure、图注戴编号',
+    rendered.article.includes('<figcaption><span class="item-no">图 1</span>趋势</figcaption>')
+    && rendered.article.includes('<div class="inline">图</div></figure>'));
+
+  const page = buildReportPage({
+    meta: { kind: 'report', name: 'demo', at: '20260101T000000Z', title: '演示' },
+    subtitle: '当月',
+    generatedAt: '2026-01-01T00:00:00Z',
+    article: rendered.article,
+    origin: archived.origin,
+    assets: archived.assets,
+    items: { summary: { growth: '12%' }, note: 'a < b & c' },
+    outline: [{ level: 2, text: '趋势', id: 'section-1' }],
+  });
+  ok('页面：元数据区在页面里，JSON 里的 < 与 & 已转义',
+    page.includes(`<script type="application/json" id="${REPORT_METADATA_ID}">`)
+    && page.includes('\\u003c') && page.includes('\\u0026'));
+  ok('页面：写入自校验为良构 XML（含样式表、目录与中文）', checkWellFormed(page).length === 0);
+
+  const back = readReportPage(page);
+  ok('读回：拿到 origin/assets/items 与缩水后的结构区',
+    !('error' in back) && Object.keys(back.assets).length === 1
+    && back.structure.includes('<!-- omitted --></span>')
+    && back.structure.includes('<figure data-oks-ref="trend"><!-- omitted --></figure>'));
+  ok('读回：外壳、目录与页脚都不进结构区',
+    !('error' in back) && !back.structure.includes('<header>')
+    && !back.structure.includes('<nav>') && !back.structure.includes('<footer>'));
+  ok('读回：范围外的正文与目录锚点都保留',
+    !('error' in back) && back.structure.includes('<h2 id="section-1">趋势</h2>'));
+  // 组装（纯函数）：校验 → 绑定过滤 → 编号 → 渲染 → 归档 → 页面。
+  const makeBinding = (value, display) => ({
+    src: '.oks/data/x.tr.json',
+    root: '.data',
+    value,
+    origin: { root: 'n1', nodes: { n1: { kind: 'transform', snip: 'x', snipFile: 'p.jq' } } },
+    ...(display === undefined ? {} : { display }),
+  });
+  const assembleBase = {
+    name: 'r', title: '标题', subtitle: null, category: '即时分析', at: '20260101T000000Z',
+  };
+  const assembled = assembleReport({
+    ...assembleBase,
+    xhtml: '<article><h2>趋势</h2><p>同比 <span data-oks-ref="summary" data-oks-pick=".growth"></span>。</p>'
+      + '<figure data-oks-ref="trend"><figcaption>趋势</figcaption></figure></article>',
+    bindings: {
+      summary: makeBinding({ growth: '12%' }),
+      trend: makeBinding({ rows: [] }, {
+        kind: 'chart',
+        content: '<svg xmlns="http://www.w3.org/2000/svg">'
+          + '<metadata id="dsh-oks-chart-input">{}</metadata><path d="M0 0"></path></svg>',
+      }),
+    },
+    valueOf: (ref, pick) => (pick === '.growth' ? { value: '12%' } : { error: `缺值 ${ref}${pick ?? ''}` }),
+  });
+  ok('组装：产出页面、来源与资源（源码以 asset:// 引用）',
+    !('error' in assembled) && assembled.page.includes(`id="${REPORT_METADATA_ID}"`)
+    && assembled.page.includes('asset://') && Object.keys(assembled.assets).length === 1);
+  ok('组装：图按出现顺序编号并戴上 chip',
+    !('error' in assembled) && assembled.page.includes('图 1</span>趋势'));
+  ok('组装：内联的图剥掉了它自己的材料块',
+    !('error' in assembled) && !assembled.page.includes('dsh-oks-chart-input'));
+  ok('组装：目录锚点补进标题、导航指向它',
+    !('error' in assembled) && assembled.page.includes('<h2 id="section-1">趋势</h2>')
+    && assembled.page.includes('href="#section-1"'));
+  ok('组装：来源链记下每个绑定的选取路径与根节点',
+    !('error' in assembled) && assembled.origin.nodes[assembled.origin.root].inputPaths.summary === '.data');
+  const unbound = assembleReport({
+    ...assembleBase,
+    xhtml: '<article><p><span data-oks-ref="nope" data-oks-pick="."></span></p></article>',
+    bindings: {}, valueOf: () => ({ value: 'x' }),
+  });
+  ok('组装：正文引用了没绑定的项就报错', 'error' in unbound && unbound.error.includes('nope'));
+  const spare = assembleReport({
+    ...assembleBase,
+    xhtml: '<article><p>纯文字</p></article>',
+    bindings: { spare: makeBinding(1) }, valueOf: () => ({ value: 'x' }),
+  });
+  ok('组装：绑定没被正文引用也报错', 'error' in spare && spare.error.includes('spare'));
+  const badValue = assembleReport({
+    ...assembleBase,
+    xhtml: '<article><p><span data-oks-ref="x" data-oks-pick="."></span></p></article>',
+    bindings: { x: makeBinding({ rows: [] }) }, valueOf: () => ({ error: '这个值不是标量' }),
+  });
+  ok('组装：取值失败时把原因带出来', 'error' in badValue && badValue.error.includes('不是标量'));
+  const badBody = assembleReport({
+    ...assembleBase,
+    xhtml: '<article><br></article>', bindings: {}, valueOf: () => ({ value: 'x' }),
+  });
+  ok('组装：正文不合规时连行列一起报出来',
+    'error' in badBody && badBody.error.includes('第 1 行') && badBody.error.includes('要改'));
+
+  const metaRaw = new RegExp(`<script type="application/json" id="${REPORT_METADATA_ID}">([\\s\\S]*?)</script>`)
+    .exec(page)?.[1] ?? '';
+  ok('元数据区只序列化 { origin, assets, items }，不夹带正文',
+    JSON.stringify(Object.keys(JSON.parse(metaRaw)).sort()) === JSON.stringify(['assets', 'items', 'origin'])
+    && !metaRaw.includes('<article'));
+
+  const chartBinding = () => makeBinding({ rows: [] }, {
+    kind: 'chart',
+    content: '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0"></path></svg>',
+  });
+  const singleQuoted = assembleReport({
+    ...assembleBase,
+    xhtml: "<article><figure data-oks-ref='trend'><figcaption>趋势</figcaption></figure></article>",
+    bindings: { trend: chartBinding() }, valueOf: () => ({ value: 'x' }),
+  });
+  ok('单引号写的 data-oks-ref 一样编号并内联',
+    !('error' in singleQuoted) && singleQuoted.page.includes('图 1</span>趋势')
+    && singleQuoted.page.includes('<path d="M0 0"></path>'));
+
+  const selfClosed = assembleReport({
+    ...assembleBase,
+    xhtml: '<article><figure data-oks-ref="trend" /></article>',
+    bindings: { trend: chartBinding() }, valueOf: () => ({ value: 'x' }),
+  });
+  ok('自闭合 figure 的内联图落在容器里面',
+    !('error' in selfClosed)
+    && /<figure data-oks-ref="trend">[\s\S]*<path d="M0 0"><\/path>[\s\S]*<\/figure>/.test(selfClosed.page));
+
+  const notDisplay = assembleReport({
+    ...assembleBase,
+    xhtml: '<article><figure data-oks-ref="d"></figure></article>',
+    bindings: { d: makeBinding({ rowCount: 1 }) }, valueOf: () => ({ value: 'x' }),
+  });
+  ok('figure 绑到非展示件时报错', 'error' in notDisplay && notDisplay.error.includes('不是图或表展示件'));
+
+  const sliced = assembleReport({
+    ...assembleBase,
+    xhtml: '<article><figure data-oks-ref="trend"></figure></article>',
+    bindings: { trend: { ...chartBinding(), root: '.data.rows' } }, valueOf: () => ({ value: 'x' }),
+  });
+  ok('figure 绑定不接受自选 root（要整件展示）',
+    'error' in sliced && sliced.error.includes('只能整件展示'));
+
+  // 正文里的取值要能吃数组下标（RFC 0008 §4 的 `.regions.0.name`）。
+  const nested = await call('create_data', {
+    name: 'nested_probe', motivation: '冒烟：数组下标取值', data: { regions: [{ name: '华东' }, { name: '华北' }] },
+  });
+  const arrayPick = await call('oks_report', {
+    spec: {
+      title: '数组下标（冒烟）',
+      articleFile: (() => {
+        const file = 'smoke_report_array_pick.xhtml';
+        mkdirSync(resolve(DEV_ROOT, '.work'), { recursive: true });
+        writeFileSync(resolve(DEV_ROOT, '.work', file),
+          '<article><p>区域：<span data-oks-ref="nested" data-oks-pick=".regions.0.name"></span></p></article>', 'utf8');
+        reportBodies.push(file);
+        return file;
+      })(),
+      inputs: { nested: { src: nested.value.dataSrc, root: '.data' } },
+    },
+    name: 'probe_report_array_pick',
+  });
+  const arrayHtml = readFileSync(resolve(DEV_ROOT, arrayPick.value.htmlSrc), 'utf8');
+  ok('正文取值支持数组下标（.regions.0.name）', arrayHtml.includes('华东'));
+
+  // 加工结果要把"每个输入切了哪一段"记下来（输入切片是来源的一部分）。
+  const slicedInput = await call('create_data', {
+    name: 'slice_probe', motivation: '冒烟：记输入切片', data: { rows: [{ n: 1 }, { n: 2 }] },
+  });
+  const slicedTransform = await call('jq_transform_into', {
+    name: 'slice_probe_out',
+    inputs: { src: { src: slicedInput.value.dataSrc, root: '.data.rows' } },
+    byFile: prog('[.src[] | .n]'),
+  });
+  const slicedSaved = JSON.parse(readFileSync(resolve(DEV_ROOT, slicedTransform.value.dataSrc), 'utf8'));
+  const slicedNode = slicedSaved.origin.nodes[slicedSaved.origin.root];
+  ok('加工结果记下每个输入的切片（inputs + inputPaths 成对）',
+    slicedNode.inputs?.src === slicedSaved.origin.root || typeof slicedNode.inputs?.src === 'string'
+    ? slicedNode.inputPaths?.src === '.data.rows'
+    : false);
+
+  // 引用由解析器收集：注释里的示例不算引用，实体化的名字还原后再匹配。
+  const commented = assembleReport({
+    ...assembleBase,
+    xhtml: '<article><!-- 例如 <figure data-oks-ref="ghost"></figure> -->'
+      + '<figure data-oks-ref="trend"><figcaption>趋势</figcaption></figure></article>',
+    bindings: { trend: chartBinding() }, valueOf: () => ({ value: 'x' }),
+  });
+  ok('注释里的 <figure> 示例不算引用（不要求 ghost 绑定、也不占号）',
+    !('error' in commented) && commented.figureCount === 1
+    && commented.page.includes('图 1</span>趋势') && commented.page.includes('<!-- 例如'));
+
+  const entityRef = assembleReport({
+    ...assembleBase,
+    xhtml: '<article><figure data-oks-ref="a&amp;b"><figcaption>实体名</figcaption></figure></article>',
+    bindings: { 'a&b': chartBinding() }, valueOf: () => ({ value: 'x' }),
+  });
+  ok('引用名里的 XML 实体还原后再匹配（a&amp;b ↔ a&b）',
+    !('error' in entityRef) && entityRef.figureCount === 1
+    && entityRef.page.includes('图 1</span>实体名'));
+
+  const cdata = assembleReport({
+    ...assembleBase,
+    xhtml: '<article><p><span data-oks-ref="x" data-oks-pick="."></span></p></article>',
+    bindings: { x: makeBinding('a]]>b') }, valueOf: () => ({ value: 'a]]>b' }),
+  });
+  ok('数据里出现 ]]> 时页面仍是良构 XML（> 走 \\u003e 转义）',
+    !('error' in cdata) && checkWellFormed(cdata.page).length === 0
+    && readReportPage(cdata.page).items?.x === 'a]]>b');
+
+  for (const [name, tool] of registered) {
+    if (/plainTables|chapters\b/.test(tool.description ?? '')) {
+      throw new Error(`工具 ${name} 的描述还在讲旧报告形状（chapters / plainTables）`);
+    }
+  }
+  ok('工具描述里没有退出设计的报告形状名（chapters / plainTables）', true);
+
+  // 回执进模型上下文的那一份有上限：超了就把数据留下，让 agent 换更精确的取法。
+  const bigRows = await call('create_data', {
+    name: 'big_probe', motivation: '冒烟：回执上限',
+    data: { rows: Array.from({ length: 3000 }, (_, index) => ({ n: index, text: 'x'.repeat(24) })) },
+  });
+  const bigRead = await call('jq_transform', { inputs: { r: bigRows.value.dataSrc }, byFile: prog('.r.rows') });
+  const bigError = (() => { try { return JSON.parse(bigRead.text).error; } catch { return null; } })();
+  ok('回执超过 16 KiB 时不把数据交出去，而是给同形状的错误与更精确取法的提示',
+    bigError?.code === 'payload_too_large' && bigError?.limitBytes === 16384
+    && typeof bigError?.hint === 'string' && !bigRead.text.includes('xxxx'));
+
+  for (const [file, body] of [['smoke_check_good.xhtml', '<article><p>你好</p><br /></article>'],
+    ['smoke_check_bad.xhtml', '<article><p>换行<br>没斜杠</p></article>']]) {
+    mkdirSync(resolve(DEV_ROOT, '.work'), { recursive: true });
+    writeFileSync(resolve(DEV_ROOT, '.work', file), body, 'utf8');
+    reportBodies.push(file);
+  }
+  const listedWork = await call('work_list', {});
+  ok('work_list：列出 .work/ 下的文件（名字、字节、写入时间）',
+    listedWork.value.count > 0
+    && listedWork.value.files.some((file) => file.name.endsWith('.xhtml')
+      && typeof file.bytes === 'number' && typeof file.modifiedAt === 'string'));
+
+  const goodCheck = await call('oks_report_check', { src: 'smoke_check_good.xhtml' });
+  ok('报告校验工具：合规正文 valid=true 且零错误',
+    goodCheck.value.valid === true && goodCheck.value.errors.length === 0);
+  const badCheck = await call('oks_report_check', { src: 'smoke_check_bad.xhtml' });
+  ok('报告校验工具：不合规正文给出结构化错误（code + 行列）',
+    badCheck.value.valid === false
+    && badCheck.value.errors.some((error) => error.code === 'author-void' && error.line >= 1 && error.column >= 1));
+
+  const broken = page.replace(/"assets":\{[^}]*\}/, '"assets":{}');
+  ok('读回：来源引用不到资源时明确报错', 'error' in readReportPage(broken));
+  ok('读回：没有元数据区的页面明确报错',
+    'error' in readReportPage('<html><body><article><p>x</p></article></body></html>'));
+}
+
+for (const file of reportBodies) rmSync(resolve(DEV_ROOT, '.work', file), { force: true });
 
 for (const dispose of disposers.reverse()) dispose();
 rmSync(SCRATCH, { recursive: true, force: true });

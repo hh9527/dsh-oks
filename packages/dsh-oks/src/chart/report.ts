@@ -1,113 +1,20 @@
-/** 报告生成：把一份 markdown 拼成自足的 HTML。
+/**
+ * 出图与报告共用的两样东西：**图表 SVG 的收拾**与**报告的样式表**。
  *
- *  「自足」是硬要求：图以 `<svg>` 元素内联、样式写在页面里、没有任何外链。原因是侧栏的
- *  **静态 HTML 模式不读取关联文件**（它只放行行内样式与 data 图片），而且自足的文件
- *  发给别人也能直接打开。
+ *  「自足」是硬要求：图以 `<svg>` 元素内联、样式写在页面里、没有任何外链——侧栏的静态 HTML 模式
+ *  不读取关联文件，自足的文件发给别人也能直接打开。
  *
- *  安全上只有一条规矩：**这份 HTML 全部由这里生成**。markdown 经白名单解析器转义后进入页面，
- *  内嵌 HTML 不被解释；图的规格交给调用方校验并渲染。脚本、样式、结构都是本文件里的常量。
+ *  安全上只有一条规矩：**页面全部由我们生成**。SVG 的清理（脚本、事件属性、外链）在这一层保证；
+ *  报告正文的严格性由 `src/report/` 那套校验负责。
  */
-import { escapeHtml, renderMarkdown, safeLanguage } from './markdown.ts';
-import type { DataOrigin, EnvelopeParts } from '../results.ts';
+import type { DataOrigin } from '../results.ts';
 
-/** 报告里的一个**展示项**：图或表。报表级的来源结构里一条就是一项。 */
-export interface DisplayItem {
-  kind: 'chart' | 'table';
-  /** 报表内的编号（图 N / 表 N，各自连续）。 */
-  no: number;
-  /** 图注 / 表注。 */
-  caption: string;
-  /** 这项展示的数据来源链（整份复制进报表级节点表）。 */
-  origin: DataOrigin;
-  /** 实际展示的数据（最终展示数据）。 */
-  data: unknown;
-  /** 绘图规格 / 展示规格。 */
-  spec: unknown;
-}
-
-/** 一行 `![注解](路径)` 解析出来的东西：要内联的内容，加上它自带的材料。
- *  调用方负责解析路径、读文件；这里只管怎么放进页面。 */
 export type DisplaySource =
   | { kind: 'chart'; svg: string; origin: DataOrigin; data: unknown; spec: unknown }
   | { kind: 'table'; markdown: string; origin: DataOrigin; data: unknown; spec: unknown };
 
-/** 引用的解析器：路径不认识、文件不在、材料缺失都在这里报出来（报告整份失败）。 */
-export type DisplayRenderer = (href: string) => { source: DisplaySource } | { error: string };
-
-/** 报表级来源结构在文件里的标记名与容量上限。 */
-export const PROVENANCE_KEY = 'dsh-oks-provenance';
-export const REPORT_PROVENANCE_MAX_BYTES = 4 * 1024 * 1024;
-
-/** 报表级的 data：章节骨架（`chapters`）+ 展示项（`items`，各自带着最终展示数据与规格）。
- *  骨架与数据都进文件，于是读结构、读数据都能用 jq 投影，不必再解析 HTML。 */
-export interface ReportData {
-  chapters: Array<{
-    caption: string | null;
-    level: string | null;
-    figures: Array<{ ref: string; kind: string; caption: string }>;
-    tables: Array<{ ref: string; caption: string }>;
-  }>;
-  /** 正文里手打的表（没有编号 chip、没有来源的那种）的个数。 */
-  plainTables: number;
-  items: Array<{ kind: string; no: number; caption: string; root: string; spec: unknown; data: unknown }>;
-}
-
-/** 报表级来源结构：**报表自己也是一个操作**——根指向"组装这份报告"那个节点，
- *  它的 `inputs` 是各展示项的根；于是"一件产物恰好一个 origin"对报告也成立。
- *  自述写在页面的 `<meta name="dsh-oks-artifact">` 里，这一块于是只有来源与数据。 */
-export type ReportProvenance = EnvelopeParts<ReportData>;
-
-/** 把来源结构包成页面里的一块：`type="application/json"` 不是脚本，浏览器不执行它。
- *
- *  `<` 必须写成 JSON 的 `\u003c` 转义，**不能**用 HTML 实体（`&lt;`）：`<script>` 是
- *  所谓 raw text 元素，元素里的内容是原样文本，HTML 实体在这里**不会被还原**——
- *  用 `&lt;` 会让 JSON 变成一段解不开的字符串。反过来，属性里（如产物自述的 `<meta content="…">`）
- *  就该用 `&lt;`，那里的实体由 HTML 解析器还原。两处的正确写法不同，别混。 */
-export const provenanceBlockHtml = (payload: ReportProvenance): string =>
-  `<script type="application/json" id="${PROVENANCE_KEY}">`
-  + JSON.stringify(payload).replace(/</g, '\\u003c')
-  + '</script>';
-
-/** 从报告里读回来源结构；读不到就是 null。 */
-export function readReportProvenance(html: string): ReportProvenance | null {
-  const raw = new RegExp(`<script type="application/json" id="${PROVENANCE_KEY}">([\\s\\S]*?)</script>`).exec(html)?.[1];
-  if (raw === undefined) return null;
-  try {
-    // 写进去时把 `<` 换成 JSON 的 `\u003c` 转义，JSON.parse 自己会还原成 `<`——
-    // 不能再手工替换一遍：数据里真有一段字面量 `\u003c` 时，那会把 JSON 改坏。
-    const value = JSON.parse(raw) as ReportProvenance;
-    return value?.origin === undefined || value?.data === undefined ? null : value;
-  } catch {
-    return null;
-  }
-}
-
-/** 一份报告的素材。 */
-export interface ReportInput {
-  title: string;
-  /** 副标题：通常是时间窗。 */
-  subtitle: string | null;
-  /** 生成时间（UTC ISO 字符串），由调用方给，便于测试。 */
-  generatedAt: string;
-  /** 正文 markdown：章节、叙述与图表的落点都在这里。 */
-  markdown: string;
-  /** 引用已经落盘的展示件（图 / 表）：由调用方负责解析路径、读文件与取材料。 */
-  display: DisplayRenderer;
-  /** 正文渲染完之后，用收集到的展示项与渲染出的正文拼出要嵌进页面的来源结构。 */
-  provenanceBlock: (items: readonly DisplayItem[], body: string) => string;
-}
-
-/**
- * 把一张 SVG 包成报告里的图。图以 `<svg>` 元素内联而不是 `<img src="data:...">`：
- * base64 会把体积撑大三分之一，内联后图里的文字还能被选中、页面样式也能作用到图内。
- *
- * 代价是**内联的 `<svg>` 会执行其中的脚本**（`<img>` 里的不会），所以这里自己剥一遍：
- * 脚本、`on*` 事件属性、指向外部的 `href`。安全性由这一段保证，而不是"依赖我们的图恰好干净"。
- *
- * 同时把根元素的固定宽高换掉——echarts 给的是像素值，而报告里应当随栏宽自适应；
- * `viewBox` 保留，所以比例不变。
- */
-export const buildFigureHtml = (svg: string, caption: string | null): string => {
+/** 收拾一张图表 SVG：去掉外壳与可执行内容、尺寸交给栏宽。内联与单独成件都走这里。 */
+export const cleanChartSvg = (svg: string): string => {
   const cleaned = svg
     .replace(/<\?xml[\s\S]*?\?>/gi, '')
     .replace(/<!DOCTYPE[\s\S]*?>/gi, '')
@@ -119,11 +26,11 @@ export const buildFigureHtml = (svg: string, caption: string | null): string => 
     .replace(/<svg([^>]*?)\swidth="[^"]*"/i, '<svg$1')
     .replace(/<svg([^>]*?)\sheight="[^"]*"/i, '<svg$1')
     .replace('<svg', '<svg class="chart" preserveAspectRatio="xMidYMid meet"');
-  return `<figure>${cleaned}${caption === null || caption === '' ? '' : `<figcaption>${escapeHtml(caption)}</figcaption>`}</figure>`;
+  return cleaned;
 };
 
 /** 报告的样式：全部写在页面里。 */
-const STYLE = `
+export const REPORT_STYLE = `
 :root { color-scheme: light; }
 * { box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -177,107 +84,3 @@ footer { margin-top: 52px; padding-top: 16px; border-top: 1px solid #e5eaf1; col
   .item-no { background: none; border: 1px solid #b9c6d8; }
 }
 `.trim();
-
-/** 从 markdown 里抽出章节标题，生成目录。 */
-const outline = (markdown: string): Array<{ level: number; text: string; id: string }> => {
-  const found: Array<{ level: number; text: string; id: string }> = [];
-  for (const line of markdown.split('\n')) {
-    const heading = line.match(/^(#{1,3})\s+(.*)$/);
-    if (heading === null) continue;
-    const level = heading[1].length;
-    const text = heading[2].trim();
-    if (text === '') continue;
-    found.push({ level, text, id: `section-${found.length + 1}` });
-  }
-  return found;
-};
-
-/** 给标题元素补上 id，让目录锚点能跳到它。 */
-const anchorHeadings = (body: string, headings: Array<{ level: number; text: string; id: string }>): string => {
-  let index = 0;
-  return body.replace(/<h([1-3])>(.*?)<\/h\1>/g, (match, level: string, inner: string) => {
-    const target = headings[index];
-    index += 1;
-    if (target === undefined || target.level !== Number(level)) return match;
-    return `<h${level} id="${target.id}">${inner}</h${level}>`;
-  });
-};
-
-/** 生成一份自足的 HTML 报告。 */
-export const renderReportHtml = (input: ReportInput): string => {
-  let figureIndex = 0;
-  let tableIndex = 0;
-  const items: DisplayItem[] = [];
-  // 编号由这里统一给（图 N / 表 N 各自连续），agent 只写注解。
-  // **取不到材料就让整份报告失败**：报表是交付物，缺一张图/一张表就不是完整交付，
-  // 不能悄悄少一件——报错里带着是哪一行引用、该怎么写，调用方据此修。
-  const place = (href: string, alt: string): string => {
-    const rendered = input.display(href);
-    if ('error' in rendered) throw new Error(rendered.error);
-    const source = rendered.source;
-    const caption = alt === '' ? '' : alt;
-    const at = items.length + 1;
-    if (source.kind === 'chart') {
-      figureIndex += 1;
-      items.push({ kind: 'chart', no: figureIndex, caption, origin: source.origin, data: source.data, spec: source.spec });
-      const html = buildFigureHtml(source.svg, null)
-        .replace('<figure>', `<figure data-oks-item="${at}" id="oks-item-${at}">`);
-      return caption === '' ? html : html.replace(
-        '</figure>',
-        `<figcaption><span class="item-no">图 ${figureIndex}</span>${escapeHtml(caption)}</figcaption></figure>`,
-      );
-    }
-    tableIndex += 1;
-    items.push({ kind: 'table', no: tableIndex, caption, origin: source.origin, data: source.data, spec: source.spec });
-    const captionHtml = caption === ''
-      ? ''
-      : `<figcaption><span class="item-no">表 ${tableIndex}</span>${escapeHtml(caption)}</figcaption>`;
-    return `<figure class="table-block" data-oks-item="${at}" id="oks-item-${at}">`
-      + `<div class="table-scroll">${renderMarkdown(source.markdown, (_info, text) => `<pre><code>${escapeHtml(text)}</code></pre>`)}</div>${captionHtml}</figure>`;
-  };
-  const body = renderMarkdown(
-    input.markdown,
-    (info, text) => {
-      // 围栏按代码块呈现，内容转义不解释。`chart` 这条入口已经不接受——报告里的图只有一种来源：
-      // 工作区里**已经画好**的 SVG。所以这里不是"解析失败"，而是明确指回去该怎么做。
-      if (info === 'chart') {
-        return '<div class="figure-error">报告里的图不再用 chart 块：先用 oks_chart 画一次，'
-          + '再把回执给你的那一行 ![标题](.oks/figures/xxx.bar.svg) 独占一行放进正文。</div>';
-      }
-      return `<pre><code${safeLanguage(info)}>${escapeHtml(text)}</code></pre>`;
-    },
-    // 独占一行的图片：注解取 `alt`，内容由调用方从工作区里读出来内联（图或表）。
-    (alt, href) => place(href, alt),
-  );
-
-  const headings = outline(input.markdown);
-  const anchored = anchorHeadings(body, headings);
-  const nav = headings
-    .filter((heading) => heading.level <= 2)
-    .map((heading) => `<a href="#${heading.id}">${escapeHtml(heading.text)}</a>`)
-    .join('');
-
-  return `<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(input.title)}</title>
-<style>
-${STYLE}
-</style>
-${input.provenanceBlock(items, anchored)}
-</head>
-<body>
-<header>
-<h1>${escapeHtml(input.title)}</h1>
-${input.subtitle === null ? '' : `<p class="subtitle">${escapeHtml(input.subtitle)}</p>`}
-<p class="meta">生成于 ${escapeHtml(input.generatedAt)}</p>
-</header>
-${nav === '' ? '' : `<nav><span class="nav-title">目录</span>${nav}</nav>`}
-${anchored}
-<footer>本报告由 oks 插件生成 · 单文件自足；每个图表展示项的最终数据与完整来源链都在页面里（${PROVENANCE_KEY}）</footer>
-</body>
-</html>
-`;
-};

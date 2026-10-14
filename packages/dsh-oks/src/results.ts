@@ -88,6 +88,9 @@ export interface OriginNode {
   snip?: string;
   /** transform：这段程序来自哪份代码文件（`byFile` 给出的那一份）。 */
   snipFile?: string;
+  /** 报告序列化形态：源码集中放在报告的 `assets` 里，节点用 `asset://<key>` 引用它。
+   *  报告是唯一使用这种引用形态的地方——普通材料照旧把程序正文内嵌在 `snip` 里。 */
+  byFile?: string;
   /** transform：从结果里取回的那一段（jq 点路径，`snip` 是 `.` 时它就是这次操作的全部内容）。 */
   pick?: string;
   /** transform：表达式产出了几个值。它把"恰好一个数组值"与"多个输出"分开，
@@ -95,6 +98,9 @@ export interface OriginNode {
   outputs?: number;
   /** transform / extract：输入名 → 上游操作在**本文件内**的节点 ID。 */
   inputs?: Record<string, string>;
+  /** 与 `inputs` 配套：输入名 → 从那份产物里选取数据用的点路径（RFC 0008 §4）。
+   *  以前只记"用了哪个输入"，这一项把"切了哪一段"也记下来。 */
+  inputPaths?: Record<string, string>;
   /** extract：从哪份报告取的（文件名，不含目录）与报告内的第几项。 */
   report?: string;
   item?: number;
@@ -350,7 +356,7 @@ export function embedArtifactMeta(content: string, meta: ArtifactMeta): string {
     const head = '<head>';
     const at = content.indexOf(head);
     if (at < 0) throw new Error('报告里没有 <head>，自述写不进去（渲染层的形状变了？）');
-    const insert = `${head}\n<meta name="${META_KEY}" content="${escapeXmlAttr(json)}">`;
+    const insert = `${head}\n<meta name="${META_KEY}" content="${escapeXmlAttr(json)}" />`;
     return content.slice(0, at) + insert + content.slice(at + head.length);
   }
   const open = /<svg[^>]*>/.exec(content);
@@ -364,7 +370,8 @@ export function embedArtifactMeta(content: string, meta: ArtifactMeta): string {
 /** 从产物内容里读回自述；读不到（老产物、形状不符、标题为空）就是 null。
  *  两个正则都只匹配"文件最前面那一段"，不解析整个文档。 */
 export function readArtifactMeta(content: string): ArtifactMeta | null {
-  const html = new RegExp(`<meta name="${META_KEY}" content="([^"]*)">`).exec(content);
+  // 两种写法都认：报告页面的自述按 XHTML 写成自闭合，图的仍是 HTML 写法。
+  const html = new RegExp(`<meta name="${META_KEY}" content="([^"]*)"\\s*/?>`).exec(content);
   const svg = new RegExp(`<metadata id="${META_KEY}">([^<]*)</metadata>`).exec(content);
   const raw = html?.[1] ?? svg?.[1];
   if (raw === undefined) return null;
@@ -683,6 +690,10 @@ export interface SaveArtifactOptions {
   title: string;
   /** 更精确的分类（周报、月报、即时分析…）；没给就不写这一项。 */
   category?: string;
+  /** 落盘时刻；不写就用当前时刻。报告要把同一个时刻嵌进页面，所以由调用方先定。 */
+  at?: string;
+  /** 内容里已经嵌好自述（报告页面在写入自校验时就在里面了），保存这一层不再插一次。 */
+  contentHasMeta?: boolean;
 }
 
 export function saveArtifact(options: SaveArtifactOptions): { src: string; at: string; meta: ArtifactMeta } {
@@ -694,7 +705,7 @@ export function saveArtifact(options: SaveArtifactOptions): { src: string; at: s
     throw new Error(`${KIND_LABEL[options.kind]}的标题不能为空：产物自述里那一行永远有值，`
       + 'agent 没给标题时由工具按维度与度量造一个。');
   }
-  const at = resultStamp();
+  const at = options.at ?? resultStamp();
   const meta: ArtifactMeta = {
     name: options.name,
     kind: options.kind,
@@ -703,7 +714,7 @@ export function saveArtifact(options: SaveArtifactOptions): { src: string; at: s
     ...(options.category === undefined ? {} : { category: options.category }),
   };
   // 先嵌自述、再算名字：文件名里的内容哈希必须等于**最终字节**的哈希。
-  const content = embedArtifactMeta(options.content, meta);
+  const content = options.contentHasMeta === true ? options.content : embedArtifactMeta(options.content, meta);
   const directory = dirForKind(options.kind);
   mkdirSync(join(options.root, directory), { recursive: true });
   const fileName = artifactName({
@@ -862,6 +873,13 @@ export function writeWorkFile(root: string, path: unknown, content: unknown, too
 
 /** 改一份 `.work/` 下的文本文件：字面替换。`old` 必须原样出现——找不到、或出现多次而没开
  *  `replaceAll`，都报出来（改错地方的代价比多问一句高）。 */
+/** 读 `.work/` 下**一整份文本文件**（不限扩展名）：报告正文这类"内容文件"走它。
+ *  与 `readCodeFile` 的分工：那个只认 `.jq`（程序），这个认内容。 */
+export function readWorkText(root: string, raw: unknown, tool: string): { text: string; file: string } {
+  const { rel, text } = readWorkTextWhole(root, raw, tool);
+  return { text, file: rel };
+}
+
 export function editWorkFile(root: string, path: unknown, old: unknown, next: unknown, replaceAll: unknown, tool: string): {
   file: string; replaced: number; bytes: number;
 } {
@@ -892,10 +910,9 @@ export function editWorkFile(root: string, path: unknown, old: unknown, next: un
   return { file: rel, replaced, bytes };
 }
 
-/** 读一份 `.work/` 下的文本文件：按行给（带行号），可以分页——这是"代码看得见"的那一半。 */
-export function readWorkFile(root: string, path: unknown, offset: unknown, limit: unknown, tool: string): {
-  file: string; lines: string[]; from: number; total: number; bytes: number;
-} {
+/** 读 `.work/` 下**一整份文本文件**：`readWorkFile`（给 agent 看的行窗口）与报告正文都用它。
+ *  路径校验、文件不存在时的提示、单份文件上限都在这里，只有这一处。 */
+function readWorkTextWhole(root: string, path: unknown, tool: string): { rel: string; text: string } {
   const { rel, full } = workPath(root, path, tool);
   let text: string;
   try {
@@ -903,6 +920,18 @@ export function readWorkFile(root: string, path: unknown, offset: unknown, limit
   } catch {
     throw new Error(`读不到 ${rel}：${WORK_DIR}/ 里现有 ${listWorkFiles(root).map((f) => f.name).join('、') || '（空）'}`);
   }
+  const bytes = Buffer.byteLength(text, 'utf8');
+  if (bytes > WORK_MAX_BYTES) {
+    throw new Error(`${rel} ${(bytes / 1024).toFixed(0)} KB，超过 ${WORK_DIR}/ 单份文件的上限：拆成几份。`);
+  }
+  return { rel, text };
+}
+
+/** 读一份 `.work/` 下的文本文件：按行给（带行号），可以分页——这是"代码看得见"的那一半。 */
+export function readWorkFile(root: string, path: unknown, offset: unknown, limit: unknown, tool: string): {
+  file: string; lines: string[]; from: number; total: number; bytes: number;
+} {
+  const { rel, text } = readWorkTextWhole(root, path, tool);
   const all = text.replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n');
   const from = offset === undefined ? 1 : offset;
   if (typeof from !== 'number' || !Number.isInteger(from) || from < 1) {

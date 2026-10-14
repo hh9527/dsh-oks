@@ -39,7 +39,6 @@ export { artifactName, NAME_MAX, resultStamp } from './results.ts';
 // 产物自述的读写也导出：它是"产物自己说得清自己是什么"这条契约的实现，冒烟直接按它断言。
 export { embedArtifactMeta, readArtifactMeta, saveArtifact } from './results.ts';
 export { renderEchartsSvg } from './chart/echarts.ts';
-export { buildFigureHtml, renderReportHtml } from './chart/report.ts';
 export { renderMarkdown } from './chart/markdown.ts';
 // 外加两个与模型无关的辅助工具：time_now（当前时刻的各种标准表示）、
 // time_calc（日历代数：加减 / 对齐到日历边界 / 换时区）——服务不读时钟，相对时间
@@ -73,6 +72,7 @@ export { renderMarkdown } from './chart/markdown.ts';
 import { createKnowledge } from './knowledge.ts';
 import { createTimeContext } from './time-context.ts';
 import { createTools } from './tools.ts';
+import { PAYLOAD_MAX_BYTES } from './tools.ts';
 import { createVaRuntime } from './va.ts';
 import { ARTIFACTS_ENDPOINT, createArtifactsEndpoint, createDeleteEndpoint, createDownloadEndpoint,
   createCollectEndpoint, createPinEndpoint, COLLECT_ENDPOINT, DELETE_ENDPOINT, DOWNLOAD_ENDPOINT,
@@ -111,7 +111,36 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
 
   const definitions = createTools({ knowledge, va, timeContext, log, config });
   for (const definition of definitions) {
-    const dispose = ctx.tools.register(definition);
+    // **回执的大小闸门在所有工具上**：交回给模型的那一份超过上限时，数据留在文件里，
+    // 交出去的是与数据接口同形状的合法 JSON 错误——数据本身不设上限（每份材料有自己的上限），
+    // 把门的是"进模型上下文的这一份"。工具自己更精确的提示（如 jq_transform）在它内部先生效。
+    const render = definition.output.render.bind(definition.output);
+    const dispose = ctx.tools.register({
+      ...definition,
+      output: {
+        ...definition.output,
+        render: (args, value) => {
+          const blocks = render(args, value);
+          const actualBytes = Buffer.byteLength(blocks.map((block) => block.text ?? '').join(''), 'utf8');
+          if (actualBytes <= PAYLOAD_MAX_BYTES) return blocks;
+          return [{
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              error: {
+                code: 'payload_too_large',
+                tool: definition.name,
+                limitBytes: PAYLOAD_MAX_BYTES,
+                actualBytes,
+                hint: '回执太大，没有交给你。用更精确的取法再来一次：jq_transform 里用 pick 取一个字段，'
+                  + '或在 byFile 的程序里聚合与投影（length / group_by / map({…})）；'
+                  + '要整块数据就让它留在文件里，用 root 只取你要的那一段。',
+              },
+            }),
+          }];
+        },
+      },
+    });
     if (typeof dispose === 'function') ctx.effect(() => dispose);
   }
 

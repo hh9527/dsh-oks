@@ -8,10 +8,13 @@ import type { JaqOutcome } from './jaq.ts';
 import { buildOption, CHART_WIDTH } from './chart/option.ts';
 import { renderEchartsSvg } from './chart/echarts.ts';
 import { tableMarkdown } from './view/table.ts';
-import { parseArtifactOrigin, reportChapters, reportItems } from './report/read.ts';
-import type { ReportItemView } from './report/read.ts';
-import { buildFigureHtml, provenanceBlockHtml, renderReportHtml, REPORT_PROVENANCE_MAX_BYTES } from './chart/report.ts';
-import type { DisplaySource, ReportData } from './chart/report.ts';
+import { parseArtifactOrigin } from './report/read.ts';
+import { readWorkText } from './results.ts';
+import { restoreAssets } from './report/page.ts';
+import { assembleReport } from './report/assemble.ts';
+import type { ReportBinding } from './report/assemble.ts';
+import { checkAuthorXhtml } from './report/xhtml.ts';
+import type { DisplaySource } from './chart/report.ts';
 import { CHART_KINDS, inferXType, supportedKinds, supports, toNumber } from './chart/shared.ts';
 import type { ChartKind, ExpressionSwitch, LayoutOverrides, MarkLine, SecondMetric, StyleOverrides } from './chart/shared.ts';
 import { OBJECT_OUTPUT, renderArtifacts, renderChart, renderCheck, renderCreateData, renderJqInto, renderJqTransform,
@@ -35,7 +38,7 @@ import type { DiagnosticEntry, LogFn, ServiceResponse, ToolDefinition, ToolExec,
 import { intentKey } from './key.ts';
 import { appendNode, ARTIFACT_DIR, chainLines, DEFAULT_ROOT, embedChartInput, FIGURE_DIR, nameProblem,
   deleteWorkFile, editWorkFile, listWorkFiles, readArtifact, readCodeFile, readWorkFile, WORK_DIR, writeWorkFile,
-  readChartInput, readTableView, rowsOf, saveArtifact, saveInputData,
+  readChartInput, readTableView, resultStamp, rowsOf, saveArtifact, saveInputData,
   saveResult, saveTableView, saveTransform } from './results.ts';
 import type { ColumnInfo, DataOrigin, Envelope, OriginNode, SaveArtifactOptions } from './results.ts';
 
@@ -99,32 +102,69 @@ interface ReportArgs {
 }
 
 /** 解析并校验报告素材。图的规格与取数都复用 oks_chart 那一套。 */
-/** 报告的素材：标题、副标题与正文 markdown。章节（`##`）与图的落点（独占一行的图片）都在正文里，
- *  所以不需要另外的结构——报告只认这一种写法。 */
+/** 报告的素材：标题、副标题、结构区（XHTML 子集）与绑定。
+ *  图表、数值都靠正文里的 `data-oks-ref` 引用绑定，元数据区由 oks_report 从这些绑定组装——
+ *  agent 写正文与绑定，不写来源链、不写资源。 */
 interface ReportSpec {
   title: string;
   subtitle: string | null;
-  markdown: string;
+  /** 结构区所在的文件（`.work/` 下的相对路径）：正文写成文件，校验与渲染都按路径读它。 */
+  articleFile: string;
+  /** item key → 取哪份材料的哪一段（`root` 是封装里的点路径）。 */
+  inputs: Record<string, { src: string; root: string }>;
 }
+
+/** 引用值要能直接填进正文：字符串原样、数字与布尔用 JSON 标量文本、`null` 写 `null`；
+ *  对象与数组先经过加工取成标量（RFC 0008 §4）。 */
+const scalarText = (value: unknown, what: string): { value: string } | { error: string } => {
+  if (typeof value === 'string') return { value };
+  if (typeof value === 'number' || typeof value === 'boolean') return { value: JSON.stringify(value) };
+  if (value === null) return { value: 'null' };
+  return {
+    error: `引用 ${what} 的值是${Array.isArray(value) ? '数组' : typeof value}，不是标量：`
+      + '先用加工把它取成字符串、数字、布尔或 null，再在正文里引用。',
+  };
+};
 
 const parseReportSpec = (raw: unknown): { spec: ReportSpec } | { error: string } => {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-    return { error: 'oks_report 需要 spec（对象）：title 与 markdown 必填' };
+    return { error: 'oks_report 需要 spec（对象）：title 与 xhtml 必填' };
   }
   const record = raw as Record<string, unknown>;
   const title = record.title;
   if (typeof title !== 'string' || title.trim() === '') return { error: 'spec.title 必填，且不能是空字符串' };
-  const markdown = record.markdown;
-  if (typeof markdown !== 'string' || markdown.trim() === '') {
-    return { error: 'spec.markdown 必填：用 ## 写章节，用 ![图注](路径) 放图' };
+  if (record.xhtml !== undefined) {
+    return { error: '正文写成 .work/ 下的文件：用 spec.articleFile 给文件名（不再收内联的 spec.xhtml）' };
   }
-  const unknown = Object.keys(record).filter((key) => !['title', 'subtitle', 'markdown'].includes(key));
+  const articleFile = record.articleFile;
+  if (typeof articleFile !== 'string' || articleFile.trim() === '') {
+    return {
+      error: 'spec.articleFile 必填：先用 work_write 把 <article> … </article> 写成 .work/ 下的文件，'
+        + '再把它的名字给过来（习惯用 "article.xhtml"）。',
+    };
+  }
+  const rawInputs = record.inputs === undefined || record.inputs === null ? {} : record.inputs;
+  if (typeof rawInputs !== 'object' || Array.isArray(rawInputs)) {
+    return { error: 'spec.inputs 要写成对象：{ "<item key>": { "src": "…", "root": ".data" } }' };
+  }
+  const inputs: Record<string, { src: string; root: string }> = {};
+  for (const [key, value] of Object.entries(rawInputs as Record<string, unknown>)) {
+    const entry = typeof value === 'string' ? { src: value, root: '.data' } : value;
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      return { error: `spec.inputs.${key} 要写成 src 字符串，或 {"src": "…", "root": ".data"}` };
+    }
+    const { src, root } = entry as { src?: unknown; root?: unknown };
+    if (typeof src !== 'string' || src === '') return { error: `spec.inputs.${key}.src 必填` };
+    inputs[key] = { src, root: root === undefined || root === null ? '.data' : String(root) };
+  }
+  const unknown = Object.keys(record).filter((key) => !['title', 'subtitle', 'articleFile', 'inputs'].includes(key));
   if (unknown.length > 0) return { error: `spec 里不认识的项：${unknown.join(', ')}` };
   return {
     spec: {
       title,
       subtitle: record.subtitle === undefined || record.subtitle === null ? null : String(record.subtitle),
-      markdown,
+      articleFile,
+      inputs,
     },
   };
 };
@@ -849,6 +889,19 @@ function selectPath(value: unknown, path: readonly string[], what: string): { va
   let current: unknown = value;
   const walked: string[] = [];
   for (const key of path) {
+    // 数组上只认非负整数下标，对象上的数字段按字符串键取（RFC 0008 §4）。
+    if (Array.isArray(current)) {
+      const index = /^\d+$/.test(key) ? Number(key) : null;
+      if (index === null || index >= current.length) {
+        return {
+          error: `${what}没有 ${JSON.stringify(`.${[...walked, key].join('.')}`)}：`
+            + `${JSON.stringify(`.${walked.join('.') || '.'}`)} 是长度 ${current.length} 的数组，下标从 0 起。`,
+        };
+      }
+      current = current[index];
+      walked.push(key);
+      continue;
+    }
     if (!isRecord(current) || !(key in current)) {
       const available = isRecord(current) ? Object.keys(current).map((name) => `.${name}`).join(' / ') : '(不是对象)';
       return {
@@ -864,10 +917,22 @@ function selectPath(value: unknown, path: readonly string[], what: string): { va
 
 /** 读一份产物、摊成本来的三段（`{ meta, origin, data }`；图/表/报告的材料块就地解析）。
  *  于是"读任何产物"只有一条路——具名输入 + 点路径，既不需要派生封装，也不需要专门的读接口。 */
+/** 带着一份产物的来源继续加工时的形态：报告先把源码从 `assets` 还原成内嵌正文，别的产物原样。
+ *  这样新产物自己闭合、不必背一张资源表；jq 读到的读模型不变（RFC 0008 §3）。 */
+function originForCarrying(src: string, product: Envelope): DataOrigin {
+  if (!src.endsWith('.report.html')) return product.origin;
+  const data = product.data;
+  if (!isRecord(data) || !isRecord(data.assets)) return product.origin;
+  return restoreAssets(product.origin, data.assets as Record<string, string>);
+}
+
 function readDocument(root: string, src: string): { document: Record<string, unknown>; origin: DataOrigin } {
   const product = readProduct(root, src);
   // 交出去的形状与文件一致：把读回来时多出来的展示项视图留在这一层。
-  return { document: { meta: product.meta, origin: product.origin, data: product.data }, origin: product.origin };
+  return {
+    document: { meta: product.meta, origin: product.origin, data: product.data },
+    origin: originForCarrying(src, product),
+  };
 }
 
 /** 从一份 data 里取列名：查询结果带着列信息，其余数据按第一行现取。 */
@@ -1591,7 +1656,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'jq_transform',
-      description: 'Run a jaq (jq-compatible) program over saved data without saving anything, so a result can be looked at before it is kept. inputs maps a name of your choosing to a src a previous receipt gave you; each entry is either that src or {"src": "<src>", "root": "<jq dot path>"}, where root is which slice of the file the program gets — the default ".data" is that record\'s own data (a query result is {rows, columns}; a transform is the value it produced; a figure or table is {rows, spec}; a report is {chapters, plainTables, items}), ".origin" is the source chain {root, nodes}, ".meta" is the record\'s self-description, "." is the whole {meta, origin, data}, and deeper paths like ".data.rows" work too — so reading a record\'s provenance takes no separate tool. A path that does not exist fails with the keys that do. The program lives in a file under .work/ and byFile names it — "byFile": "analysis.jq", written first with work_write — so jq syntax never sits next to the JSON of the call itself. The program sees one object whose keys are the input names, so write ".events.rows[] | select(.count > 100)" or "{total: ([.events.rows[].n] | add)}". Leave byFile out and the result is that object itself ({"events": <slice>}); pick then takes one part of the result back, as a jq dot path without quotes ("pick": ".events"), which is how a single input is read under its bare name. With no inputs that object is {}, so a constant arrives through a program file. A jq program produces a stream of values: exactly one value comes back as that value, several come back as an array, none comes back as []. The receipt reports every input, the shape of the result and the values themselves, so look before you save; an expression that fails comes back with the evaluator\'s own message — which names the .work/ file and the line it stopped at, followed by the shape of each input the program saw, so one look at the error is usually enough to fix the program. To keep a result for a later step or for a figure, materialise it with jq_transform_into.',
+      description: 'Run a jaq (jq-compatible) program over saved data without saving anything, so a result can be looked at before it is kept. inputs maps a name of your choosing to a src a previous receipt gave you; each entry is either that src or {"src": "<src>", "root": "<jq dot path>"}, where root is which slice of the file the program gets — the default ".data" is that record\'s own data (a query result is {rows, columns}; a transform is the value it produced; a figure or table is {rows, spec}; a report is {assets, items, structure} - items and the structure region with display values and your commentary cleared), ".origin" is the source chain {root, nodes}, ".meta" is the record\'s self-description, "." is the whole {meta, origin, data}, and deeper paths like ".data.rows" work too — so reading a record\'s provenance takes no separate tool. A path that does not exist fails with the keys that do. The program lives in a file under .work/ and byFile names it — "byFile": "analysis.jq", written first with work_write — so jq syntax never sits next to the JSON of the call itself. The program sees one object whose keys are the input names, so write ".events.rows[] | select(.count > 100)" or "{total: ([.events.rows[].n] | add)}". Leave byFile out and the result is that object itself ({"events": <slice>}); pick then takes one part of the result back, as a jq dot path without quotes ("pick": ".events"), which is how a single input is read under its bare name. With no inputs that object is {}, so a constant arrives through a program file. A jq program produces a stream of values: exactly one value comes back as that value, several come back as an array, none comes back as []. The receipt reports every input, the shape of the result and the values themselves, so look before you save; an expression that fails comes back with the evaluator\'s own message — which names the .work/ file and the line it stopped at, followed by the shape of each input the program saw, so one look at the error is usually enough to fix the program. To keep a result for a later step or for a figure, materialise it with jq_transform_into.',
       parameters: {
         type: 'object',
         properties: {
@@ -1640,7 +1705,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'jq_transform_into',
-      description: 'Run a jaq (jq-compatible) program over saved data and save the result as data a later step or a figure can read. inputs maps a name of your choosing to a src from an earlier receipt; each entry is either that src or {"src": "<src>", "root": "<jq dot path>"}, and the program sees one object whose keys are those names — the default ".data" is the record\'s own data (query → {rows, columns}, transform → its value, figure/table → {rows, spec}, report → {chapters, plainTables, items}), ".origin" is the source chain and "." the whole {meta, origin, data}. Leave byFile out and the result is that object itself; pick takes one part of it back as a jq dot path without quotes ("pick": ".events"). With no inputs the object is {}, so a constant arrives through a program file. The tool builds the provenance itself: it reads each input, runs the program, and writes {meta, origin, data} into .oks/data/ — the new origin carries this operation (snip, motivation, output count, which name used which input) plus the complete source chain of every input, while the inputs\' own data stays out of it. A value stream is collected the same way as in jq_transform: one value is that value, several are an array, none is []. The receipt gives you the dataSrc, the shape and the whole source chain — it does not repeat the values, so explore with jq_transform when you want to see them. Data the agent supplies itself does not come in here: create_data makes it an envelope first, so that the numbers have a recorded reason.',
+      description: 'Run a jaq (jq-compatible) program over saved data and save the result as data a later step or a figure can read. inputs maps a name of your choosing to a src from an earlier receipt; each entry is either that src or {"src": "<src>", "root": "<jq dot path>"}, and the program sees one object whose keys are those names — the default ".data" is the record\'s own data (query → {rows, columns}, transform → its value, figure/table → {rows, spec}, report -> {assets, items, structure}, the structure region being the cleared one), ".origin" is the source chain and "." the whole {meta, origin, data}. Leave byFile out and the result is that object itself; pick takes one part of it back as a jq dot path without quotes ("pick": ".events"). With no inputs the object is {}, so a constant arrives through a program file. The tool builds the provenance itself: it reads each input, runs the program, and writes {meta, origin, data} into .oks/data/ — the new origin carries this operation (snip, motivation, output count, which name used which input) plus the complete source chain of every input, while the inputs\' own data stays out of it. A value stream is collected the same way as in jq_transform: one value is that value, several are an array, none is []. The receipt gives you the dataSrc, the shape and the whole source chain — it does not repeat the values, so explore with jq_transform when you want to see them. Data the agent supplies itself does not come in here: create_data makes it an envelope first, so that the numbers have a recorded reason.',
       parameters: {
         type: 'object',
         properties: {
@@ -1687,6 +1752,8 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             outputs: outcome.outputs,
             ...(plan.inputs.length === 0 ? {} : {
               inputs: Object.fromEntries(plan.inputs.map((input) => [input.name, input.origin.root])),
+              // 与 `inputs` 配套：这次从每份产物里**切了哪一段**（RFC 0008 §4）。
+              inputPaths: Object.fromEntries(plan.inputs.map((input) => [input.name, input.root])),
             }),
           },
           inputs: plan.inputs.map((input) => input.origin),
@@ -1853,7 +1920,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             required: ['kind'],
             additionalProperties: false,
           },
-          src: { type: 'string', description: 'A src copied verbatim from an earlier receipt — any product whose data are the rows to draw: oks_query returns queried rows ({rows, columns}), jq_transform_into a computed result, create_data rows you supplied yourself, and a figure, table or report can be drawn from again (its data form is {rows, spec} or a report\'s {chapters, items}). Rows cannot be written inline.' },
+          src: { type: 'string', description: 'A src copied verbatim from an earlier receipt — any product whose data are the rows to draw: oks_query returns queried rows ({rows, columns}), jq_transform_into a computed result, create_data rows you supplied yourself, and a figure, table or report can be drawn from again (its data form is {rows, spec} or a report\'s {assets, items, structure}). Rows cannot be written inline.' },
           name: { type: 'string', description: 'Optional name for the saved SVG; defaults to "chart". A name is an identifier, not a title: 0-9, _ and a-z only, at most 60 characters (longer ones are cut and tagged with a ~ plus a short hash), and the file is named <time>-<name>-<content hash>.<chart kind>.svg (e.g. .bar.svg) under .oks/figures/.' },
           category: { type: 'string', description: 'The precise kind of report, as a short noun phrase the reader recognizes — 周报 / 月报 / 即时分析 / 复盘 and the like. It is the text next to the type icon in the artifacts list, so keep it to a few characters; omit it for a one-off analysis and it defaults to 即时分析.' },
           note: { type: 'string', description: 'Optional short note carried in the receipt — your own narration, kept apart from the system source label.' },
@@ -1924,8 +1991,38 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       },
     },
     {
+      name: 'oks_report_check',
+      description: 'Check the report body you are about to hand to oks_report, and get every problem back with a line and a column. The body is a strict XML subset: a single <article> root, only the elements and attributes the report tool lists, empty elements written self-closed (<br />), XML comments for the intent of a section (no "--" inside), and data references as <figure data-oks-ref="…"> / <span data-oks-ref="…" data-oks-pick=".path">, with data-oks-shrink marking your own commentary. Nothing is written to the workspace: use it to fix the body before rendering.',
+      parameters: {
+        type: 'object',
+        properties: {
+          src: { type: 'string', description: 'The .work/ file holding the <article> … </article> body — the same path you will hand to oks_report as spec.articleFile.' },
+        },
+        required: ['src'],
+        additionalProperties: false,
+      },
+      output: { schema: OBJECT_OUTPUT, render: renderValue },
+      async execute(args: unknown, exec: ToolExec) {
+        const entry = knowledge.ensureWorkspace(exec);
+        const src = (args as { src?: unknown } | undefined)?.src;
+        if (typeof src !== 'string' || src.trim() === '') {
+          throw new Error('oks_report_check 需要 src：先用 work_write 把正文写成 .work/ 下的文件，再把它的名字给过来。');
+        }
+        const checked = checkAuthorXhtml(readWorkText(entry.settings.workspaceRoot, src, 'oks_report_check').text);
+        const refs = [...new Set(checked.refs)];
+        log(`[oks] report check · ${checked.errors.length} 条错误 · 引用 ${refs.length} 个`);
+        return {
+          ok: true as const,
+          valid: checked.errors.length === 0,
+          errors: checked.errors,
+          refs,
+          commentCount: checked.comments.length,
+        };
+      },
+    },
+    {
       name: 'oks_report',
-      description: 'Assemble a self-contained HTML report from a markdown body. The markdown is parsed with a restricted subset — headings, paragraphs, lists, tables, bold/italic/inline code, links, blockquotes, rules, images and fenced code blocks — and embedded HTML is escaped rather than interpreted. Figures come in one way only: reference a figure you have already drawn, on a line of its own, as ![caption](.oks/figures/<file>.<chart kind>.svg) — the report reads that SVG back and inlines it, so the single file opens anywhere with no external assets. Hand the result to the user with the present tool — an HTML report does not render in the reply body itself.',
+      description: 'Assemble a self-contained HTML report from an XHTML body. The body is a strict XML subset: one <article> root; the elements are article, section, h1-h3, p, div, span, figure, figcaption, table, caption, thead, tbody, tfoot, tr, th, td, ul, ol, li, blockquote, pre, code, strong, em, a, br, hr; the attributes are id, class, title, lang, data-oks-ref, data-oks-pick, data-oks-shrink, href, colspan, rowspan, scope; empty elements are written self-closed (<br />); and XML comments carry what a section is meant to answer (no "--" inside them). Data comes in by reference only: <figure data-oks-ref="key"> places a figure or table you already produced, <span data-oks-ref="key" data-oks-pick=".path"> fills in one scalar, and every key must be declared in spec.inputs as {"src": "<dataSrc from a receipt>", "root": ".data"}. Everything else is prose you write; mark your own commentary with data-oks-shrink so a later reader gets the reasoning without the conclusions. The tool builds the metadata region itself (source chains, display values, jq sources), numbers figures and tables in body order, inlines each display file, and writes one self-contained HTML. Check the body with oks_report_check first; hand the result to the user with the present tool — an HTML report does not render in the reply body itself.',
       parameters: {
         type: 'object',
         properties: {
@@ -1935,12 +2032,17 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             properties: {
               title: { type: 'string', description: 'Report title.' },
               subtitle: { type: 'string', description: 'Optional subtitle — usually the time window the report covers.' },
-              markdown: {
+              articleFile: {
                 type: 'string',
-                description: 'The report body in markdown. Use ## for sections (they become the table of contents). A figure comes in one way only: draw it first with oks_chart, then put the line that receipt gave you on a line of its own — ![caption](.oks/figures/<file>.<chart kind>.svg). The report reads that SVG back and inlines it, so the file stays single and self-contained; either .oks/figures/<file>.<chart kind>.svg or <file>.<chart kind>.svg is accepted (the figure itself lives in .oks/figures/), nothing else is. Figure numbers are assigned in the order the references appear. Other fenced blocks are rendered as plain code.',
+                description: 'The .work/ file holding the <article> … </article> body — write it with work_write first, edit it with work_edit, check it with oks_report_check, then hand its name here. Prose is yours; data enters by reference — <figure data-oks-ref="key"> for a figure or table you already drew, <span data-oks-ref="key" data-oks-pick=".path"> for one scalar. Write XML comments for what each section is meant to answer, and mark your own commentary with data-oks-shrink.',
+              },
+              inputs: {
+                type: 'object',
+                description: 'What each data-oks-ref key points at: {"key": {"src": "<dataSrc from a receipt>", "root": ".data"}}. A key may be the bare src string when root is the default .data. Every key the body references must be declared here, and every key declared here must be referenced by the body.',
+                additionalProperties: { oneOf: [{ type: 'string' }, { type: 'object', properties: { src: { type: 'string' }, root: { type: 'string' } }, required: ['src'], additionalProperties: false }] },
               },
             },
-            required: ['title', 'markdown'],
+            required: ['title', 'articleFile'],
             additionalProperties: false,
           },
           name: { type: 'string', description: 'Optional name for the saved HTML; defaults to "report". A name is an identifier, not a title: 0-9, _ and a-z only, at most 60 characters, and the file is named <time>-<name>-<content hash>.report.html.' },
@@ -1956,77 +2058,86 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         const parsed = parseReportSpec(args?.spec);
         if ('error' in parsed) throw new Error(parsed.error);
         const note = typeof args?.note === 'string' ? args.note : null;
-        let figureCount = 0;
-        let tableCount = 0;
-        const html = renderReportHtml({
+        // 读绑定：每一份材料走与 jq 输入同一条路（路径校验、点路径选取都在那一层）。
+        const bindings: Record<string, ReportBinding> = {};
+        for (const [key, binding] of Object.entries(parsed.spec.inputs)) {
+          // 展示件两种写法都认：带材料目录前缀，或只给文件名（它就在那个目录里）——与旧正文一致。
+          const isDisplay = binding.src.endsWith('.svg') || binding.src.endsWith('.table.md');
+          const src = isDisplay && !binding.src.startsWith(`${FIGURE_DIR}/`)
+            ? `${FIGURE_DIR}/${binding.src}`
+            : binding.src;
+          const where = `spec.inputs.${key}（${src}）`;
+          const parsedPath = parsePath(binding.root, `${where} 的 root`);
+          if ('error' in parsedPath) throw new Error(parsedPath.error);
+          const read = readDocument(entry.settings.workspaceRoot, src);
+          const picked = selectPath(read.document, parsedPath.path, `${where} 里`);
+          if ('error' in picked) throw new Error(picked.error);
+          // 展示件：图给 SVG 正文、表给 markdown 正文（内联时图会剥掉它自己的材料块）；
+          // 其余材料只作数据引用。
+          let display: ReportBinding['display'];
+          if (isDisplay) {
+            const resolved = resolveReportDisplay(entry.settings.workspaceRoot, src);
+            if ('error' in resolved) throw new Error(resolved.error);
+            display = resolved.source.kind === 'chart'
+              ? { kind: 'chart', content: resolved.source.svg }
+              : { kind: 'table', content: resolved.source.markdown };
+          }
+          bindings[key] = {
+            src,
+            root: parsedPath.text,
+            value: picked.value,
+            origin: read.origin,
+            ...(display === undefined ? {} : { display }),
+          };
+        }
+        const category = typeof args?.category === 'string' && args.category.trim() !== ''
+          ? args.category.trim()
+          : '即时分析';
+        const name = typeof args?.name === 'string' && args.name.length > 0 ? args.name : 'report';
+        const at = resultStamp();
+        const assembledReport = assembleReport({
+          name,
           title: parsed.spec.title,
           subtitle: parsed.spec.subtitle,
-          generatedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
-          markdown: parsed.spec.markdown,
-          display: (href) => resolveReportDisplay(entry.settings.workspaceRoot, href),
-          // 展示项的来源链在正文渲染完之后合并：每个展示项的原链都整份带过来，
-          // 共享祖先按记录身份只留一个节点，节点引用在这个文件内闭合。
-          provenanceBlock: (placed, body) => {
-            figureCount = placed.filter((item) => item.kind === 'chart').length;
-            tableCount = placed.filter((item) => item.kind === 'table').length;
-            const records: ReportData['items'] = placed.map((item) => ({
-              kind: item.kind,
-              no: item.no,
-              caption: item.caption,
-              root: item.origin.root,
-              spec: item.spec,
-              data: item.data,
-            }));
-            // 章节骨架从渲染出的正文里取：哪张图在哪一章下，只有正文的顺序能回答。
-            const structure = reportChapters(body, reportItems(records));
-            // 报告自己也是一个操作：根指向"组装这份报告"，inputs 是各展示项的根。
-            const assembled = appendNode(placed.map((item) => item.origin), {
-              kind: 'report',
-              inputs: Object.fromEntries(placed.map((item) => [
-                `${item.kind === 'table' ? '表' : '图'} ${item.no}`,
-                item.origin.root,
-              ])),
-            }, records.map((record) => ({
-              ref: `${record.kind === 'table' ? '表' : '图'} ${record.no}`,
-              root: record.root,
-            })));
-            const data: ReportData = {
-              chapters: structure.chapters.map((chapter) => ({
-                caption: chapter.caption,
-                level: chapter.level,
-                figures: chapter.items
-                  .filter((item) => item.kind === 'chart')
-                  .map((item) => ({ ref: item.label, kind: chartKindOf(item.spec), caption: item.caption })),
-                tables: chapter.items
-                  .filter((item) => item.kind === 'table')
-                  .map((item) => ({ ref: item.label, caption: item.caption })),
-              })),
-              plainTables: structure.plainTables,
-              items: records,
-            };
-            const bytes = Buffer.byteLength(JSON.stringify({ origin: assembled, data }));
-            if (bytes > REPORT_PROVENANCE_MAX_BYTES) {
-              throw new Error(`报表要带的来源材料 ${(bytes / 1024 / 1024).toFixed(1)} MB，超过上限 `
-                + `${REPORT_PROVENANCE_MAX_BYTES / 1024 / 1024} MB：先缩小展示数据（聚合或投影），再出报表。`);
-            }
-            return provenanceBlockHtml({ origin: assembled, data });
+          category,
+          at,
+          xhtml: readWorkText(entry.settings.workspaceRoot, parsed.spec.articleFile, 'oks_report').text,
+          bindings,
+          valueOf: (ref, pick) => {
+            const binding = bindings[ref];
+            if (binding === undefined) return { error: `正文引用了没有绑定的项：${ref}` };
+            if (pick === undefined || pick === '.') return scalarText(binding.value, ref);
+            const parsedPick = parsePath(pick, `data-oks-ref="${ref}" 的 data-oks-pick`);
+            if ('error' in parsedPick) return { error: parsedPick.error };
+            const selected = selectPath({ item: binding.value }, ['item', ...parsedPick.path], `引用 ${ref} 的取值`);
+            return 'error' in selected
+              ? { error: selected.error }
+              : scalarText(selected.value, `${ref}${pick}`);
           },
         });
+        if ('error' in assembledReport) throw new Error(assembledReport.error);
         const saved = saveAndRecord(entry, {
-          name: typeof args?.name === 'string' && args.name.length > 0 ? args.name : 'report',
-          content: html,
+          name,
+          content: assembledReport.page,
+          // 页面里已经嵌好自述（写入自校验时就在里面了），保存这一层不再插一次。
+          contentHasMeta: true,
+          at,
           extension: '.html',
           kind: 'report',
-          // 报告没有单一来源可写：叙述是 agent 写的，图逐张自证（见渲染层那句注释）。
           title: parsed.spec.title,
-          // 大类是"报表"（用图标呈现），这一项是更精确的分类：agent 没给就按"即时分析"。
-          category: typeof args?.category === 'string' && args.category.trim() !== ''
-            ? args.category.trim()
-            : '即时分析',
+          category,
         });
         const markdown = `[${parsed.spec.title}](${saved.src})`;
-        // 来源在报表级：展示项清单与合并后的节点表都在页面里的来源结构里，回执只报件数。
-        return { ok: true, htmlSrc: saved.src, markdown, at: saved.at, note, figureCount, tableCount };
+        // 来源在报表级：来源链、展示项与源码资源都在页面的元数据区里，回执只报件数。
+        return {
+          ok: true,
+          htmlSrc: saved.src,
+          markdown,
+          at: saved.at,
+          note,
+          figureCount: assembledReport.figureCount,
+          tableCount: assembledReport.tableCount,
+        };
       },
     },
     {
@@ -2155,6 +2266,17 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       args?.new_string, args?.replace_all, 'work_edit');
         log(`[oks] work_edit ${saved.file} · 替换 ${saved.replaced} 处 · ${(saved.bytes / 1024).toFixed(1)} KB`);
         return { ok: true as const, ...saved };
+      },
+    },
+    {
+      name: 'work_list',
+      description: `List the files in ${WORK_DIR}/ — name, size and when each was last written. Everything the work area holds lives here: the jq programs byFile runs, the report body you hand to oks_report as articleFile, and any other scratch file. Use it when a name is in doubt, or before deleting something.`,
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      output: { schema: OBJECT_OUTPUT, render: renderValue },
+      async execute(_args: unknown, exec: ToolExec) {
+        const entry = knowledge.ensureWorkspace(exec);
+        const files = listWorkFiles(entry.settings.workspaceRoot);
+        return { ok: true as const, files, count: files.length };
       },
     },
     {
