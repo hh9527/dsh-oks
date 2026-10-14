@@ -136,7 +136,9 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
     webCtx.effect(() => webServer.register({
       kind: 'exact', path: DOWNLOAD_ENDPOINT, handler: createDownloadEndpoint(deps),
     }));
-    log(`[oks] 面板端点已开：${ARTIFACTS_ENDPOINT} · ${PIN_ENDPOINT} · ${DELETE_ENDPOINT} · ${DOWNLOAD_ENDPOINT}`);
+    // 会话兜底用没用上是"重启后页签是否还会空"的关键，装好后第一行就该看见它。
+    log(`[oks] 面板端点已开：${ARTIFACTS_ENDPOINT} · ${PIN_ENDPOINT} · ${DELETE_ENDPOINT} · ${DOWNLOAD_ENDPOINT}`
+      + `（会话兜底：${sessionQuery === undefined ? '不可用' : '可用'}）`);
   });
 
   ctx.effect(() => knowledge.dispose);
