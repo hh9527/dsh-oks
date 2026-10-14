@@ -3373,6 +3373,35 @@ console.log('=== 界面那两条端点 ===');
     return { status, body: parsed, text, headers };
   };
 
+  // 会话 → 工作区的解析：活会话表只认识**本进程起来之后**创建的会话，而页签可能在看重启前
+  // 那个会话（现场就是"刷新一下就好了"）。所以落空时要读磁盘上的会话头。
+  {
+    const { sessionRootResolver } = await import('./src/endpoint.ts');
+    let persistedReads = 0;
+    const resolver = sessionRootResolver(
+      { get: (id: string) => (id === 'live' ? { header: { cwd: '/w/live' } } : undefined) },
+      {
+        readSession: async (id: string) => {
+          persistedReads += 1;
+          if (id === 'from-log') return { header: { cwd: '/w/from-log' } };
+          throw new Error('没有这个会话');
+        },
+      },
+    );
+    ok('活会话表里有时直接用它的工作区', await resolver('live') === '/w/live');
+    ok('活会话表落空时读磁盘上的会话头（重启后旧会话靠这条）',
+      await resolver('from-log') === '/w/from-log' && persistedReads === 1);
+    ok('解析过的记在内存里：同一次运行里不反复读日志',
+      await resolver('from-log') === '/w/from-log' && persistedReads === 1);
+    let bothMissed = '';
+    try { await resolver('nope'); } catch (cause) { bothMissed = String((cause as Error).message); }
+    ok('两条路都落空才报错（带上会话 id，不猜一个工作区出来）', /找不到会话 nope/.test(bothMissed));
+    const liveOnly = sessionRootResolver({ get: () => undefined }, undefined);
+    let noFallback = '';
+    try { await liveOnly('x'); } catch (cause) { noFallback = String((cause as Error).message); }
+    ok('没有 sessionQuery 的部署里，行为与从前一样（回 400，不炸）', /找不到会话 x/.test(noFallback));
+  }
+
   const first = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
   const value = first.body.value as { keepAliveMinutes: number; entries: { file: string; pinned: boolean }[] } | undefined;
   ok('GET 清单：回执是 { ok, value }', first.status === 200 && first.body.ok === true && Array.isArray(value?.entries));

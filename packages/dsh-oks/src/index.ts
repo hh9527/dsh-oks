@@ -73,7 +73,8 @@ import { createTimeContext } from './time-context.ts';
 import { createTools } from './tools.ts';
 import { createVaRuntime } from './va.ts';
 import { ARTIFACTS_ENDPOINT, createArtifactsEndpoint, createDeleteEndpoint, createDownloadEndpoint,
-  createPinEndpoint, DELETE_ENDPOINT, DOWNLOAD_ENDPOINT, PIN_ENDPOINT } from './endpoint.ts';
+  createPinEndpoint, DELETE_ENDPOINT, DOWNLOAD_ENDPOINT, PIN_ENDPOINT, sessionRootResolver } from './endpoint.ts';
+import type { LiveSessionsLike, PersistedSessionsLike } from './endpoint.ts';
 import { deleteArtifact, pinBySrc } from './state.ts';
 
 // 界面那条机械通道的两条路径（页签与插件约定同一对常量）。
@@ -112,16 +113,14 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
   ctx.inject?.(['webServer'], (webCtx) => {
     const webServer = webCtx.get('webServer');
     if (webServer === undefined) return;
-    const sessions = webCtx.get('sessions');
+    const sessions = webCtx.get('sessions') as LiveSessionsLike | undefined;
+    // 活会话不够用：进程起来之前创建的会话不在 `ctx.sessions` 里，而页签可能正看着它们
+    // （重启服务、或页面一直开着而服务重启过，都是这个情形）。`ctx.sessionQuery` 能读磁盘上的
+    // 会话头，于是这条路由得住——"刷新一下就好了"不该是必须的动作。
+    const sessionQuery = webCtx.get('sessionQuery') as PersistedSessionsLike | undefined;
     const deps = {
       log,
-      rootFor: (sessionId: string) => {
-        const cwd = sessions?.get(sessionId)?.header?.cwd;
-        if (typeof cwd !== 'string' || cwd.length === 0) {
-          throw new Error(`找不到会话 ${sessionId} 的工作区目录`);
-        }
-        return cwd;
-      },
+      rootFor: sessionRootResolver(sessions, sessionQuery),
       pin: pinBySrc,
       remove: deleteArtifact,
     };

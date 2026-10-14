@@ -51,8 +51,10 @@ function reportFile(file: string): boolean {
 
 
 export interface PanelDeps {
-  /** 会话 → 工作区根；取不到就抛，端点回 400（不猜一个工作区出来）。 */
-  rootFor(sessionId: string): string;
+  /** 会话 → 工作区根；取不到就抛，端点回 400（不猜一个工作区出来）。
+   *  可以是异步的：**活的会话注册表只认识本进程起来之后创建的会话**，而页签可能在看重启之前
+   *  那个会话——那时要去读磁盘上的会话头（见 `sessionRootResolver`）。 */
+  rootFor(sessionId: string): string | Promise<string>;
   /** 记一行（可选）：清单里移除了行时说明一下，事后能自证。 */
   log?(message: string): void;
   /** 落状态：与 `oks_pin` / `oks_unpin` 走的是同一个函数。 */
@@ -98,7 +100,7 @@ export function createArtifactsEndpoint(deps: PanelDeps): PanelHandler {
       return;
     }
     try {
-      const root = deps.rootFor(sessionId);
+      const root = await deps.rootFor(sessionId);
       const state = openState(root);
       try {
         // 读路径以账本为准，只做一件事：**补登**目录里有、账本上没有的可读产物（只加不删）。
@@ -121,6 +123,50 @@ export function createArtifactsEndpoint(deps: PanelDeps): PanelHandler {
     } catch (cause) {
       reply(res, 400, { ok: false, message: String((cause as Error)?.message ?? cause) });
     }
+  };
+}
+
+/** 会话 → 工作区根的解析器（端点用）。两条路，按顺序试：
+ *   1. **活的会话注册表**（`ctx.sessions`）：本进程当前握着的会话，最快；
+ *   2. **磁盘上的会话头**（`ctx.sessionQuery.readSession`）：本进程起来之前创建的会话——
+ *      宿主为了打开文件/资源本来就能解析它们，而页签看重启前那个会话时，路 1 一定落空。
+ *      没有这条兜底，"重启服务 → 页签什么也不显示"就是必然而不是偶然。
+ *  解析出来的映射在内存里记住（一个会话的工作区不会变），于是轮询不会反复读日志。
+ *  两条路都落空才抛——让端点回 400 并带上会话 id，而不是猜一个工作区出来。 */
+export interface LiveSessionsLike {
+  get?(sessionId: string): { header?: { cwd?: unknown } } | undefined;
+}
+export interface PersistedSessionsLike {
+  readSession?(sessionId: string): Promise<{ header?: { cwd?: unknown } }>;
+}
+
+const cwdOf = (value: unknown): string | undefined =>
+  (typeof value === 'string' && value.length > 0 ? value : undefined);
+
+export function sessionRootResolver(
+  sessions: LiveSessionsLike | undefined,
+  persisted: PersistedSessionsLike | undefined,
+): (sessionId: string) => Promise<string> {
+  const known = new Map<string, string>();
+  return async (sessionId: string): Promise<string> => {
+    const cached = known.get(sessionId);
+    if (cached !== undefined) return cached;
+    const live = cwdOf(sessions?.get?.(sessionId)?.header?.cwd);
+    if (live !== undefined) {
+      known.set(sessionId, live);
+      return live;
+    }
+    try {
+      const snapshot = await persisted?.readSession?.(sessionId);
+      const fromLog = cwdOf(snapshot?.header?.cwd);
+      if (fromLog !== undefined) {
+        known.set(sessionId, fromLog);
+        return fromLog;
+      }
+    } catch {
+      // 落到底下那句错误：会话不存在（或读不出来）与"没有这条兜底"对外是同一种情形。
+    }
+    throw new Error(`找不到会话 ${sessionId} 的工作区目录`);
   };
 }
 
@@ -152,7 +198,7 @@ export function createDeleteEndpoint(deps: PanelDeps): PanelHandler {
       return;
     }
     try {
-      const result = deps.remove(deps.rootFor(sessionId), src);
+      const result = deps.remove(await deps.rootFor(sessionId), src);
       deps.log?.(`[oks] 删除产物 ${result.file}`);
       reply(res, 200, { ok: true, value: { file: result.file } });
     } catch (cause) {
@@ -186,7 +232,7 @@ export function createDownloadEndpoint(deps: PanelDeps): PanelHandler {
       return;
     }
     try {
-      const target = join(deps.rootFor(sessionId), ARTIFACT_DIR, file);
+      const target = join(await deps.rootFor(sessionId), ARTIFACT_DIR, file);
       if (!existsSync(target)) {
         reply(res, 404, { ok: false, message: `没有这份报表：${file}` });
         return;
@@ -238,7 +284,7 @@ export function createPinEndpoint(deps: PanelDeps): PanelHandler {
       return;
     }
     try {
-      const result = deps.pin(deps.rootFor(sessionId), src, pinned);
+      const result = deps.pin(await deps.rootFor(sessionId), src, pinned);
       reply(res, 200, { ok: true, value: { file: result.file, pinned: result.pinned, keepAliveMinutes: KEEP_ALIVE_MINUTES } });
     } catch (cause) {
       reply(res, 400, { ok: false, message: String((cause as Error)?.message ?? cause) });
