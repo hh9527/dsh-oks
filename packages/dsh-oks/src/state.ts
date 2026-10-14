@@ -17,7 +17,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
-import { ARTIFACT_DIR, artifactFileName, CHART_DIR, DATA_DIR, readArtifactMeta, VIEW_DIR, WORK_DIR } from './results.ts';
+import { ARTIFACT_DIR, artifactFileName, DATA_DIR, FIGURE_DIR, readArtifactMeta, WORK_DIR } from './results.ts';
+import { CHART_KINDS } from './chart/shared.ts';
 import type { ArtifactMeta } from './results.ts';
 
 /** 状态目录（相对工作区根）。 */
@@ -27,7 +28,7 @@ export const STATE_DIR = '.oks';
  *  MVP 用固定值；配置项（`oks.json` 的 `data.keepAliveMinutes`）留到需要时再加。 */
 export const KEEP_ALIVE_MINUTES = 60;
 
-/** 内部材料（`.oks/data/`、`.oks/charts/`）的保活窗口：**比报表多 2 分钟**。
+/** 内部材料（`.oks/data/`、`.oks/figures/`）的保活窗口：**比报表多 2 分钟**。
  *  **这只是一个常数差，不构成时序保证**，而且两类用的**不是同一个时钟**：
  *  报表按**文件名里的生成时刻**判龄（见 `pruneArtifacts`），内部材料按**文件 mtime** 判龄。
  *  所以一张早先画好的图晚些被新报表引用时，仍可能比那份报表先过期。材料是可回收的中间件，
@@ -40,8 +41,11 @@ export const VISIBLE = /\.report\.html$/;
 
 /** 我们写的几类产物的名字形状：`<时间>-<名字>[-<内容哈希>].<类别><扩展名>`。
  *  只有认得出的才可能被清理；`~` 是超长名字被截过的记号。 */
-const OURS = /^(\d{8}T\d{6}Z)-[0-9a-z_~]+(?:-[0-9a-f]{8})?\.(query\.json|transform\.json|derived\.json|data\.json|chart\.svg|table\.md|report\.html)$/;
-// `derived.json` 已经不再产生（读产物是就地读的）：留着它只为把早期留下的派生封装按保活回收。
+// "是不是我们的文件"只此一处：材料取短名（qres / tr / def），图按图元（`pie.svg` 等，取自
+//  `CHART_KINDS` 以免加图元时漏一处），表与报表原样（rfc/0007）。老名字不再认。
+const OURS = new RegExp('^(\\d{8}T\\d{6}Z)-[0-9a-z_~]+(?:-[0-9a-f]{8})?\\.('
+  + `qres\\.json|tr\\.json|def\\.json|table\\.md|report\\.html|(?:${CHART_KINDS.join('|')})\\.svg`
+  + ')$');
 
 /** 清单里的一条制品：文件自述 + 只有状态才知道的 pin。 */
 export interface ArtifactEntry {
@@ -292,12 +296,11 @@ export function markCleanup(root: string, kind: 'manual' | 'auto', removed: numb
  *  报表的份数与保留数来自账本（调用方传进来，与清单显示的是同一批行），字节按磁盘现算。 */
 export function usageByKind(root: string, entries: Array<{ file: string; pinned: boolean }>): Usage {
   const data = usageOf(join(root, DATA_DIR), (file) => OURS.test(file));
-  const charts = usageOf(join(root, CHART_DIR), (file) => OURS.test(file));
-  const views = usageOf(join(root, VIEW_DIR), (file) => OURS.test(file));
+  const charts = usageOf(join(root, FIGURE_DIR), (file) => OURS.test(file));
   const reports = usageOf(join(root, ARTIFACT_DIR), (file) => OURS.test(file));
   return {
     data,
-    charts: { files: charts.files + views.files, bytes: charts.bytes + views.bytes },
+    charts,
     work: workUsage(root),
     artifacts: { files: entries.length, bytes: reports.bytes, pinned: entries.filter((e) => e.pinned).length },
   };
@@ -306,7 +309,7 @@ export function usageByKind(root: string, entries: Array<{ file: string; pinned:
 /** 材料还剩几份（只数我们命名的），给回执用。 */
 export function materialCount(root: string): number {
   let count = 0;
-  for (const directory of [DATA_DIR, CHART_DIR, VIEW_DIR]) {
+  for (const directory of [DATA_DIR, FIGURE_DIR]) {
     const base = join(root, directory);
     if (!existsSync(base)) continue;
     count += readdirSync(base).filter((file) => OURS.test(file)).length;
@@ -314,7 +317,7 @@ export function materialCount(root: string): number {
   return count;
 }
 
-/** 清一次材料（`.oks/data` `.oks/charts` `.oks/views`）：删掉超过窗口的、**我们命名的**文件；
+/** 清一次材料（`.oks/data` `.oks/figures`）：删掉超过窗口的、**我们命名的**文件；
  *  别的一概不碰。`minutes` 由调用方给——自动路径来自 `retention.auto.materials`，
  *  显式触发来自 `collect` 的 `ttl` 或 `retention.manual.materials`。
  *  判据是 mtime＝**产生时刻**（读不算使用）。 */
@@ -326,7 +329,7 @@ export function collectMaterials(root: string, minutes: number): {
   let freedBytes = 0;
   let kept = 0;
   let untouched = 0;
-  for (const directory of [DATA_DIR, CHART_DIR, VIEW_DIR]) {
+  for (const directory of [DATA_DIR, FIGURE_DIR]) {
     const base = join(root, directory);
     if (!existsSync(base)) continue;
     for (const file of readdirSync(base)) {
@@ -372,11 +375,11 @@ export function collectWork(root: string, minutes: number): {
   return { removed, freedBytes, kept };
 }
 
-/** 材料（`.oks/data|charts|views` 里我们命名的文件）的文件数与总字节。 */
+/** 材料（`.oks/data|figures` 里我们命名的文件）的文件数与总字节。 */
 export function materialUsage(root: string): { files: number; bytes: number } {
   let files = 0;
   let bytes = 0;
-  for (const directory of [DATA_DIR, CHART_DIR, VIEW_DIR]) {
+  for (const directory of [DATA_DIR, FIGURE_DIR]) {
     const base = join(root, directory);
     if (!existsSync(base)) continue;
     for (const file of readdirSync(base)) {

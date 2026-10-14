@@ -33,10 +33,10 @@ import { isArray, isRecord } from './host.ts';
 import { errorText } from './host.ts';
 import type { DiagnosticEntry, LogFn, ServiceResponse, ToolDefinition, ToolExec, TraceStep } from './host.ts';
 import { intentKey } from './key.ts';
-import { appendNode, ARTIFACT_DIR, chainLines, CHART_DIR, DEFAULT_ROOT, embedChartInput, nameProblem,
+import { appendNode, ARTIFACT_DIR, chainLines, DEFAULT_ROOT, embedChartInput, FIGURE_DIR, nameProblem,
   deleteWorkFile, editWorkFile, listWorkFiles, readArtifact, readCodeFile, readWorkFile, WORK_DIR, writeWorkFile,
   readChartInput, readTableView, rowsOf, saveArtifact, saveInputData,
-  saveResult, saveTableView, saveTransform, VIEW_DIR } from './results.ts';
+  saveResult, saveTableView, saveTransform } from './results.ts';
 import type { ColumnInfo, DataOrigin, Envelope, OriginNode, SaveArtifactOptions } from './results.ts';
 
 
@@ -145,15 +145,16 @@ function observedSource(dataFile: string): Record<string, unknown> {
   return source;
 }
 
-/** 报告里引用的图（`![图注](路径)`）：把工作区 `.oks/charts/` 下已经画好的 SVG 读进来内联。
+/** 报告里引用的图表件（`![图注](路径)`）：把工作区 `.oks/figures/` 下已经画好的图或表读进来内联。
  *
- *  路径两种写法都认——`.oks/charts/x.svg`（相对工作区根，和 src 一样）与 `x.svg`
- *  （相对 `.oks/charts/`：图就住在那里，所以这个解释在人看来同样自然）。
+ *  路径两种写法都认——`.oks/figures/x.pie.svg`（相对工作区根，和 src 一样）与 `x.pie.svg`
+ *  （相对 `.oks/figures/`：图表件就住在那里，所以这个解释在人看来同样自然）。
  *  与其要求 agent 记住"相对谁"，不如让两种都对；两种都经同一套越界校验，安全性不变。
  *  除此之外（`./`、`../`、绝对路径、子目录、http）一概拒绝，报错里给出正确写法。 */
 const resolveReportDisplay = (root: string, href: string): { source: DisplaySource } | { error: string } => {
   const isTable = href.endsWith('.table.md');
-  const directory = isTable ? VIEW_DIR : CHART_DIR;
+  // 图与表同住图表件目录；图的名字里带图元（`x.pie.svg`），表是 `x.table.md`。
+  const directory = FIGURE_DIR;
   const extension = isTable ? '.md' : '.svg';
   const label = isTable ? '表' : '图';
   // 两种写法都认：带材料目录前缀，或只给文件名（材料就在那个目录里）。
@@ -345,7 +346,7 @@ function chartKindOf(spec: unknown): string {
  *  `{ meta, origin, data }`，路径校验仍走 readArtifact（可读目录 + 真实路径复核）。 */
 function readProduct(root: string, src: string): Envelope {
   const extension = src.endsWith('.report.html') ? '.html'
-    : src.endsWith('.chart.svg') ? '.svg'
+    : src.endsWith('.svg') ? '.svg'
       : src.endsWith('.table.md') ? '.md' : '.json';
   let content: string;
   try {
@@ -883,7 +884,7 @@ function columnsOf(data: unknown, rows: readonly Record<string, unknown>[]): str
 function readInputs(root: string, inputs: unknown, tool: string): NamedInput[] {
   if (inputs === undefined || inputs === null) return [];
   if (!isRecord(inputs)) {
-    throw new Error(`${tool} 的 inputs 要写成"名字 → 数据来源"的对象，例如 {"events": ".oks/data/xxx.query.json"}；`
+    throw new Error(`${tool} 的 inputs 要写成"名字 → 数据来源"的对象，例如 {"events": ".oks/data/xxx.qres.json"}；`
       + '每个条目可以是 dataSrc 字符串，也可以是 {"src": "<dataSrc>", "root": ".data.rows"}；没有输入就省略这一项。');
   }
   const entries: NamedInput[] = [];
@@ -1545,11 +1546,11 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'create_data',
-      description: 'Turn data you supply yourself into an envelope in the workspace, so that it can be referenced like any other data: give it a name, say why it exists, and pass the JSON. The tool writes {origin, data} into .oks/data/ as <time>-<name>-<content hash>.data.json, where origin is one node saying this data was given and carrying your motivation. The receipt gives you the dataSrc — a figure takes it as src, a transform takes it as one of its named inputs, and a later step can read it like anything else. Row objects (an array of objects) are what a figure needs; nested objects, arrays and scalars are fine too. Use this only for data that comes from outside the workspace (a handful of values from the user, a threshold table, rows copied from somewhere); anything computed from queried data belongs in jq_transform_into, whose provenance is built from the real inputs.',
+      description: 'Turn data you supply yourself into an envelope in the workspace, so that it can be referenced like any other data: give it a name, say why it exists, and pass the JSON. The tool writes {origin, data} into .oks/data/ as <time>-<name>-<content hash>.def.json, where origin is one node saying this data was given and carrying your motivation. The receipt gives you the dataSrc — a figure takes it as src, a transform takes it as one of its named inputs, and a later step can read it like anything else. Row objects (an array of objects) are what a figure needs; nested objects, arrays and scalars are fine too. Use this only for data that comes from outside the workspace (a handful of values from the user, a threshold table, rows copied from somewhere); anything computed from queried data belongs in jq_transform_into, whose provenance is built from the real inputs.',
       parameters: {
         type: 'object',
         properties: {
-          name: { type: 'string', description: 'Name of the saved data — an identifier, not a title: 0-9, _ and a-z only, at most 60 characters, e.g. threshold_table. The file is named <time>-<name>-<content hash>.data.json under .oks/data/; an existing file is never overwritten.' },
+          name: { type: 'string', description: 'Name of the saved data — an identifier, not a title: 0-9, _ and a-z only, at most 60 characters, e.g. threshold_table. The file is named <time>-<name>-<content hash>.def.json under .oks/data/; an existing file is never overwritten.' },
           motivation: { type: 'string', description: 'Why this data exists and where it came from — one short natural-language sentence. It is recorded on the data\'s own node, and for given data it is the only explanation a reader will have, so it is required.' },
           data: {
             oneOf: [{ type: 'array' }, { type: 'object' }, { type: 'string' }, { type: 'number' }, { type: 'boolean' }],
@@ -1594,7 +1595,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       parameters: {
         type: 'object',
         properties: {
-          inputs: { type: 'object', description: 'Named inputs, {"events": "<src>"} or {"events": {"src": "<src>", "root": ".data.rows"}}: each name becomes a key the program reads, each src is copied verbatim from an earlier receipt (a workspace-relative path under .oks/data/, .oks/charts/, .oks/views/ or artifacts/), and root picks the slice of that file. Omit it when the program needs no input.', additionalProperties: { oneOf: [{ type: 'string' }, { type: 'object', properties: { src: { type: 'string' }, root: { type: 'string' } }, required: ['src'], additionalProperties: false }] } },
+          inputs: { type: 'object', description: 'Named inputs, {"events": "<src>"} or {"events": {"src": "<src>", "root": ".data.rows"}}: each name becomes a key the program reads, each src is copied verbatim from an earlier receipt (a workspace-relative path under .oks/data/, .oks/figures/ or artifacts/), and root picks the slice of that file. Omit it when the program needs no input.', additionalProperties: { oneOf: [{ type: 'string' }, { type: 'object', properties: { src: { type: 'string' }, root: { type: 'string' } }, required: ['src'], additionalProperties: false }] } },
           byFile: { type: 'string', description: 'Which .work/ file holds the program: "analysis.jq" (write it there first with work_write). Its input is one object whose keys are the input names, e.g. a program ".events.rows[] | select(.count > 100)". Leave it out to read the inputs unchanged, and use pick to take one part of that result.' },
           pick: { type: 'string', description: 'A jq dot path into the result, without quotes: ".events" gives one input back under its bare name, ".events.rows" goes deeper. It is for taking a part of the result back, so it stands alone — with byFile given, write that step into the program instead ("| .events").' },
         },
@@ -1643,7 +1644,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       parameters: {
         type: 'object',
         properties: {
-          name: { type: 'string', description: 'Name of the saved result — an identifier, not a title: 0-9, _ and a-z only, at most 60 characters, e.g. events_by_level. The file is named <time>-<name>-<content hash>.transform.json under .oks/data/; an existing file is never overwritten.' },
+          name: { type: 'string', description: 'Name of the saved result — an identifier, not a title: 0-9, _ and a-z only, at most 60 characters, e.g. events_by_level. The file is named <time>-<name>-<content hash>.tr.json under .oks/data/; an existing file is never overwritten.' },
           motivation: { type: 'string', description: 'Why this step is being done — one short natural-language sentence, recorded on this operation\'s node so the numbers can be explained later.' },
           inputs: { type: 'object', description: 'Named inputs, {"events": "<src>"} or {"events": {"src": "<src>", "root": ".data.rows"}}: each name becomes a key the program reads, each src is copied verbatim from an earlier receipt, and root picks the slice of that file. Omit it when the program needs no input (a constant).', additionalProperties: { oneOf: [{ type: 'string' }, { type: 'object', properties: { src: { type: 'string' }, root: { type: 'string' } }, required: ['src'], additionalProperties: false }] } },
           byFile: { type: 'string', description: 'Which .work/ file holds the program: "analysis.jq" (write it there first with work_write). Its input is one object whose keys are the input names, e.g. a program ".events.rows[] | {level, count}". Leave it out to save the inputs object itself, and use pick to take one part of it.' },
@@ -1708,7 +1709,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_view',
-      description: 'Turn saved data into a display piece and write it as a markdown file — a table, for now. Give spec.kind "table" and spec.src (a src copied verbatim from an earlier receipt — any product works, as long as its data are row objects, either an array or under rows). spec.columns picks and orders the columns to show (omit for every column in the order the data has); spec.title is the caption. Numeric columns are right-aligned. The receipt gives you two things: the line ![caption](.oks/views/<file>.table.md) for the markdown of a report, and the same table as ready-to-paste markdown for your reply. Paste the table itself into your reply — the ![caption](...) line belongs in a report body only, because nothing renders a .table.md as an image. The file holds the table plus the source chain of the data it shows, so the report can inline it and still explain where the numbers came from.',
+      description: 'Turn saved data into a display piece and write it as a markdown file — a table, for now. Give spec.kind "table" and spec.src (a src copied verbatim from an earlier receipt — any product works, as long as its data are row objects, either an array or under rows). spec.columns picks and orders the columns to show (omit for every column in the order the data has); spec.title is the caption. Numeric columns are right-aligned. The receipt gives you two things: the line ![caption](.oks/figures/<file>.table.md) for the markdown of a report, and the same table as ready-to-paste markdown for your reply. Paste the table itself into your reply — the ![caption](...) line belongs in a report body only, because nothing renders a .table.md as an image. The file holds the table plus the source chain of the data it shows, so the report can inline it and still explain where the numbers came from.',
       parameters: {
         type: 'object',
         properties: {
@@ -1724,7 +1725,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             required: ['kind', 'src'],
             additionalProperties: false,
           },
-          name: { type: 'string', description: 'Optional name for the saved file; defaults to "table". An identifier: 0-9, _ and a-z only, at most 60 characters. The file is <time>-<name>-<content hash>.table.md under .oks/views/.' },
+          name: { type: 'string', description: 'Optional name for the saved file; defaults to "table". An identifier: 0-9, _ and a-z only, at most 60 characters. The file is <time>-<name>-<content hash>.table.md under .oks/figures/.' },
           note: { type: 'string', description: 'Optional short note carried in the receipt — your own narration.' },
         },
         required: ['spec'],
@@ -1853,7 +1854,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             additionalProperties: false,
           },
           src: { type: 'string', description: 'A src copied verbatim from an earlier receipt — any product whose data are the rows to draw: oks_query returns queried rows ({rows, columns}), jq_transform_into a computed result, create_data rows you supplied yourself, and a figure, table or report can be drawn from again (its data form is {rows, spec} or a report\'s {chapters, items}). Rows cannot be written inline.' },
-          name: { type: 'string', description: 'Optional name for the saved SVG; defaults to "chart". A name is an identifier, not a title: 0-9, _ and a-z only, at most 60 characters (longer ones are cut and tagged with a ~ plus a short hash), and the file is named <time>-<name>-<content hash>.chart.svg.' },
+          name: { type: 'string', description: 'Optional name for the saved SVG; defaults to "chart". A name is an identifier, not a title: 0-9, _ and a-z only, at most 60 characters (longer ones are cut and tagged with a ~ plus a short hash), and the file is named <time>-<name>-<content hash>.<chart kind>.svg (e.g. .bar.svg) under .oks/figures/.' },
           category: { type: 'string', description: 'The precise kind of report, as a short noun phrase the reader recognizes — 周报 / 月报 / 即时分析 / 复盘 and the like. It is the text next to the type icon in the artifacts list, so keep it to a few characters; omit it for a one-off analysis and it defaults to 即时分析.' },
           note: { type: 'string', description: 'Optional short note carried in the receipt — your own narration, kept apart from the system source label.' },
         },
@@ -1898,6 +1899,8 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           content,
           extension: '.svg',
           kind: 'chart',
+          // 文件名写图元本身：`<名>.pie.svg`（账本与来源链仍按语义类别 `chart`，rfc/0007）。
+          fileKind: spec.kind,
           title,
         });
         const alt = title.replace(/[[\]]/g, '');
@@ -1922,7 +1925,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_report',
-      description: 'Assemble a self-contained HTML report from a markdown body. The markdown is parsed with a restricted subset — headings, paragraphs, lists, tables, bold/italic/inline code, links, blockquotes, rules, images and fenced code blocks — and embedded HTML is escaped rather than interpreted. Figures come in one way only: reference a figure you have already drawn, on a line of its own, as ![caption](.oks/charts/<file>.chart.svg) — the report reads that SVG back and inlines it, so the single file opens anywhere with no external assets. Hand the result to the user with the present tool — an HTML report does not render in the reply body itself.',
+      description: 'Assemble a self-contained HTML report from a markdown body. The markdown is parsed with a restricted subset — headings, paragraphs, lists, tables, bold/italic/inline code, links, blockquotes, rules, images and fenced code blocks — and embedded HTML is escaped rather than interpreted. Figures come in one way only: reference a figure you have already drawn, on a line of its own, as ![caption](.oks/figures/<file>.<chart kind>.svg) — the report reads that SVG back and inlines it, so the single file opens anywhere with no external assets. Hand the result to the user with the present tool — an HTML report does not render in the reply body itself.',
       parameters: {
         type: 'object',
         properties: {
@@ -1934,7 +1937,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
               subtitle: { type: 'string', description: 'Optional subtitle — usually the time window the report covers.' },
               markdown: {
                 type: 'string',
-                description: 'The report body in markdown. Use ## for sections (they become the table of contents). A figure comes in one way only: draw it first with oks_chart, then put the line that receipt gave you on a line of its own — ![caption](.oks/charts/<file>.chart.svg). The report reads that SVG back and inlines it, so the file stays single and self-contained; either .oks/charts/<file>.chart.svg or <file>.chart.svg is accepted (the figure itself lives in .oks/charts/), nothing else is. Figure numbers are assigned in the order the references appear. Other fenced blocks are rendered as plain code.',
+                description: 'The report body in markdown. Use ## for sections (they become the table of contents). A figure comes in one way only: draw it first with oks_chart, then put the line that receipt gave you on a line of its own — ![caption](.oks/figures/<file>.<chart kind>.svg). The report reads that SVG back and inlines it, so the file stays single and self-contained; either .oks/figures/<file>.<chart kind>.svg or <file>.<chart kind>.svg is accepted (the figure itself lives in .oks/figures/), nothing else is. Figure numbers are assigned in the order the references appear. Other fenced blocks are rendered as plain code.',
               },
             },
             required: ['title', 'markdown'],

@@ -42,9 +42,12 @@ export function reportItems(raw: ReportData['items']): ReportItemView[] {
 
 /** 一份产物读回来的形态就是文件本身的三段：`{ meta, origin, data }`。
  *  四种产物到这里同形了——读的人不必再分辨它是图、表还是报告。 */
-/** 按扩展名分派：`.report.html` / `.chart.svg` / `.table.md` / 其余当数据封装读。
+/** 按文件名里的**文件类别**分派：`.report.html` 报告、图（`<名>.<图元>.svg`）与 `.table.md` 表各有原生自述，
+ *  其余（`.qres.json` / `.tr.json` / `.def.json` 数据封装）当三段 JSON 读。类别 ↔ 文件的映射由
+ *  `nameParts` / `kindOfFile`（`results.ts`）一处给出。
  *  `content` 由调用方读进来（它负责路径校验与读文件），这一层只管形状。 */
 export function parseArtifactOrigin(src: string, content: string): Envelope | { error: string } {
+  const kind = nameParts(src).kind;
   // 图与报告的自述写在原生元素里（读开头几个字节就够），材料块里只有来源与数据。
   if (src.endsWith('.report.html')) {
     const provenance = readReportProvenance(content);
@@ -55,7 +58,7 @@ export function parseArtifactOrigin(src: string, content: string): Envelope | { 
       data: provenance.data,
     };
   }
-  if (src.endsWith('.chart.svg')) {
+  if (kind === 'chart') {
     const material = readChartInput(content);
     if (material === null) return { error: '这张图里没有来源材料（不是本插件画的？）' };
     return {

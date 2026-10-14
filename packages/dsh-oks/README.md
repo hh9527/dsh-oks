@@ -50,15 +50,15 @@ Node 按 URL 缓存 ESM 模块，所以：
 | `oks_references` | `{key, link?, kind?, skip?}` | 按 key **反向**找引用它的节点：回引用种类与引用方的 key。用来回答"哪个维度用了这套值域""哪个数据集声明了这个度量" |
 | `oks_info` | `{key:"<不透明字符串>"}` | 按 key 读一个知识节点（每次都向服务要，插件不缓存节点）。**入口是 `key:"index"`**（唯一可以凭记忆给出的 key）；之后按返回内容给出的 key 逐级继续——怎么继续、到哪一层，节点自己的说明会回答。key 一律原样传递，**不要构造、切分或解码** |
 | `oks_check_intent` | `{intents:{<名>:Intent}}` | **只校验**：按名字回结论，通过的项给出 `key`（该项 Intent 的标识，提交查询时原样带回）。每个 Intent 必须带顶层 `limit`（1..100）：它是 Intent 的一部分、也参与哈希。不回查询语句，也不碰数据——迭代 Intent 形状时用它 |
-| `oks_query` | `{intents:{<名>:{intent,key}}}` | 核 key 后**只读执行**：每个成功项写进 `<工作区>/.oks/data/<时间>-<名>-<内容哈希>.query.json`，回执只给 `dataSrc`、列信息与行数——**数据行与语句都不进这段对话**（数据按需读回，语句在执行记录与呈现记录里）；失败项按 `key_mismatch` / `rejected` / `query_error` / `save_error` 分别报告 |
-| `jq_transform` | `{inputs?, pick?, byFile?}` | 在具名输入上做**加工**（只看，不落盘）：`inputs` 是「名字 → 数据来源」——条目给 `"<src>"` 就是那份数据本身，给 `{"src": "<src>", "root": ".data.rows"}` 就指明要其中的哪一段（`src` 原样取自前面的回执、限定在工作区可读目录内：`.oks/data/`、`.oks/charts/`、`.oks/views/`、`artifacts/` 都收，图/表/报告的材料块**就地**解析，不落任何中间文件）；程序的作用范围是一个**对象**，键就是那些名字。**代码一律在文件里**：程序写进 `.work/` 下的 `.jq`（`work_write`），参数 `byFile` 只给文件名——jq 语法于是永远不与调用的 JSON 相邻（见下文那条硬规则）；不写程序时结果就是那个「名字 → 那一段」的对象（`{"q": <那一份数据>}`，回执标出等价的恒等程序），要用裸名字读一份数据就写 `pick: ".q"`；
+| `oks_query` | `{intents:{<名>:{intent,key}}}` | 核 key 后**只读执行**：每个成功项写进 `<工作区>/.oks/data/<时间>-<名>-<内容哈希>.qres.json`，回执只给 `dataSrc`、列信息与行数——**数据行与语句都不进这段对话**（数据按需读回，语句在执行记录与呈现记录里）；失败项按 `key_mismatch` / `rejected` / `query_error` / `save_error` 分别报告 |
+| `jq_transform` | `{inputs?, pick?, byFile?}` | 在具名输入上做**加工**（只看，不落盘）：`inputs` 是「名字 → 数据来源」——条目给 `"<src>"` 就是那份数据本身，给 `{"src": "<src>", "root": ".data.rows"}` 就指明要其中的哪一段（`src` 原样取自前面的回执、限定在工作区可读目录内：`.oks/data/`、`.oks/figures/`、`artifacts/` 都收，图/表/报告的材料块**就地**解析，不落任何中间文件）；程序的作用范围是一个**对象**，键就是那些名字。**代码一律在文件里**：程序写进 `.work/` 下的 `.jq`（`work_write`），参数 `byFile` 只给文件名——jq 语法于是永远不与调用的 JSON 相邻（见下文那条硬规则）；不写程序时结果就是那个「名字 → 那一段」的对象（`{"q": <那一份数据>}`，回执标出等价的恒等程序），要用裸名字读一份数据就写 `pick: ".q"`；
   `root` 与 `pick` 是**同一套语法**（jq 点路径：不带引号、只走对象键），`byFile` 是另一种（`.work/` 下的文件名），`pick` 与 `byFile` 二选一。`root` 指出每份输入交出哪一段：默认 `.data`（那份数据本身）——查询结果是 `{rows, columns}`（写 `.q.rows[] \| select(.count > 100)`），加工结果是它产出的值本身，图与表是 `{rows, spec}`，报告是 `{chapters, plainTables, items}`；`.origin` 是来源链 `{root, nodes}`，`.meta` 是自述，`.` 是整份 `{meta, origin, data}`，更深如 `.data.items` 也收。只认点路径，路径不存在时报出该层可用的键。不给 `inputs` 时结果就是 `{}`（常量走程序文件）。结果是一个**值流**：一个输出就是那个值，多个输出是值的数组，零输出是空数组，回执里的 `outputs` 是个数。回执还给出每份输入（含它用的 `root`）与结果的形状，以及完整的值（超上限就报错，绝不截断） |
-| `create_data` | `{name, motivation, data}` | 把 **agent 自己给的数据**落成一份封装（`<工作区>/.oks/data/<时间>-<name>-<内容哈希>.data.json`），于是它可以像查询结果一样被引用：当 `jq_transform` 的具名输入、当 `oks_chart` 的 `src`。`name` 是落点名（`0-9`、`_`、`a-z`，同名不覆盖），`motivation` **必填**——来源链里这个节点只记着"这份数据是给定的"与这句话，给定数据没有别的解释。`data` 是任意 JSON，行对象数组才是图能画的形状。来自数据文件或上游加工的数字不要走这里，走 `oks_query` 与 `jq_transform_into` |
-| `jq_transform_into` | `{name, inputs?, pick?, byFile?, motivation?}` | 同一套求值，**结果物化**成 `<工作区>/.oks/data/<时间>-<name>-<内容哈希>.transform.json`（`name` 是落点名：`0-9`、`_`、`a-z`，同名不覆盖）——回执给 `dataSrc`、形状、输出个数与**完整来源链**（易读视图：输入在前、本次操作在最后），不重复值。`inputs` / `root` / `pick` / `byFile` 的语义与 `jq_transform` 完全一致。来源链由工具组装：本次的程序正文（不写程序时记 `pick` 那段投影）、`motivation`、输出个数与「哪个名字用了哪份输入的根节点」，加上各输入的全部上游；**上游的 `data` 不跟过来**。求值到上限被截断时明确失败、不落盘（残缺的结果不进链） |
+| `create_data` | `{name, motivation, data}` | 把 **agent 自己给的数据**落成一份封装（`<工作区>/.oks/data/<时间>-<name>-<内容哈希>.def.json`），于是它可以像查询结果一样被引用：当 `jq_transform` 的具名输入、当 `oks_chart` 的 `src`。`name` 是落点名（`0-9`、`_`、`a-z`，同名不覆盖），`motivation` **必填**——来源链里这个节点只记着"这份数据是给定的"与这句话，给定数据没有别的解释。`data` 是任意 JSON，行对象数组才是图能画的形状。来自数据文件或上游加工的数字不要走这里，走 `oks_query` 与 `jq_transform_into` |
+| `jq_transform_into` | `{name, inputs?, pick?, byFile?, motivation?}` | 同一套求值，**结果物化**成 `<工作区>/.oks/data/<时间>-<name>-<内容哈希>.tr.json`（`name` 是落点名：`0-9`、`_`、`a-z`，同名不覆盖）——回执给 `dataSrc`、形状、输出个数与**完整来源链**（易读视图：输入在前、本次操作在最后），不重复值。`inputs` / `root` / `pick` / `byFile` 的语义与 `jq_transform` 完全一致。来源链由工具组装：本次的程序正文（不写程序时记 `pick` 那段投影）、`motivation`、输出个数与「哪个名字用了哪份输入的根节点」，加上各输入的全部上游；**上游的 `data` 不跟过来**。求值到上限被截断时明确失败、不落盘（残缺的结果不进链） |
 | `oks_chart` | `{spec, src, name?, note?}` | 把图画成 **SVG 存进工作区**：数据**只从 `src` 来**——那是前面回执里给的一份封装（`oks_query` 的查询结果、`jq_transform_into` 的加工结果、`create_data` 的输入数据），行不内联进调用。图不再画"来源标识"这类标签（标签说不清：同一份数据经过几层加工就归不到一个入口了），要说来源就看随图带走的来源链。图把**自己用的那份材料**（画出来的行、实际绘图规格、完整来源链）嵌在 SVG 里，所以工作区被回收之后它仍旧说得清这些数字从哪来。十种图元都用 `x`（类别/横轴列）与 `value`（数值列）作底（`histogram` 只给 `value`）：**分组柱** `column`，可选 `series`（组内分组）；**横条** `bar`（可选 `series`：横向的分组条）；**饼图** `pie`（只取正数）；**多序列折线** `line`、**面积图** `area`（可选 `series`，`xType` 不填按数据推断）；**散点** `scatter`（可选 `size` 当第三维）；**直方图** `histogram`（可选 `bins`）；**箱线图** `box`；**矩阵** `heatmap` 与**雷达** `radar`（两者都要 `series`：矩阵的纵轴类别 / 雷达的被比较对象）。要看明细表，直接在回答里写 markdown 表格。回执给出一行 `![标题](路径)`，agent 把它放进回答，图就显示在那里 |
-| `oks_view` | `{spec:{kind,src,title?,columns?}, name?, note?}` | 把数据变成**展示件**并落成 markdown 文件，先支持表格（`kind:"table"`）：`src` 是要展示的那份封装（行对象数组），`columns` 选列与顺序，`title` 是表注；数字列右对齐。回执给两份——`![表注](.oks/views/<文件>.table.md)`（**只放进报告正文**）与可直接粘进回答的 markdown 表本体（表太大时不给本体，只给引用）。文件是 markdown，打开就是张表；来源链、最终数据与展示规格藏在文件头的一行 HTML 注释里，报表内联时读它 |
-| `oks_report` | `{spec, name?, note?}` | 把叙述与图组织成一份**自足的 HTML 报告**存进工作区：`spec` 给 `title`、可选 `subtitle` 与一段 **markdown 正文**。正文用 `##` 分章节（成为目录），支持列表、表格、加粗、行内代码、引用、分隔线与换行（`<br>` / 行尾两空格 / 行尾 `\`），**除 `<br>` 外的 HTML 会转义**；**图写在它该出现的位置，只有一种写法：先画再引**——用 `oks_chart` 画出来（回执给的就是那一行），再把 `![图注](.oks/charts/<文件>.chart.svg)` **独占一行**放进正文；报告把那份 SVG 读进来**内联**（路径写 `.oks/charts/x.chart.svg` 或 `x.chart.svg` 都认），图注编号按出现顺序由系统给；
-  **表同理**：把 `oks_view` 回执里的 `![表注](.oks/views/<文件>.table.md)` 独占一行放进正文，报告把它渲染成真 `<table>` 并给「表 N」。
+| `oks_view` | `{spec:{kind,src,title?,columns?}, name?, note?}` | 把数据变成**展示件**并落成 markdown 文件，先支持表格（`kind:"table"`）：`src` 是要展示的那份封装（行对象数组），`columns` 选列与顺序，`title` 是表注；数字列右对齐。回执给两份——`![表注](.oks/figures/<文件>.table.md)`（**只放进报告正文**）与可直接粘进回答的 markdown 表本体（表太大时不给本体，只给引用）。文件是 markdown，打开就是张表；来源链、最终数据与展示规格藏在文件头的一行 HTML 注释里，报表内联时读它 |
+| `oks_report` | `{spec, name?, note?}` | 把叙述与图组织成一份**自足的 HTML 报告**存进工作区：`spec` 给 `title`、可选 `subtitle` 与一段 **markdown 正文**。正文用 `##` 分章节（成为目录），支持列表、表格、加粗、行内代码、引用、分隔线与换行（`<br>` / 行尾两空格 / 行尾 `\`），**除 `<br>` 外的 HTML 会转义**；**图写在它该出现的位置，只有一种写法：先画再引**——用 `oks_chart` 画出来（回执给的就是那一行），再把 `![图注](.oks/figures/<文件>.<图元>.svg)` **独占一行**放进正文；报告把那份 SVG 读进来**内联**（路径写 `.oks/figures/x.bar.svg` 或 `x.bar.svg` 都认），图注编号按出现顺序由系统给；
+  **表同理**：把 `oks_view` 回执里的 `![表注](.oks/figures/<文件>.table.md)` 独占一行放进正文，报告把它渲染成真 `<table>` 并给「表 N」。
   每个展示项（图或表）的**最终展示数据、展示规格与完整来源链**都并进页面里的一份报表级结构
   （`<script type="application/json" id="dsh-oks-provenance">` = `{ origin, data }`：`origin` 是所有展示项的
   节点合成的一张表（共享祖先只存一份）+ 一个"组装这份报告"的根节点，`data` 是 `{ chapters, plainTables, items }`
@@ -119,11 +119,11 @@ key 模式，以及 `vocabulary`（哪些 kind 进词汇表、每类词条的归
   （执行器只用同一个数字做保险，不再另加 `queryMaxRows` 截断）。数据行都进了结果文件，所以
   模型可见文本天然远在宿主 tool-result pruner 的阈值（8192 字符）之下。
 - **结果落盘**：每个成功项写一个 JSON 文件到 `<工作区>/.oks/data/`，文件名
-  `<时间>-<名>-<内容哈希>.query.json`（`<时间>` 是这次保存的 UTC 时刻、到秒；
+  `<时间>-<名>-<内容哈希>.qres.json`（`<时间>` 是这次保存的 UTC 时刻、到秒；
   `<内容哈希>` 是文件内容 sha256 的前 8 位）。独占创建，同名的只可能是同一份内容
   （哈希相同即去重，内容不同则报错）；写失败会清掉不完整的文件。加工结果同一套规则，
-  落点类别是 `.transform.json`；`create_data` 给的输入数据写 `.data.json`。按需取数由 `jq_transform` 负责——每个 `dataSrc` 限定在
-  可读目录（`.oks/data/`、`.oks/charts/`、`.oks/views/`、`artifacts/`）内，并检查真实路径不越界。
+  落点类别是 `.tr.json`；`create_data` 给的输入数据写 `.def.json`。按需取数由 `jq_transform` 负责——每个 `dataSrc` 限定在
+  可读目录（`.oks/data/`、`.oks/figures/`、`artifacts/`）内，并检查真实路径不越界。
 - **代码区 `.work/`**：jq 程序放在 `<工作区>/.work/`，参数 `byFile` 给文件名（`byFile: "分析.jq"`）；不写程序时结果就是「名字 → 那一段」的对象，再用 `pick: ".名字"` 把它取回来；
   写、读、改、删由本插件自己的四个工具负责——`work_write` / `work_read` / `work_edit` / `work_delete`，**只作用在
   `.work/` 内**。为什么不用宿主的 `read` / `write` / `edit`：那三个工具的沙箱根是**整个工作区**
@@ -154,8 +154,7 @@ key 模式，以及 `vocabulary`（哪些 kind 进词汇表、每类词条的归
   表、报告——图与表的材料块、报告的骨架与展示数据都在读的那一刻从文件里解析出来，每个条目再用它自己的
   `root` 选一段（`.data` / `.origin` / `.meta` / `.`）。于是既没有中间文件要维护，也没有专门的读接口：
   报告的结构读 `root ".data.chapters"` / `".data.items"`，来源链读 `root ".origin"`，
-  "这一项背后的查询与那段程序"就是 `.origin.nodes` 上的一次投影。早期版本留下的
-  `.derived.json` 不再产生（旧文件按保活回收）。
+  "这一项背后的查询与那段程序"就是 `.origin.nodes` 上的一次投影。
 - **硬规则：内层语言不与外层 JSON 相邻**。工具调用的参数是 JSON，而 jq 的 `{a: .b}` 与 JSON 的
   `{a: .b}` 几乎一样——实测里 13 次整轮失败（`MALFORMED_RESPONSE`）中有 3 次正是模型把 jq 的对象构造
   直接写成了 JSON 值。对照之下，`bash` / `write` / `edit` / 报告正文这些"内容在一个字符串值里"的调用
@@ -352,7 +351,7 @@ cd packages/dsh-oks && OKS_WORKSPACE=/path/to/ws node smoke.ts          # 或者
 结果文件里有，且带原始 Intent 与列信息）、**改了 Intent 复用别的 key 会被 `key_mismatch` 拒掉**、
 `queryMaxRows` 触顶时的截断说明、缺 / 坏 `dataFile` 的报错（坏的那份要在回执里写明执行失败）、
 **按需取数**（表达式作用在行数组上、求值器的报错原样带回、缺 `query` 与越界 `src` 的明确报错）、
-**插件只写 `artifacts/` 与 `.oks/`**（`.oks/` 里是状态库与 `data/`、`charts/` 两类内部材料）、自带技能的注册（名字合法、描述非空、正文与 `src/skill.md` 逐字一致、
+**插件只写 `artifacts/` 与 `.oks/`**（`.oks/` 里是状态库与 `data/`、`figures/` 两类内部材料）、自带技能的注册（名字合法、描述非空、正文与 `src/skill.md` 逐字一致、
 正文不含任何具体领域名）、第二个工作区按 `oks.json` 解析相对路径、无 `oks.json` 与**无 `telora.snapshot` 段**
 两种情况下都明确报错，以及模型请求与查询两侧 1 ms 上限下的超时强杀与复活。
 
@@ -371,7 +370,7 @@ cd packages/dsh-oks && OKS_WORKSPACE=/path/to/ws node smoke.ts          # 或者
 - **一种渲染路径**：十种图元（`bar` / `line` / `column` / `pie` / `area` / `scatter` / `histogram` /
   `box` / `heatmap` / `radar`）都由同一份规格渲染——
   `src/chart/option.ts` 把业务字段与结果行翻成 option，`src/chart/echarts.ts` 用它的 SSR 出 SVG。
-  报告（`src/chart/report.ts`）复用同一条链路：正文 markdown 里独占一行的 `![图注](.oks/charts/….chart.svg)`
+  报告（`src/chart/report.ts`）复用同一条链路：正文 markdown 里独占一行的 `![图注](.oks/figures/….<图元>.svg)`
   被读回来、经同一套清理后内联成 SVG——所以报告正文里不带 JSON，图一律"先画后引"。
 - `parameters` 只使用受支持的 JSON Schema 关键字子集：`type` / `oneOf` / `properties` /
   `required` / `additionalProperties` / `items` / `enum` / `const` 加注解关键字；
@@ -440,12 +439,15 @@ cd packages/dsh-oks && OKS_WORKSPACE=/path/to/ws node smoke.ts          # 或者
     `auto` 守 **5 分钟**（它无人值守地自动跑），`manual` 与 `collect` 的 `ttl` 到 **5 秒**
     （这两种都要人/agent 显式触发）。写错的键与非法值当场报错（免得静默用默认值）。
     判据是 mtime＝**产生时刻**，读不算"使用"。
-- 三类产物一套命名：`<时间>-<名>[-<内容哈希>].<类别><扩展名>`
-  ——查询结果是 `.query.json`，图是 `.chart.svg`，报告是 `.report.html`。时间在最前面，`ls` 就是
+- **落点与命名**：统一是 `<时间>-<名>[-<内容哈希>].<类别><扩展名>`。内部材料分两处——
+  `.oks/data/` 放数据封装（查询结果 `.qres.json`、加工结果 `.tr.json`、agent 自填数据 `.def.json`），
+  `.oks/figures/` 放图表件（图 `.<图元>.svg`、表 `.table.md`）；报表 `.report.html` 落在交付目录 `artifacts/`。
+  时间在最前面，`ls` 就是
   时间序；内容哈希等于文件字节的 sha256 前 8 位，所以**同名即同内容**，撞名不需要"加序号"那套补丁
   （查询结果那一段是名字前缀而不是内容哈希，撞名时读出来核一遍再决定是去重还是报错）。
   名字是**标识**而不是标题：只用 `0-9`、`_` 与 `a-z`，超过 60 字符就截成"前 53 + `~` + 6 位哈希"；
-  读取时先按 `artifacts/` 前缀收窄，再用真实路径复核，挡住符号链接逃逸；独占创建、失败清理。
+  读取时先按可读目录（`.oks/data/`、`.oks/figures/`、`artifacts/`）收窄，再用真实路径复核，
+  挡住符号链接逃逸；独占创建、失败清理。
 - 宿主是**进程内 worker**（`node:worker_threads` + 内置 WebAssembly）；当前只支持快照产物，
   产物没有 `telora.snapshot` 段时直接报错。
 - 执行器是**另一个 worker**：`node:sqlite` 同步，只有独立线程才能被超时强杀；

@@ -61,7 +61,7 @@ assert.equal(calls.paneDefinition?.key, 'oks-artifacts', '槽的 key 应当是 t
 assert.ok(calls.effects >= 1, 'apply 没有用 ctx.effect 注册（清理函数会拿不到）');
 
 // —— 5. 清单走插件端点
-const listing = { keepAliveMinutes: 60, entries: [{ file: 'a.chart.svg', kind: 'chart', pinned: false }] };
+const listing = { keepAliveMinutes: 60, entries: [{ file: 'a.bar.svg', kind: 'chart', pinned: false }] };
 const requests = [];
 globalThis.fetch = async (url, init) => {
   requests.push({ url, init });
@@ -104,16 +104,16 @@ globalThis.fetch = async (url, init) => {
   return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, value: { pinned: true } }) };
 };
 const before = requests.length;
-await module.postPin('session-1', 'artifacts/a.chart.svg', true);
+await module.postPin('session-1', 'artifacts/a.bar.svg', true);
 assert.equal(requests.length, before + 1, 'postPin 应当发一次请求');
 const sent = requests[requests.length - 1];
 assert.equal(sent.url, '/oks/pin', '打的是插件开的保留端点');
 assert.equal(sent.init?.method, 'POST');
 assert.deepEqual(JSON.parse(sent.init.body),
-  { sessionId: 'session-1', src: 'artifacts/a.chart.svg', pinned: true }, '请求体要是那三个字段');
+  { sessionId: 'session-1', src: 'artifacts/a.bar.svg', pinned: true }, '请求体要是那三个字段');
 
 globalThis.fetch = async () => ({ ok: false, status: 400, text: async () => JSON.stringify({ ok: false, message: '这份产物没有自述' }) });
-await assert.rejects(() => module.postPin('session-1', 'artifacts/a.chart.svg', true), /没有自述/);
+await assert.rejects(() => module.postPin('session-1', 'artifacts/a.bar.svg', true), /没有自述/);
 
 // —— 6b. 删除也是机械通道：同一个 src 形状，只删未保留的
 globalThis.fetch = async (url, init) => {
@@ -171,10 +171,10 @@ globalThis.fetch = async () => ({ ok: false, status: 400, text: async () => JSON
 await assert.rejects(() => module.postCollect('session-1'), /拿不到这个会话的工作区/);
 
 // —— 7. 点条目：在右栏新开一个页签打开它（地址格式与文件面板一致）
-assert.equal(module.artifactAddress('session-1', 'a.chart.svg'),
-  'dsh-resource://file/session/session-1/artifacts/a.chart.svg', '资源地址的格式要与文件面板一致');
-assert.equal(module.artifactAddress('s/1', 'a b.chart.svg'),
-  'dsh-resource://file/session/s%2F1/artifacts/a%20b.chart.svg', '地址要逐段编码');
+assert.equal(module.artifactAddress('session-1', 'a.bar.svg'),
+  'dsh-resource://file/session/session-1/artifacts/a.bar.svg', '资源地址的格式要与文件面板一致');
+assert.equal(module.artifactAddress('s/1', 'a b.bar.svg'),
+  'dsh-resource://file/session/s%2F1/artifacts/a%20b.bar.svg', '地址要逐段编码');
 
 // apply 里那次注册之后，宿主会调用 openResource；这里只确认它确实被接线到了 ctx.sidebarRight
 const opened = [];
@@ -192,11 +192,11 @@ const usage = {
   data: { files: 1, bytes: 10 }, charts: { files: 2, bytes: 20 }, work: { files: 3, bytes: 30 },
   artifacts: { files: 4, bytes: 40, pinned: 1 }, lastCleanup: null,
 };
-const base = { keepAliveMinutes: 60, usage, entries: [{ file: 'a.chart.svg', kind: 'chart', title: 't', at: 'now', pinned: false }] };
+const base = { keepAliveMinutes: 60, usage, entries: [{ file: 'a.bar.svg', kind: 'chart', title: 't', at: 'now', pinned: false }] };
 assert.equal(module.sameListing(base, JSON.parse(JSON.stringify(base))), true, '同样内容算同一份');
 assert.equal(module.sameListing(null, base), false, '还没有清单时必须更新');
 assert.equal(module.sameListing(base, { ...base, keepAliveMinutes: 30 }), false, '保活窗口变了要更新');
-assert.equal(module.sameListing(base, { ...base, entries: [...base.entries, { ...base.entries[0], file: 'b.chart.svg' }] }), false, '多了一条要更新');
+assert.equal(module.sameListing(base, { ...base, entries: [...base.entries, { ...base.entries[0], file: 'b.bar.svg' }] }), false, '多了一条要更新');
 assert.equal(module.sameListing(base, { ...base, entries: [{ ...base.entries[0], pinned: true }] }), false, '保留状态变了要更新');
 assert.equal(module.sameListing(base, { ...base, entries: [{ ...base.entries[0], title: '改了' }] }), false, '标题变了要更新');
 assert.equal(module.sameListing(base, { ...base, usage: { ...usage, data: { files: 9, bytes: 10 } } }), false,

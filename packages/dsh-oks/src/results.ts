@@ -4,6 +4,7 @@ import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, realpathSyn
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { errorText, isRecord } from './host.ts';
 import { capLine } from './text.ts';
+import { CHART_KINDS } from './chart/shared.ts';
 
 // 查询结果与产物的落盘与读取（见 rfc/0001 的「查询结果保存」，封装与来源链见 rfc/0005）。
 // 一份**文件**是 { meta, origin, data }：meta 说这是什么，origin 是产生这份数据的操作及它的
@@ -19,25 +20,42 @@ import { capLine } from './text.ts';
 /** 结果文件所在的目录（相对工作区根）。 */
 export const ARTIFACT_DIR = 'artifacts';
 
-// 内部材料与交付物分开放（rfc/0005 决策 1）：
-//   - 查询与加工产生的**封装数据** → `.oks/data/`（可回收的内部材料）
-//   - **图** → `.oks/charts/`（报表的组成材料，同样可回收）
+// 内部材料与交付物分开放（rfc/0005 决策 1，命名见 rfc/0007）：
+//   - 查询、加工与自填的**封装数据** → `.oks/data/`（可回收的内部材料）
+//   - **图表件**（图 `<名>.<图元>.svg`、表 `<名>.table.md`）→ `.oks/figures/`（报表的组成材料）
 //   - **报表** → `artifacts/`（交付物：按保活清理，可显式保留）
 export const DATA_DIR = '.oks/data';
-export const CHART_DIR = '.oks/charts';
-/** 其他展示件（表）：同样是报表的组成材料，可回收。 */
-export const VIEW_DIR = '.oks/views';
+export const FIGURE_DIR = '.oks/figures';
 /** agent 的**代码**工作区：jq 程序这类"内容"放这里，工具按引用读——见 readCodeFile。 */
 export const WORK_DIR = '.work';
 
-/** 一类产物落在哪个目录。将来的加工结果（transform）与查询结果同属数据材料。 */
+/** 一类产物落在哪个目录。图与表同住图表件目录；加工结果与查询结果同属数据材料。 */
 export const dirForKind = (kind: ArtifactKind): string =>
-  kind === 'chart' ? CHART_DIR
-    : kind === 'table' ? VIEW_DIR
-      : kind === 'report' ? ARTIFACT_DIR : DATA_DIR;
+  kind === 'chart' || kind === 'table' ? FIGURE_DIR
+    : kind === 'report' ? ARTIFACT_DIR : DATA_DIR;
 
 /** 可以被引用与读取的目录（校验按它来；其余路径一律拒绝）。 */
-export const READABLE_DIRS = [DATA_DIR, CHART_DIR, VIEW_DIR, ARTIFACT_DIR];
+export const READABLE_DIRS = [DATA_DIR, FIGURE_DIR, ARTIFACT_DIR];
+
+/** 落盘时写在名字中间的那个"文件类别"：材料取短名，**图直接写图元**（`pie.svg` 而不是
+ *  `chart.svg`）——文件名自己说清是什么图（rfc/0007）。 */
+export const fileKindOf = (kind: ArtifactKind, chartKind?: string): string => {
+  if (kind === 'query') return 'qres';
+  if (kind === 'transform') return 'tr';
+  if (kind === 'data') return 'def';
+  if (kind === 'chart') return chartKind ?? 'chart';
+  return kind;   // table / report 原样
+};
+
+/** 文件名里的类别 → 语义类别：读路径反过来认（账本、清单与来源链仍按语义类别）。 */
+export const kindOfFile = (fileKind: string): ArtifactKind | undefined => {
+  if (fileKind === 'qres') return 'query';
+  if (fileKind === 'tr') return 'transform';
+  if (fileKind === 'def') return 'data';
+  if (fileKind === 'table') return 'table';
+  if (fileKind === 'report') return 'report';
+  return (CHART_KINDS as readonly string[]).includes(fileKind) ? 'chart' : undefined;
+};
 
 /** 一列的观察结果：列名取自 SQL 元数据，类型按返回值观察。 */
 export interface ColumnInfo {
@@ -290,7 +308,8 @@ const shortName = (name: string): string => {
 export const artifactName = (options: {
   at: string;
   name: string;
-  kind: ArtifactKind;
+  /** 文件名中间那个**文件类别**（材料短名 / 图元 / table / report）——不是语义类别。 */
+  kind: string;
   extension: string;
   content?: string;
 }): string => {
@@ -521,7 +540,7 @@ export function saveResult(options: {
     data,
   };
   const body = `${JSON.stringify(payload, null, 2)}\n`;
-  const fileName = artifactName({ at, name: options.name, kind: 'query', extension: '.json', content: body });
+  const fileName = artifactName({ at, name: options.name, kind: 'qres', extension: '.json', content: body });
   writeExclusive(join(directory, fileName), body, 'query');
   return { dataSrc: `${DATA_DIR}/${fileName}`, columns, rowCount: rows.length };
 }
@@ -554,7 +573,7 @@ export function saveTransform(options: {
   }
   const directory = join(options.root, DATA_DIR);
   mkdirSync(directory, { recursive: true });
-  const fileName = artifactName({ at, name: options.name, kind: 'transform', extension: '.json', content: body });
+  const fileName = artifactName({ at, name: options.name, kind: 'tr', extension: '.json', content: body });
   writeExclusive(join(directory, fileName), body, 'transform');
   return { dataSrc: `${DATA_DIR}/${fileName}`, bytes, origin };
 }
@@ -584,7 +603,7 @@ export function saveInputData(options: {
   }
   const directory = join(options.root, DATA_DIR);
   mkdirSync(directory, { recursive: true });
-  const fileName = artifactName({ at, name: options.name, kind: 'data', extension: '.json', content: body });
+  const fileName = artifactName({ at, name: options.name, kind: 'def', extension: '.json', content: body });
   writeExclusive(join(directory, fileName), body, 'data');
   return { dataSrc: `${DATA_DIR}/${fileName}`, bytes };
 }
@@ -643,11 +662,11 @@ export function saveTableView(options: {
     throw new Error(`这张表 ${(bytes / 1024 / 1024).toFixed(1)} MB，超过单份展示件上限 `
       + `${ENVELOPE_MAX_BYTES / 1024 / 1024} MB：先把数据聚合或投影，再出表。`);
   }
-  const directory = join(options.root, VIEW_DIR);
+  const directory = join(options.root, FIGURE_DIR);
   mkdirSync(directory, { recursive: true });
   const fileName = artifactName({ at, name: options.name, kind: 'table', extension: '.md', content: body });
   writeExclusive(join(directory, fileName), body, 'table');
-  return { src: `${VIEW_DIR}/${fileName}`, bytes };
+  return { src: `${FIGURE_DIR}/${fileName}`, bytes };
 }
 
 /** 把一份产物（图、报告）写成文件：与结果文件同一套命名与独占创建规则。
@@ -658,6 +677,8 @@ export interface SaveArtifactOptions {
   content: string;
   extension: string;
   kind: SelfDescribingKind;
+  /** 文件名中间那个类别；不写就用语义类别。图传它的图元（`pie` → `<名>.pie.svg`）。 */
+  fileKind?: string;
   /** 给人看的标题。**永不为空**：调用方在 agent 没给时负责造一个，这里只守门。 */
   title: string;
   /** 更精确的分类（周报、月报、即时分析…）；没给就不写这一项。 */
@@ -688,7 +709,7 @@ export function saveArtifact(options: SaveArtifactOptions): { src: string; at: s
   const fileName = artifactName({
     at,
     name: options.name,
-    kind: options.kind,
+    kind: options.fileKind ?? options.kind,
     extension: options.extension,
     content,
   });
@@ -943,13 +964,14 @@ export function nameParts(src: unknown): { at: string; name: string; kind: Artif
   const file = String(src).split('/').pop() ?? '';
   const at = /^\d{8}T\d{6}Z/.exec(file)?.[0] ?? '';
   const rest = at === '' ? file : file.slice(at.length + 1);
-  const kind = /\.([a-z_]+)\.[a-z]+$/.exec(rest)?.[1] ?? '';
+  const fileKind = /\.([a-z_]+)\.[a-z]+$/.exec(rest)?.[1] ?? '';
   const name = rest.replace(/\.([a-z_]+)\.[a-z]+$/, '').replace(/-[0-9a-f]{8}$/, '');
-  const kinds: ArtifactKind[] = ['query', 'transform', 'data', 'chart', 'table', 'report'];
   return {
     at: at === '' ? resultStamp() : at,
     name: name === '' ? 'unnamed' : name,
-    kind: kinds.includes(kind as ArtifactKind) ? kind as ArtifactKind : 'data',
+    // 老名字（query / transform / data / chart）这一版之后不再认：认不出来的一律当数据材料，
+    // 与"认不出文件名就不是我们的东西"这条口径一致（rfc/0007）。
+    kind: kindOfFile(fileKind) ?? 'data',
   };
 }
 

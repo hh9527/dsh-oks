@@ -16,7 +16,7 @@
 #
 # 宿主是 Node 自带的进程内 wasm worker，直接导入产物里的 telora.snapshot 段——
 # 当前只支持快照产物。查询由另一个 worker 用 node:sqlite **只读**执行；命中的结果写进
-# 工作区的 .data/（那是插件在工作区里唯一的落点），数据行默认不进模型上下文。
+# 工作区 .oks/data/ 的内部材料（图表件写 .oks/figures/，报表写 artifacts/），数据行默认不进模型上下文。
 #
 # 这一行只有 node 半边（工具），所以写进 agent preset 的 plugins 即可：工具面只在该 preset 的
 # 作用域内生效，profile 顶层不必多一行。图在服务端画成 SVG 落进工作区，由 agent 引用进回答。
