@@ -114,6 +114,13 @@ export function renderStructure(input: {
         const inline = ref === undefined ? undefined : input.inlineOf(ref);
         return inline?.table === true ? { ...tag.attributes, class: 'table-block' } : undefined;
       }
+      // 有来源的数字带一句悬停提示：引用键 + 取值路径。只放机器值，也只在作者没写 title 时补。
+      if (tag.name === 'span') {
+        const ref = tag.attributes['data-oks-ref'];
+        if (ref === undefined || tag.attributes['title'] !== undefined) return undefined;
+        const pick = tag.attributes['data-oks-pick'];
+        return { ...tag.attributes, title: pick === undefined || pick === '.' ? ref : `${ref}${pick}` };
+      }
       return undefined;
     },
     policy: (tag): ElementPolicy | undefined => {

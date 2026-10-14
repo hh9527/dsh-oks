@@ -34,7 +34,8 @@ export const REPORT_STYLE = `
 :root { color-scheme: light; }
 * { box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
-       max-width: 880px; margin: 0 auto; padding: 36px 30px 72px; color: #1c2b3a; line-height: 1.75; background: #fff; }
+       max-width: 880px; margin: 0 auto; padding: 36px 30px 72px; color: #1c2b3a; line-height: 1.75;
+       font-weight: 500; background: #fff; }
 header { border-bottom: 2px solid #1c2b3a; padding-bottom: 16px; margin-bottom: 10px; }
 h1 { font-size: 27px; margin: 0 0 8px; letter-spacing: .2px; }
 .subtitle { font-size: 14px; color: #3d4d5c; margin: 0 0 6px; }
@@ -68,6 +69,10 @@ figcaption { color: #6b7b8c; font-size: 12.5px; margin-top: 8px; }
    "这段数字有没有来路"的视觉信号。 */
 .item-no { display: inline-block; padding: 1px 9px; margin-right: 8px; border-radius: 999px;
            background: #edf3fc; color: #3f5d8f; font-weight: 600; font-size: 12px; letter-spacing: .3px; }
+/* 有来源的数字：正文里带 data-oks-ref 的 span。半透明浅绿标出"这个数字有来路"，悬停加深并给出
+   引用键与取值路径（title）。背景色在纸上不一定印出来，所以打印样式里补一条下划线兜底。 */
+span[data-oks-ref] { background: rgba(96, 176, 112, .11); border-radius: 3px; padding: 0 3px; }
+span[data-oks-ref]:hover { background: rgba(96, 176, 112, .2); }
 .figure-error { border: 1px dashed #e0b4b4; background: #fdf6f6; color: #8a4b4b; border-radius: 8px;
                 padding: 10px 14px; font-size: 13px; margin: 16px 0; }
 footer { margin-top: 52px; padding-top: 16px; border-top: 1px solid #e5eaf1; color: #93a3b4; font-size: 12px; }
@@ -82,5 +87,7 @@ footer { margin-top: 52px; padding-top: 16px; border-top: 1px solid #e5eaf1; col
   figure svg.chart { border-color: #ccc; }
   /* 纸上不保证印背景色，给 chip 一条描边，别让它变成看不见的空白。 */
   .item-no { background: none; border: 1px solid #b9c6d8; }
+  /* 纸上默认不印背景色：给有来源的数字留一条下划线，标记照样看得见，颜色压淡别抢正文。 */
+  span[data-oks-ref] { background: none; padding: 0; border-bottom: 1px solid #b9c6d8; }
 }
 `.trim();

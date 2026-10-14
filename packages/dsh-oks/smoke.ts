@@ -4305,8 +4305,9 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     valueOf: (ref, pick) => `${ref}${pick ?? ''}`,
     inlineOf: (ref) => (ref === 'trend' ? { html: '<div class="inline">图</div>', label: '图 1' } : undefined),
   });
-  ok('渲染：span 填入绑定值',
-    rendered.article.includes('<span data-oks-ref="summary" data-oks-pick=".growth">summary.growth</span>'));
+  ok('渲染：span 填入绑定值，并带上引用键 + 路径的悬停提示',
+    rendered.article.includes('<span data-oks-ref="summary" data-oks-pick=".growth" title="summary.growth">'
+      + 'summary.growth</span>'));
   ok('渲染：图内联进 figure、图注戴编号',
     rendered.article.includes('<figcaption><span class="item-no">图 1</span>趋势</figcaption>')
     && rendered.article.includes('<div class="inline">图</div></figure>'));
@@ -4325,6 +4326,8 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     page.includes(`<script type="application/json" id="${REPORT_METADATA_ID}">`)
     && page.includes('\\u003c') && page.includes('\\u0026'));
   ok('页面：写入自校验为良构 XML（含样式表、目录与中文）', checkWellFormed(page).length === 0);
+  ok('页面：有来源的数字带浅绿背景样式，并带引用键的悬停提示',
+    page.includes('span[data-oks-ref]') && page.includes('title="summary.growth"'));
 
   const back = readReportPage(page);
   ok('读回：拿到 origin/assets/items 与缩水后的结构区',
