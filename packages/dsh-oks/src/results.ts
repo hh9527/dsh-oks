@@ -805,6 +805,24 @@ function ensureInsideWork(root: string, target: string): void {
 
 /** 写一份 `.work/` 下的文本文件：父目录按需创建，已存在就覆盖（它是 agent 自己的工作区，
  *  没有"独占创建"这条规矩——`edit` 与重写是它迭代代码的方式）。 */
+/** 删一份 `.work/` 下的文件。只删文件——目录要先把它里面的文件删掉。 */
+export function deleteWorkFile(root: string, raw: unknown): { file: string; remaining: number } {
+  const { rel, full } = workPath(root, raw, 'work_delete');
+  let info: ReturnType<typeof statSync>;
+  try {
+    info = statSync(full);
+  } catch {
+    const names = listWorkFiles(root).map((entry) => entry.name);
+    throw new Error(`work_delete 找不到 ${rel}：${WORK_DIR}/ 里现在有 `
+      + `${names.length === 0 ? '（空）' : names.join(' / ')}。`);
+  }
+  if (!info.isFile()) {
+    throw new Error(`work_delete 只能删文件：${rel} 是一个目录（先删它里面的文件）。`);
+  }
+  unlinkSync(full);
+  return { file: rel, remaining: listWorkFiles(root).length };
+}
+
 export function writeWorkFile(root: string, path: unknown, content: unknown, tool: string): {
   file: string; bytes: number; created: boolean;
 } {

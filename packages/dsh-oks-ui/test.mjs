@@ -132,6 +132,44 @@ assert.deepEqual(JSON.parse(sentDelete.init.body),
 globalThis.fetch = async () => ({ ok: false, status: 400, text: async () => JSON.stringify({ ok: false, message: '这份产物已经保留，先取消保留再删除' }) });
 await assert.rejects(() => module.postDelete('session-1', 'artifacts/a.report.html'), /先取消保留/);
 
+// —— 6b. 页签那个「清理」按钮：打的是插件的清理端点，按工作区的 manual 窗口清一次
+globalThis.fetch = async (url, init) => {
+  requests.push({ url, init });
+  return {
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({
+      ok: true,
+      value: {
+        cutoffMs: 1791999999999, windowSeconds: 15,
+        removedMaterials: 68, removedWork: 2, freedBytes: 524288,
+        remainingMaterials: 3, remainingMaterialBytes: 4096,
+        remainingWork: 1, remainingWorkBytes: 512,
+      },
+    }),
+  };
+};
+const beforeCollect = requests.length;
+const collected = await module.postCollect('session-1');
+assert.equal(requests.length, beforeCollect + 1, 'postCollect 应当发一次请求');
+const sentCollect = requests[requests.length - 1];
+assert.equal(sentCollect.url, '/oks/collect', '打的是插件开的清理端点');
+assert.equal(sentCollect.init?.method, 'POST');
+assert.deepEqual(JSON.parse(sentCollect.init.body), { sessionId: 'session-1' }, '不带窗口时请求体只有 sessionId');
+
+const beforeMenu = requests.length;
+await module.postCollect('session-1', '30m');
+assert.equal(requests.length, beforeMenu + 1, '菜单里的 30 分钟也要发一次请求');
+assert.deepEqual(JSON.parse(requests[requests.length - 1].init.body), { sessionId: 'session-1', ttl: '30m' },
+  '菜单给的窗口要带在请求体里（ttl）');
+assert.equal(collected.removedMaterials, 68, '回执里有清掉的材料数');
+assert.equal(collected.removedWork, 2, '回执里有清掉的程序数');
+assert.equal(collected.windowSeconds, 15, '回执里有窗口，消息才写得出"<时间> 之前的文件"');
+assert.equal(collected.remainingMaterialBytes, 4096, '回执里有剩余总大小');
+
+globalThis.fetch = async () => ({ ok: false, status: 400, text: async () => JSON.stringify({ ok: false, message: '拿不到这个会话的工作区' }) });
+await assert.rejects(() => module.postCollect('session-1'), /拿不到这个会话的工作区/);
+
 // —— 7. 点条目：在右栏新开一个页签打开它（地址格式与文件面板一致）
 assert.equal(module.artifactAddress('session-1', 'a.chart.svg'),
   'dsh-resource://file/session/session-1/artifacts/a.chart.svg', '资源地址的格式要与文件面板一致');
@@ -150,13 +188,22 @@ assert.equal(module.downloadHref('s/1', 'a b.report.html'),
   '/oks/download?sessionId=s%2F1&file=a%20b.report.html', '两个参数都要编码');
 
 // —— 8. 轮询去重：内容没变就不该更新状态
-const base = { keepAliveMinutes: 60, entries: [{ file: 'a.chart.svg', kind: 'chart', title: 't', at: 'now', pinned: false }] };
+const usage = {
+  data: { files: 1, bytes: 10 }, charts: { files: 2, bytes: 20 }, work: { files: 3, bytes: 30 },
+  artifacts: { files: 4, bytes: 40, pinned: 1 }, lastCleanup: null,
+};
+const base = { keepAliveMinutes: 60, usage, entries: [{ file: 'a.chart.svg', kind: 'chart', title: 't', at: 'now', pinned: false }] };
 assert.equal(module.sameListing(base, JSON.parse(JSON.stringify(base))), true, '同样内容算同一份');
 assert.equal(module.sameListing(null, base), false, '还没有清单时必须更新');
 assert.equal(module.sameListing(base, { ...base, keepAliveMinutes: 30 }), false, '保活窗口变了要更新');
 assert.equal(module.sameListing(base, { ...base, entries: [...base.entries, { ...base.entries[0], file: 'b.chart.svg' }] }), false, '多了一条要更新');
 assert.equal(module.sameListing(base, { ...base, entries: [{ ...base.entries[0], pinned: true }] }), false, '保留状态变了要更新');
 assert.equal(module.sameListing(base, { ...base, entries: [{ ...base.entries[0], title: '改了' }] }), false, '标题变了要更新');
+assert.equal(module.sameListing(base, { ...base, usage: { ...usage, data: { files: 9, bytes: 10 } } }), false,
+  '占用份数变了要更新——否则概览块停在旧数字上');
+assert.equal(module.sameListing(base, { ...base, usage: { ...usage, lastCleanup: { kind: 'manual', at: 1 } } }), false,
+  '最后清理时间变了要更新');
+assert.equal(module.sameListing(base, { ...base }), true, '什么都没变就不更新');
 
 // —— 9. 时间说法（本地时区：从文件名那段 UTC 换算过来）
 const at = '20261012T092654Z';
@@ -176,5 +223,5 @@ assert.equal(module.metaLine({ category: '周报', at }, stamp), '周报 · 刚�
 assert.equal(module.metaLine({ at }, stamp), '即时分析 · 刚刚', '缺分类要落到"即时分析"，不是"报表"');
 assert.equal(module.metaLine({ category: '月报', at }, stamp + 8 * 60_000), '月报 · 8 分钟前');
 
-console.log('client.mjs：交付形态、激活契约、四条端点都对 ✓');
+console.log('client.mjs：交付形态、激活契约、五条端点都对 ✓');
 console.log(`  inject = ${module.inject.join(', ')} · tab=${calls.tab.kind} · pane=${calls.pane}`);

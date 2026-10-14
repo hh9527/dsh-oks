@@ -1,5 +1,6 @@
 import { basename } from 'node:path';
 import { capLine } from './text.ts';
+import { windowText } from './config.ts';
 import { DEFAULT_ROOT } from './results.ts';
 import type { DiagnosticEntry, OkPayload, RenderBlock, ServiceResponse, TraceStep } from './host.ts';
 
@@ -199,6 +200,41 @@ export interface TransformValue {
   data: unknown;
   truncated: boolean;
   ms: number;
+}
+
+/** collect 渲染清理材料的结果。 */
+export interface CollectValue {
+  ok?: boolean;
+  ttlSeconds: number;
+  removed: string[];
+  removedCount: number;
+  freedBytes: number;
+  remaining: number;
+  kept: number;
+}
+
+export function renderCollect(_args: unknown, value: CollectValue | null | undefined): RenderBlock[] {
+  if (value?.ok !== true) {
+    return textBlock([JSON.stringify(value ?? { ok: false, error: { code: 'collect_failed' } })]);
+  }
+  const shown = value.removed.slice(0, 20);
+  const lines = [
+    `清理窗口 ${windowText(value.ttlSeconds / 60)} · 清掉 ${value.removedCount} 份材料`
+    + ` · 释放 ${(value.freedBytes / 1024).toFixed(1)} KB · 还剩 ${value.remaining} 份`
+    + `（窗口内保留 ${value.kept} 份）`,
+    ...shown.map((file) => `  ${file}`),
+    value.removed.length > shown.length ? `  …（另有 ${value.removed.length - shown.length} 份）` : '',
+    '之前回执里的 dataSrc 若指向被清掉的材料，已经失效——需要时重新取数。',
+  ].filter((line) => line !== '');
+  return textBlock([lines.join('\n')]);
+}
+
+/** work_delete 渲染删除结果。 */
+export function renderWorkDelete(_args: unknown, value: { ok?: boolean; file?: string; remaining?: number } | null | undefined): RenderBlock[] {
+  if (value?.ok !== true) {
+    return textBlock([JSON.stringify(value ?? { ok: false, error: { code: 'work_unwritable' } })]);
+  }
+  return textBlock([`${value.file ?? ''} · 已删除 · 代码区还剩 ${value.remaining ?? 0} 个文件`]);
 }
 
 /** jq_transform_into 渲染读到的值（物化：结果写进 .oks/data/）。 */

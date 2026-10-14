@@ -11,6 +11,7 @@
 //   OKS_WORKSPACE=/path/to/workspace node smoke.ts
 import { apply, artifactName, buildOption, CHART_WIDTH, embedArtifactMeta, NAME_MAX, readArtifactMeta,
   renderEchartsSvg, resultStamp, saveArtifact } from './lib/index.mjs';
+import { collectWindows, resolveSettings, retentionMinutes, windowText } from './src/config.ts';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { applyOps, encode, parseMoment } from './src/time.ts';
@@ -20,8 +21,9 @@ import { CHART_KINDS, supports } from './src/chart/shared.ts';
 import { tableMarkdown } from './src/view/table.ts';
 import { readReportProvenance } from './src/chart/report.ts';
 // 保留走的是 `pinBySrc`——界面端点与冒烟都直接调它（这条能力不在工具面里）。
-import { adoptArtifacts, deleteArtifact, KEEP_ALIVE_MINUTES, MATERIAL_KEEP_ALIVE_MINUTES, VISIBLE, listArtifacts,
-  openState, pinBySrc, pruneArtifacts, pruneMaterials, reconcileArtifacts, recordArtifact } from './src/state.ts';
+import { adoptArtifacts, collectMaterials, collectWithWindows, deleteArtifact, KEEP_ALIVE_MINUTES, markCleanup,
+  listArtifacts, MATERIAL_KEEP_ALIVE_MINUTES, openState, pinBySrc, pruneArtifacts, reconcileArtifacts,
+  recordArtifact, VISIBLE } from './src/state.ts';
 // 来源链的读取与易读视图：冒烟直接调这一层，验证编码与边界（不经工具）。
 import { chainLines, readChartInput, readEnvelope, readTableView, rowsOf } from './src/results.ts';
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync,
@@ -39,6 +41,8 @@ const listingBefore = workspaceListing();
 const dataListingBefore = new Set(existsSync(`${DEV_ROOT}/artifacts`) ? readdirSync(`${DEV_ROOT}/artifacts`) : []);
 
 const registered = new Map();
+/** 插件在启动时注册的页面端点路径：漏注册一条（路由表里没有）时，界面上表现为"点了没反应"。 */
+const webPaths = [];
 const disposers = [];
 const skillsRegistered = [];
 const events = new Map();
@@ -75,6 +79,23 @@ const ctx = {
     const dispose = fn();
     if (typeof dispose === 'function') disposers.push(dispose);
   },
+  // 宿主没有 web 服务时插件照常工作，所以真机上这段是可选的；这里给一个桩，
+  // 让"启动时注册了哪几条端点"进入测试视野。
+  inject: (deps, callback) => {
+    if (!Array.isArray(deps) || !deps.includes('webServer')) return;
+    const services = {
+      webServer: { register: (handler) => { webPaths.push(handler.path); return () => {}; } },
+      sessions: { get: () => undefined },
+      sessionQuery: { readSession: () => undefined },
+    };
+    callback({
+      get: (name) => services[name],
+      effect: (fn) => {
+        const dispose = fn();
+        if (typeof dispose === 'function') disposers.push(dispose);
+      },
+    });
+  },
   // 插件按规范监听 agent/pre-step 以取得上下文时区；桩把监听器全部记下来，测试里手动触发。
   on: (name, listener) => listen(events, name, listener),
 };
@@ -82,7 +103,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['work_read', 'work_write', 'work_edit', 'oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'create_data', 'jq_transform', 'jq_transform_into', 'oks_chart', 'oks_view', 'oks_report', 'oks_artifacts', 'time_now', 'time_calc', 'va_ask'];
+const EXPECTED_TOOLS = ['work_read', 'work_write', 'work_edit', 'work_delete', 'oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'create_data', 'jq_transform', 'jq_transform_into', 'oks_chart', 'oks_view', 'oks_report', 'oks_artifacts', 'collect', 'time_now', 'time_calc', 'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -93,7 +114,15 @@ for (const name of EXPECTED_TOOLS) {
     const description = registered.get(name)?.description;
     return typeof description === 'string' && description.length > 0;
   });
-  console.log(`  每个工具都有非空描述: ${described ? '✓' : '✗'}`);
+  console.log(`  每个工具都有非空描述: ${described ? '✓' : '✗'}`);{
+  const expected = ['/oks/artifacts', '/oks/pin', '/oks/delete', '/oks/collect', '/oks/download'];
+  const missing = expected.filter((path) => !webPaths.includes(path));
+  console.log(`=== 面板端点 ===\n  启动时注册了 ${webPaths.length} 条：${webPaths.join(' · ')} ${
+    missing.length === 0 && webPaths.length === expected.length ? '✓' : '✗'}`);
+  if (missing.length > 0) throw new Error(`启动时没有注册这些端点: ${missing.join(', ')}`);
+  if (webPaths.length !== expected.length) throw new Error(`端点数量不对：${webPaths.join(', ')}`);
+}
+
   if (!described) throw new Error('有工具的描述为空');
 }
 
@@ -3324,9 +3353,10 @@ console.log('=== 内部材料的回收 ===');
   utimesSync(stale, longAgo, longAgo);
   const state = openState(dir);
   try {
-    const { removed, untouched } = pruneMaterials(state, dir, 60);
+    const { removed, untouched, freedBytes, remaining } = collectMaterials(dir, 60);
     ok('过期的内部材料被回收', removed.length === 1 && !existsSync(stale));
     ok('内部材料里认不出的不动', existsSync(stranger) && untouched >= 1);
+    ok('回收报出释放的字节与剩余份数', freedBytes > 0 && remaining === 0);
     ok('内部材料比报表多活 2 分钟', MATERIAL_KEEP_ALIVE_MINUTES === KEEP_ALIVE_MINUTES + 2);
   } finally {
     state.close();
@@ -3334,19 +3364,221 @@ console.log('=== 内部材料的回收 ===');
   }
 }
 
+console.log('=== 清理窗口的配置 ===');
+{
+  const dir = mkdtempSync(join(tmpdir(), 'oks-retention-'));
+  const base = JSON.parse(readFileSync(join(DEV_ROOT, 'oks.json'), 'utf8'));
+  // 用**绝对** model 路径，免得相对路径在临时目录里解析不到。
+  const model = resolve(DEV_ROOT, String(base.model ?? ''));
+  const withRetention = (retention: unknown): void => {
+    writeFileSync(join(dir, 'oks.json'),
+      `${JSON.stringify({ ...base, model, ...(retention === undefined ? {} : { retention }) }, null, 2)}\n`);
+  };
+  const parsed = (retention: unknown): ReturnType<typeof resolveSettings> | string => {
+    withRetention(retention);
+    try { return resolveSettings(dir, undefined); } catch (cause) { return String((cause as Error).message); }
+  };
+  try {
+    const fallback = parsed(undefined);
+    ok('没写 retention 时用默认窗口（auto 62/60、manual 5/5、.work 不参与）',
+      typeof fallback !== 'string' && fallback.retention.auto.materials === MATERIAL_KEEP_ALIVE_MINUTES
+      && fallback.retention.auto.artifacts === KEEP_ALIVE_MINUTES && fallback.retention.auto.work === null
+      && fallback.retention.manual.materials === 5 && fallback.retention.manual.work === 5);
+    const custom = parsed({ auto: { materials: '2h', artifacts: 90 }, manual: { materials: '7d', work: 30 } });
+    ok('时长三种写法都认："2h" / "7d" / 纯数字分钟',
+      typeof custom !== 'string' && custom.retention.auto.materials === 120
+      && custom.retention.auto.artifacts === 90 && custom.retention.manual.materials === 10080
+      && custom.retention.manual.work === 30);
+    const noWork = parsed({ auto: { materials: '62m', artifacts: '60m', work: null } });
+    ok('auto.work 给 null＝这一类不参与自动清理',
+      typeof noWork !== 'string' && noWork.retention.auto.work === null);
+    const tooSmallAuto = parsed({ auto: { materials: '4m' } });
+    const tooSmallManual = parsed({ manual: { materials: '4s' } });
+    ok('auto 守 5 分钟下限、manual 守 5 秒下限，各自说清',
+      typeof tooSmallAuto === 'string' && /下限是 5 分钟/.test(tooSmallAuto)
+      && typeof tooSmallManual === 'string' && /下限是 5 秒/.test(tooSmallManual));
+    const zeroValue = parsed({ auto: { materials: 0 } });
+    ok('0 仍被拒（不设保护这个语义没有实现）',
+      typeof zeroValue === 'string' && /下限是 5 分钟/.test(zeroValue));
+    const inSeconds = parsed({ manual: { materials: '15s', work: '30s' } });
+    ok('manual 认秒级：\"15s\" → 0.25 分钟、\"30s\" → 0.5 分钟',
+      typeof inSeconds !== 'string' && inSeconds.retention.manual.materials === 0.25
+      && inSeconds.retention.manual.work === 0.5);
+    ok('秒级窗口的解析与写法：15s / 5 分钟 / 2 小时',
+      retentionMinutes('15s', 'x') === 0.25 && retentionMinutes('90', 'x') === 90
+      && windowText(0.25) === '15 秒' && windowText(5) === '5 分钟' && windowText(120) === '2 小时');
+    const bogus = parsed({ auto: { materials: 'soon' } });
+    ok('写错的时长被拒，并给出写法', typeof bogus === 'string' && /例如 "15s"/.test(bogus));
+    const withSwitch = parsed({ auto: { enabled: true } });
+    ok('retention 里写错键被拒（例如 auto.enabled——自动清理是必做）',
+      typeof withSwitch === 'string' && /没有开关/.test(withSwitch));
+    const manualArtifacts = parsed({ manual: { artifacts: '10m' } });
+    ok('manual 里不认 artifacts（报表的显式清理走页签逐条删除）',
+      typeof manualArtifacts === 'string' && /只认 materials \/ work/.test(manualArtifacts));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+console.log('=== 最后清理的记账 ===');
+{
+  const dir = mkdtempSync(join(tmpdir(), 'oks-cleanup-'));
+  try {
+    const { markCleanup, readLastCleanup, openState } = await import('./src/state.ts');
+    {
+      const state = openState(dir);
+      try {
+        markCleanup(dir, 'auto', 0);   // 没清掉东西：不记
+        ok('自动清理没清到东西时不记（否则每次写操作都刷一遍时间）', readLastCleanup(state) === undefined);
+      } finally { state.close(); }
+    }
+    {
+      const state = openState(dir);
+      try {
+        markCleanup(dir, 'auto', 3);
+        ok('清到东西时记下来源与时间', readLastCleanup(state)?.kind === 'auto');
+      } finally { state.close(); }
+    }
+    {
+      const state = openState(dir);   // 重新开一次库：说明它记在账本里，不是内存里
+      try {
+        ok('重启（重开库）之后仍然读得到', readLastCleanup(state)?.kind === 'auto');
+        markCleanup(dir, 'manual', 1);
+        ok('之后的手工清理会覆盖它', readLastCleanup(state)?.kind === 'manual');
+      } finally { state.close(); }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+console.log('=== collect：材料清理 ===');
+{
+  const stamp = resultStamp();
+  mkdirSync(join(DEV_ROOT, '.oks', 'data'), { recursive: true });
+  const fresh = `${stamp}-collect_fresh-aaaaaaaa.query.json`;
+  const old = `${stamp}-collect_old-bbbbbbbb.query.json`;
+  const stranger2 = 'user_notes.json';
+  writeFileSync(join(DEV_ROOT, '.oks', 'data', fresh), '{"rows":[],"columns":[]}');
+  writeFileSync(join(DEV_ROOT, '.oks', 'data', old), '{"rows":[],"columns":[]}');
+  writeFileSync(join(DEV_ROOT, '.oks', 'data', stranger2), '用户自己放的');
+  const tenMin = new Date(Date.now() - 10 * 60_000);
+  const fortyMin = new Date(Date.now() - 40 * 60_000);
+  utimesSync(join(DEV_ROOT, '.oks', 'data', fresh), tenMin, tenMin);
+  utimesSync(join(DEV_ROOT, '.oks', 'data', old), fortyMin, fortyMin);
+  const reportBefore = readdirSync(join(DEV_ROOT, 'artifacts')).length;
+  const workBefore = readdirSync(join(DEV_ROOT, '.work')).length;
+  const wide = await call('collect', { ttl: '30m' });
+  ok('collect 按 ttl 删材料：40 分钟前的走了、10 分钟前的留着',
+    wide.value.ok === true && wide.value.ttlSeconds === 1800
+    && (wide.value.removed as string[]).includes(`.oks/data/${old}`)
+    && !existsSync(join(DEV_ROOT, '.oks', 'data', old))
+    && existsSync(join(DEV_ROOT, '.oks', 'data', fresh)));
+  ok('collect 只碰 .oks/ 材料：artifacts/ 与 .work/ 一份没动',
+    readdirSync(join(DEV_ROOT, 'artifacts')).length === reportBefore
+    && readdirSync(join(DEV_ROOT, '.work')).length === workBefore);
+  ok('不是我们命名的文件不动', existsSync(join(DEV_ROOT, '.oks', 'data', stranger2)));
+  const narrow = await call('collect', { ttl: '5m' });
+  ok('窗口收窄到 5 分钟，10 分钟前那份也走',
+    narrow.value.ttlSeconds === 300 && !existsSync(join(DEV_ROOT, '.oks', 'data', fresh))
+    && typeof narrow.value.remaining === 'number' && typeof narrow.value.freedBytes === 'number');
+  const floor = async (ttl: unknown): Promise<string> => {
+    try { await call('collect', { ttl }); return ''; } catch (cause) { return String((cause as Error).message); }
+  };
+  ok('collect 的 ttl 下限 5 秒（"4s" 与 0 都被拒）',
+    /下限是 5 秒/.test(await floor('4s')) && /下限是 5 秒/.test(await floor(0)));
+  rmSync(join(DEV_ROOT, '.oks', 'data', stranger2), { force: true });
+}
+
+console.log('=== work_delete：代码区删除 ===');
+{
+  await call('work_write', { file_path: 'doomed.jq', content: '. | length\n' });
+  await call('work_write', { file_path: 'kept.jq', content: '.\n' });
+  const removed = await call('work_delete', { file_path: 'doomed.jq' });
+  ok('删掉一份程序：回执给删了哪个、还剩几个',
+    removed.value.ok === true && /doomed\.jq$/.test(String(removed.value.file))
+    && typeof removed.value.remaining === 'number');
+  ok('文件确实没了，另一份还在',
+    !existsSync(join(DEV_ROOT, '.work', 'doomed.jq')) && existsSync(join(DEV_ROOT, '.work', 'kept.jq')));
+  const fails = async (args: unknown): Promise<string> => {
+    try { await call('work_delete', args); return ''; } catch (cause) { return String((cause as Error).message); }
+  };
+  mkdirSync(join(DEV_ROOT, '.work', 'subdir'), { recursive: true });
+  const missing = await fails({ file_path: 'nope.jq' });
+  const isDir = await fails({ file_path: 'subdir' });
+  const escape = await fails({ file_path: '../evil.jq' });
+  console.log(`  work_delete 的三种拒绝 → ${missing.slice(0, 60)} / ${isDir.slice(0, 40)} / ${escape.slice(0, 40)}`);
+  ok('不存在时报出现在有哪些文件', /找不到/.test(missing) && /kept\.jq/.test(missing));
+  ok('目标是目录时明确拒绝', /只能删文件/.test(isDir));
+  ok('越界被拒', /只能读写工作区 \.work\//.test(escape));
+  rmSync(join(DEV_ROOT, '.work', 'subdir'), { recursive: true, force: true });
+  await call('work_delete', { file_path: 'kept.jq' });
+}
+
+console.log('=== 会话 → 工作区：两段式解析（绝不猜）===');
+{
+  const { sessionRootResolver } = await import('./src/endpoint.ts');
+
+  const liveFirst = sessionRootResolver({
+    sessions: { get: () => ({ header: { cwd: '/ws/live' } }) },
+    persistence: { stat: async () => ({ header: { cwd: '/ws/disk' } }) },
+  });
+  ok('活会话表的会话头有 cwd 就用它（新建会话第一轮对话之前就有）',
+    await liveFirst('s1') === '/ws/live');
+
+  const fromPersistence = sessionRootResolver({
+    sessions: { get: () => undefined },
+    persistence: { stat: async () => ({ header: { cwd: '/ws/disk' } }) },
+  });
+  ok('活表落空时读宿主的会话持久化（进程重启前建的会话靠它）',
+    await fromPersistence('s2') === '/ws/disk');
+
+  let attempts = 0;
+  const late = sessionRootResolver(
+    { sessions: { get: () => (attempts += 1, attempts < 3 ? undefined : { header: { cwd: '/ws/late' } }) } },
+    { attempts: 3, waitsMs: [1, 1] });
+  ok('会话刚建、登记晚一拍：解析会重试到成功', await late('s3') === '/ws/late' && attempts === 3);
+  const beforeCached = attempts;
+  await late('s3');
+  ok('解析结果会被记住：同一会话只解析一次', attempts === beforeCached);
+
+  const nothing = sessionRootResolver({}, { attempts: 2, waitsMs: [1] });
+  let message = '';
+  try { await nothing('s4'); } catch (cause) { message = String((cause as Error).message); }
+  ok('两条路都没有时明确报错——宁可"读不到"，也不用部署 cwd 顶替', /找不到会话 s4/.test(message));
+
+  const blank = sessionRootResolver(
+    { sessions: { get: () => ({ header: { cwd: '' } }) },
+      persistence: { stat: async () => ({ header: { cwd: '   ' } }) } },
+    { attempts: 2, waitsMs: [1] });
+  let blankMessage = '';
+  try { await blank('s5'); } catch (cause) { blankMessage = String((cause as Error).message); }
+  ok('空串 / 空格不算答案', /找不到会话 s5/.test(blankMessage));
+}
+
 console.log('=== 界面那两条端点 ===');
 {
-  const { createArtifactsEndpoint, createDeleteEndpoint, createDownloadEndpoint, createPinEndpoint } = await import('./src/endpoint.ts');
+  const { createArtifactsEndpoint, createCollectEndpoint, createDeleteEndpoint, createDownloadEndpoint,
+    createPinEndpoint } = await import('./src/endpoint.ts');
   const asked: string[] = [];
   const deps = {
     rootFor: (sessionId: string) => { asked.push(sessionId); return DEV_ROOT; },
     pin: (root: string, src: string, pinned: boolean) => pinBySrc(root, src, pinned),
     remove: (root: string, src: string) => deleteArtifact(root, src),
+    keepAliveMinutes: () => KEEP_ALIVE_MINUTES,
+    // 清理端点走真实路径：窗口来自工作区声明（DEV_ROOT 没写 retention，于是用默认的 manual 5/5）。
+    collect: (root: string, ttl?: unknown) => {
+      const manual = resolveSettings(root, undefined).retention.manual;
+      const outcome = collectWithWindows(root, collectWindows(manual, ttl));
+      markCleanup(root, 'manual', outcome.removedMaterials + outcome.removedWork);
+      return outcome;
+    },
   };
   const artifacts = createArtifactsEndpoint(deps);
   const pin = createPinEndpoint(deps);
   const del = createDeleteEndpoint(deps);
   const download = createDownloadEndpoint(deps);
+  const collect = createCollectEndpoint(deps);
   const call = async (
     handler: (req: never, res: never) => Promise<void>,
     method: string,
@@ -3373,38 +3605,15 @@ console.log('=== 界面那两条端点 ===');
     return { status, body: parsed, text, headers };
   };
 
-  // 会话 → 工作区的解析：活会话表只认识**本进程起来之后**创建的会话，而页签可能在看重启前
-  // 那个会话（现场就是"刷新一下就好了"）。所以落空时要读磁盘上的会话头。
-  {
-    const { sessionRootResolver } = await import('./src/endpoint.ts');
-    let persistedReads = 0;
-    const resolver = sessionRootResolver(
-      { get: (id: string) => (id === 'live' ? { header: { cwd: '/w/live' } } : undefined) },
-      {
-        readSession: async (id: string) => {
-          persistedReads += 1;
-          if (id === 'from-log') return { header: { cwd: '/w/from-log' } };
-          throw new Error('没有这个会话');
-        },
-      },
-    );
-    ok('活会话表里有时直接用它的工作区', await resolver('live') === '/w/live');
-    ok('活会话表落空时读磁盘上的会话头（重启后旧会话靠这条）',
-      await resolver('from-log') === '/w/from-log' && persistedReads === 1);
-    ok('解析过的记在内存里：同一次运行里不反复读日志',
-      await resolver('from-log') === '/w/from-log' && persistedReads === 1);
-    let bothMissed = '';
-    try { await resolver('nope'); } catch (cause) { bothMissed = String((cause as Error).message); }
-    ok('两条路都落空才报错（带上会话 id，不猜一个工作区出来）', /找不到会话 nope/.test(bothMissed));
-    const liveOnly = sessionRootResolver({ get: () => undefined }, undefined);
-    let noFallback = '';
-    try { await liveOnly('x'); } catch (cause) { noFallback = String((cause as Error).message); }
-    ok('没有 sessionQuery 的部署里，行为与从前一样（回 400，不炸）', /找不到会话 x/.test(noFallback));
-  }
-
   const first = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
   const value = first.body.value as { keepAliveMinutes: number; entries: { file: string; pinned: boolean }[] } | undefined;
   ok('GET 清单：回执是 { ok, value }', first.status === 200 && first.body.ok === true && Array.isArray(value?.entries));
+  const usage = (first.body.value as { usage?: Record<string, { files?: unknown; bytes?: unknown }> } | undefined)?.usage;
+  ok('清单回执带上那块概览要的四类占用（数据 / 图表 / 工作 / 输出）',
+    usage !== undefined && ['data', 'charts', 'work', 'artifacts'].every((kind) =>
+      typeof usage[kind]?.files === 'number' && typeof usage[kind]?.bytes === 'number'));
+  ok('输出文件那类还带"保留了几份"',
+    typeof (usage?.artifacts as { pinned?: unknown } | undefined)?.pinned === 'number');
   ok('清单里有产物（界面要的就是这些）', (value?.entries.length ?? 0) > 0);
   ok('回执带着保活窗口', Number(value?.keepAliveMinutes) > 0);
 
@@ -3527,6 +3736,65 @@ console.log('=== 界面那两条端点 ===');
   ok('下载不接受路径', (await call(download, 'GET', '/oks/download?sessionId=probe&file=../state.db')).status === 400);
   const figureFile = (existsSync(join(DEV_ROOT, '.oks', 'charts'))
     ? readdirSync(join(DEV_ROOT, '.oks', 'charts')) : []).find((name) => name.endsWith('.chart.svg'));
+  // 清理端点：按工作区配置的 manual 窗口清一次（材料 + 代码区）；报表不在其中。
+  {
+    mkdirSync(join(DEV_ROOT, '.oks', 'data'), { recursive: true });
+    mkdirSync(join(DEV_ROOT, '.work'), { recursive: true });
+    const stamp = resultStamp();
+    const oldMaterial = join(DEV_ROOT, '.oks', 'data', `${stamp}-endpoint_old-cccccccc.query.json`);
+    const freshMaterial = join(DEV_ROOT, '.oks', 'data', `${stamp}-endpoint_fresh-dddddddd.query.json`);
+    const oldProgram = join(DEV_ROOT, '.work', 'endpoint_old.jq');
+    const strangerFile = join(DEV_ROOT, '.oks', 'data', 'endpoint_user_file.json');
+    writeFileSync(oldMaterial, '{"rows":[],"columns":[]}');
+    writeFileSync(freshMaterial, '{"rows":[],"columns":[]}');
+    writeFileSync(strangerFile, '用户自己放的');
+    writeFileSync(oldProgram, '.\n');
+    const tenMin = new Date(Date.now() - 10 * 60_000);
+    utimesSync(oldMaterial, tenMin, tenMin);
+    utimesSync(oldProgram, tenMin, tenMin);
+    const reportsBefore = readdirSync(join(DEV_ROOT, 'artifacts')).length;
+    // 菜单给的大窗口（30 分钟）：10 分钟前那份**留得住**，窗口秒数如实回执。
+    const wide = await call(collect, 'POST', '/oks/collect', { sessionId: 'probe', ttl: '30m' });
+    const wideValue = JSON.parse(wide.text).value ?? {};
+    ok('菜单给 30 分钟窗口时按它留人：回执 1800 秒，10 分钟前的材料与程序都没被误删',
+      wide.status === 200 && wideValue.windowSeconds === 1800
+      && existsSync(oldMaterial) && existsSync(oldProgram));
+    // 不给 ttl：按工作区配置的 manual 策略（DEV_ROOT 没写 retention → 默认 5 分钟）。
+    const cleaned = await call(collect, 'POST', '/oks/collect', { sessionId: 'probe' });
+    const value = JSON.parse(cleaned.text).value ?? {};
+    ok('清理端点按 manual 窗口清了材料与代码区',
+      cleaned.status === 200 && value.removedMaterials >= 1 && value.removedWork >= 1
+      && !existsSync(oldMaterial) && !existsSync(oldProgram) && existsSync(freshMaterial));
+    ok('窗口内的材料留着、不是我们命名的文件不动', existsSync(strangerFile));
+    ok('清理端点不碰报表', readdirSync(join(DEV_ROOT, 'artifacts')).length === reportsBefore);
+    ok('回执够界面写一句话：截止时刻、窗口、还剩几个、总大小、释放多少',
+      Math.abs(Date.now() - Number(value.cutoffMs) - 300_000) < 5_000   // DEV_ROOT 没写 retention：manual 默认 5 分钟
+      && value.windowSeconds === 300
+      && typeof value.remainingMaterials === 'number' && typeof value.remainingMaterialBytes === 'number'
+      && typeof value.remainingWork === 'number' && typeof value.remainingWorkBytes === 'number'
+      && typeof value.freedBytes === 'number');
+    ok('端点不把路径交给界面（界面只显示数量与大小）',
+      value.materials === undefined && value.work === undefined);
+    ok('清理只接受 POST', (await call(collect, 'GET', '/oks/collect')).status === 405);
+    // 菜单给的小窗口（5 分钟）：再摆一份 10 分钟前的材料，这次该被清掉。
+    const shortMaterial = join(DEV_ROOT, '.oks', 'data', `${stamp}-endpoint_short-eeeeeeee.query.json`);
+    writeFileSync(shortMaterial, '{"rows":[],"columns":[]}');
+    utimesSync(shortMaterial, tenMin, tenMin);
+    const narrow = await call(collect, 'POST', '/oks/collect', { sessionId: 'probe', ttl: '5m' });
+    const narrowValue = JSON.parse(narrow.text).value ?? {};
+    ok('菜单给 5 分钟窗口时按它清：10 分钟前那份走掉',
+      narrow.status === 200 && narrowValue.windowSeconds === 300 && !existsSync(shortMaterial));
+
+    ok('清理缺 sessionId 明确报错', (await call(collect, 'POST', '/oks/collect', {})).status === 400);
+    const afterClean = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
+    const lastCleanup = (afterClean.body.value as { usage?: { lastCleanup?: { kind?: unknown; at?: unknown } } })
+      ?.usage?.lastCleanup;
+    ok('清理之后"最后清理"记成手工，并且带时间',
+      lastCleanup?.kind === 'manual' && typeof lastCleanup?.at === 'number');
+    rmSync(freshMaterial, { force: true });
+    rmSync(strangerFile, { force: true });
+  }
+
   ok('下载不读图（当前只有报表算制品）',
     (await call(download, 'GET', `/oks/download?sessionId=probe&file=${encodeURIComponent(String(figureFile))}`)).status === 400);
   ok('不存在的报表回 404',

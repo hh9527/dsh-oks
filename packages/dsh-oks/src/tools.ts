@@ -15,10 +15,12 @@ import type { DisplaySource, ReportData } from './chart/report.ts';
 import { CHART_KINDS, inferXType, supportedKinds, supports, toNumber } from './chart/shared.ts';
 import type { ChartKind, ExpressionSwitch, LayoutOverrides, MarkLine, SecondMetric, StyleOverrides } from './chart/shared.ts';
 import { OBJECT_OUTPUT, renderArtifacts, renderChart, renderCheck, renderCreateData, renderJqInto, renderJqTransform,
-  renderJson, renderQuery, renderValue, renderView, renderWorkEdit, renderWorkRead, renderWorkWrite,
+  renderCollect, renderJson, renderQuery, renderValue, renderView, renderWorkDelete, renderWorkEdit,
+  renderWorkRead, renderWorkWrite,
   shapeOf, withoutQueries } from './response.ts';
-import { adoptArtifacts, KEEP_ALIVE_MINUTES, listArtifacts, MATERIAL_KEEP_ALIVE_MINUTES, openState,
-  pruneArtifacts, pruneMaterials, reconcileArtifacts, recordArtifact, VISIBLE } from './state.ts';
+import { adoptArtifacts, collectMaterials, collectWork, listArtifacts, markCleanup, materialCount,
+  openState, pruneArtifacts, reconcileArtifacts, recordArtifact, VISIBLE } from './state.ts';
+import { retentionMinutes, windowText } from './config.ts';
 import type { Row } from './response.ts';
 import { REFERENCE_KINDS, referencesOf, renderReferences, renderSearch, searchIndex } from './retrieval.ts';
 import type { ReferencesArgs, SearchArgs } from './retrieval.ts';
@@ -32,7 +34,7 @@ import { errorText } from './host.ts';
 import type { DiagnosticEntry, LogFn, ServiceResponse, ToolDefinition, ToolExec, TraceStep } from './host.ts';
 import { intentKey } from './key.ts';
 import { appendNode, ARTIFACT_DIR, chainLines, CHART_DIR, DEFAULT_ROOT, embedChartInput, nameProblem,
-  editWorkFile, listWorkFiles, readArtifact, readCodeFile, readWorkFile, WORK_DIR, writeWorkFile,
+  deleteWorkFile, editWorkFile, listWorkFiles, readArtifact, readCodeFile, readWorkFile, WORK_DIR, writeWorkFile,
   readChartInput, readTableView, rowsOf, saveArtifact, saveInputData,
   saveResult, saveTableView, saveTransform, VIEW_DIR } from './results.ts';
 import type { ColumnInfo, DataOrigin, Envelope, OriginNode, SaveArtifactOptions } from './results.ts';
@@ -793,6 +795,16 @@ interface ViewArgs {
   note?: unknown;
 }
 
+/** collect 的入参：清理窗口（省略则用工作区配置的 manual 窗口）。 */
+interface CollectArgs {
+  ttl?: unknown;
+}
+
+/** work_delete 的入参：要删的那份代码文件。 */
+interface WorkDeleteArgs {
+  file_path?: unknown;
+}
+
 /** create_data 的入参：agent 自己给的一份数据。 */
 interface CreateDataArgs {
   name?: unknown;
@@ -1104,21 +1116,33 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
 
   /** 写产物之前顺带清一次过期的（**懒惰清理**：插件只在被调用时活着，因此不需要定时器）。
    *  保留过的不动、认不出的不动；删了什么进宿主日志——删除是唯一不可逆的动作，必须留痕。 */
-  const pruneBeforeWrite = (root: string): void => {
+  const pruneBeforeWrite = (entry: WorkspaceEntry): void => {
+    const root = entry.settings.workspaceRoot;
+    const windows = entry.settings.retention.auto;
     const state = openState(root);
     try {
-      const { removed, kept, missing } = pruneArtifacts(state, root, KEEP_ALIVE_MINUTES);
-      if (removed.length > 0) {
-        log(`[oks] prune · 清理 ${removed.length} 个过期产物（保活 ${KEEP_ALIVE_MINUTES} 分钟；`
-          + `保留 ${kept} 个、文件已经不在了 ${missing} 个）`);
+      const artifacts = pruneArtifacts(state, root, windows.artifacts);
+      if (artifacts.removed.length > 0) {
+        log(`[oks] prune · 清理 ${artifacts.removed.length} 个过期产物（窗口 ${windowText(windows.artifacts)}；`
+          + `保留 ${artifacts.kept} 个、文件已经不在了 ${artifacts.missing} 个）`);
       }
-      const materials = pruneMaterials(state, root, MATERIAL_KEEP_ALIVE_MINUTES);
+      const materials = collectMaterials(root, windows.materials);
       if (materials.removed.length > 0) {
-        log(`[oks] prune · 清理 ${materials.removed.length} 个过期内部材料`
-          + `（保活 ${MATERIAL_KEEP_ALIVE_MINUTES} 分钟；认不出 ${materials.untouched} 个不动）`);
+        log(`[oks] prune · 清理 ${materials.removed.length} 个过期材料（窗口 ${windowText(windows.materials)}；`
+          + `认不出 ${materials.untouched} 个不动）`);
+      }
+      let workRemoved = 0;
+      if (windows.work !== null) {
+        const work = collectWork(root, windows.work);
+        workRemoved = work.removed.length;
+        if (work.removed.length > 0) {
+          log(`[oks] prune · 清理 ${work.removed.length} 个过期程序文件（窗口 ${windowText(windows.work)}）`);
+        }
       }
       // 顺手把账本对齐一次（补登 + 清掉文件已不在的行）：这是写路径该做的事，
       // 读路径因此可以完全不碰目录。人工放进 artifacts/ 的报告也在这里被收进清单。
+      // "最后一次清理"只在确实清了东西时更新（每次写操作都刷一遍时间，这行就没意义了）。
+      markCleanup(root, 'auto', artifacts.removed.length + materials.removed.length + workRemoved);
       const reconciled = reconcileArtifacts(state, root);
       if (reconciled.adopted > 0 || reconciled.removed.length > 0) {
         log(`[oks] 账本 · 补登 ${reconciled.adopted} 份、清掉 ${reconciled.removed.length} 条`
@@ -1128,12 +1152,13 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       state.close();
     }
   };
+
   /** 产出一份文件，并在**同一处**记账（只对进清单的那一类）。
    *  行与磁盘上的文件由这一次调用一起产生，于是不存在"文件在、账上没有"；记账失败就把文件删掉、
    *  整个调用失败，也不留孤文件。图不进清单（它是报表里的材料），产出流程一样，只是不记账。 */
   const saveAndRecord = (entry: WorkspaceEntry, options: Omit<SaveArtifactOptions, 'root'>): { src: string; at: string } => {
     const root = entry.settings.workspaceRoot;
-    pruneBeforeWrite(root);
+    pruneBeforeWrite(entry);
     const saved = saveArtifact({ root, ...options });
     const file = saved.src.slice(saved.src.lastIndexOf('/') + 1);
     if (!VISIBLE.test(file)) return saved;
@@ -1489,7 +1514,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           slot.truncated = outcome.truncated;
           try {
             // 只读执行成功就落盘：数据行只留在结果文件里，模型可见面只有引用。
-            pruneBeforeWrite(entry.settings.workspaceRoot);
+            pruneBeforeWrite(entry);
             const saved = saveResult({
               root: entry.settings.workspaceRoot,
               name: slot.name,
@@ -1550,7 +1575,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           throw new Error('create_data 需要 data：你要落成封装的那份 JSON（行对象数组、对象或标量都可以）。');
         }
         const at = Date.now();
-        pruneBeforeWrite(entry.settings.workspaceRoot);
+        pruneBeforeWrite(entry);
         const saved = saveInputData({ root: entry.settings.workspaceRoot, name, motivation, data: args.data });
         const ms = Date.now() - at;
         log(`[oks] create_data ${name} · ${(saved.bytes / 1024).toFixed(1)} KB · ${ms} ms · ${saved.dataSrc}`);
@@ -1647,7 +1672,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         const motivation = typeof args?.motivation === 'string' && args.motivation.trim() !== ''
           ? args.motivation.trim() : undefined;
         // 来源链由这一层组装：本次操作 + 各输入的**根节点**（产出那份 data 的记录）。
-        pruneBeforeWrite(entry.settings.workspaceRoot);
+        pruneBeforeWrite(entry);
         const saved = saveTransform({
           root: entry.settings.workspaceRoot,
           name,
@@ -1720,7 +1745,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         });
         if ('error' in drawn) throw new Error(drawn.error);
         const title = view.title ?? '数据表';
-        pruneBeforeWrite(entry.settings.workspaceRoot);
+        pruneBeforeWrite(entry);
         const saved = saveTableView({
           root: entry.settings.workspaceRoot,
           name: typeof args?.name === 'string' && args.name.length > 0 ? args.name : 'table',
@@ -2019,10 +2044,44 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           adoptArtifacts(state, root);
           const entries = listArtifacts(state);
           log(`[oks] artifacts · ${entries.length} 条（保留 ${entries.filter((item) => item.pinned).length}）`);
-          return { ok: true as const, keepAliveMinutes: KEEP_ALIVE_MINUTES, entries };
+          return { ok: true as const, keepAliveMinutes: entry.settings.retention.auto.artifacts, entries };
         } finally {
           state.close();
         }
+      },
+    },
+    {
+      name: 'collect',
+      description: 'Clean up this workspace\'s internal materials — the query results, transforms, charts and table pieces under .oks/. Files older than the window are deleted; files this plugin did not write are left alone, and reports (artifacts/) are not touched (pin one to keep it, or delete it from the sidebar). Omit ttl to use the window configured for this workspace; pass ttl ("30m" / "2h" / "3d", "15s", or a number of minutes) to be more aggressive for this one call. The floor is 5 seconds — this is explicit, so seconds count. The receipt reports what went, how much space came back and how much is left — and if you clean aggressively, dataSrc values from earlier receipts are gone, so query again when you need them.',
+      parameters: {
+        type: 'object',
+        properties: {
+          ttl: { type: 'string', description: 'Keep materials produced within this window and delete older ones: "15s" / "30m" / "2h" / "3d", or a number of minutes. Omit it to use the workspace\'s configured window. Minimum 5 seconds.' },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+      output: { schema: OBJECT_OUTPUT, render: renderCollect },
+      async execute(args: CollectArgs, exec: ToolExec) {
+        const entry = knowledge.ensureWorkspace(exec);
+        const root = entry.settings.workspaceRoot;
+        const minutes = args?.ttl === undefined || args?.ttl === null
+          ? entry.settings.retention.manual.materials
+          : retentionMinutes(args.ttl, 'collect 的 ttl');
+        const ttlSeconds = Math.round(minutes * 60);
+        const outcome = collectMaterials(root, minutes);
+        markCleanup(root, 'manual', outcome.removed.length);
+        log(`[oks] collect · 窗口 ${windowText(minutes)} · 清理 ${outcome.removed.length} 份材料`
+          + ` · 释放 ${(outcome.freedBytes / 1024).toFixed(1)} KB · 还剩 ${outcome.remaining} 份`);
+        return {
+          ok: true as const,
+          ttlSeconds,
+          removed: outcome.removed,
+          removedCount: outcome.removed.length,
+          freedBytes: outcome.freedBytes,
+          kept: outcome.kept,
+          remaining: outcome.remaining,
+        };
       },
     },
     {
@@ -2093,6 +2152,25 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       args?.new_string, args?.replace_all, 'work_edit');
         log(`[oks] work_edit ${saved.file} · 替换 ${saved.replaced} 处 · ${(saved.bytes / 1024).toFixed(1)} KB`);
         return { ok: true as const, ...saved };
+      },
+    },
+    {
+      name: 'work_delete',
+      description: `Delete one file under ${WORK_DIR}/ — how a jq program you no longer need goes away. It deletes files only: empty a directory first if you want it gone. The receipt says which file went and how many are left in ${WORK_DIR}/. Deleting a program does not cost provenance: the source chain records the program text itself, so the only thing lost is the ability to run it again.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          file_path: { type: 'string', description: `Path under ${WORK_DIR}/, e.g. "analysis.jq" (or "${WORK_DIR}/analysis.jq").` },
+        },
+        required: ['file_path'],
+        additionalProperties: false,
+      },
+      output: { schema: OBJECT_OUTPUT, render: renderWorkDelete },
+      async execute(args: WorkDeleteArgs, exec: ToolExec) {
+        const entry = knowledge.ensureWorkspace(exec);
+        const removed = deleteWorkFile(entry.settings.workspaceRoot, args?.file_path);
+        log(`[oks] work_delete ${removed.file} · 还剩 ${removed.remaining} 个文件`);
+        return { ok: true as const, ...removed };
       },
     },
     {

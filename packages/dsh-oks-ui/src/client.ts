@@ -35,9 +35,35 @@ interface ArtifactEntry {
   pinned: boolean;
 }
 
+/** 工作区里各类占用的份数与字节（数据 / 图表（含表格）/ 工作文件 / 输出文件）。 */
+interface UsageCell {
+  files: number;
+  bytes: number;
+}
+
 interface Listing {
   keepAliveMinutes: number;
+  usage: {
+    data: UsageCell;
+    charts: UsageCell;
+    work: UsageCell;
+    artifacts: UsageCell & { pinned: number };
+    lastCleanup: { kind: 'manual' | 'auto'; at: number } | null;
+  };
   entries: ArtifactEntry[];
+}
+
+/** 清理动作的回执：够界面写一句话——截止时刻、清掉几个、还剩几个、总大小、释放多少。 */
+interface CollectResult {
+  cutoffMs: number;
+  windowSeconds: number;
+  removedMaterials: number;
+  removedWork: number;
+  freedBytes: number;
+  remainingMaterials: number;
+  remainingMaterialBytes: number;
+  remainingWork: number;
+  remainingWorkBytes: number;
 }
 
 interface Context {
@@ -71,6 +97,8 @@ interface ModuleExports {
   postPin: (sessionId: string, src: string, pinned: boolean) => Promise<void>;
   /** 给本地测试用：删掉一份未保留的产物。 */
   postDelete: (sessionId: string, src: string) => Promise<void>;
+  /** 给本地测试用：清一次（材料 + 代码区）。给了 `ttl` 就按它，不给按工作区的 manual 窗口。 */
+  postCollect: (sessionId: string, ttl?: string) => Promise<CollectResult>;
   /** 给本地测试用：一份产物的资源地址（点条目会用它在右栏新开页签）。 */
   artifactAddress: (sessionId: string, file: string) => string;
   /** 给本地测试用：下载一份报表的 URL。 */
@@ -96,6 +124,7 @@ window.__ModuleLoader__.load({
     const ARTIFACTS_ENDPOINT = '/oks/artifacts';
     const PIN_ENDPOINT = '/oks/pin';
     const DELETE_ENDPOINT = '/oks/delete';
+    const COLLECT_ENDPOINT = '/oks/collect';
     const DOWNLOAD_ENDPOINT = '/oks/download';
     /** 我们真正用到的服务：槽与右栏 tab 注册表（清单与保留走 fetch，不占服务）。 */
     const inject = ['slots', 'sidebarRightTabs', 'sidebarRight'];
@@ -158,6 +187,32 @@ window.__ModuleLoader__.load({
       + 'padding:2px;font:inherit;line-height:1}',
       '.oks-artifact-delete:hover{opacity:.9}',
       '.oks-artifact-delete[data-disabled="true"]{opacity:.15;cursor:not-allowed}',
+      '.oks-artifacts-usage{border:1px solid rgba(127,127,127,.28);border-radius:8px;'
+      + 'padding:8px 10px;margin:0 0 8px;font-size:12px}',
+      '.oks-artifacts-usage-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 12px}',
+      '.oks-artifacts-usage-cell{display:flex;gap:6px;justify-content:space-between;'
+      + 'white-space:nowrap;overflow:hidden}',
+      '.oks-artifacts-usage-label{opacity:.7}',
+      '.oks-artifacts-usage-line{opacity:.6;margin-top:4px}',
+      '.oks-artifacts-usage-foot{display:flex;align-items:center;justify-content:space-between;'
+      + 'gap:8px;margin-top:6px}',
+      '.oks-artifacts-action-error{opacity:.8;white-space:nowrap;overflow:hidden;'
+      + 'text-overflow:ellipsis;margin:0 0 6px}',
+      '.oks-artifacts-clean{font-size:12px;padding:2px 8px;border-radius:6px;cursor:pointer;'
+      + 'background:none;border:1px solid currentColor;color:inherit;opacity:.7}',
+      '.oks-artifacts-clean:hover{opacity:1}',
+      '.oks-artifacts-clean-menu{position:relative;display:inline-block}',
+      '.oks-artifacts-clean-menu>summary{list-style:none}',
+      '.oks-artifacts-clean-menu>summary::-webkit-details-marker{display:none}',
+      '.oks-artifacts-clean-items{position:absolute;right:0;top:100%;z-index:20;margin-top:4px;'
+      + 'display:flex;flex-direction:column;padding:4px;border-radius:6px;white-space:nowrap;'
+      + 'background:Canvas;color:CanvasText;border:1px solid rgba(127,127,127,.4);'
+      + 'box-shadow:0 4px 12px rgba(0,0,0,.25)}',
+      '.oks-artifacts-clean-item{font-size:12px;padding:4px 8px;border:0;border-radius:4px;'
+      + 'background:none;color:inherit;cursor:pointer;text-align:left}',
+      '.oks-artifacts-clean-item:hover{background:rgba(127,127,127,.18)}',
+      '.oks-artifacts-clean-item:disabled{opacity:.4;cursor:not-allowed}',
+      '.oks-artifacts-clean:disabled{opacity:.35;cursor:not-allowed}',
     ].join('\n');
 
     const installCss = (): void => {
@@ -170,7 +225,12 @@ window.__ModuleLoader__.load({
     };
 
     /** 两份清单是不是同一份。轮询会反复读，内容没变就不该重置状态（否则每轮都重渲染）。 */
+    /** 概览块那四项与"最后清理"变了吗：变了就得更新，否则数字会停在旧值上。 */
+    const sameUsage = (a: Listing | null, b: Listing): boolean =>
+      JSON.stringify(a?.usage ?? null) === JSON.stringify(b.usage ?? null);
+
     const sameListing = (a: Listing | null, b: Listing): boolean => {
+      if (!sameUsage(a, b)) return false;
       if (a === null) return false;
       if (a.keepAliveMinutes !== b.keepAliveMinutes) return false;
       if (a.entries.length !== b.entries.length) return false;
@@ -184,7 +244,8 @@ window.__ModuleLoader__.load({
 
     /** 调一次端点：成功取 `value`，失败把 `message` 抛出来（回执统一一层包装）。 */
     const callEndpoint = async (url: string, init?: RequestInit): Promise<unknown> => {
-      const response = await fetch(url, init);
+      // 清单是轮询来的：不要让浏览器或中间层把上一次的结果留下来。
+      const response = await fetch(url, { cache: 'no-store', ...init });
       const text = await response.text();
       let payload: { ok?: unknown; value?: unknown; message?: unknown } = {};
       try { payload = JSON.parse(text) as typeof payload; } catch { /* 不是 JSON：下面按状态码报 */ }
@@ -254,6 +315,28 @@ window.__ModuleLoader__.load({
       });
     };
 
+    /** 人话大小：B / KB / MB。 */
+    const humanSize = (bytes: number): string => {
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    };
+
+    /** 截止时刻写成"月-日 时:分"：清理消息里那个"<这个时间> 之前的文件"。 */
+    const cutoffText = (ms: number): string => {
+      const at = new Date(ms);
+      const pad = (value: number): string => String(value).padStart(2, '0');
+      return `${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${pad(at.getHours())}:${pad(at.getMinutes())}`;
+    };
+
+    /** 清一次：`ttl` 是页签菜单给的窗口（"30m" / "5m"），不给就用工作区配置的 manual 策略。 */
+    const postCollect = async (sessionId: string, ttl?: string): Promise<CollectResult> =>
+      await callEndpoint(COLLECT_ENDPOINT, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(ttl === undefined ? { sessionId } : { sessionId, ttl }),
+      }) as CollectResult;
+
     const module = { exports: {} as ModuleExports };
     const exports = module.exports;
     const React = require('react') as typeof import('react');
@@ -282,6 +365,8 @@ window.__ModuleLoader__.load({
         const [listing, setListing] = useState<Listing | null>(null);
         const [error, setError] = useState<string | null>(null);
         const [busy, setBusy] = useState(false);
+        /** 动作失败（清理 / 删除 / 保留）的短行：读清单失败走 `error`，这里只管动作。 */
+        const [actionError, setActionError] = useState<string | null>(null);
         /** 手上这份清单（给"变空了要再问一次"的判断用；state 在闭包里读不到最新的）。 */
         const heldListing = useRef<Listing | null>(null);
         useEffect(() => { heldListing.current = listing; }, [listing]);
@@ -325,11 +410,11 @@ window.__ModuleLoader__.load({
         /** 删掉一份**未保留**的产物：文件与清单一起去。保留中的那条界面上点不动，服务端也会拒。 */
         const remove = async (entry: ArtifactEntry): Promise<void> => {
           if (typeof sessionId !== 'string' || sessionId.length === 0) {
-            setError('拿不到当前会话，因此不知道删哪个工作区的产物。');
+            setActionError('拿不到当前会话，因此不知道删哪个工作区的产物。');
             return;
           }
           if (entry.pinned) {
-            setError('这份产物已经保留，先取消保留再删除。');
+            setActionError('这份产物已经保留，先取消保留再删除。');
             return;
           }
           setBusy(true);
@@ -345,7 +430,7 @@ window.__ModuleLoader__.load({
 
         const toggle = async (entry: ArtifactEntry): Promise<void> => {
           if (typeof sessionId !== 'string' || sessionId.length === 0) {
-            setError('拿不到当前会话，因此不知道改哪个工作区的状态。');
+            setActionError('拿不到当前会话，因此不知道改哪个工作区的状态。');
             return;
           }
           setBusy(true);
@@ -357,6 +442,71 @@ window.__ModuleLoader__.load({
           } finally {
             setBusy(false);
           }
+        };
+
+        /** 页签那个按钮：按工作区配置的 manual 窗口清一次（材料 + 代码区）。
+         *  报表不在其中——要删报表走行里的 `✕`，要留就保留。 */
+        const clean = async (ttl?: string): Promise<void> => {
+          if (typeof sessionId !== 'string' || sessionId.length === 0) {
+            setActionError('拿不到当前会话，因此不知道清哪个工作区。');
+            return;
+          }
+          setBusy(true);
+          try {
+            await postCollect(sessionId, ttl);
+            // 清了什么、还剩什么，上面那块概览直接反映出来——不再弹一条会换行、会把页面顶动的消息。
+            setActionError(null);
+            await load();
+          } catch (cause) {
+            setActionError(`清理没成功：${String((cause as Error)?.message ?? cause)}`);
+          } finally {
+            setBusy(false);
+          }
+        };
+
+        /** 工作区概览：固定五行（四项占用 + 报表说明 + 最后清理与按钮 + 一行小结），
+         *  清单为空或还没读到时就显示占位符——位置与高度不跳，按钮也一直在。 */
+        const usageBox = (): ReactElement => {
+          const usage = listing?.usage ?? null;
+          const cell = (label: string, item: UsageCell | undefined): ReactElement =>
+            createElement('div', { key: label, className: 'oks-artifacts-usage-cell' },
+              createElement('span', { key: 'label', className: 'oks-artifacts-usage-label' }, label),
+              createElement('span', { key: 'value' },
+                item === undefined ? '—' : `${item.files} 份 · ${humanSize(item.bytes)}`));
+          const last = usage?.lastCleanup ?? null;
+          return createElement('div', { className: 'oks-artifacts-usage' },
+            createElement('div', { key: 'grid', className: 'oks-artifacts-usage-grid' },
+              cell('数据', usage?.data),
+              cell('图表', usage?.charts),
+              cell('工作件', usage?.work),
+              cell('输出件', usage?.artifacts)),
+            createElement('div', { key: 'foot', className: 'oks-artifacts-usage-foot' },
+              createElement('span', { key: 'last' },
+                last === null
+                  ? '最后清理：还没有过'
+                  : `最后清理 ${cutoffText(last.at)}（${last.kind === 'manual' ? '手工' : '自动'}）`),
+              createElement('details', { key: 'go', className: 'oks-artifacts-clean-menu' },
+                createElement('summary', {
+                  className: 'oks-artifacts-clean',
+                  title: '清掉这个工作区里超过窗口的中间材料与工作件；报表不受影响',
+                }, '清理 ▾'),
+                createElement('div', { className: 'oks-artifacts-clean-items' },
+                  ...[['30m', '清理 30 分钟前的'], ['5m', '清理 5 分钟前的']].map(([ttl, label]) =>
+                    createElement('button', {
+                      key: ttl,
+                      type: 'button',
+                      className: 'oks-artifacts-clean-item',
+                      disabled: busy || listing === null,
+                      onClick: (event?: { currentTarget?: { closest?(selector: string): unknown } }) => {
+                        // 点完就把菜单收起来（再用时重新展开）。
+                        const box = event?.currentTarget?.closest?.('details');
+                        if (box !== null && box !== undefined
+                          && typeof (box as { removeAttribute?: unknown }).removeAttribute === 'function') {
+                          (box as { removeAttribute(name: string): void }).removeAttribute('open');
+                        }
+                        void clean(ttl);
+                      },
+                    }, label))))));
         };
 
         /** 刷新失败：手上有清单就只提示一行、**不顶掉**它；手上什么都没有时把原因说清楚——
@@ -376,7 +526,7 @@ window.__ModuleLoader__.load({
           createElement('div', { key: 'head', style: { fontWeight: 600 } }, '读不到「产出」清单'),
           createElement('div', { key: 'why', style: { opacity: 0.8, marginTop: '2px' } }, error),
           createElement('div', { key: 'hint', style: { opacity: 0.6, fontSize: '12px', marginTop: '4px' } },
-            '每 4 秒自动重试一次；刚重启过、或这个会话很旧时，刷新页面通常就好。'));
+            '每 4 秒自动重试一次；会话刚建出来、或服务刚重启过时会短暂读不到，稍等即可。'));
         };
 
         const statusLine = (text: string): ReactElement => createElement('p', {
@@ -384,12 +534,20 @@ window.__ModuleLoader__.load({
           style: { fontSize: '13px' },
         }, text);
 
-        if (listing === null) {
-          return createElement('div', { className: 'oks-artifacts' }, warnLine(), statusLine('正在读取产出…'));
-        }
+        /** 三种状态（读不到 / 清单为空 / 有清单）都套这层壳：提示行只在这里渲染一次。 */
+        /** 动作失败只占一行、不换行：失败才出现，也不把清单顶下去。 */
+        const actionLine = (): ReactElement | null => (actionError === null ? null : createElement('p', {
+          className: 'oks-artifacts-action-error',
+          style: { fontSize: '12px' },
+        }, actionError));
+
+        const shell = (inner: ReactElement): ReactElement =>
+          createElement('div', { className: 'oks-artifacts' }, warnLine(), usageBox(), actionLine(), inner);
+
+        if (listing === null) return shell(statusLine('正在读取产出…'));
         if (listing.entries.length === 0) {
-          return createElement('div', { className: 'oks-artifacts' }, warnLine(),
-            statusLine(`这个工作区还没有图或报告。未保留的产物会在 ${listing.keepAliveMinutes} 分钟后被清理。`));
+          return shell(statusLine(
+            `这个工作区还没有图或报告。未保留的产物会在 ${listing.keepAliveMinutes} 分钟后被清理。`));
         }
 
         /** 点条目：在右栏**新开一个页签**打开这份产物（与文件面板同一个地址格式）。 */
@@ -467,11 +625,7 @@ window.__ModuleLoader__.load({
           'aria-label': '删掉这份产物',
         }, '✕')));
 
-        return createElement('div', { className: 'oks-artifacts' },
-          warnLine(),
-          createElement('div', { style: { fontSize: '12px', opacity: 0.7, padding: '2px 0 6px' } },
-            `${listing.entries.length} 条 · 未保留的在 ${listing.keepAliveMinutes} 分钟后清理`),
-          ...rows);
+        return shell(createElement('div', null, ...rows));
       };
 
       // 正文挂在 pane 这个 keyed 槽上，key 就是我们注册的 tab id（与 files / terminal 同样的路子）。
@@ -487,6 +641,7 @@ window.__ModuleLoader__.load({
     exports.readListingWithRetry = readListingWithRetry;
     exports.postPin = postPin;
     exports.postDelete = postDelete;
+    exports.postCollect = postCollect;
     exports.artifactAddress = artifactAddress;
     exports.downloadHref = downloadHref;
     exports.sameListing = sameListing;

@@ -17,7 +17,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
-import { ARTIFACT_DIR, artifactFileName, CHART_DIR, DATA_DIR, readArtifactMeta, VIEW_DIR } from './results.ts';
+import { ARTIFACT_DIR, artifactFileName, CHART_DIR, DATA_DIR, readArtifactMeta, VIEW_DIR, WORK_DIR } from './results.ts';
 import type { ArtifactMeta } from './results.ts';
 
 /** 状态目录（相对工作区根）。 */
@@ -96,6 +96,8 @@ export function openState(root: string): State {
     pinned integer not null default 0,
     pinned_at text
   )`);
+  // 工作区级的少量元信息（当前只有"最后一次清理"）。键值表，单行写入。
+  db.exec('create table if not exists meta (key text primary key, value text not null)');
   // 老库（还没这一列）补上：状态库是插件自己的，迁移放在打开时做一次就够。
   const columns = db.prepare('pragma table_info(artifacts)').all() as Array<{ name: string }>;
   if (!columns.some((column) => column.name === 'category')) {
@@ -219,17 +221,111 @@ export function listArtifacts(state: State): ArtifactEntry[] {
   }));
 }
 
-/** 回收内部材料：按年龄丢，**不看保留**（保留只对报表有意义），认得清的才动。
- *  返回与 `pruneArtifacts` 同形状的结果，便于调用方统一记一行日志。 */
-export function pruneMaterials(
-  state: State,
-  root: string,
-  keepAliveMinutes: number = MATERIAL_KEEP_ALIVE_MINUTES,
-): { removed: string[]; kept: number; untouched: number } {
-  void state;   // 材料没有保留状态；参数保留是为了与 pruneArtifacts 同形，调用处一致。
+/** 记下"最后一次清理"：手工（页签按钮、`collect`）还是自动（写路径的保活清理）。
+ *  只在**确实清了东西**时记——每次写操作都刷一遍时间，这行就没意义了。 */
+export function recordCleanup(state: State, kind: 'manual' | 'auto', at: number = Date.now()): void {
+  state.db.prepare('insert into meta (key, value) values (?, ?) '
+    + 'on conflict(key) do update set value = excluded.value')
+    .run('lastCleanup', JSON.stringify({ kind, at }));
+}
+
+/** 读"最后一次清理"：重启之后还在（它记在账本里，不在内存里）。 */
+export function readLastCleanup(state: State): { kind: 'manual' | 'auto'; at: number } | undefined {
+  const row = state.db.prepare('select value from meta where key = ?').get('lastCleanup') as
+    | { value?: unknown }
+    | undefined;
+  if (typeof row?.value !== 'string') return undefined;
+  try {
+    const parsed = JSON.parse(row.value) as { kind?: unknown; at?: unknown };
+    if ((parsed.kind === 'manual' || parsed.kind === 'auto') && typeof parsed.at === 'number') {
+      return { kind: parsed.kind, at: parsed.at };
+    }
+  } catch {
+    // 坏了就当作没有：这一行不值得让页签读不出来。
+  }
+  return undefined;
+}
+
+/** 工作区里各类占用：材料分数据 / 图表（图表与表格合并算一类）、代码区、交付的报表。 */
+export interface Usage {
+  data: { files: number; bytes: number };
+  charts: { files: number; bytes: number };
+  work: { files: number; bytes: number };
+  artifacts: { files: number; bytes: number; pinned: number };
+}
+
+/** 一个目录里"我们命名的"文件的份数与字节。 */
+function usageOf(base: string, match: (file: string) => boolean): { files: number; bytes: number } {
+  let files = 0;
+  let bytes = 0;
+  let names: string[];
+  try {
+    names = readdirSync(base);
+  } catch {
+    // 目录看不见（被清理、被换成同名文件、权限不对）：这一类按零算，别把整次清单读带坏。
+    return { files, bytes };
+  }
+  for (const file of names) {
+    if (!match(file)) continue;
+    try {
+      files += 1;
+      bytes += statSync(join(base, file)).size;
+    } catch {
+      // 读不了就不算，别让一块统计把整次读取带坏。
+    }
+  }
+  return { files, bytes };
+}
+
+/** 确实清了东西时记一笔"最后一次清理"（自己开一次库，调用方不必持有状态句柄）。 */
+export function markCleanup(root: string, kind: 'manual' | 'auto', removed: number): void {
+  if (removed <= 0) return;
+  const state = openState(root);
+  try {
+    recordCleanup(state, kind);
+  } finally {
+    state.close();
+  }
+}
+
+/** 页签那块概览要的四类占用：材料分"数据"与"图表"（图表与表格合并算一类）、代码区、报表。
+ *  报表的份数与保留数来自账本（调用方传进来，与清单显示的是同一批行），字节按磁盘现算。 */
+export function usageByKind(root: string, entries: Array<{ file: string; pinned: boolean }>): Usage {
+  const data = usageOf(join(root, DATA_DIR), (file) => OURS.test(file));
+  const charts = usageOf(join(root, CHART_DIR), (file) => OURS.test(file));
+  const views = usageOf(join(root, VIEW_DIR), (file) => OURS.test(file));
+  const reports = usageOf(join(root, ARTIFACT_DIR), (file) => OURS.test(file));
+  return {
+    data,
+    charts: { files: charts.files + views.files, bytes: charts.bytes + views.bytes },
+    work: workUsage(root),
+    artifacts: { files: entries.length, bytes: reports.bytes, pinned: entries.filter((e) => e.pinned).length },
+  };
+}
+
+/** 材料还剩几份（只数我们命名的），给回执用。 */
+export function materialCount(root: string): number {
+  let count = 0;
+  for (const directory of [DATA_DIR, CHART_DIR, VIEW_DIR]) {
+    const base = join(root, directory);
+    if (!existsSync(base)) continue;
+    count += readdirSync(base).filter((file) => OURS.test(file)).length;
+  }
+  return count;
+}
+
+/** 清一次材料（`.oks/data` `.oks/charts` `.oks/views`）：删掉超过窗口的、**我们命名的**文件；
+ *  别的一概不碰。`minutes` 由调用方给——自动路径来自 `retention.auto.materials`，
+ *  显式触发来自 `collect` 的 `ttl` 或 `retention.manual.materials`。
+ *  判据是 mtime＝**产生时刻**（读不算使用）。 */
+export function collectMaterials(root: string, minutes: number): {
+  removed: string[]; freedBytes: number; kept: number; untouched: number; remaining: number;
+} {
+  const cutoff = Date.now() - minutes * 60_000;
   const removed: string[] = [];
+  let freedBytes = 0;
+  let kept = 0;
   let untouched = 0;
-  const cutoff = Date.now() - keepAliveMinutes * 60_000;
   for (const directory of [DATA_DIR, CHART_DIR, VIEW_DIR]) {
     const base = join(root, directory);
     if (!existsSync(base)) continue;
@@ -237,15 +333,116 @@ export function pruneMaterials(
       if (!OURS.test(file)) { untouched += 1; continue; }
       const target = join(base, file);
       try {
-        if (statSync(target).mtimeMs >= cutoff) continue;
+        const info = statSync(target);
+        if (info.mtimeMs >= cutoff) { kept += 1; continue; }
         unlinkSync(target);
         removed.push(`${directory}/${file}`);
+        freedBytes += info.size;
       } catch {
         untouched += 1;   // 读不了、删不掉：留着，不动它
       }
     }
   }
-  return { removed, kept: 0, untouched };
+  return { removed, freedBytes, kept, untouched, remaining: materialCount(root) };
+}
+
+/** 清一次代码区（`.work/`）：删掉超过窗口的文件，子目录不参与。
+ *  它只在窗口被显式给出时才被调用——auto 默认不给（`.work/` 不参与自动清理）。 */
+export function collectWork(root: string, minutes: number): {
+  removed: string[]; freedBytes: number; kept: number;
+} {
+  const base = join(root, WORK_DIR);
+  const removed: string[] = [];
+  let freedBytes = 0;
+  let kept = 0;
+  if (!existsSync(base)) return { removed, freedBytes, kept };
+  const cutoff = Date.now() - minutes * 60_000;
+  for (const file of readdirSync(base)) {
+    const target = join(base, file);
+    try {
+      const info = statSync(target);
+      if (!info.isFile() || info.mtimeMs >= cutoff) { kept += 1; continue; }
+      unlinkSync(target);
+      removed.push(`${WORK_DIR}/${file}`);
+      freedBytes += info.size;
+    } catch {
+      kept += 1;
+    }
+  }
+  return { removed, freedBytes, kept };
+}
+
+/** 材料（`.oks/data|charts|views` 里我们命名的文件）的文件数与总字节。 */
+export function materialUsage(root: string): { files: number; bytes: number } {
+  let files = 0;
+  let bytes = 0;
+  for (const directory of [DATA_DIR, CHART_DIR, VIEW_DIR]) {
+    const base = join(root, directory);
+    if (!existsSync(base)) continue;
+    for (const file of readdirSync(base)) {
+      if (!OURS.test(file)) continue;
+      try { files += 1; bytes += statSync(join(base, file)).size; } catch { /* 读不了就不算 */ }
+    }
+  }
+  return { files, bytes };
+}
+
+/** 代码区（`.work/` 下的文件）的文件数与总字节。 */
+export function workUsage(root: string): { files: number; bytes: number } {
+  const base = join(root, WORK_DIR);
+  let files = 0;
+  let bytes = 0;
+  let names: string[];
+  try {
+    names = readdirSync(base);
+  } catch {
+    return { files, bytes };
+  }
+  for (const file of names) {
+    const target = join(base, file);
+    try {
+      const info = statSync(target);
+      if (!info.isFile()) continue;
+      files += 1;
+      bytes += info.size;
+    } catch { /* 读不了就不算 */ }
+  }
+  return { files, bytes };
+}
+
+/** 按一套窗口清一次：材料 + （给了窗口才）代码区。写路径的自动清理与人的按钮都走它，
+ *  于是"清哪些、按什么窗口清"只有一个出处。 */
+export function collectWithWindows(root: string, windows: { materials: number; work: number | null }): {
+  windowSeconds: number;
+  cutoffMs: number;
+  removedMaterials: number;
+  removedWork: number;
+  freedBytes: number;
+  remainingMaterials: number;
+  remainingMaterialBytes: number;
+  remainingWork: number;
+  remainingWorkBytes: number;
+} {
+  // 截止时刻按材料窗口算：它就是要显示给人看的"清理了 <这个时刻> 之前的文件"。
+  const cutoffMs = Date.now() - Math.round(windows.materials * 60_000);
+  const materials = collectMaterials(root, windows.materials);
+  const work = windows.work === null
+    ? { removed: [] as string[], freedBytes: 0, kept: 0 }
+    : collectWork(root, windows.work);
+  const materialLeft = materialUsage(root);
+  const workLeft = workUsage(root);
+  // 回执只给数量与大小，不给路径：界面据此写一句话，路径留在日志与工具回执里。
+  return {
+    windowSeconds: Math.round(windows.materials * 60),
+    cutoffMs,
+    removedMaterials: materials.removed.length,
+    removedWork: work.removed.length,
+    freedBytes: materials.freedBytes + work.freedBytes,
+    remainingMaterials: materialLeft.files,
+    remainingMaterialBytes: materialLeft.bytes,
+    remainingWork: workLeft.files,
+    remainingWorkBytes: workLeft.bytes,
+  };
 }
 
 /** 被保留的文件名集合——清理靠它跳过。 */

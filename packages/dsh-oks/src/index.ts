@@ -1,9 +1,9 @@
-// dsh-oks —— DSH 能力扩展：把"某个领域的知识服务（OKS）"接成十五个原生工具。
+// dsh-oks —— DSH 能力扩展：把"某个领域的知识服务（OKS）"接成十七个原生工具。
 // 插件不认识任何模型：开放哪个模型、模型在哪，由**会话所在工作区**根目录的 oks.json 声明
 // （{"domain":"...","model":"...wasm","dataFile":"...sqlite"}）。
 // 工作区是会话属性，所以一份插件能服务任意多工作区。
 //
-// 十五个工具：oks_search（按名词/说法在词汇表里找到 key）、
+// 十七个工具：oks_search（按名词/说法在词汇表里找到 key）、
 // oks_references（按 key 反向找到引用它的节点）、
 // oks_info（按服务给出的不透明 key 读节点，入口是 key "index"）、
 // oks_check_intent（只校验命名 Intent；通过的项给出该项的 key）、
@@ -20,10 +20,12 @@
 // oks_report（把 markdown 组装成自足的 HTML 报告：图与表内联，展示项的最终数据与完整来源链
 //   并进页面里的报表级来源结构；缺件或超限整份失败）、
 // 读来源与读报告结构都不再另设工具：换一段 root 用 jq 投影即可。
-// 代码区三个工具只作用在 .work/ 内：work_write（创建/覆盖）、work_read（按行读、"." 列目录）、
-//   work_edit（字面替换）——jq 程序写在那里、由 byFile 按文件名引用。宿主那三个通用文件工具的
-//   沙箱根是整个工作区，给不出"只能 .work/"这条边界，所以边界由插件自己在执行层给出。
-// oks_artifacts（列出这个工作区产出过什么）。
+// 代码区四个工具只作用在 .work/ 内：work_write（创建/覆盖）、work_read（按行读、"." 列目录）、
+//   work_edit（字面替换）、work_delete（删一份文件）——jq 程序写在那里、由 byFile 按文件名引用。
+//   宿主那三个通用文件工具的沙箱根是整个工作区，给不出"只能 .work/"这条边界，所以边界由插件
+//   自己在执行层给出。
+// oks_artifacts（列出这个工作区产出过什么）、collect（按窗口清掉 .oks/ 下的内部材料；
+//   窗口分 auto/manual 两套，配置在工作区 oks.json 的 retention 里）。
 //
 // **保留（pin）不在工具面里**：那是用户在右侧栏「产出」页签里点一下的动作（走插件自己的端点），
 // agent 不需要知道这件事，也就不会被诱导"出完顺手钉一下"。
@@ -73,13 +75,18 @@ import { createTimeContext } from './time-context.ts';
 import { createTools } from './tools.ts';
 import { createVaRuntime } from './va.ts';
 import { ARTIFACTS_ENDPOINT, createArtifactsEndpoint, createDeleteEndpoint, createDownloadEndpoint,
-  createPinEndpoint, DELETE_ENDPOINT, DOWNLOAD_ENDPOINT, PIN_ENDPOINT, sessionRootResolver } from './endpoint.ts';
-import type { LiveSessionsLike, PersistedSessionsLike } from './endpoint.ts';
-import { deleteArtifact, pinBySrc } from './state.ts';
+  createCollectEndpoint, createPinEndpoint, COLLECT_ENDPOINT, DELETE_ENDPOINT, DOWNLOAD_ENDPOINT,
+  PIN_ENDPOINT,
+  sessionRootResolver } from './endpoint.ts';
+import type { SessionPersistenceLike } from './endpoint.ts';
+import type { LiveSessionsLike } from './endpoint.ts';
+import { collectWithWindows, deleteArtifact, KEEP_ALIVE_MINUTES, markCleanup, pinBySrc } from './state.ts';
 
 // 界面那条机械通道的两条路径（页签与插件约定同一对常量）。
 export { ARTIFACTS_ENDPOINT, DOWNLOAD_ENDPOINT, PIN_ENDPOINT };
 import type { LogFn, PluginContext } from './host.ts';
+import { appendFileSync } from 'node:fs';
+import { collectWindows, resolveSettings } from './config.ts';
 import type { PluginConfig } from './config.ts';
 
 export const inject = ['tools'];
@@ -112,17 +119,65 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
   // 需要 web 服务才装配——没有 web 的部署里插件照常工作（这里就不装）。
   ctx.inject?.(['webServer'], (webCtx) => {
     const webServer = webCtx.get('webServer');
-    if (webServer === undefined) return;
+    if (webServer === undefined) {
+      // 不静默跳过：没有 web 服务时页签那五条端点不会注册，界面上表现为"读不到清单"——
+      // 这一行就是解释，别让下次再从头猜。
+      log('[oks] 这个部署没有 webServer 服务：产出页签的五条端点没有注册（工具面不受影响）');
+      return;
+    }
     const sessions = webCtx.get('sessions') as LiveSessionsLike | undefined;
-    // 活会话不够用：进程起来之前创建的会话不在 `ctx.sessions` 里，而页签可能正看着它们
-    // （重启服务、或页面一直开着而服务重启过，都是这个情形）。`ctx.sessionQuery` 能读磁盘上的
-    // 会话头，于是这条路由得住——"刷新一下就好了"不该是必须的动作。
-    const sessionQuery = webCtx.get('sessionQuery') as PersistedSessionsLike | undefined;
+    // 活会话表是首选；进程重启前建的会话靠宿主的会话持久化兜底（宿主的"工作区文件"面板同一条路）。
+    // 解析不出来时明确报错，不去猜工作区——给错工作区比报错更难发现。
+    // 兜底用宿主自己的会话持久化：活会话表落空时（例如重启前建的会话），宿主的"工作区文件"
+    // 面板也是问它。**不再拿沙箱策略猜工作区**——那个值在 profile 级是启动目录，会给错答案。
+    const sessionPersistence = webCtx.get('sessionPersistence') as SessionPersistenceLike | undefined;
+    // 诊断时顺带看一眼活 agent 表（它持同一份会话头，用来核对"活表为什么没给 cwd"）。
+    const agents = webCtx.get('agents') as { get?(id: string): { session?: { header?: { cwd?: unknown } } } | undefined } | undefined;
+    const resolveRoot = sessionRootResolver({ sessions, persistence: sessionPersistence });
+    /** 解析不出来时把各来源摊开记一行：这是"页签读不到清单"最需要的一条线索。 */
+    const whyUnresolved = async (sessionId: string): Promise<string> => {
+      const pick = (value: unknown): string => (value === undefined ? 'undefined' : String(value));
+      const parts: string[] = [];
+      parts.push(`sessions.cwd=${pick(sessions?.get?.(sessionId)?.header?.cwd)}`);
+      parts.push(`agents.cwd=${pick(agents?.get?.(sessionId)?.session?.header?.cwd)}`);
+      try {
+        const stat = await sessionPersistence?.stat?.(sessionId);
+        parts.push(`sessionPersistence.cwd=${pick(stat?.header?.cwd)}`);
+      } catch (cause) {
+        parts.push(`sessionPersistence.err=${String((cause as Error)?.message ?? cause).slice(0, 60)}`);
+      }
+      return parts.join(' · ');
+    };
+    const rootFor = async (sessionId: string): Promise<string> => {
+      try {
+        return await resolveRoot(sessionId);
+      } catch (cause) {
+        log(`[oks] 会话解析失败 · ${sessionId} · ${await whyUnresolved(sessionId)}`);
+        throw cause;
+      }
+    };
+
     const deps = {
       log,
-      rootFor: sessionRootResolver(sessions, sessionQuery),
+      rootFor,
       pin: pinBySrc,
       remove: deleteArtifact,
+      // 报表窗口可配置：读不到声明（工作区没有 oks.json）时退回默认值，别让端点因此报错。
+      keepAliveMinutes: (root: string) => {
+        try {
+          return resolveSettings(root, config).retention.auto.artifacts;
+        } catch {
+          return KEEP_ALIVE_MINUTES;
+        }
+      },
+      // 页签那个按钮：按工作区配置的 manual 窗口清一次（材料 + 代码区）。
+      collect: (root: string, ttl?: unknown) => {
+        const manual = resolveSettings(root, config).retention.manual;
+        // 页签下拉给的窗口（"30m" / "5m"）与工作区策略怎么合，见 config.ts 的 collectWindows。
+        const outcome = collectWithWindows(root, collectWindows(manual, ttl));
+        markCleanup(root, 'manual', outcome.removedMaterials + outcome.removedWork);
+        return outcome;
+      },
     };
     webCtx.effect(() => webServer.register({
       kind: 'exact', path: ARTIFACTS_ENDPOINT, handler: createArtifactsEndpoint(deps),
@@ -134,11 +189,15 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
       kind: 'exact', path: DELETE_ENDPOINT, handler: createDeleteEndpoint(deps),
     }));
     webCtx.effect(() => webServer.register({
+      kind: 'exact', path: COLLECT_ENDPOINT, handler: createCollectEndpoint(deps),
+    }));
+    webCtx.effect(() => webServer.register({
       kind: 'exact', path: DOWNLOAD_ENDPOINT, handler: createDownloadEndpoint(deps),
     }));
     // 会话兜底用没用上是"重启后页签是否还会空"的关键，装好后第一行就该看见它。
-    log(`[oks] 面板端点已开：${ARTIFACTS_ENDPOINT} · ${PIN_ENDPOINT} · ${DELETE_ENDPOINT} · ${DOWNLOAD_ENDPOINT}`
-      + `（会话兜底：${sessionQuery === undefined ? '不可用' : '可用'}）`);
+    log(`[oks] 面板端点已开：${ARTIFACTS_ENDPOINT} · ${PIN_ENDPOINT} · ${DELETE_ENDPOINT}`
+      + ` · ${COLLECT_ENDPOINT} · ${DOWNLOAD_ENDPOINT}`
+      + `（会话兜底：${sessionPersistence === undefined ? '不可用' : '可用'}）`);
   });
 
   ctx.effect(() => knowledge.dispose);
