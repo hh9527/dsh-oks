@@ -114,9 +114,7 @@ export function createArtifactsEndpoint(deps: PanelDeps): PanelHandler {
           deps.log?.(`[oks] 补登失败了（这次的清单按账本已有的给出）：${errorText(cause)}`);
         }
         const entries = listArtifacts(state);
-        // 把读到的工作区一起交出去：页签于是能说清"我看的是哪个工作区"——
-        // 这次排查里最难分辨的一种情形就是"清单空"与"看错了工作区"长得一模一样。
-        reply(res, 200, { ok: true, value: { keepAliveMinutes: KEEP_ALIVE_MINUTES, root, entries } });
+        reply(res, 200, { ok: true, value: { keepAliveMinutes: KEEP_ALIVE_MINUTES, entries } });
       } finally {
         state.close();
       }

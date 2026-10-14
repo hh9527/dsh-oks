@@ -386,8 +386,7 @@ cd packages/dsh-oks && OKS_WORKSPACE=/path/to/ws node smoke.ts          # 或者
 - 报表可以带一个**精确分类**（`category`：周报 / 月报 / 即时分析…），它写在产物自述里、进清单，
   界面上显示在大类图标旁边；没给就按"即时分析"。
 - **界面走四条同源端点**（`GET /oks/artifacts` 清单、`POST /oks/pin` 保留、`POST /oks/delete` 删除、
-  `GET /oks/download` 下载）。清单回执里带着**读到的工作区路径**，页签把它显示出来——
-  "这个工作区没有产出"与"读不到清单"于是是界面上的两件事：
+  `GET /oks/download` 下载）。
   装了 web 服务才开，
   没有 web 的部署里插件照常工作。**会话 → 工作区**两步走：先问活的会话注册表（`ctx.sessions`）
   ——它只认识**本进程起来之后**创建的会话；落空时读**磁盘上的会话头**

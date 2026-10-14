@@ -3407,8 +3407,6 @@ console.log('=== 界面那两条端点 ===');
   ok('GET 清单：回执是 { ok, value }', first.status === 200 && first.body.ok === true && Array.isArray(value?.entries));
   ok('清单里有产物（界面要的就是这些）', (value?.entries.length ?? 0) > 0);
   ok('回执带着保活窗口', Number(value?.keepAliveMinutes) > 0);
-  // 回执带上"这是哪个工作区的清单"：页签据此说清自己在看哪里（"清单空"与"看错工作区"要能分开）。
-  ok('回执带着工作区路径', (value as { root?: string } | undefined)?.root === DEV_ROOT);
 
   const target = value?.entries[0];
   const pinned = await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: `artifacts/${target?.file}`, pinned: true });
