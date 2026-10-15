@@ -22,7 +22,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { applyOps, encode, parseMoment } from './src/time.ts';
 import { singleFlight } from './src/single-flight.ts';
 import { intentKey } from './src/key.ts';
-import { CHART_KINDS, supports } from './src/chart/shared.ts';
+import { CHART_KINDS, SERIES_COLORS, supports } from './src/chart/shared.ts';
 import { tableMarkdown } from './src/view/table.ts';
 // 保留走的是 `pinBySrc`——界面端点与冒烟都直接调它（这条能力不在工具面里）。
 import { adoptArtifacts, collectMaterials, collectWithWindows, deleteArtifact, KEEP_ALIVE_MINUTES, markCleanup,
@@ -2866,7 +2866,8 @@ console.log('=== oks_chart（服务端出图）===');
     graph: { x: 'k', series: 's', value: 'w' },
   };
   const switchValue: Record<string, unknown> = {
-    stack: 'total', size: 'w', bins: 4, second: { value: 'w' }, marks: [{ value: 1 }],
+    stack: 'total', size: 'w', bins: 4, second: { value: 'w' }, marks: [{ value: 1 }], donut: true,
+    connectNulls: true, entityColor: true,
   };
   // 一份能让所有图元都过关的数据：两个分组 × 三个类别（雷达因此有 3 个指标且没有缺口）。
   const gridRows = ['a', 'b', 'c'].flatMap((k, i) => ['p', 'q'].map((s, j) => ({ k, s, w: i + j + 1 })));
@@ -4665,6 +4666,76 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
   }
   ok('gauge：超出 0–100 明确报错并给出两条出路',
     gaugeOverflow.includes('0–100') && gaugeOverflow.includes('bar'));
+
+  const piePlain = buildOption([{ k: 'A', w: 3 }, { k: 'B', w: 2 }],
+    { kind: 'pie', title: null, x: 'k', value: 'w', series: null } as never).option as {
+      series: Array<{ radius: [string, string] }> };
+  const pieDonut = buildOption([{ k: 'A', w: 3 }, { k: 'B', w: 2 }],
+    { kind: 'pie', title: null, x: 'k', value: 'w', series: null, donut: true } as never).option as {
+      series: Array<{ radius: [string, string] }> };
+  ok('pie：donut 打开就是环形（中心留白），关掉仍是实心',
+    piePlain.series[0]!.radius[0] === '0%' && pieDonut.series[0]!.radius[0] === '45%');
+
+  // 断点：缺失点处断开（SVG 里是两段 path），打开 connectNulls 才连起来。
+  // 缺口是"这段没有数据"，连起来会被读成"这段数据是平的"——两种读法在图上必须分得开。
+  // 「工具收下了」不等于「画出来了」，所以这里数的是渲染出来的那条线有几个起点。
+  const gapRows = [
+    { d: '2026-01-01', s: '甲', w: 3 }, { d: '2026-01-02', s: '甲', w: 4 },
+    { d: '2026-01-03', s: '甲', w: 5 }, { d: '2026-01-04', s: '甲', w: 6 },
+    { d: '2026-01-01', s: '乙', w: 6 }, { d: '2026-01-03', s: '乙', w: 4 }, { d: '2026-01-04', s: '乙', w: 5 },
+  ];
+  const gapSpec = (extra: Record<string, unknown>) => ({
+    kind: 'line', title: null, x: 'd', value: 'w', series: 's',
+    xType: null, xLabel: null, valueLabel: null, unit: null, ...extra,
+  });
+  const gapSegments = (spec: Record<string, unknown>): number[] => {
+    const built = buildOption(gapRows, spec as never);
+    const svg = renderEchartsSvg(built.option, CHART_WIDTH, built.height);
+    return [...svg.matchAll(/<path d="([^"]*)"[^>]*stroke-linejoin="bevel"/g)]
+      .map(([, d]) => ((d ?? '').match(/M/g) ?? []).length)
+      .sort((a, b) => a - b);
+  };
+  ok('断点：缺失点处断开（有缺口的那条线画成两段）',
+    JSON.stringify(gapSegments(gapSpec({}))) === '[1,2]');
+  ok('断点：打开 connectNulls 才连成一条（不写就是断开）',
+    JSON.stringify(gapSegments(gapSpec({ connectNulls: true }))) === '[1,1]');
+  // 时间轴走另一条数据装配路（[时间, 值]）：过去这里把缺的那一行整个删掉，缺口就消失了。
+  ok('断点：时间轴上的缺失点同样断开，不连过去',
+    JSON.stringify(gapSegments(gapSpec({ xType: 'time' }))) === '[1,2]'
+    && JSON.stringify(gapSegments(gapSpec({ xType: 'time', connectNulls: true }))) === '[1,1]');
+
+  // 颜色跟实体：颜色由名字决定，同一个机房在饼图与折线图里同色，颜色能跨图对照；
+  // 不打开则照旧按序列序号取色（既有图的样子不变）。
+  const entityPie = [{ k: '机房甲', w: 5 }, { k: '机房乙', w: 3 }, { k: '机房丙', w: 2 }];
+  const entityLine = [
+    { d: 'D1', s: '机房丙', w: 2 }, { d: 'D1', s: '机房甲', w: 5 },
+    { d: 'D2', s: '机房乙', w: 3 }, { d: 'D2', s: '机房甲', w: 4 },
+  ];
+  const pieColorOf = (entityColor: boolean | null): Record<string, string> => Object.fromEntries(
+    (buildOption(entityPie, {
+      kind: 'pie', title: null, x: 'k', value: 'w', series: null, entityColor,
+    } as never)
+      .option as { series: Array<{ data: Array<{ name: string; itemStyle: { color: string } }> }> })
+      .series[0]!.data.map((slice) => [slice.name, slice.itemStyle.color]));
+  const lineColorOf = (rows: readonly Record<string, unknown>[], entityColor: boolean | null): Record<string, string> =>
+    Object.fromEntries(
+      (buildOption(rows, {
+        kind: 'line', title: null, x: 'd', value: 'w', series: 's',
+        xType: null, xLabel: null, valueLabel: null, unit: null, entityColor,
+      } as never)
+        .option as { series: Array<{ name: string; itemStyle: { color: (params: { value: number }) => string } }> })
+        .series.map((one) => [one.name, one.itemStyle.color({ value: 1 })]));
+  const namedPie = pieColorOf(true);
+  const namedLine = lineColorOf(entityLine, true);
+  ok('颜色跟实体：同一个实体在饼图与折线图里同色',
+    Object.keys(namedPie).every((name) => namedPie[name] === namedLine[name]));
+  ok('颜色跟实体：同一张图里不同实体不同色',
+    new Set(Object.values(namedPie)).size === 3 && new Set(Object.values(namedLine)).size === 3);
+  const reversedLine = lineColorOf([...entityLine].reverse(), true);
+  ok('颜色跟实体：行序变了颜色不变（颜色跟名字，不跟行序）',
+    Object.keys(namedLine).every((name) => namedLine[name] === reversedLine[name]));
+  ok('颜色跟实体：不打开时照旧按序号取色（默认图的样子不变）',
+    pieColorOf(null)['机房甲'] === SERIES_COLORS[0] && pieColorOf(null)['机房乙'] === SERIES_COLORS[1]);
 
   const graphRows = [
     { id: 'core', label: '核心', depth: 0 },

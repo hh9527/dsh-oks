@@ -6,6 +6,7 @@
  *  译者只做映射，不做判断：哪些序列要画、配色怎么轮、空数据怎么办，都由这里与调用方共享的规则决定。
  */
 import {
+  ENTITY_COLORS,
   NEGATIVE_COLOR,
   PAGE_WIDTH,
   SERIES_COLORS,
@@ -60,6 +61,11 @@ export interface OptionInput {
   unit: string | null;
   /** 图元专属：column / area 的堆叠方式。total 是绝对量、percent 是各组占比。 */
   stack?: 'total' | 'percent' | null;
+  donut?: boolean | null;
+  /** 图元专属：line / area 的缺失点连不连成直线；不写就断开。 */
+  connectNulls?: boolean | null;
+  /** 颜色跟实体：颜色由名字决定，同一个实体跨图同色。 */
+  entityColor?: boolean | null;
   /** 图元专属：scatter 的第三维——把这一列的数值映射成点的大小。 */
   size?: string | null;
   /** 第二个度量：同一张图里再画一条线，带独立的右侧数值轴。 */
@@ -143,6 +149,16 @@ const emptyOption = (spec: OptionInput, layout: ReturnType<typeof resolveLayout>
     subtextStyle: { fontSize: layout.labelFont, color: '#8494a5' },
   },
 });
+
+/** 名字到色板的落点：同一串文字每次都得到同一个数（FNV-1a，跨运行、跨机器都一样）。 */
+const hashName = (name: string): number => {
+  let hash = 2166136261;
+  for (const char of name) {
+    hash ^= char.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  return hash;
+};
 
 /**
  * 规格 + 结果行 → echarts option。
@@ -468,6 +484,28 @@ export const buildOption = (
   const palette = spec.style?.colors !== undefined && spec.style.colors.length > 0 ? spec.style.colors : SERIES_COLORS;
   const pick = (index: number): string => palette[index % palette.length];
   const showLabels = spec.style?.labels === true;
+  // 断点：缺失点在折线上连成直线还是断开。不写就是断开——缺口是"这段没有数据"，
+  // 连起来会读成"这段数据是平的"。
+  const connectNulls = supports(spec.kind, 'connectNulls') && spec.connectNulls === true;
+  // 颜色跟实体：名字决定颜色，于是同一个机房在饼图与折线图里同色，读者能靠颜色对照。
+  // 名字的哈希定落点；同一张图里两个名字撞到同一格时按名字顺序往后顺延，图内就不会出现两个实体同色
+  //（名字比色板还多时仍会重复——色板是有限的）。
+  const entityColor = supports(spec.kind, 'entityColor') && spec.entityColor === true;
+  const colorResolver = (names: readonly string[]): ((name: string, index: number) => string) => {
+    if (!entityColor) return (_name, index) => pick(index);
+    const byName = spec.style?.colors !== undefined && spec.style.colors.length > 0 ? spec.style.colors : ENTITY_COLORS;
+    const taken = new Set<number>();
+    const slots = new Map<string, number>();
+    for (const name of [...new Set(names)].sort()) {
+      let slot = hashName(name) % byName.length;
+      while (taken.has(slot)) slot = (slot + 1) % byName.length;
+      taken.add(slot);
+      slots.set(name, slot);
+    }
+    // 名字为空的那一条没有实体可跟，退回按序号取色：单序列的图不会因为开了这个开关就换个颜色。
+    return (name, index) => (name === '' ? pick(index) : byName[slots.get(name) ?? 0]);
+  };
+
   // spec.stack 的"没写"是 null，而下面各处的判断比的是 undefined——两种"没有"混在一起，
   // "不给 stack"就会被当成 stack: 'total'。"分组柱"因此在真机上从来画不出来（永远是多段的一根）。
   // 在这一行统一成 undefined，让"没写"和"没写"只有一个样子。
@@ -532,16 +570,16 @@ export const buildOption = (
     };
   }
 
-  // 饼图：单一序列，数据是"名称 + 数值"，配色按扇区轮转。
+  // 饼图：单一序列，数据是"名称 + 数值"，配色按扇区轮转（颜色跟实体时按名字取色）
   if (spec.kind === 'pie') {
     const bucket = points.get(seriesNames[0]) ?? new Map<string, number>();
-    const data = [...bucket.entries()]
-      .filter(([, value]) => value > 0)
-      .map(([name, value], index) => ({
-        name,
-        value,
-        itemStyle: { color: pick(index) },
-      }));
+    const slices = [...bucket.entries()].filter(([, value]) => value > 0);
+    const colorAt = colorResolver(slices.map(([name]) => name));
+    const data = slices.map(([name, value], index) => ({
+      name,
+      value,
+      itemStyle: { color: colorAt(name, index) },
+    }));
     if (data.length === 0) return { option: emptyOption(spec, layout), height };
     return {
       height,
@@ -549,7 +587,8 @@ export const buildOption = (
         title,
         series: [{
           type: 'pie',
-          radius: ['0%', '68%'],
+          // 环形：中心留白（`donut` 开关，只有饼图有这个形状）。
+          radius: [spec.donut === true ? '45%' : '0%', '68%'],
           center: ['50%', spec.title === null ? '52%' : '56%'],
           data,
           label: { fontSize: labelFont, color: '#1c2b3a' },
@@ -634,6 +673,7 @@ export const buildOption = (
     containLabel: false,
   };
 
+  const colorAt = colorResolver(seriesNames);
   const series = seriesNames.map((name, index) => {
     const bucket = points.get(name) ?? new Map<string, number>();
     const raw = categories.map((category) => bucket.get(category) ?? null);
@@ -645,7 +685,7 @@ export const buildOption = (
         return value === null || totals === 0 ? null : Math.round((value / totals) * 1000) / 10;
       })
       : raw;
-    const color = pick(index);
+    const color = colorAt(name, index);
     const base = {
       name: name === '' ? axisName(spec.valueLabel, spec.unit) ?? 'value' : name,
       data,
@@ -653,7 +693,7 @@ export const buildOption = (
         // 负值换区分色：柱状图里正负同轴时更好读。
         color: (params: { value: number | null }) => (params.value !== null && params.value < 0 ? NEGATIVE_COLOR : color),
       },
-      connectNulls: false,
+      connectNulls,
       // 堆叠只在 column / area 上有意义：同一个 stack 名的序列会叠在一起。
       stack: stack === undefined ? undefined : 'total',
       label: showLabels
@@ -850,9 +890,9 @@ export const buildOption = (
     const data = seriesNames.map((name, index) => ({
       name: name === '' ? axisName(spec.valueLabel, spec.unit) ?? 'value' : name,
       value: categories.map((category) => points.get(name)?.get(category) ?? null),
-      itemStyle: { color: pick(index) },
-      lineStyle: { width: 2, color: darken(pick(index)) },
-      areaStyle: { color: pick(index), opacity: 0.12 },
+      itemStyle: { color: colorAt(name, index) },
+      lineStyle: { width: 2, color: darken(colorAt(name, index)) },
+      areaStyle: { color: colorAt(name, index), opacity: 0.12 },
       label: showLabels
         ? { show: true, fontSize: Math.max(9, labelFont - 2), color: '#3d4d5c' }
         : undefined,
@@ -904,14 +944,14 @@ export const buildOption = (
     smooth: false,
     symbol: 'circle',
     symbolSize: 6,
-    connectNulls: false,
+    connectNulls,
     lineStyle: { width: 2, color: pick(seriesNames.length) },
     itemStyle: { color: pick(seriesNames.length) },
-    // 时间轴时同样要以 [时间, 值] 给出，echarts 才会按时间排布。
+    // 时间轴时同样要以 [时间, 值] 给出，echarts 才会按时间排布。缺失的那个点也照样列出
+    //（值为 null）——把整条删掉等于说"这段时间不在轴上"，缺口会消失、线会直接跨过去。
     data: spec.xType === 'time' && (spec.kind === 'line' || spec.kind === 'area')
       ? categories
         .map((category) => [category, toNumber(firstRowByCategory.get(category)?.[second.value])] as [string, number | null])
-        .filter((pair) => pair[1] !== null)
       : categories.map((category) => toNumber(firstRowByCategory.get(category)?.[second.value])),
   };
 
@@ -952,15 +992,14 @@ export const buildOption = (
       // 时间轴时数据要以 [时间, 值] 形式给出，echarts 才会按时间排布。
       // 值必须取**已经算好的那一份**（stack: 'percent' 时它就是归一化结果）——回到原始行再取一次
       // 会把归一化丢掉，堆叠的总和线于是一路爬出绘图区、看起来像"图被截断"。
+      // 缺失点（null）留在数组里：断点由 `connectNulls` 决定，不在这一步被抹掉。
       series: (spec.kind === 'line' || spec.kind === 'area') && spec.xType === 'time'
         ? allSeries.map((item, index) => {
           if (index >= series.length) return item;
           const values = (item as { data?: (number | null)[] }).data ?? [];
           return {
             ...item,
-            data: categories
-              .map((category, i) => [category, values[i] ?? null] as [string, number | null])
-              .filter((pair) => pair[1] !== null),
+            data: categories.map((category, i) => [category, values[i] ?? null] as [string, number | null]),
           };
         })
         : allSeries,

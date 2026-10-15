@@ -28,6 +28,14 @@ export const EXPRESSION_SUPPORT = {
   second: ['bar', 'column', 'line', 'area'],
   /** 参考线 / 阈值线。 */
   marks: ['bar', 'column', 'line', 'area', 'gauge'],
+  /** 环形：饼图中心留白。 */
+  donut: ['pie'],
+  /** 断点：缺失点在折线上连成直线（`true`）还是断开成两段（不写）。
+   *  缺口本身是信息——"这段没有数据"与"这段数据是平的"在图上必须能分开。 */
+  connectNulls: ['line', 'area'],
+  /** 颜色跟实体：颜色由名字决定（`true`），于是同一个实体在哪张图里都是同一个颜色；
+   *  不写就按序列序号取色。 */
+  entityColor: ['bar', 'column', 'line', 'area', 'pie', 'radar'],
 } as const;
 
 /** 图元专属开关的名字。 */
@@ -42,6 +50,13 @@ export const supportedKinds = (feature: ExpressionSwitch): readonly ChartKind[] 
 
 /** 色板：同一个序列在不同图元里颜色保持一致。 */
 export const SERIES_COLORS = ['#5a8cf0', '#e0803a', '#4aa96c', '#c0567a', '#8a6ad0'];
+
+/** 跟实体取色时的色板。名字的哈希落在色板上，格子多几个，同一张图里撞色的机会就小几个
+ *  （名字多于色板时仍会重复，报告里如实说明）。 */
+export const ENTITY_COLORS = [
+  '#5a8cf0', '#e0803a', '#4aa96c', '#c0567a', '#8a6ad0', '#2f9bb3', '#b8952e', '#7a8b3a',
+  '#d2694f', '#4f7fc4', '#a05fb0', '#3f9e8d', '#c26a2e', '#6b7fd0', '#9e5b7a', '#5aa0c0',
+];
 
 /** 负值条的颜色：方向之外再加一重区分，正负一眼可辨。 */
 export const NEGATIVE_COLOR = '#c0567a';

@@ -249,6 +249,11 @@ interface ChartArgs {
  *  哪些图元还要 series、哪些开关对哪些图元有意义，由 parseChartSpec 按 shared.ts 里那份适用表判定。
  *  layout 是排版覆盖项（字号、高度、是否斜排标签），全部可选、缺省走默认规则。 */
 interface ChartSpec {
+  donut?: boolean | null;
+  /** 图元专属：line / area 的缺失点连成直线还是断开。 */
+  connectNulls?: boolean | null;
+  /** 颜色跟实体：颜色由名字决定。 */
+  entityColor?: boolean | null;
   kind: ChartKind;
   title: string | null;
   x: string;
@@ -605,6 +610,27 @@ const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: string } =
     }
     if (!supports(spec.kind, 'bins')) return { error: unsupported('bins', spec.kind) };
     spec.bins = record.bins;
+  }
+  if (record.donut !== undefined && record.donut !== null) {
+    if (typeof record.donut !== 'boolean') {
+      return { error: `spec.donut 是 true / false，收到 ${JSON.stringify(record.donut)}` };
+    }
+    if (!supports(spec.kind, 'donut')) return { error: unsupported('donut', spec.kind) };
+    spec.donut = record.donut;
+  }
+  if (record.connectNulls !== undefined && record.connectNulls !== null) {
+    if (typeof record.connectNulls !== 'boolean') {
+      return { error: `spec.connectNulls 是 true / false，收到 ${JSON.stringify(record.connectNulls)}` };
+    }
+    if (!supports(spec.kind, 'connectNulls')) return { error: unsupported('connectNulls', spec.kind) };
+    spec.connectNulls = record.connectNulls;
+  }
+  if (record.entityColor !== undefined && record.entityColor !== null) {
+    if (typeof record.entityColor !== 'boolean') {
+      return { error: `spec.entityColor 是 true / false，收到 ${JSON.stringify(record.entityColor)}` };
+    }
+    if (!supports(spec.kind, 'entityColor')) return { error: unsupported('entityColor', spec.kind) };
+    spec.entityColor = record.entityColor;
   }
   if (spec.size !== null && !supports(spec.kind, 'size')) return { error: unsupported('size', spec.kind) };
   if (spec.kind === 'histogram' && spec.value === '') {
@@ -1877,6 +1903,18 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             type: 'object',
             description: 'Figure specification. kind is required: bar needs x (the category column) and value; column needs x and value — one bar per category, or grouped bars when series is given, or stacked ones when stack is given; line needs x and value (xType is inferred from the column, override it with number or time), plus an optional series for several lines; area is a line with the region below it filled, and takes the same fields as line (stack works here too); pie needs x (the slice label column) and value, and only positive values are drawn; scatter needs x and value (two numeric columns) and takes an optional size column for bubble charts; histogram needs only value (one numeric column) and shows how those values are distributed; box needs x (the category) and value, and draws one box per category; heatmap needs x (the horizontal category), series (the vertical category) and value, and colours each cell by its value — a combination with no row stays blank, not zero; radar needs x (the indicator), series (the object compared) and value, at least three indicators, and gives every indicator its own scale. title / xLabel / valueLabel / unit are display text you supply.',
             properties: {
+              donut: {
+                type: 'boolean',
+                description: 'pie 的环形开关：true 时中心留白（只对 pie 有意义，别的图元填它会报错）。',
+              },
+              connectNulls: {
+                type: 'boolean',
+                description: 'line / area only: true draws the line straight across a missing point; omit (the default) and the line breaks, so a gap reads as "no data here" instead of "the value was flat".',
+              },
+              entityColor: {
+                type: 'boolean',
+                description: 'bar / column / line / area / pie / radar only: true colours each entity by its name (the same name keeps the same colour in every figure, so colours can be compared across figures); omit and colours follow the series order. Names are hashed onto the palette, and two names that land on the same colour in one figure are shifted apart.',
+              },
               kind: { type: 'string', enum: [...CHART_KINDS], description: 'Which figure to draw.' },
               bins: { type: 'number', description: 'histogram only: how many bins to cut the value range into. Omit to let it pick by sample count.' },
               title: { type: 'string', description: 'Title shown above the figure.' },
