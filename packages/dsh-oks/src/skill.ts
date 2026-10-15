@@ -7,7 +7,7 @@ import type { LogFn, PluginContext, SkillsService } from './host.ts';
 /** rank 250：工作区自己的 skill(100/200) 能覆盖它，用户级(400/500) 不能。 */
 export const SKILL = {
   name: 'oks-query',
-  description: 'Use when a business question must be answered from domain data: discover the domain model with oks_info, validate structured intents with oks_check_query_intent, and get actual rows with oks_exec_query_intent. Fix the current instant and zone once with create_current_ctx_data (it lands a material), then compute the absolute boundaries inside jq with tzadd / tzfloor / tzceil — the evaluator has no clock.',
+  description: 'Use when answering a business question from the data this workspace declares: when to read the knowledge, construct data, draw a figure, assemble a report, go back a step, or ask the user.',
   source: 'runtime',
 };
 

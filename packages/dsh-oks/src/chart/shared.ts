@@ -48,6 +48,12 @@ export const supports = (kind: ChartKind, feature: ExpressionSwitch): boolean =>
 /** 开关适用的图元清单，报错时用它告诉 agent 该填给谁。 */
 export const supportedKinds = (feature: ExpressionSwitch): readonly ChartKind[] => EXPRESSION_SUPPORT[feature];
 
+/** 开关适用矩阵的一句话说明：声明里那行由它生成，于是表、校验与报错三处不会各写一遍。 */
+export const expressionMatrix = (): string =>
+  (Object.keys(EXPRESSION_SUPPORT) as ExpressionSwitch[])
+    .map((feature) => `${feature}: ${EXPRESSION_SUPPORT[feature].join(' | ')}`)
+    .join('; ');
+
 /** 色板：同一个序列在不同图元里颜色保持一致。 */
 export const SERIES_COLORS = ['#5a8cf0', '#e0803a', '#4aa96c', '#c0567a', '#8a6ad0'];
 

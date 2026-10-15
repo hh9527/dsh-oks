@@ -3182,14 +3182,15 @@ console.log('=== 非快照产物（只有 wasm 头，没有 telora.snapshot 段�
   }
 }
 
-// ── 插件只写工作区的 artifacts/（交付物）与 .oks/（状态与内部材料），别处不碰 ──────
-console.log('=== 插件只写 artifacts/ 与 .oks/ ===');
+// ── 插件只写工作区的 artifacts/（交付物）、.oks/（状态与内部材料）与 .work/（文本产物），别处不碰 ──
+console.log('=== 插件只写 artifacts/、.oks/ 与 .work/ ===');
 {
   const after = workspaceListing();
   const before = new Set(listingBefore.split(',').filter(Boolean));
   const added = after.split(',').filter(Boolean).filter((name) => !before.has(name));
   console.log(`  顶层新增条目：${added.join(', ') || '(无)'}`);
-  const allowed = ['artifacts', '.oks'];
+  // `.work/` 是 agent 的文本产物区（jq 程序与报告正文），由 work_write 按需建立；另外两个是插件的。
+  const allowed = ['artifacts', '.oks', '.work'];
   if (added.some((name) => !allowed.includes(name))) throw new Error(`插件创建了 ${allowed.join(' / ')} 之外的东西：${added.join(', ')}`);
   // 状态目录里只有状态库：没有计划文件，也没有缓存出来的产物。
   const stateFiles = existsSync(`${DEV_ROOT}/.oks`) ? readdirSync(`${DEV_ROOT}/.oks`) : [];
