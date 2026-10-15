@@ -2140,6 +2140,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           note,
           figureCount: assembledReport.figureCount,
           NumWithoutSource: assembledReport.NumWithoutSource,
+          LitNotOnSpan: assembledReport.LitNotOnSpan,
           tableCount: assembledReport.tableCount,
         };
       },

@@ -442,12 +442,15 @@ export function checkAuthorXhtml(xhtml: string): {
     if (heading !== null) heading.text.push(text);
     if (quiet > 0) return;
     const end = at();
-    // 记号 = 字母/数字/下划线/点/连字符/斜杠连成的一串。含字母的记号是标识符或术语
+    // 记号 = 字母/数字/下划线/点/连字符/斜杠连成的一串。含字母的记号是标识符或术语；
+    // 数字紧跟 `#` 的（#123）是引用编号。
     // （P95、K8s、A-123、A_123、A123、A.1.2.3、HTTP/2），里面的数字不是业务数字。
     for (const token of text.matchAll(/[A-Za-z0-9_.\-/]+/g)) {
       if (/[A-Za-z]/.test(token[0])) continue;
       for (const match of token[0].matchAll(/[+-]?\d+/g)) {
         const index = (token.index ?? 0) + (match.index ?? 0);
+        // 引用编号也不是业务数字：#123、##1。
+        if (index > 0 && text[index - 1] === '#') continue;
         const before = text.slice(0, index + match[0].length);
         const column = before.includes('\n') ? end.column : Math.max(1, end.column - text.length + index);
         numWithoutSource.push({

@@ -2169,6 +2169,8 @@ console.log('=== oks_chart（服务端出图）===');
     },
     name: 'probe_report',
   });
+  ok('oks_report 回执带 NumWithoutSource 与 LitNotOnSpan 两个数',
+    typeof report.value.NumWithoutSource === 'number' && typeof report.value.LitNotOnSpan === 'number');
   const reportHtml = readFileSync(resolve(DEV_ROOT, report.value.htmlSrc), 'utf8');
   console.log(`  报告：${report.value.figureCount} 张引用的图 → ${report.value.htmlSrc}`);
   if (report.value.figureCount !== 1) throw new Error(`这份报告引用了一张图，收到 ${report.value.figureCount}`);
@@ -4559,7 +4561,7 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
   <p><span data-oks-lit="">第 1 步</span> 先看分布，<span data-oks-lit="">24 小时</span> 口径。</p>
   <p><span data-oks-ref="alarms" data-oks-pick=".rowCount">0</span> 条。</p>
   <p>样例：<code>value = 42</code>。</p>
-  <p>P95 与 K8s，A-123、A_123、A123、A.1、A.1.2.3 都是标识符。</p>
+  <p>P95 与 K8s，A-123、A_123、A123、A.1、A.1.2.3、#123 都是标识符。</p>
   <p>时延 5 ms，集群 3 个。</p>
   <p data-oks-lit="">写错标签的 99</p>
   <!-- 注释里的 123 不算 -->
@@ -4579,7 +4581,8 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     && unmarked.includes('1487') && unmarked.includes('99')
     && unmarked.includes('5 ms') && unmarked.includes('3 个'));
   ok('数字来源：标识符里的数字不算（P95 / K8s / A-123 / A_123 / A123 / A.1 / A.1.2.3）',
-    !unmarked.includes('都是标识符') && !unmarked.includes('P95 与 K8s'));
+    !unmarked.includes('都是标识符') && !unmarked.includes('P95 与 K8s')
+    && !unmarked.includes('#123'));
   ok('数字来源：lit span / ref span / pre·code / 注释里的数字都不报',
     !unmarked.includes('第 1 步') && !unmarked.includes('24 小时')
     && !unmarked.includes('42') && !unmarked.includes('123'));
