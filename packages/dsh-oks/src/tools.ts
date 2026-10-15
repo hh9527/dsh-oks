@@ -1,5 +1,5 @@
-import { applyOps, encode, parseMoment, resolveZone } from './time.ts';
-import type { ContextTimeZone, TimeState } from './time.ts';
+import { encode, resolveZone } from './time.ts';
+import type { ContextTimeZone } from './time.ts';
 import { statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { capLine } from './text.ts';
@@ -17,7 +17,7 @@ import { checkAuthorXhtml } from './report/xhtml.ts';
 import type { DisplaySource } from './chart/report.ts';
 import { CHART_KINDS, inferXType, supportedKinds, supports, toNumber } from './chart/shared.ts';
 import type { ChartKind, ExpressionSwitch, LayoutOverrides, MarkLine, SecondMetric, StyleOverrides } from './chart/shared.ts';
-import { OBJECT_OUTPUT, renderArtifacts, renderChart, renderCheck, renderCreateData, renderJqInto, renderJqTransform,
+import { OBJECT_OUTPUT, renderArtifacts, renderChart, renderCheck, renderCreateData, renderCurrentCtx, renderJqInto, renderJqTransform,
   renderCollect, renderJson, renderQuery, renderValue, renderView, renderWorkDelete, renderWorkEdit,
   renderWorkRead, renderWorkWrite,
   shapeOf, withoutQueries } from './response.ts';
@@ -836,11 +836,6 @@ const parseNamedIntents = (raw: unknown, withKey: boolean, toolName: string): Pa
 };
 
 /** 两个时间工具的入参。 */
-interface TimeArgs {
-  timeZone?: string;
-  base?: unknown;
-  operations?: unknown;
-}
 
 /** 两个 jq 工具的入参：具名输入 + 两种取法（`pick` 取路径 / `byFile` 跑程序）；物化那一个另有落点与动机。 */
 interface TransformArgs {
@@ -1701,7 +1696,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'jq_transform',
-      description: 'Run a jaq (jq-compatible) program over saved data without saving anything, so a result can be looked at before it is kept. inputs maps a name of your choosing to a src a previous receipt gave you; each entry is either that src or {"src": "<src>", "root": "<jq dot path>"}, where root is which slice of the file the program gets — the default ".data" is that record\'s own data (a query result is {rows, columns}; a transform is the value it produced; a figure or table is {rows, spec}; a report is {assets, items, structure} - items and the structure region with display values and your commentary cleared), ".origin" is the source chain {root, nodes}, ".meta" is the record\'s self-description, "." is the whole {meta, origin, data}, and deeper paths like ".data.rows" work too — so reading a record\'s provenance takes no separate tool. A path that does not exist fails with the keys that do. The program lives in a file under .work/ and byFile names it — "byFile": "analysis.jq", written first with work_write — so jq syntax never sits next to the JSON of the call itself. The program sees one object whose keys are the input names, so write ".events.rows[] | select(.count > 100)" or "{total: ([.events.rows[].n] | add)}". Leave byFile out and the result is that object itself ({"events": <slice>}); pick then takes one part of the result back, as a jq dot path without quotes ("pick": ".events"), which is how a single input is read under its bare name. With no inputs that object is {}, so a constant arrives through a program file. A jq program produces a stream of values: exactly one value comes back as that value, several come back as an array, none comes back as []. The receipt reports every input, the shape of the result and the values themselves, so look before you save; an expression that fails comes back with the evaluator\'s own message — which names the .work/ file and the line it stopped at, followed by the shape of each input the program saw, so one look at the error is usually enough to fix the program. To keep a result for a later step or for a figure, materialise it with jq_transform_into.',
+      description: 'Run a jaq program over saved data without saving anything, so a result can be looked at before it is kept. The engine is jaq plus a few time-zone additions — gmtime_tz(zone), strftime_tz(fmt; zone), tzadd(unit; amount; zone), tzfloor(unit; zone), tzceil(unit; zone), each taking epoch seconds from the pipe and the zone explicitly; the clock and the environment stay outside it (no now, env, localtime, strflocaltime, input or inputs), so the current instant reaches the program only as a value you pass in, from create_current_ctx_data. inputs maps a name of your choosing to a src a previous receipt gave you; each entry is either that src or {"src": "<src>", "root": "<jq dot path>"}, where root is which slice of the file the program gets — the default ".data" is that record\'s own data (a query result is {rows, columns}; a transform is the value it produced; a figure or table is {rows, spec}; a report is {assets, items, structure} - items and the structure region with display values and your commentary cleared), ".origin" is the source chain {root, nodes}, ".meta" is the record\'s self-description, "." is the whole {meta, origin, data}, and deeper paths like ".data.rows" work too — so reading a record\'s provenance takes no separate tool. A path that does not exist fails with the keys that do. The program lives in a file under .work/ and byFile names it — "byFile": "analysis.jq", written first with work_write — so jq syntax never sits next to the JSON of the call itself. The program sees one object whose keys are the input names, so write ".events.rows[] | select(.count > 100)" or "{total: ([.events.rows[].n] | add)}". Leave byFile out and the result is that object itself ({"events": <slice>}); pick then takes one part of the result back, as a jq dot path without quotes ("pick": ".events"), which is how a single input is read under its bare name. With no inputs that object is {}, so a constant arrives through a program file. A jq program produces a stream of values: exactly one value comes back as that value, several come back as an array, none comes back as []. The receipt reports every input, the shape of the result and the values themselves, so look before you save; an expression that fails comes back with the evaluator\'s own message — which names the .work/ file and the line it stopped at, followed by the shape of each input the program saw, so one look at the error is usually enough to fix the program. To keep a result for a later step or for a figure, materialise it with jq_transform_into.',
       parameters: {
         type: 'object',
         properties: {
@@ -1751,7 +1746,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'jq_transform_into',
-      description: 'Run a jaq (jq-compatible) program over saved data and save the result as data a later step or a figure can read. inputs maps a name of your choosing to a src from an earlier receipt; each entry is either that src or {"src": "<src>", "root": "<jq dot path>"}, and the program sees one object whose keys are those names — the default ".data" is the record\'s own data (query → {rows, columns}, transform → its value, figure/table → {rows, spec}, report -> {assets, items, structure}, the structure region being the cleared one), ".origin" is the source chain and "." the whole {meta, origin, data}. Leave byFile out and the result is that object itself; pick takes one part of it back as a jq dot path without quotes ("pick": ".events"). With no inputs the object is {}, so a constant arrives through a program file. The tool builds the provenance itself: it reads each input, runs the program, and writes {meta, origin, data} into .oks/data/ — the new origin carries this operation (snip, motivation, output count, which name used which input) plus the complete source chain of every input, while the inputs\' own data stays out of it. A value stream is collected the same way as in jq_transform: one value is that value, several are an array, none is []. The receipt gives you the dataSrc, the shape and the whole source chain — it does not repeat the values, so explore with jq_transform when you want to see them. Data the agent supplies itself does not come in here: create_data makes it an envelope first, so that the numbers have a recorded reason.',
+      description: 'Run a jaq program over saved data and save the result as data a later step or a figure can read — the same engine as jq_transform: jaq plus gmtime_tz(zone), strftime_tz(fmt; zone), tzadd(unit; amount; zone), tzfloor(unit; zone), tzceil(unit; zone), with the clock and the environment outside it (the instant comes from create_current_ctx_data). inputs maps a name of your choosing to a src from an earlier receipt; each entry is either that src or {"src": "<src>", "root": "<jq dot path>"}, and the program sees one object whose keys are those names — the default ".data" is the record\'s own data (query → {rows, columns}, transform → its value, figure/table → {rows, spec}, report -> {assets, items, structure}, the structure region being the cleared one), ".origin" is the source chain and "." the whole {meta, origin, data}. Leave byFile out and the result is that object itself; pick takes one part of it back as a jq dot path without quotes ("pick": ".events"). With no inputs the object is {}, so a constant arrives through a program file. The tool builds the provenance itself: it reads each input, runs the program, and writes {meta, origin, data} into .oks/data/ — the new origin carries this operation (snip, motivation, output count, which name used which input) plus the complete source chain of every input, while the inputs\' own data stays out of it. A value stream is collected the same way as in jq_transform: one value is that value, several are an array, none is []. The receipt gives you the dataSrc, the shape and the whole source chain — it does not repeat the values, so explore with jq_transform when you want to see them. Data the agent supplies itself does not come in here: create_data makes it an envelope first, so that the numbers have a recorded reason.',
       parameters: {
         type: 'object',
         properties: {
@@ -2376,59 +2371,44 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       },
     },
     {
-      name: 'time_now',
-      description: 'Read the current instant from the host clock in several standard forms — epoch milliseconds and seconds, UTC text, RFC 3339, local text with its UTC offset, calendar date, and ISO week. The knowledge service never reads the clock, so every relative expression ("last week", "the last 24 hours") has to become an absolute boundary before it is submitted: resolve it here, state the time zone you used, and pick whichever form the knowledge node itself declares. This tool knows nothing about domain time formats.',
+      name: 'create_current_ctx_data',
+      description: 'Read the current session context — the instant and the time zone in force — ONCE, and land it as an envelope in .oks/data/ (<date>-current-<hash>.ctx.json), returning both the dataSrc and that data. Takes no arguments. Use it at the start of any question whose answer depends on "now", then read it inside jq (as a named input) and compute the absolute boundaries in the program with tzadd / tzfloor / tzceil / gmtime_tz / strftime_tz (the zone is passed explicitly): the engine has no clock, so every boundary comes from this material. The zone is the one attached to the current turn (the browser zone); when the context carries none, or carries two that disagree, the call fails and asks you to have the user confirm it — nothing is guessed.',
       parameters: {
         type: 'object',
-        properties: {
-          timeZone: {
-            type: 'string',
-            description: 'IANA time zone such as "Asia/Shanghai". By default the zone comes from the request context — the browser zone the client attached to the current turn messages, read per the plugin spec — so pass one only to override it (for example when the context zone is mixed or missing). The zone comes from the request context or from this argument; with neither, the call fails and asks you to confirm it with the user. The source actually used is echoed back.',
-          },
-        },
+        properties: {},
         additionalProperties: false,
       },
-      output: { schema: OBJECT_OUTPUT, render: renderValue },
-      async execute(args: TimeArgs, exec: ToolExec) {
-        const { zone, source } = resolveZone(args?.timeZone, contextZone(exec));
-        return { timeZone: zone, timeZoneSource: source, ...encode(Date.now(), zone) };
-      },
-    },
-    {
-      name: 'time_calc',
-      description: 'Apply ordered calendar arithmetic to an instant and return every standard form of the result: add (year/quarter/month/week/day/hour/minute/second), floor/ceil to a calendar boundary (weeks start on Monday unless weekStartsOn is given), and convert between time zones. Day and week arithmetic keeps the local wall clock, so a day across a daylight-saving change is not always 24 hours; month/quarter/year addition clamps to the last valid day. Intervals are half-open [start, end), so compute both ends. base accepts "now" (the default), epoch milliseconds as a number, RFC 3339 text, or zone-less text "YYYY-MM-DD[ HH:MM[:SS]]" read as local time in the given zone.',
-      parameters: {
-        type: 'object',
-        properties: {
-          base: {
-            oneOf: [{ type: 'string' }, { type: 'number' }],
-            description: '"now" (default), epoch milliseconds as a number, RFC 3339 text, or zone-less "YYYY-MM-DD[ HH:MM[:SS]]" read as local time in timeZone.',
+      output: { schema: OBJECT_OUTPUT, render: renderCurrentCtx },
+      async execute(_args: unknown, exec: ToolExec) {
+        const entry = knowledge.ensureWorkspace(exec);
+        // 时区只能来自当轮上下文：没有、或两份互相冲突，就明确报错让 agent 去问用户（不猜）。
+        const { zone, source } = resolveZone(undefined, contextZone(exec));
+        const at = Date.now();
+        const encoded = encode(at, zone);
+        const data = {
+          // 这个固定时刻的**绝对值**表示：epoch 毫秒 + UTC 的 RFC 3339（合起来就是"这一刻在 UTC
+          // 下的样子"）；时区按层放在下面。墙钟与日历边界都是程序的活：`tzwall(zone)` 取墙钟、
+          // `tzfloor` / `tzceil` / `tzadd` 取边界。
+          utc: {
+            epochMillis: encoded.epochMillis,
+            rfc3339: encoded.rfc3339,
           },
-          timeZone: {
-            type: 'string',
-            description: 'IANA time zone such as "Asia/Shanghai". By default the zone comes from the request context — the browser zone the client attached to the current turn messages, read per the plugin spec — so pass one only to override it (for example when the context zone is mixed or missing). The zone comes from the request context or from this argument; with neither, the call fails and asks you to confirm it with the user. The source actually used is echoed back.',
-          },
-          operations: {
-            type: 'array',
-            description: 'Applied in order, e.g. {"op":"add","unit":"month","amount":-1}, {"op":"floor","unit":"week","weekStartsOn":1}, {"op":"ceil","unit":"day"}, {"op":"convert","zone":"UTC"}.',
-            items: { type: 'object', additionalProperties: true },
-          },
-        },
-        additionalProperties: false,
-      },
-      output: { schema: OBJECT_OUTPUT, render: renderValue },
-      async execute(args: TimeArgs, exec: ToolExec) {
-        const { zone, source } = resolveZone(args?.timeZone, contextZone(exec));
-        const base = parseMoment(args?.base, zone);
-        const state: TimeState = { epochMillis: base, zone };
-        const result = applyOps(state, args?.operations);
-        return {
-          timeZone: result.zone,
-          timeZoneSource: source,
-          base: { input: args?.base ?? 'now', ...encode(base, zone) },
-          operations: result.applied,
-          ...encode(result.epochMillis, result.zone),
+          // 时区按**层**放：现在只有当轮会话（浏览器）这一层；将来加服务端时是
+          // `tz: { client: {...}, server: {...} }` —— 槽位只增不改，读路径的含义不会漂。
+          tz: { client: { id: encoded.zone, offset: encoded.offset, offsetMinutes: encoded.offsetMinutes } },
         };
+        pruneBeforeWrite(entry);
+        const saved = saveInputData({
+          root: entry.settings.workspaceRoot,
+          name: 'current',
+          motivation: '读当轮会话上下文（时刻与时区），作为这组问题的时间基准',
+          data,
+          kind: 'context',
+        });
+        const ms = Date.now() - at;
+        log(`[oks] create_current_ctx_data · ${zone}（来源 ${source}）`
+          + ` · ${saved.bytes} B · ${ms} ms · ${saved.dataSrc}`);
+        return { dataSrc: saved.dataSrc, name: 'current', bytes: saved.bytes, ms, data };
       },
     },
     {

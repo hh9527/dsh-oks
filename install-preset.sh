@@ -4,7 +4,8 @@
 # 可重复执行：每一步都先看现状，已经成立就跳过。顺序是
 #   1. 产物：两个包（packages/dsh-oks、packages/dsh-oks-ui）的 lib/index.mjs 不存在时先构建
 #      （node_modules 缺失才先 pnpm install）。
-#      出图与报告都在这个产物里（echarts 按需导入后打进来），lib/ 里没有旁资产。
+#      出图与报告都在这个产物里（echarts 按需导入后打进来）；插件产物里还有一个**旁资产**：
+#      求值器的 lib/oks-wti.wasm（Rust 编出来的，与 index.mjs 同目录，运行时就近加载）。
 #   2. profile：package.json 不存在时，用 `dsh plugin` 按模板初始化。
 #   2b. bundles：把 @deepseek-ai/dsh-web-app 加进 profile 的 bundles（Web 形态）。
 #   3. 依赖：把两个包都以 link: 写进 profile 的 package.json。
@@ -113,9 +114,13 @@ say "用 ${DSH_ARR[*]} 调用 dsh"
 # 仓库只带源码：exports 指向 lib/index.mjs，而 lib/ 不入库，所以新克隆必须先构建。
 for dir in "$PACKAGE_DIR" "$UI_DIR"; do
   [ -f "$dir/package.json" ] || fail "没有包目录 $dir"
-  if [ ! -f "$dir/lib/index.mjs" ]; then
-    command -v pnpm >/dev/null 2>&1 || fail "lib/index.mjs 不存在（$dir），构建需要 pnpm"
-    say "构建产物 lib/index.mjs（$dir）"
+  need_build=0
+  [ -f "$dir/lib/index.mjs" ] || need_build=1
+  # 插件包还多一个旁资产：求值器的 .wasm（与 index.mjs 同目录）。
+  if [ "$dir" = "$PACKAGE_DIR" ] && [ ! -f "$dir/lib/oks-wti.wasm" ]; then need_build=1; fi
+  if [ "$need_build" = 1 ]; then
+    command -v pnpm >/dev/null 2>&1 || fail "lib/ 里的产物不全（$dir），构建需要 pnpm"
+    say "构建产物（$dir）"
     (
       cd "$dir"
       [ -d node_modules ] || pnpm install
@@ -123,6 +128,10 @@ for dir in "$PACKAGE_DIR" "$UI_DIR"; do
     ) || fail "pnpm 构建失败（$dir）"
   fi
   [ -f "$dir/lib/index.mjs" ] || fail "构建后仍没有 $dir/lib/index.mjs"
+  if [ "$dir" = "$PACKAGE_DIR" ]; then
+    [ -f "$dir/lib/oks-wti.wasm" ] \
+      || fail "构建后仍没有 $dir/lib/oks-wti.wasm：求值器要用 Rust 构建（cargo + wasm32-unknown-unknown target）"
+  fi
 done
 
 # ── 2. profile ───────────────────────────────────────────────────────────────

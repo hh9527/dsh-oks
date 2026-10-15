@@ -1,9 +1,9 @@
-// dsh-oks —— DSH 能力扩展：把"某个领域的知识服务（OKS）"接成十七个原生工具。
+// dsh-oks —— DSH 能力扩展：把"某个领域的知识服务（OKS）"接成十九个原生工具。
 // 插件不认识任何模型：开放哪个模型、模型在哪，由**会话所在工作区**根目录的 oks.json 声明
 // （{"domain":"...","model":"...wasm","dataFile":"...sqlite"}）。
 // 工作区是会话属性，所以一份插件能服务任意多工作区。
 //
-// 十七个工具：oks_search（按名词/说法在词汇表里找到 key）、
+// 十九个工具：oks_search（按名词/说法在词汇表里找到 key）、
 // oks_references（按 key 反向找到引用它的节点）、
 // oks_info（按服务给出的不透明 key 读节点，入口是 key "index"）、
 // oks_check_intent（只校验命名 Intent；通过的项给出该项的 key）、
@@ -40,9 +40,9 @@ export { artifactName, NAME_MAX, resultStamp } from './results.ts';
 export { embedArtifactMeta, readArtifactMeta, saveArtifact } from './results.ts';
 export { renderEchartsSvg } from './chart/echarts.ts';
 export { renderMarkdown } from './chart/markdown.ts';
-// 外加两个与模型无关的辅助工具：time_now（当前时刻的各种标准表示）、
-// time_calc（日历代数：加减 / 对齐到日历边界 / 换时区）——服务不读时钟，相对时间
-// 必须在提交前换成绝对边界；这两个工具只做标准表示，不解释任何领域格式。
+// 外加一个与模型无关的上下文工具：create_current_ctx_data —— 把当轮会话上下文（时刻与时区）
+// **读一次**并落成 .oks/data/ 下的材料。服务不读时钟，求值器里也没有时钟：相对时间的绝对边界
+// 只能由这份材料在 jq 里算出来（tzadd / tzfloor / tzceil），于是一组问题共用一个时间基准。
 // 第十五个是 va_ask：咨询一个**词汇助手**——插件自己建（顶层 agent，同工作区、同 preset）、
 // 自己喂（**把整份词表渲染成一条提示词**，加上角色与回答方法）、自己收（每次拿到回答后把问答
 // 从模型可见表面收回到标记点）；助手没有任何工具，每轮只看到「词汇 + 方法 + 标记 + 当前这个问题」，
@@ -70,6 +70,7 @@ export { renderMarkdown } from './chart/markdown.ts';
 // 关键字子集，批次形状 / 名字校验与 key 比对放在 execute 里。
 
 import { createKnowledge } from './knowledge.ts';
+import { disposeJaqEngine } from './jaq.ts';
 import { createTimeContext } from './time-context.ts';
 import { createTools } from './tools.ts';
 import { PAYLOAD_MAX_BYTES } from './tools.ts';
@@ -232,4 +233,6 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
   });
 
   ctx.effect(() => knowledge.dispose);
+  // 求值器是一个常驻 worker（第一次用 jq 时拉起）：卸载时收掉，别让它拖着事件循环。
+  ctx.effect(() => disposeJaqEngine);
 }

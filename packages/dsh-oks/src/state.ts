@@ -44,7 +44,7 @@ export const VISIBLE = /\.report\.html$/;
 // "是不是我们的文件"只此一处：材料取短名（qres / tr / def），图按图元（`pie.svg` 等，取自
 //  `CHART_KINDS` 以免加图元时漏一处），表与报表原样（rfc/0007）。老名字不再认。
 const OURS = new RegExp('^(\\d{8}T\\d{6}Z)-[0-9a-z_~]+(?:-[0-9a-f]{8})?\\.('
-  + `qres\\.json|tr\\.json|def\\.json|table\\.md|report\\.html|(?:${CHART_KINDS.join('|')})\\.svg`
+  + `qres\\.json|tr\\.json|def\\.json|ctx\\.json|table\\.md|report\\.html|(?:${CHART_KINDS.join('|')})\\.svg`
   + ')$');
 
 /** 清单里的一条制品：文件自述 + 只有状态才知道的 pin。 */

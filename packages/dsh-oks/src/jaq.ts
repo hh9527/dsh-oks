@@ -1,113 +1,179 @@
-// 加工求值层：把一份 JSON 输入交给 jaq 表达式，取回它输出的值流。
+// 加工求值层：把一份 JSON 输入交给求值器，取回它输出的值流。
 //
-// 为什么单独一层：**求值器从哪来**是实现细节，不该泄进工具契约。这一版走系统里的 jaq 可执行文件
-// （`spawn`，不经 shell，因此表达式里没有命令注入面）；将来换成内嵌求值器或内置子集，只改这个文件。
+// **求值器从哪来**是实现细节，不泄进工具契约：这一版是我们自己编的 wasm 引擎
+// （`crates/oks-wti`：jaq 的库 + 白名单 builtin），就是与 `index.mjs` **同目录**的
+// `oks-wti.wasm` —— 没有环境、没有时钟、没有文件系统（见 rfc/0009）。
 //
-// 契约只到这里为止：输入是一个 JSON 值（工具那一层把具名输入绑成一个对象），
-// 输出是若干 JSON 值、一行一个。封装与来源链的形状不进这一层，也不进 agent 的视野。
-
-import { spawn } from 'node:child_process';
+// 为什么放 worker：死循环只能靠超时 `terminate()` 兜住；worker 是唯一能被强杀的边界。
+// trap（栈溢出之类）则不需要杀：worker 自己「丢弃重建」实例，宿主这一侧照常收发。
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
+import { errorText } from './host.ts';
+import { JAQ_WORKER_SOURCE } from './jaq-worker.ts';
 
 export interface JaqOutcome {
-  /** jaq 的紧凑输出，一行一个值。 */
+  /** 引擎的紧凑输出，一行一个值。 */
   text: string;
-  /** 输出是否到达上限而被截断（截断时进程已被终止）。 */
+  /** 输出是否到达上限而被截断。 */
   truncated: boolean;
 }
 
 export interface JaqOptions {
-  /** 表达式作用的输入值（工具那一层绑好的具名输入对象）。 */
+  /** 表达式作用的输入值（工具那一层把具名输入绑成一个对象）。 */
   input: unknown;
-  /** 墙钟上限，到点终止。 */
+  /** 墙钟上限，到点终止这一代 worker。 */
   timeoutMs: number;
-  /** 输出的字符上限，到点终止并标记截断。 */
+  /** 输出字符上限：**引擎自己**到点就停并标记截断（不会先造出一个巨大的串再截）。 */
   maxChars: number;
-  /** 可执行文件名，默认 'jaq'。 */
-  binary?: string;
   signal?: AbortSignal;
-  /** 程序来自哪个文件（`byFile` 给出的那一份）。给了它就让 jaq 自己读这个文件，于是报错里
-   *  写的是**文件名 + 行号 + 出错那一行**，而不是 `<inline>`——写程序的人一眼知道去哪一行改。 */
+  /** 程序来自哪个文件（`byFile` 给出的那一份）：读出来交给引擎，报错里写**这个名字**。 */
   programFile?: string;
-  /** 跑 jaq 的工作目录。配 `programFile` 用：程序名写成工作区相对路径，报错里显示的就是
-   *  模型自己写的那个名字（`.work/peek.jq`），不是一长串绝对路径。 */
+  /** 配 `programFile` 用：相对路径按它解析（工作区根）。 */
   cwd?: string;
 }
 
-/** 跑一次 jaq：表达式写在参数里（或由 `programFile` 指定文件），输入从 stdin 取，结果从 stdout 读回。 */
-export const runJaq = (query: string, options: JaqOptions): Promise<JaqOutcome> =>
-  new Promise<JaqOutcome>((resolve, reject) => {
-    const binary = options.binary ?? 'jaq';
-    const child = spawn(
-      binary,
-      options.programFile === undefined ? ['-c', query] : ['-c', '-f', options.programFile],
-      { stdio: ['pipe', 'pipe', 'pipe'], ...(options.cwd === undefined ? {} : { cwd: options.cwd }) },
-    );
-    let out = '';
-    let err = '';
-    let truncated = false;
-    let settled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const finish = (done: () => void): void => {
-      if (settled) return;
-      settled = true;
-      if (timer !== undefined) clearTimeout(timer);
-      options.signal?.removeEventListener('abort', onAbort);
-      done();
-    };
-    const abort = (): void => {
-      child.kill('SIGKILL');
-    };
-    const onAbort = (): void => {
-      abort();
-      finish(() => reject(new Error('aborted')));
-    };
-    timer = setTimeout(() => {
-      abort();
-      finish(() => reject(new Error(`jaq 求值超过 ${options.timeoutMs} ms（已终止）`)));
-    }, options.timeoutMs);
+/** 引擎的位置：与 `index.mjs` 同目录（profile 里是 `link:` 装的，运行时就是这个 `lib/`）。 */
+const enginePath = (): string => join(dirname(fileURLToPath(import.meta.url)), 'oks-wti.wasm');
+
+interface EngineReply {
+  /** 0 = 结果、1 = 错误、2 = 到上限被截断。 */
+  status: number;
+  text: string;
+}
+
+interface Pending {
+  resolve: (value: EngineReply) => void;
+  reject: (error: unknown) => void;
+  timer: NodeJS.Timeout;
+}
+
+interface WorkerMessage {
+  kind?: string;
+  id?: number;
+  response?: EngineReply;
+  error?: string;
+  trap?: string;
+}
+
+let worker: Worker | null = null;
+const pending = new Map<number, Pending>();
+let nextId = 1;
+
+const failAll = (error: unknown): void => {
+  for (const [, entry] of pending) {
+    clearTimeout(entry.timer);
+    entry.reject(error);
+  }
+  pending.clear();
+};
+
+const spawn = (): Worker => {
+  const wasm = enginePath();
+  if (!existsSync(wasm)) {
+    throw new Error(`找不到求值器 ${wasm}：它是与 index.mjs 同目录的旁资产，用 \`pnpm run wasm\` 构建它。`);
+  }
+  const created = new Worker(JAQ_WORKER_SOURCE, { eval: true, workerData: { wasm } });
+  created.on('message', (message: WorkerMessage) => {
+    if (message.kind === 'ready') return;
+    const entry = message.id === undefined ? undefined : pending.get(message.id);
+    if (entry === undefined) return;
+    pending.delete(message.id as number);
+    clearTimeout(entry.timer);
+    if (message.error !== undefined) entry.reject(new Error(message.error));
+    else if (message.trap !== undefined) entry.reject(new Error(`jaq 求值失败（引擎 trap：${message.trap}）`));
+    else entry.resolve(message.response as EngineReply);
+  });
+  // 只有**当前这一代**的死亡才能影响排队请求：被超时 terminate 的旧代，退出事件会晚到。
+  created.on('error', (cause: Error) => {
+    if (worker !== created) return;
+    worker = null;
+    failAll(cause);
+  });
+  created.on('exit', (code) => {
+    if (worker !== created) return;
+    worker = null;
+    failAll(new Error(`jaq 求值器 worker 退出（退出码 ${code}）`));
+  });
+  worker = created;
+  return created;
+};
+
+/** 程序从哪来：给了 `programFile` 就自己读（报错里写字**相对**的那个名字，不是绝对路径）。 */
+const readProgram = (query: string, options: JaqOptions): { program: string; path: string } => {
+  if (options.programFile === undefined) return { program: query, path: '' };
+  const root = options.cwd ?? process.cwd();
+  const file = isAbsolute(options.programFile) ? options.programFile : resolve(root, options.programFile);
+  let program: string;
+  try {
+    program = readFileSync(file, 'utf8');
+  } catch (cause) {
+    throw new Error(`读不到程序文件 ${options.programFile}：${errorText(cause)}`);
+  }
+  return { program, path: options.programFile };
+};
+
+/** 跑一次：表达式（或它所在的文件）与输入交给引擎，取回值流。 */
+export const runJaq = (query: string, options: JaqOptions): Promise<JaqOutcome> => {
+  let prepared: { program: string; path: string };
+  try {
+    prepared = readProgram(query, options);
+  } catch (cause) {
+    return Promise.reject(cause);
+  }
+  const input = JSON.stringify(options.input ?? null);
+  return new Promise<JaqOutcome>((resolve, reject) => {
     if (options.signal?.aborted === true) {
-      onAbort();
+      reject(new Error('aborted'));
       return;
     }
+    let target: Worker;
+    try {
+      target = worker ?? spawn();
+    } catch (cause) {
+      reject(cause);
+      return;
+    }
+    const id = nextId;
+    nextId += 1;
+    const kill = (): void => {
+      const dead = worker;
+      worker = null;
+      if (dead !== null) void dead.terminate();
+    };
+    const onAbort = (): void => {
+      pending.delete(id);
+      kill();
+      reject(new Error('aborted'));
+    };
+    const timer = setTimeout(() => {
+      options.signal?.removeEventListener('abort', onAbort);
+      pending.delete(id);
+      kill();
+      reject(new Error(`jaq 求值超过 ${options.timeoutMs} ms（已终止）`));
+    }, options.timeoutMs);
     options.signal?.addEventListener('abort', onAbort, { once: true });
-
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      if (truncated) return;
-      out += chunk;
-      if (out.length > options.maxChars) {
-        truncated = true;
-        // 回退到最后一个换行：jaq -c 一行一个值，切在行中间会把一个 JSON 值劈成两半，
-        // 调用方解析时就会把残片当成结果。
-        const cut = out.lastIndexOf('\n');
-        out = cut > 0 ? out.slice(0, cut) : '';
-        abort();
-      }
+    pending.set(id, {
+      resolve: (response) => {
+        options.signal?.removeEventListener('abort', onAbort);
+        // 状态 1 是编译期或运行时错误（连排版都是引擎自己的，和 jaq CLI 同一套）。
+        if (response.status === 1) reject(new Error(`jaq 表达式执行失败：\n${response.text}`));
+        else resolve({ text: response.text, truncated: response.status === 2 });
+      },
+      reject,
+      timer,
     });
-    child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk: string) => {
-      if (err.length < 8000) err += chunk;
+    target.postMessage({
+      id, program: prepared.program, path: prepared.path, input, maxChars: options.maxChars,
     });
-    child.on('error', (cause: NodeJS.ErrnoException) => {
-      // 这台机器没有 jaq 的时候就是 ENOENT：给一句能照着做的错误，而不是一个 errno。
-      const message = cause.code === 'ENOENT'
-        ? `这台机器上没有 jaq（找不到可执行文件 ${binary}）：结构化查询暂不可用。`
-        : `jaq 启动失败：${cause.message}`;
-      finish(() => reject(new Error(message)));
-    });
-    child.on('close', (code: number | null) => {
-      if (truncated) {
-        finish(() => resolve({ text: out, truncated: true }));
-        return;
-      }
-      if (code === 0) {
-        finish(() => resolve({ text: out, truncated: false }));
-        return;
-      }
-      // jaq 的错误信息带位置指示，对写表达式的人很有用，尽量原样带回去。
-      const detail = err.trim().slice(0, 600);
-      finish(() => reject(new Error(`jaq 表达式执行失败（退出码 ${code}）：${detail === '' ? '(没有错误输出)' : detail}`)));
-    });
-    child.stdin.on('error', () => { /* 进程被终止时写 stdin 可能报错，忽略 */ });
-    child.stdin.end(JSON.stringify(options.input ?? null));
   });
+};
+
+/** 插件卸载时收掉 worker：它是常驻的，不收会拖着事件循环。 */
+export const disposeJaqEngine = (): void => {
+  failAll(new Error('jaq 引擎已释放'));
+  const dead = worker;
+  worker = null;
+  if (dead !== null) void dead.terminate();
+};

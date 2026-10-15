@@ -43,6 +43,7 @@ export const fileKindOf = (kind: ArtifactKind, chartKind?: string): string => {
   if (kind === 'query') return 'qres';
   if (kind === 'transform') return 'tr';
   if (kind === 'data') return 'def';
+  if (kind === 'context') return 'ctx';
   if (kind === 'chart') return chartKind ?? 'chart';
   return kind;   // table / report 原样
 };
@@ -52,6 +53,7 @@ export const kindOfFile = (fileKind: string): ArtifactKind | undefined => {
   if (fileKind === 'qres') return 'query';
   if (fileKind === 'tr') return 'transform';
   if (fileKind === 'def') return 'data';
+  if (fileKind === 'ctx') return 'context';
   if (fileKind === 'table') return 'table';
   if (fileKind === 'report') return 'report';
   return (CHART_KINDS as readonly string[]).includes(fileKind) ? 'chart' : undefined;
@@ -167,7 +169,7 @@ export const resultStamp = (when: Date = new Date()): string =>
 
 /** artifacts/ 里的产物类别。它进文件名，与扩展名各管一件事。
  *  query / transform / data 都是数据材料（落在 .oks/data/），只有图与报告在文件里自述。 */
-export type ArtifactKind = 'query' | 'transform' | 'data' | 'chart' | 'table' | 'report';
+export type ArtifactKind = 'query' | 'transform' | 'data' | 'context' | 'chart' | 'table' | 'report';
 
 /** 在文件里带自述的类别：图与报告各用一种原生写法，数据材料没有自述那一层。 */
 export type SelfDescribingKind = 'chart' | 'report';
@@ -175,7 +177,7 @@ export type SelfDescribingKind = 'chart' | 'report';
 /** 类别的中文名，只用在报错里。 */
 const KIND_LABEL: Record<ArtifactKind, string> = {
   query: '结果', transform: '加工结果', data: '输入数据',
-  chart: '图表', table: '表格', report: '报告',
+  context: '上下文材料', chart: '图表', table: '表格', report: '报告',
 };
 
 /** 名字的长度上限（字符）。字符集限定为 ASCII，所以字符数就是字节数。 */
@@ -593,12 +595,15 @@ export function saveInputData(options: {
   name: string;
   motivation: string;
   data: unknown;
+  /** `data` 是 `create_data` 那份"给定的数据"；`context` 是"读到的当轮会话上下文"。 */
+  kind?: 'data' | 'context';
 }): { dataSrc: string; bytes: number } {
   const problem = nameProblem(options.name);
   if (problem !== null) throw new Error(`输入数据名不合法：${problem}`);
+  const kind = options.kind ?? 'data';
   const at = resultStamp();
   const payload: Envelope = {
-    meta: { kind: 'data', name: options.name, at },
+    meta: { kind, name: options.name, at },
     origin: originOf({ kind: 'input', motivation: options.motivation }, options.data),
     data: options.data,
   };
@@ -610,8 +615,8 @@ export function saveInputData(options: {
   }
   const directory = join(options.root, DATA_DIR);
   mkdirSync(directory, { recursive: true });
-  const fileName = artifactName({ at, name: options.name, kind: 'def', extension: '.json', content: body });
-  writeExclusive(join(directory, fileName), body, 'data');
+  const fileName = artifactName({ at, name: options.name, kind: fileKindOf(kind), extension: '.json', content: body });
+  writeExclusive(join(directory, fileName), body, kind);
   return { dataSrc: `${DATA_DIR}/${fileName}`, bytes };
 }
 

@@ -1,5 +1,5 @@
 // 本地冒烟测试（TS 脚本，不纳入 tsc 检查）：用假的 cordis ctx 加载插件，直接调用各工具的真实实现，不安装进 profile。
-// 其中两个与模型无关的时间工具（time_now / time_calc）不需要工作区，也在这里单测。
+// 会话上下文材料（create_current_ctx_data）在这里单测：它读一次上下文、落成材料，供后续 jq 加工。
 // 插件行**什么都不配**——领域、模型、数据文件全部来自工作区，正是要验证的那一点。
 //
 // 夹具**不含任何领域知识、也不假设地图形状**：实体 id 是运行时从服务里走出来的——读
@@ -19,7 +19,6 @@ import { assetKey, buildReportPage, extractAssets, readReportPage, renderStructu
 import { assembleReport } from './src/report/assemble.ts';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
-import { applyOps, encode, parseMoment } from './src/time.ts';
 import { singleFlight } from './src/single-flight.ts';
 import { intentKey } from './src/key.ts';
 import { CHART_KINDS, SERIES_COLORS, supports } from './src/chart/shared.ts';
@@ -107,7 +106,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['work_read', 'work_write', 'work_edit', 'work_list', 'work_delete', 'oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'create_data', 'jq_transform', 'jq_transform_into', 'oks_chart', 'oks_view', 'oks_report_check', 'oks_report', 'oks_artifacts', 'collect', 'time_now', 'time_calc', 'va_ask'];
+const EXPECTED_TOOLS = ['work_read', 'work_write', 'work_edit', 'work_list', 'work_delete', 'oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'create_data', 'jq_transform', 'jq_transform_into', 'oks_chart', 'oks_view', 'oks_report_check', 'oks_report', 'oks_artifacts', 'collect', 'create_current_ctx_data', 'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -264,8 +263,10 @@ console.log('=== 自带技能（注册进 runtime 层，所有工作区可见）
   console.log(`  正文不含具体领域名: ${/\bic\b|icloud/i.test(skill.content) ? '✗' : '✓'}`);
 }
 
-// ── 与模型无关的时间工具（不依赖工作区、不解释领域格式）─────────────────────
-console.log('=== 时间辅助工具 ===');
+// ── 会话上下文材料（与模型无关、不解释领域格式）──────────────────────────────
+// 求值器里**没有时钟**：相对时间的绝对边界只能由这份材料在 jq 里算出来（tzadd / tzfloor / tzceil），
+// 所以它必须落盘、必须给 dataSrc（后续 jq 才加工得了），而且**一次任务只取一份**。
+console.log('=== 会话上下文材料 ===');
 {
   const Z = 'Asia/Shanghai';
   const firePreStep = (cwd, messages) => {
@@ -273,95 +274,116 @@ console.log('=== 时间辅助工具 ===');
     if (list.length === 0) throw new Error('插件没有监听 agent/pre-step');
     return waterfall(list, { agent: { session: sessionFor(cwd).agent.session }, messages }, async () => ({ kind: 'enter' }));
   };
-  // 先让上下文带上浏览器时区，后面的日历运算都用它
-  await firePreStep(NOWHERE, [{ source: { kind: 'user', rpcId: 'r1', clientTimeZone: Z } }]);
-  const fromNowhere = await call('time_now', {}, NOWHERE);
-  console.log(`  本地 ${fromNowhere.value.local.text} (${fromNowhere.value.offset})`
-    + ` → UTC 文本 ${fromNowhere.value.utc.text} · RFC 3339 ${fromNowhere.value.utc.rfc3339}`);
-  const week = await call('time_calc', {
-    base: '2026-09-30T12:00:00+08:00',
-    operations: [{ op: 'floor', unit: 'week', weekStartsOn: 1 }, { op: 'convert', zone: 'UTC' }],
-  }, NOWHERE);
-  const weekEnd = await call('time_calc', {
-    base: '2026-09-30T12:00:00+08:00',
-    operations: [{ op: 'floor', unit: 'week', weekStartsOn: 1 }, { op: 'add', unit: 'week', amount: 1 }, { op: 'convert', zone: 'UTC' }],
-  }, NOWHERE);
-  console.log(`  上周（周一到周日）半开区间 → [${week.value.utc.text}, ${weekEnd.value.utc.text})`);
-  if (week.value.utc.text !== '2026-09-27 16:00:00' || weekEnd.value.utc.text !== '2026-10-04 16:00:00') {
-    throw new Error('周对齐或时区换算不对');
+  const readMaterial = (src) => JSON.parse(readFileSync(resolve(DEV_ROOT, src), 'utf8'));
+
+  // 上下文里有浏览器时区：读一次 → 落成 .ctx.json → 回执同时给 dataSrc 与 data
+  await firePreStep(DEV_ROOT, [{ source: { kind: 'user', rpcId: 'r1', clientTimeZone: Z } }]);
+  const made = await call('create_current_ctx_data', {}, DEV_ROOT);
+  console.log(`  落点 ${made.value.dataSrc}`);
+  console.log(`  回执里的上下文：${JSON.stringify(made.value.data)}`);
+  if (!/^\.oks\/data\/\d{8}T\d{6}Z-current-[0-9a-f]{8}\.ctx\.json$/.test(made.value.dataSrc)) {
+    throw new Error('上下文材料没有落在 .oks/data/ 下、也不叫 <date>-current-<hash>.ctx.json');
   }
-  const clamped = await call('time_calc', { base: '2026-01-31T12:00:00+08:00', operations: [{ op: 'add', unit: 'month', amount: 1 }] }, NOWHERE);
-  console.log(`  1/31 + 1 月 → ${clamped.value.local.text}（钳制到月末）`);
-  if (!clamped.value.local.text.startsWith('2026-02-28')) throw new Error('月末没有钳制');
-  const dst = await call('time_calc', {
-    base: '2026-03-07T12:00:00', timeZone: 'America/New_York',
-    operations: [{ op: 'add', unit: 'day', amount: 1 }],
-  }, NOWHERE);
-  console.log(`  跨 DST：NY 3/7 12:00 + 1 天 → ${dst.value.local.text}，偏移 ${dst.value.offset}（保持墙钟）`);
-  if (!dst.value.local.text.startsWith('2026-03-08')) throw new Error('跨 DST 的一天没有保持墙钟');
-  // 上下文里没有时区 → 报错并要求向用户澄清
-  await firePreStep(NOWHERE, [{ source: { kind: 'user', rpcId: 'r0' } }]);
+  if (made.value.data?.tz?.client?.id !== Z) {
+    throw new Error('上下文时区没有生效（应当落在 tz.client 这一层）');
+  }
+  if (typeof made.value.data?.utc?.epochMillis !== 'number'
+    || !/Z$/.test(String(made.value.data?.utc?.rfc3339 ?? ''))) {
+    throw new Error('回执里的 utc 不完整（要 epochMillis 与 UTC 的 rfc3339）');
+  }
+  // 形状正面钉死：顶层是 utc + tz，utc 里是 epochMillis + rfc3339，时区落在 client 这一层。
+  const topKeys = Object.keys(made.value.data ?? {}).sort();
+  const utcKeys = Object.keys(made.value.data?.utc ?? {}).sort();
+  if (JSON.stringify(topKeys) !== '["tz","utc"]'
+    || JSON.stringify(utcKeys) !== '["epochMillis","rfc3339"]') {
+    throw new Error(`材料形状不对：${JSON.stringify(made.value.data)}`);
+  }
+  if (!made.text.includes(made.value.dataSrc) || !made.text.includes('tzadd')) {
+    throw new Error('回执要给出 dataSrc，并说清边界在 jq 里算');
+  }
+  const body = readMaterial(made.value.dataSrc);
+  const node = body.origin.nodes[body.origin.root];
+  console.log(`  材料：kind=${body.meta.kind} · 节点 kind=${node?.kind} · ${node?.motivation ?? '(没有动机)'}`);
+  if (body.meta.kind !== 'context' || node?.kind !== 'input' || body.data.tz.client.id !== Z) {
+    throw new Error('材料的自述/来源节点/数据不符合约定');
+  }
+  if (!/上下文/.test(String(node?.motivation ?? ''))) throw new Error('节点动机应当说清这是读来的上下文');
+
+  // 材料能直接当 jq 的具名输入：一组问题共用一个锚点，边界在程序里算
+  // 注意：jq 里 `|` 比 `,` 松，所以两个元素各自要括号（否则 ceil 会把两个都再算一遍）。
+  const weekFile = prog('(.ctx.utc.epochMillis / 1000 | floor) as $at | .ctx.tz.client.id as $tz'
+    + ' | [($at | tzfloor("week"; $tz)), ($at | tzceil("week"; $tz))]');
+  const week = await call('jq_transform', { inputs: { ctx: made.value.dataSrc }, byFile: weekFile });
+  const span = Array.isArray(week.value.data) ? week.value.data : [];
+  console.log(`  同一份锚点算出的本周（上海，半开）：[${span[0]}, ${span[1]}) · 跨度 ${span[1] - span[0]} 秒`);
+  if (span.length !== 2 || span[1] - span[0] !== 7 * 86400) {
+    throw new Error('由上下文材料算出的周区间不对（tzfloor / tzceil）');
+  }
+  rmSync(resolve(DEV_ROOT, made.value.dataSrc), { force: true });
+
+  // 再调一次：它没有参数，同一毫秒内内容相同就落到同一个文件（"同名即同内容"），不报错
+  const again = await call('create_current_ctx_data', {}, DEV_ROOT);
+  if (!/\.ctx\.json$/.test(again.value.dataSrc)) throw new Error('重复调用没有落成上下文材料');
+  console.log('  ✓ 重复调用照常落盘（同名同内容视为同一份，不冲突）');
+  rmSync(resolve(DEV_ROOT, again.value.dataSrc), { force: true });
+
+  // 上下文里没有时区 → 报错并要求向用户澄清（不猜）
+  await firePreStep(DEV_ROOT, [{ source: { kind: 'user', rpcId: 'r0' } }]);
   try {
-    await call('time_now', {}, NOWHERE);
-    console.log('  ✗ 上下文没有时区却成功了');
+    await call('create_current_ctx_data', {}, DEV_ROOT);
     throw new Error('没有时区时不应成功');
   } catch (cause) {
     if (!/没有带浏览器时区/.test(String(cause?.message ?? cause))) throw cause;
     console.log('  ✓ 上下文没有时区时明确报错，要求向用户澄清');
   }
-  // 上下文带来浏览器时区 → 自动取用（规范字段 source.clientTimeZone）
-  await firePreStep(NOWHERE, [{ source: { kind: 'user', rpcId: 'r1', clientTimeZone: Z } }]);
-  const fromContext = await call('time_now', {}, NOWHERE);
-  console.log(`  上下文浏览器时区 → source=${fromContext.value.timeZoneSource} · zone=${fromContext.value.timeZone}`);
-  if (fromContext.value.timeZoneSource !== 'context' || fromContext.value.timeZone !== Z) {
-    throw new Error('上下文时区没有生效');
-  }
-  // 同一回合的第 2 步：payload.messages 为空，不能把已取到的时区覆盖成 missing
-  await firePreStep(NOWHERE, []);
-  const afterEmptyStep = await call('time_now', {}, NOWHERE);
-  if (afterEmptyStep.value.timeZoneSource !== 'context' || afterEmptyStep.value.timeZone !== Z) {
-    throw new Error('空消息的那一步把上下文时区覆盖掉了');
-  }
-  console.log('  ✓ 同回合后续步骤（无用户消息）不会覆盖已取到的上下文时区');
-  // 上下文时区冲突 → 按规范请用户澄清，而不是随便挑一个
-  await firePreStep(NOWHERE, [
+
+  // 时区冲突 → 按规范请用户澄清
+  await firePreStep(DEV_ROOT, [
     { source: { kind: 'user', rpcId: 'r1', clientTimeZone: Z } },
     { source: { kind: 'user', rpcId: 'r2', clientTimeZone: 'UTC' } },
   ]);
   try {
-    await call('time_now', {}, NOWHERE);
-    console.log('  ✗ 时区冲突却成功了');
+    await call('create_current_ctx_data', {}, DEV_ROOT);
     throw new Error('时区冲突时不应成功');
   } catch (cause) {
     if (!/不一致/.test(String(cause?.message ?? cause))) throw cause;
     console.log('  ✓ 上下文时区冲突时明确报错，要求澄清');
   }
-  // 显式参数可以覆盖上下文
-  await firePreStep(NOWHERE, [{ source: { kind: 'user', rpcId: 'r1', clientTimeZone: 'UTC' } }]);
-  const overridden = await call('time_now', { timeZone: Z }, NOWHERE);
-  console.log(`  显式参数覆盖上下文 → source=${overridden.value.timeZoneSource} · zone=${overridden.value.timeZone}`);
-  if (overridden.value.timeZoneSource !== 'argument' || overridden.value.timeZone !== Z) {
-    throw new Error('显式参数没有覆盖上下文');
+
+  // 同一回合的第 2 步（payload.messages 为空）不能把已取到的时区覆盖成 missing
+  await firePreStep(DEV_ROOT, [{ source: { kind: 'user', rpcId: 'r1', clientTimeZone: Z } }]);
+  await firePreStep(DEV_ROOT, []);
+  const afterEmptyStep = await call('create_current_ctx_data', {}, DEV_ROOT);
+  if (afterEmptyStep.value.data.tz.client.id !== Z) {
+    throw new Error('空消息的那一步把上下文时区覆盖掉了');
   }
-  // 设置里能覆盖的只有那几个键：给了别的键，行为照旧（时区来自上下文，工作区来自会话头）
+  console.log('  ✓ 同回合后续步骤（无用户消息）不会覆盖已取到的上下文时区');
+  rmSync(resolve(DEV_ROOT, afterEmptyStep.value.dataSrc), { force: true });
+
+  // 没有工作区 → 明确报错（它要落盘，不能凭空调用）
+  try {
+    await call('create_current_ctx_data', {}, NOWHERE);
+    throw new Error('没有工作区时不应成功');
+  } catch (cause) {
+    if (!/oks\.json|工作区/.test(String(cause?.message ?? cause))) throw cause;
+    console.log('  ✓ 没有工作区时明确报错');
+  }
+
+  // 设置里能覆盖的只有那几个键：给了别的键，时区照旧来自上下文
   {
     const { tools, events: built } = buildCtx({ timeZone: 'UTC' });
-    const session = { meta: { cwd: NOWHERE } };
+    const session = { meta: { cwd: DEV_ROOT } };
     await waterfall(listenersOf(built, 'agent/pre-step'), {
       agent: { session },
       messages: [{ source: { kind: 'user', rpcId: 'r1', clientTimeZone: Z } }],
     }, async () => ({ kind: 'enter' }));
-    const value = await tools.get('time_now').execute({}, { signal: new AbortController().signal, agent: { session } });
-    console.log('  config.timeZone=UTC 时实际用 → ' + value.timeZoneSource + ' / ' + value.timeZone);
-    if (value.timeZoneSource !== 'context' || value.timeZone !== Z) throw new Error('时区应当只来自上下文');
-    try {
-      await tools.get('oks_info').execute({ key: 'index' }, { signal: new AbortController().signal, agent: { session: { meta: {} } } });
-      throw new Error('工作区应当只来自会话头');
-    } catch (cause) {
-      if (!/无法确定当前会话的工作区目录/.test(String(cause?.message ?? cause))) throw cause;
-      console.log('  ✓ 工作区只来自会话头：没有 cwd 时在运行时报错');
-    }
+    const value = await tools.get('create_current_ctx_data')
+      .execute({}, { signal: new AbortController().signal, agent: { session } });
+    console.log('  config.timeZone=UTC 时实际用 → ' + value.data.tz.client.id);
+    if (value.data.tz.client.id !== Z) throw new Error('时区应当只来自上下文');
+    rmSync(resolve(DEV_ROOT, value.dataSrc), { force: true });
   }
+
   // 会话头里没有 cwd 时明确报错，而不是回落到别的目录
   try {
     await registered.get('oks_info').execute({ key: 'index' }, { signal: new AbortController().signal, agent: { session: { meta: {} } } });
@@ -4235,8 +4257,39 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
       series: null, xType: null, xLabel: null, valueLabel: null, unit: null,
     });
     const svg = mod.renderEchartsSvg(built.option, mod.CHART_WIDTH, built.height);
-    ok('空目录里也能出图（echarts 已打进产物，无旁资产）',
+    ok('空目录里也能出图（echarts 已打进产物）',
       svg.startsWith('<svg') && svg.includes('<path'));
+    // 唯一的旁资产：求值器的 .wasm。它必须与 index.mjs 同目录跟着 lib/ 走，而且**真的能算**——
+    // 「能加载」不等于「是那个引擎」。越界能力（now / env / include…）由 crates/oks-wti/check.mjs 逐条断言。
+    const engine = new WebAssembly.Module(readFileSync(join(alone, 'oks-wti.wasm')));
+    ok('旁资产：oks-wti.wasm 与 index.mjs 同目录，且零 host imports',
+      WebAssembly.Module.imports(engine).length === 0);
+    const wasm = new WebAssembly.Instance(engine, {}).exports as {
+      alloc: (n: number) => number; dealloc: (p: number, n: number) => void;
+      run: (pp: number, pl: number, ip: number, il: number) => number; memory: WebAssembly.Memory;
+    };
+    const put = (text: string): { ptr: number; len: number } => {
+      const bytes = new TextEncoder().encode(text);
+      const ptr = wasm.alloc(bytes.length);
+      new Uint8Array(wasm.memory.buffer, ptr, bytes.length).set(bytes);
+      return { ptr, len: bytes.length };
+    };
+    const program = put('[1,2,3] | map(. + 1)');
+    // 第二个参数是程序名：只用于报错排版（空串按 <inline>）。
+    const programName = put('');
+    const input = put('null');
+    const outPtr = wasm.run(
+      program.ptr, program.len, programName.ptr, programName.len, input.ptr, input.len, 0);
+    const view = new DataView(wasm.memory.buffer);
+    const outText = new TextDecoder()
+      .decode(new Uint8Array(wasm.memory.buffer, outPtr + 5, view.getUint32(outPtr + 1, true))).trim();
+    wasm.dealloc(outPtr, outText.length + 5);
+    wasm.dealloc(program.ptr, program.len);
+    wasm.dealloc(programName.ptr, programName.len);
+    wasm.dealloc(input.ptr, input.len);
+    ok('旁资产：wasm 引擎在里面算得出结果', outText === '[2,3,4]');
+    // 求值器不再是子进程：产物里没有 child_process（引擎是 worker 里的 wasm 实例）。
+    ok('产物里没有 child_process（求值不再起进程）', !text.includes('child_process'));
   } finally {
     rmSync(alone, { recursive: true, force: true });
   }

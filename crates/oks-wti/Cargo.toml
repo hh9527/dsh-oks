@@ -1,0 +1,23 @@
+[package]
+name = "oks-wti"
+description = "wasm toolset implementations：把 jq 求值做成「只依赖值 + 程序正文」的引擎（jaq 的库 + 白名单 builtin + 受控的时区/日历）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+# 外部依赖一律从工作区根取（版本与 feature 只有那一处）。
+[dependencies]
+jaq-core.workspace = true
+jaq-std.workspace = true
+jaq-json.workspace = true
+jaq-all.workspace = true
+jiff.workspace = true
+libm.workspace = true
+regex-bites.workspace = true
+base64.workspace = true
+urlencoding.workspace = true
+bstr.workspace = true

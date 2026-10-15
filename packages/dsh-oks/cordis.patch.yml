@@ -3,7 +3,8 @@
 # jq_transform / jq_transform_into / oks_chart / oks_view / oks_report_check / oks_report / oks_artifacts / collect /
 # work_read / work_write / work_edit / work_list / work_delete（后五个只作用在 .work/ 内的工作区：
 # jq 程序、报告正文、任何草稿文件）——
-# 外加 time_now / time_calc 两个与模型无关的时间辅助工具，以及 va_ask（插件自己装配、自己复用词汇助手）。
+# 外加两个与模型无关的辅助工具：create_current_ctx_data（把当轮会话上下文读一次、落成材料——
+# 求值器里没有时钟，相对时间的边界都由那份材料在 jq 里算）与 va_ask（插件自己装配、自己复用词汇助手）。
 # 知识探索的入口是 oks_info 的 key "index"；这里不写任何形状假设。
 #
 # 这一行不需要知道任何模型：领域、artifact、dataFile 全部来自工作区根目录的 oks.json

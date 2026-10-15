@@ -1,6 +1,6 @@
 # dsh-oks
 
-把**某个领域的知识服务（OKS）**接进 DSH，成为十七个原生工具 + 三个辅助工具 — 用于在 Harness Web 里
+把**某个领域的知识服务（OKS）**接进 DSH，成为十九个原生工具 + 两个辅助工具 — 用于在 Harness Web 里
 **亲手体验**「业务问句 → 实际查询结果」这条链路。查询在**只读**连接上执行；命中的结果写进工作区
 `.oks/data/` 下的结果文件，**默认不进模型上下文**，要看形状或取数时用 `jq_transform` 在它上面做加工、
 要留作下一步输入时用 `jq_transform_into` 物化成新的封装数据。
@@ -36,8 +36,8 @@ profile 顶层不必多一行。
 
 Node 按 URL 缓存 ESM 模块，所以：
 
-- 改 `src/` 下的源码后要重新 `pnpm run build`（产物是自包含的 `lib/index.mjs`，含
-  `src/skill.md`、`src/va-prompt-tpl.md` 两份构建期内联的提示词）；改完要**重启 profile**
+- 改 `src/` 下的源码后要重新 `pnpm run build`（产物是 `lib/index.mjs` + 与它同目录的旁资产
+  `lib/oks-wti.wasm`；`index.mjs` 里内联了 `src/skill.md`、`src/va-prompt-tpl.md` 两份提示词）；改完要**重启 profile**
   才加载新的模块代（`link:` 的好处是**不必重新安装**，重启即可；若用 `file:`，pnpm 会硬链接成拷贝，
   改源码不再生效）；
 - 改 profile 的 `cordis.patch.yml` 只会让 profile 重读**配置**（用户补丁层是热重载的）。
@@ -66,10 +66,9 @@ Node 按 URL 缓存 ESM 模块，所以：
 | `oks_artifacts` | `{}` | 列出本工作区的**图与报告**（最新在前）：标题、类别、时间、是否保留。查询结果是内部制品、不出现。用它回答"产出过什么"，或在保留别的东西之前先找到它的路径 |
 | `collect` | `{ttl?}` | 清掉 `.oks/` 下的**内部材料**（查询结果、加工结果、图、表）：超过窗口的删掉，**不是我们命名的文件不动**，`artifacts/` 里的报表也不碰（要留就保留，要删走页签里的 `✕`）。`ttl` 省略时用工作区配置的 manual 窗口；给了就按它（`"15s"` / `"30m"` / `"2h"` / `"3d"` 或分钟数，下限 5 秒）。回执给清了几份、释放多少、还剩几份——清得激进时，之前回执里的 `dataSrc` 就失效了，需要重新取数 |
 | `va_ask` | `{query}` | 咨询本会话的**词汇助手**：给一个说法（词/短语/一句话，中英不限），拿回词表里等价或相近的说法——回答是**一行一个字符串**，每个字符串都是词表原文。助手是插件自己建、自己收的**顶层 agent**（preset `oks`、与调用方同一工作区、共用同一份进程内索引），平时归档，被咨询时临时恢复。它给的是线索，检索口径仍由 `oks_search` / `oks_info` 决定。**整份词表由插件渲染成助手系统提示词里的一个 section**（模板 + 全部词条），助手一个工具都没有。装配**不发任何消息**；每个说法才是一次回合，拿到回答后插件把表面上的节点全部收进一个固定文本的标记，所以助手每次只看到「系统提示词里的词表 + 一个标记 + 当前这个说法」（会话日志保持 append-only，标记节点用 `sourceEventSeqs` 记下遮蔽范围）|
-| `time_now` | `{timeZone?}` | 当前时刻的**各种标准表示**（epoch 毫秒/秒、UTC 文本、RFC 3339、带偏移的本地文本、日期、ISO 周）+ 实际用的时区。服务不读时钟，所以相对时间必须在这里换成绝对边界 |
-| `time_calc` | `{base?, timeZone?, operations?}` | 日历代数：`add`（year/quarter/month/week/day/hour/minute/second）、`floor`/`ceil` 到日历边界（周默认周一起）、`convert` 换时区。日/周保持**本地墙钟**（跨 DST 的一天可能不是 24 小时），月/季/年**钳制**到当月最后一天。区间半开 `[start, end)` |
+| `create_current_ctx_data` | 无参数 | 把**当轮会话上下文**——时刻与时区——**读一次**并落成 `.oks/data/<date>-current-<hash>.ctx.json`，回执同时给出 `dataSrc` 与这份 `data`（`{utc: {epochMillis, rfc3339}, tz: {client: {id, offset, offsetMinutes}}}`（绝对值 + 按层放的时区；墙钟与边界都由程序当场算：`gmtime_tz(zone)` / `tzfloor` / `tzceil`）（时区**按层**放：现在只有当轮会话这一层，将来加服务端就是再添一个 `server` 槽位））。服务不读时钟、求值器里也没有时钟：**相对时间的绝对边界由这份材料在 jq 里算**（`tzadd` / `tzfloor` / `tzceil`，时区显式传）——一组问题共用这一份锚点 |
 
-`time_now` / `time_calc` **与模型无关、也不解释任何领域格式**：它们只做标准表示与日历运算，具体要哪一种
+`create_current_ctx_data` **与模型无关、也不解释任何领域格式**：它只把上下文读一次、落成材料，具体要哪一种
 形式由知识节点自己声明；`va_ask` 只管怎么问词汇助手，也不碰词汇。这三个工具都**不需要工作区**
 （没有 `oks.json` 也能用）。
 
@@ -295,24 +294,36 @@ bin/telora -C <模型目录> build <模型名> --snapshot \
 
 ## 开发
 
-源码在 `src/`（TypeScript），构建出**单一产物** `lib/index.mjs`（profile 里 `link:` 装的插件加载它）
-——所以**改完 `src/` 必须重新构建**（`lib/` 不进 git；`pnpm install` 会经 `prepare` 自动构建一次，
-`pnpm run test` 也会先构建，忘了构建不会静默用到旧产物）：
+源码分两处：插件本体在 `src/`（TypeScript），求值器在仓库根的 `crates/oks-wti`（Rust，编成 wasm）。
+构建产物是 `lib/index.mjs` **加一个与它同目录的旁资产** `lib/oks-wti.wasm`（profile 里 `link:` 装的
+插件加载的就是这份 `lib/`）——所以**改完任何一处都必须重新构建**（`lib/` 不进 git；`pnpm install`
+会经 `prepare` 自动构建一次，`pnpm run test` 也会先构建，忘了构建不会静默用到旧产物）：
 
 ```sh
 pnpm install          # tsdown + typescript（只用于开发/构建）
 pnpm run typecheck    # tsc --noEmit，零报错
-pnpm run build        # tsdown → lib/index.mjs（自包含）
-pnpm run dev          # 同上，但 watch：改完立刻重建
+pnpm run wasm         # cargo build -p oks-wti --target wasm32-unknown-unknown → lib/oks-wti.wasm
+pnpm run build        # wasm + tsdown → lib/（index.mjs + oks-wti.wasm）
+pnpm run dev          # 只 watch TypeScript：改了 Rust 要自己再跑 pnpm run wasm
 pnpm run check        # typecheck + build + 冒烟
 ```
 
-出图与报告都走 **echarts**：规格（业务字段与结果行）直接翻成 echarts option，再由它的 SSR 模式
-（`renderer: 'svg'`）产出 SVG。整条链路是纯 JS——`lib/` 里只有一个 `index.mjs`（约 1.6 MB，
-echarts 按需导入后打在里面），没有 WASM、字体或包缓存之类的旁资产。
+`pnpm run wasm` 需要 Rust 工具链与 wasm32 target（`rustup target add wasm32-unknown-unknown`）；
+缺了它**明确报错**，不会静默出一份没有引擎的产物。依赖走**共享的 cargo 缓存**：构建本身只读缓存、
+只写仓库里的 `target/`；**只有新增或升级依赖那一次**要写缓存（`cargo fetch`，脚本会先
+`cargo fetch --locked --offline` 预检并说清这一点）。求值器那边另有一份逐条验收：
+`node crates/oks-wti/check.mjs`（越界能力与跨环境确定性）。
 
-打出去的包只含运行时需要的：`lib/` + `cordis.patch.yml` + `icon.svg` + `locale/*.json`
-（`files` 就这么列的）——`src/`、`smoke.ts` 这些都不进 npm。
+`lib/` 里**只该有两件东西**：`index.mjs` 与 `oks-wti.wasm`。tsdown 的 `clean: false` 是有意的——
+它一清理就会把刚拷进去的旁资产一起删掉（`pnpm run dev` 的 watch 更是每重建一次删一次），
+所以 `lib/` 不会被自动收拾：出现别的文件时多半是旧设计留下的残骸，直接删掉即可。
+
+出图与报告都走 **echarts**：规格（业务字段与结果行）直接翻成 echarts option，再由它的 SSR 模式
+（`renderer: 'svg'`）产出 SVG。出图链路是纯 JS：`lib/index.mjs`（约 1.6 MB，echarts 按需导入后打在里面）——
+**唯一的旁资产**是求值器的 `lib/oks-wti.wasm`（约 1.1 MB，由 `crates/oks-wti` 编出）。
+
+打出去的包只含运行时需要的：`lib/`（`index.mjs` + `oks-wti.wasm`）+ `cordis.patch.yml` +
+`icon.svg` + `locale/*.json`（`files` 就这么列的）——`src/`、`crates/`、`smoke.ts` 这些都不进 npm。
 
 提示词是**普通源码模块**：`.md` 和 `.ts` 一样按功能/架构归属，不按文件类型分目录、也不单列一个
 "提示词"品类。现在 `src/` 还没有按功能拆目录，所以技能的正文是 `src/skill.md`、词汇助手的提示词是
@@ -360,8 +371,9 @@ cd packages/dsh-oks && OKS_WORKSPACE=/path/to/ws node smoke.ts          # 或者
 ## 实现备注
 
 - **产物自足**：直接注册原始工具定义（`ctx.tools.register()` 只校验 `output.schema`），
-  查询用 Node 自带的 `node:sqlite`。代码与 echarts 全部打进 `lib/index.mjs`，没有旁资产——
-  冒烟最后一段会把整个 `lib/` 搬进空目录，并在那里真画一张图，验证这一点。
+  查询用 Node 自带的 `node:sqlite`。代码与 echarts 全部打进 `lib/index.mjs`，旁资产只有求值器的
+  `oks-wti.wasm`（与它同目录）——冒烟最后一段会把整个 `lib/` 搬进空目录，在那里真画一张图，
+  并实例化那个 wasm 真算一次，验证这一点。
 - **一种渲染路径**：十种图元（`bar` / `line` / `column` / `pie` / `area` / `scatter` / `histogram` /
   `box` / `heatmap` / `radar`）都由同一份规格渲染——
   `src/chart/option.ts` 把业务字段与结果行翻成 option，`src/chart/echarts.ts` 用它的 SSR 出 SVG。

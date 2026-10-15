@@ -1,19 +1,14 @@
-// 纯时间计算：零依赖，只用 Node 内置的 Intl。
+// 会话上下文（时刻与时区）的读取与标准表示：零依赖，只用 Node 内置的 Intl。
 //
-// 这里**不涉及任何领域知识，也不假设知识服务声明了哪些时间格式**：它只做
-// 「某一时刻 ↔ 各种标准表示」与「日历运算」，调用方自己挑要用哪一种表示。
+// 这里**不涉及任何领域知识，也不假设知识服务声明了哪些时间格式**：它只做「某一时刻 ↔ 各种标准
+// 表示」，以及"时区从哪来"。
 //
 // 设计约定（都是为了不产生静默误解）：
-//   1. 所有"时刻"内部一律用 epoch 毫秒表示；时区只影响**表示**与**日历运算**。
-//   2. 无时区后缀的文本（"YYYY-MM-DD HH:MM:SS" 或 "YYYY-MM-DD"）按**传入时区的本地时间**解释；
-//      带 Z 或 ±hh:mm 的 RFC 3339 文本是绝对时刻。
-//   3. day/week 这类"日历单位"的加减保持**本地墙钟**（跨 DST 时一天可能不是 24 小时）；
-//      hour/minute/second 是精确时长。
-//   4. month/quarter/year 加减按日历钳制（1 月 31 日 + 1 月 = 2 月 28/29 日）。
-//   5. 区间一律半开 [start, end)：调用方用两次计算得到两端。
-//   6. 时区按**插件规范**取：本次请求的上下文时区（用户消息上的 source.clientTimeZone），
-//      调用方也可以显式覆盖；两者都没有时报错，让 agent 按规范的策略去问用户
-//      （mixed / missing → ask the user）。
+//   1. 所有"时刻"内部一律用 epoch 毫秒表示；时区只影响**表示**。
+//   2. 时区按**插件规范**取：本次请求的上下文时区（当轮用户消息上的 source.clientTimeZone）；
+//      没有或互相冲突（missing / mixed）时报错，让 agent 按规范的策略去问用户——不猜。
+//   3. 日历运算（加减、对齐到日历边界）由求值器里的受控内建做（`tzadd` / `tzfloor` / `tzceil`，
+//      见 crates/oks-wti）：时区显式传参，于是它进得了程序与来源链。
 
 import { isArray, isRecord } from './host.ts';
 import type { ContextMessageLike } from './host.ts';
@@ -31,47 +26,16 @@ export interface ResolvedZone {
   source: string;
 }
 
-/** 一个时刻在一个时区里的日历字段。 */
-export interface LocalParts {
-  year: number;
-  month: number;
-  day: number;
-  hour: number;
-  minute: number;
-  second: number;
-  weekday: string;
-  weekdayIndex: number;
-}
-
-/** 一个时刻的完整标准表示。 */
+/** 上下文里要给出去的东西：**绝对值**（epoch 毫秒 + UTC 的 RFC 3339）与这个时区本身。
+ *  墙钟由程序里的 `tzwall(zone)` 当场算。 */
 export interface EncodedInstant {
   epochMillis: number;
-  epochSeconds: number;
+  /** UTC 的 RFC 3339 文本（绝对时刻，没有时区歧义）。 */
+  rfc3339: string;
   zone: string;
-  offsetMinutes: number;
   offset: string;
-  utc: { text: string; rfc3339: string; date: string };
-  local: { text: string; rfc3339: string; date: string; weekday: string; weekdayIndex: number };
-  isoWeek: { weekYear: number; week: number; weekday: number };
+  offsetMinutes: number;
 }
-
-/** applyOps 的状态：当前时刻 + 当前时区。 */
-export interface TimeState {
-  epochMillis: number;
-  zone: string;
-}
-
-/** 一条日历运算。字段按 op 取用，多给的字段忽略。 */
-export interface TimeOperation {
-  op?: string;
-  unit?: string;
-  amount?: number;
-  zone?: string;
-  weekStartsOn?: number;
-}
-
-const PARTS: Intl.DateTimeFormatOptions = { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', weekday: 'short', hourCycle: 'h23' };
-const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
 /** 规范里的 IANA 形态：UTC 或 Area/Location。 */
 const IANA_TIME_ZONE = /^[A-Za-z][A-Za-z0-9_+.-]*(?:\/[A-Za-z0-9_+.-]+)+$/;
@@ -140,27 +104,38 @@ function resolveZone(requested: unknown, context: ContextTimeZone | undefined): 
 
 const pad = (value: unknown, width = 2): string => String(value).padStart(width, '0');
 
-/** 该时刻在给定时区里的日历字段。 */
-function localParts(epochMillis: number, zone: string): LocalParts {
-  const parts = new Intl.DateTimeFormat('en-US', { timeZone: zone, ...PARTS }).formatToParts(new Date(epochMillis));
-  const get = (type: string): string => parts.find((part) => part.type === type)?.value ?? '';
-  const weekday = get('weekday');
-  const index = WEEKDAYS.indexOf(weekday);
+/** 该时刻在给定时区里的日历字段——**只用来算偏移**（墙钟是程序的活：`tzwall(zone)` 当场算）。 */
+interface WallParts {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+}
+
+const PARTS: Intl.DateTimeFormatOptions = {
+  year: 'numeric', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+};
+
+function wallParts(epochMillis: number, zone: string): WallParts {
+  const parts = new Intl.DateTimeFormat('en-US', { ...PARTS, timeZone: zone })
+    .formatToParts(new Date(epochMillis));
+  const pick = (type: string): number => {
+    const found = parts.find((part) => part.type === type);
+    if (found === undefined) throw new Error(`时区 ${zone} 没给出 ${type}`);
+    return Number(found.value);
+  };
   return {
-    year: Number(get('year')),
-    month: Number(get('month')),
-    day: Number(get('day')),
-    hour: Number(get('hour')),
-    minute: Number(get('minute')),
-    second: Number(get('second')),
-    weekday,
-    weekdayIndex: index < 0 ? 1 : index + 1, // 1=周一 … 7=周日
+    year: pick('year'), month: pick('month'), day: pick('day'),
+    hour: pick('hour'), minute: pick('minute'), second: pick('second'),
   };
 }
 
 /** 该时刻在给定时区的 UTC 偏移（分钟）。 */
 function offsetMinutes(epochMillis: number, zone: string): number {
-  const p = localParts(epochMillis, zone);
+  const p = wallParts(epochMillis, zone);
   const asUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
   return Math.round((asUtc - Math.floor(epochMillis / 1000) * 1000) / 60000);
 }
@@ -171,179 +146,20 @@ function offsetText(minutes: number): string {
   return `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
 
-/** 本地日历字段（当作 UTC 毫秒）→ 真实时刻。两趟修正，DST 也能落在一个有效时刻上。 */
-function fromLocal(localMillis: number, zone: string): number {
-  const guess = localMillis - offsetMinutes(localMillis, zone) * 60000;
-  return localMillis - offsetMinutes(guess, zone) * 60000;
-}
-
-const localMillisOf = (epochMillis: number, zone: string): number =>
-  epochMillis + offsetMinutes(epochMillis, zone) * 60000;
-
-/** ISO-8601 周序号（周一起算），用于"第几周"这类表述。 */
-function isoWeek(year: number, month: number, day: number): { weekYear: number; week: number; weekday: number } {
-  const date = new Date(Date.UTC(year, month - 1, day));
-  const weekday = date.getUTCDay() || 7;
-  date.setUTCDate(date.getUTCDate() + 4 - weekday);
-  const yearStart = Date.UTC(date.getUTCFullYear(), 0, 1);
-  return {
-    weekYear: date.getUTCFullYear(),
-    week: Math.ceil(((date.getTime() - yearStart) / 86400000 + 1) / 7),
-    weekday,
-  };
-}
-
 /** 一个时刻的完整表示：调用方据此挑选知识服务声明的那种形式。 */
 function encode(epochMillis: number, zone: string): EncodedInstant {
   if (!Number.isFinite(epochMillis)) throw new Error(`not a finite instant: ${epochMillis}`);
-  const p = localParts(epochMillis, zone);
-  const offset = offsetMinutes(epochMillis, zone);
-  const text = `${p.year}-${pad(p.month)}-${pad(p.day)} ${pad(p.hour)}:${pad(p.minute)}:${pad(p.second)}`;
-  const date = `${p.year}-${pad(p.month)}-${pad(p.day)}`;
-  const uptc = localParts(epochMillis, 'UTC');
-  const utcText = `${uptc.year}-${pad(uptc.month)}-${pad(uptc.day)} ${pad(uptc.hour)}:${pad(uptc.minute)}:${pad(uptc.second)}`;
-  const utcDate = `${uptc.year}-${pad(uptc.month)}-${pad(uptc.day)}`;
+  const minutes = offsetMinutes(epochMillis, zone);
+  const at = new Date(epochMillis);
+  const rfc3339 = `${at.getUTCFullYear()}-${pad(at.getUTCMonth() + 1)}-${pad(at.getUTCDate())}`
+    + `T${pad(at.getUTCHours())}:${pad(at.getUTCMinutes())}:${pad(at.getUTCSeconds())}Z`;
   return {
     epochMillis: Math.trunc(epochMillis),
-    epochSeconds: Math.floor(epochMillis / 1000),
+    rfc3339,
     zone,
-    offsetMinutes: offset,
-    offset: offsetText(offset),
-    utc: {
-      text: utcText,
-      rfc3339: `${utcDate}T${utcText.slice(11)}Z`,
-      date: utcDate,
-    },
-    local: {
-      text,
-      rfc3339: `${date}T${text.slice(11)}${offsetText(offset)}`,
-      date,
-      weekday: p.weekday,
-      weekdayIndex: p.weekdayIndex,
-    },
-    isoWeek: isoWeek(p.year, p.month, p.day),
+    offset: offsetText(minutes),
+    offsetMinutes: minutes,
   };
 }
 
-/** 解析调用方给的"某个时刻"：字符串按自身语法判定，不合语法就报错。 */
-function parseMoment(value: unknown, zone: string): number {
-  if (value === undefined || value === null || value === 'now') return Date.now();
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw new Error(`not a finite instant: ${value}`);
-    return Math.trunc(value); // 约定：数字一律是 epoch 毫秒
-  }
-  if (typeof value !== 'string') throw new Error(`unsupported instant: ${JSON.stringify(value)}`);
-  const text = value.trim();
-  const absolute = /^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.(\d{1,3}))?(Z|z|[+-]\d{2}:?\d{2})$/.exec(text);
-  if (absolute !== null) {
-    const ms = Date.parse(text.replace(' ', 'T'));
-    if (!Number.isFinite(ms)) throw new Error(`unparsable instant: ${value}`);
-    return ms;
-  }
-  const local = /^(\d{4})-(\d{2})-(\d{2})(?:[Tt ](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(text);
-  if (local === null) {
-    throw new Error(`unparsable instant: ${JSON.stringify(value)}（要 epoch 毫秒、RFC 3339，或 "YYYY-MM-DD[ HH:MM[:SS]]"）`);
-  }
-  const [, y, mo, d, h = '0', mi = '0', s = '0'] = local;
-  const localMillis = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s));
-  return fromLocal(localMillis, zone);
-}
-
-const UNITS = new Set(['year', 'quarter', 'month', 'week', 'day', 'hour', 'minute', 'second']);
-const SNAPS = new Set(['year', 'quarter', 'month', 'week', 'day']);
-
-function addCalendar(localMillis: number, unit: string, amount: number): number {
-  const at = new Date(localMillis);
-  const year = at.getUTCFullYear();
-  const month = at.getUTCMonth();
-  const day = at.getUTCDate();
-  if (unit === 'year') {
-    at.setUTCFullYear(year + amount);
-  } else if (unit === 'quarter') {
-    at.setUTCMonth(month + amount * 3);
-  } else if (unit === 'month') {
-    const target = month + amount;
-    at.setUTCDate(1);
-    at.setUTCMonth(target);
-    const lastDay = new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth() + 1, 0)).getUTCDate();
-    at.setUTCDate(Math.min(day, lastDay)); // 钳制：1/31 + 1 月 = 2/28 或 2/29
-  } else {
-    at.setUTCDate(day + amount); // day（week 在调用处已折算成 7 天）
-  }
-  return at.getTime();
-}
-
-function floorCalendar(localMillis: number, unit: string, weekStartsOn: number): number {
-  const at = new Date(localMillis);
-  const year = at.getUTCFullYear();
-  const month = at.getUTCMonth();
-  const day = at.getUTCDate();
-  if (unit === 'year') return Date.UTC(year, 0, 1);
-  if (unit === 'quarter') return Date.UTC(year, Math.floor(month / 3) * 3, 1);
-  if (unit === 'month') return Date.UTC(year, month, 1);
-  if (unit === 'week') {
-    const weekday = at.getUTCDay() || 7; // 1=周一 … 7=周日
-    const shift = (weekday - weekStartsOn + 7) % 7;
-    return Date.UTC(year, month, day - shift);
-  }
-  return Date.UTC(year, month, day); // day
-}
-
-/**
- * 按顺序施加一串运算。state = { epochMillis, zone }，运算可以换时区。
- * op：
- *   {op:"add",   unit, amount}                日历加减（负数即减）
- *   {op:"floor", unit, weekStartsOn?}         向下取整到日历边界（默认周一）
- *   {op:"ceil",  unit, weekStartsOn?}         向上取整（已对齐则不动）
- *   {op:"convert", zone}                      换时区（时刻不变）
- */
-function applyOps(state: TimeState, operations: unknown): { epochMillis: number; zone: string; applied: string[] } {
-  let { epochMillis, zone } = state;
-  const applied: string[] = [];
-  for (const raw of isArray(operations) ? operations : []) {
-    const op = String(isRecord(raw) ? raw.op ?? '' : '');
-    if (op === 'convert') {
-      zone = assertZone(String(isRecord(raw) ? raw.zone ?? '' : ''));
-      applied.push(`convert → ${zone}`);
-      continue;
-    }
-    if (op === 'add') {
-      const unit = String(isRecord(raw) ? raw.unit ?? '' : '');
-      const amount = Number(isRecord(raw) ? raw.amount : undefined);
-      if (!UNITS.has(unit)) throw new Error(`add needs a unit in ${[...UNITS].join('/')}`);
-      if (!Number.isFinite(amount)) throw new Error('add needs a finite numeric amount');
-      if (unit === 'hour' || unit === 'minute' || unit === 'second') {
-        const factor = unit === 'hour' ? 3600000 : unit === 'minute' ? 60000 : 1000;
-        epochMillis += amount * factor; // 精确时长
-      } else {
-        const step = unit === 'week' ? 7 : 1;
-        const local = addCalendar(localMillisOf(epochMillis, zone), unit === 'week' ? 'day' : unit, amount * step);
-        epochMillis = fromLocal(local, zone);
-      }
-      applied.push(`add ${amount} ${unit}`);
-      continue;
-    }
-    if (op === 'floor' || op === 'ceil') {
-      const unit = String(isRecord(raw) ? raw.unit ?? '' : '');
-      if (!SNAPS.has(unit)) throw new Error(`${op} needs a unit in ${[...SNAPS].join('/')}`);
-      const requested = isRecord(raw) ? raw.weekStartsOn : undefined;
-      const rawWeekStartsOn = Number.isInteger(requested) ? Number(requested) : 0;
-      const weekStartsOn = rawWeekStartsOn >= 1 && rawWeekStartsOn <= 7 ? rawWeekStartsOn : 1;
-      const local = localMillisOf(epochMillis, zone);
-      const floored = floorCalendar(local, unit, weekStartsOn);
-      let target = floored;
-      if (op === 'ceil' && floored < local) {
-        target = unit === 'week'
-          ? addCalendar(floored, 'day', 7)
-          : addCalendar(floored, unit, 1);
-      }
-      epochMillis = fromLocal(target, zone);
-      applied.push(`${op} ${unit}${unit === 'week' ? `(weekStartsOn=${weekStartsOn})` : ''}`);
-      continue;
-    }
-    throw new Error(`unsupported operation: ${JSON.stringify(raw)}`);
-  }
-  return { epochMillis, zone, applied };
-}
-
-export { applyOps, assertZone, deriveContextTimeZone, encode, isoWeek, localParts, offsetMinutes, offsetText, parseMoment, resolveZone };
+export { deriveContextTimeZone, encode, resolveZone };

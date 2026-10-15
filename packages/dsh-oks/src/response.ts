@@ -76,6 +76,29 @@ export interface CreateDataValue {
   ms: number;
 }
 
+/**
+ * create_current_ctx_data 的模型可见渲染：落点 + 这份上下文**本身**。
+ * 时间基准就是要一眼看得见（现在几点、哪个时区、来源是哪一层），否则每写一个边界都得再读一次文件。
+ */
+export interface CurrentCtxValue {
+  dataSrc: string;
+  name: string;
+  bytes: number;
+  ms: number;
+  data: unknown;
+}
+
+export function renderCurrentCtx(_args: unknown, value: CurrentCtxValue | null | undefined): RenderBlock[] {
+  const lines = [
+    `dataSrc:  ${value?.dataSrc ?? ''}`,
+    `这份时间上下文：${((value?.bytes ?? 0) / 1024).toFixed(1)} KB · ${value?.ms ?? 0} ms`,
+    '把它当具名输入交给 jq_transform，边界就在程序里算（tzadd / tzfloor / tzceil，时区显式传）。',
+    '',
+    JSON.stringify(value?.data ?? null, null, 2),
+  ];
+  return [{ type: 'text', text: `${lines.join('\n')}\n` }];
+}
+
 /** create_data 的模型可见渲染：落点、形状与尺寸。数据本身不重复——要看就再读一次。 */
 export function renderCreateData(_args: unknown, value: CreateDataValue | null | undefined): RenderBlock[] {
   const lines = [
@@ -562,7 +585,9 @@ export function renderJqTransform(_args: unknown, value: TransformValue | null |
   const lines = [
     `表达式产出 ${value?.outputs ?? 0} 个值`
     + `${value?.truncated === true ? '（到达输出上限，已截断）' : ''}${picked}${from} · ${value?.ms ?? 0} ms`,
-    ...inputs.map((input) => `输入 ${input.name} ← ${input.src}（${input.root ?? DEFAULT_ROOT} · ${input.shape}）`),
+    // 绑定写清：程序里的名字**就是**那个文件按 root 取出来的那一段（不是"文件在那儿"）。
+    ...inputs.map((input) => `输入 ${input.name} ← ${input.src}（取 ${input.root ?? DEFAULT_ROOT}）`
+      + ` → 程序里的 ${input.name} 就是这一份：${input.shape}`),
     value?.generated === true
       ? `无程序：结果是「名字 → 各输入那一段」的对象${value.pick === undefined ? '' : `，再取 ${value.pick}`}`
         + `（等价 jq：${value.pick ?? '.'}）`
