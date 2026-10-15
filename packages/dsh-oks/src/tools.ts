@@ -619,6 +619,18 @@ const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: string } =
   }
   // 矩阵与雷达都要"两个类别维度 + 一个数值维度"：一个类别当横轴（矩阵）/ 当指标（雷达），
   // 另一个当纵轴（矩阵）/ 当被比较的对象（雷达）。少了第二个维度形状就不成立，所以这里当必填。
+  if (spec.kind === 'gauge' && (spec.x === '' || spec.value === '')) {
+    return {
+      error: 'gauge 需要 spec.x（每张仪表的名称列）与 spec.value（数值列）。它是比率型：值按 0–100 读，'
+        + '要展示计数就先换算成占比，或者改用 bar / column。',
+    };
+  }
+  if (spec.kind === 'sankey' && (spec.x === '' || spec.series === null)) {
+    return {
+      error: 'sankey 需要 spec.x（边的起点列）与 spec.series（边的终点列）；spec.value 可选，'
+        + '填的是边的权重列，不填时每条边计 1。',
+    };
+  }
   if (spec.kind === 'heatmap' || spec.kind === 'radar') {
     if (spec.x === '' || spec.value === '' || spec.series === null) {
       return {

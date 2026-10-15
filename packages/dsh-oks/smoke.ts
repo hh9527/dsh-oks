@@ -2813,6 +2813,25 @@ console.log('=== oks_chart（服务端出图）===');
   // 图元专属开关的适用表只有一份（shared.ts）。把"开关 × 图元"逐个真跑一遍：
   // 表里写支持的必须收下，不支持的必须按表报错。表改了而校验没跟上，这里当场露馅；
   // 报错文案也必须是"spec.<开关>"这一条，免得它其实是因为别的原因被拒、看起来却像通过了。
+  // 注册表也要跟着图元走：series 类型没注册时 echarts 静默不画，工具却回 ok——
+  // 「工具收下了」不等于「画出来了」，所以这里读一眼渲染出来的 SVG 里有没有内容。
+  const sankeyBlank = (await chart({
+    spec: { kind: 'sankey', x: 'k', series: 's', value: 'w' },
+    data: [{ k: 'D1', s: 'kpi', w: 2 }, { k: 'kpi', s: 'r1', w: 1 }],
+    name: 'probe_sankey_registered',
+  })).value;
+  const sankeySvg = readFileSync(resolve(DEV_ROOT, sankeyBlank.svgSrc), 'utf8');
+  ok('sankey：渲染出的 SVG 里有节点名（不是空白）',
+    sankeySvg.includes('D1') && sankeySvg.includes('kpi'));
+  const gaugeBlank = (await chart({
+    spec: { kind: 'gauge', x: 'k', value: 'w' },
+    data: [{ k: '可用率', w: 88 }],
+    name: 'probe_gauge_registered',
+  })).value;
+  const gaugeSvg = readFileSync(resolve(DEV_ROOT, gaugeBlank.svgSrc), 'utf8');
+  ok('gauge：渲染出的 SVG 里有名称与数值（不是空白）',
+    gaugeSvg.includes('可用率') && gaugeSvg.includes('88'));
+
   const minimalSpec: Record<string, Record<string, unknown>> = {
     bar: { x: 'k', value: 'w' },
     line: { x: 'k', value: 'w' },
@@ -2824,6 +2843,10 @@ console.log('=== oks_chart（服务端出图）===');
     box: { x: 'k', value: 'w' },
     heatmap: { x: 'k', value: 'w', series: 's' },
     radar: { x: 'k', value: 'w', series: 's' },
+    // 新图元也要进这张表：不变量测试是"开关 × 图元"逐个真跑，缺了条目就等于没被覆盖
+    // （gauge 缺 x/value 时会被"必须给 x 与 value"拒掉，看起来却像开关不支持）。
+    sankey: { x: 'k', series: 's', value: 'w' },
+    gauge: { x: 'k', value: 'w' },
   };
   const switchValue: Record<string, unknown> = {
     stack: 'total', size: 'w', bins: 4, second: { value: 'w' }, marks: [{ value: 1 }],
@@ -4600,6 +4623,50 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
   ok('读回：没有元数据区的页面明确报错',
     'error' in readReportPage('<html><body><article><p>x</p></article></body></html>'));
 }
+
+  const gaugeMarked = (buildOption(
+    [{ name: 'A', v: 88 }],
+    { kind: 'gauge', title: null, x: 'name', value: 'v', series: null, marks: [{ value: 80 }] } as never,
+  ).option as { series: Array<{ axisLine: { lineStyle: { color?: unknown } } }> }).series[0]!;
+  ok('gauge：marks 画成阈值刻度（80 之前正常色、之后警戒色）',
+    JSON.stringify(gaugeMarked.axisLine.lineStyle.color ?? '').includes('0.8'));
+
+  const gaugeSeries = (buildOption(
+    [{ name: 'A', v: 60 }, { name: 'B', v: 75 }],
+    { kind: 'gauge', title: null, x: 'name', value: 'v', series: null } as never,
+  ).option as { series: Array<{ min: number; max: number; data: Array<{ name: string; value: number }> }> }).series;
+  ok('gauge：每行一张小仪表，值按 0–100 读',
+    gaugeSeries.length === 2
+    && gaugeSeries.every((one) => one.min === 0 && one.max === 100)
+    && gaugeSeries[0]!.data[0]!.name === 'A' && gaugeSeries[0]!.data[0]!.value === 60);
+  let gaugeOverflow = '';
+  try {
+    buildOption([{ name: 'A', v: 120 }],
+      { kind: 'gauge', title: null, x: 'name', value: 'v', series: null } as never);
+  } catch (cause) {
+    gaugeOverflow = String((cause as Error)?.message ?? cause);
+  }
+  ok('gauge：超出 0–100 明确报错并给出两条出路',
+    gaugeOverflow.includes('0–100') && gaugeOverflow.includes('bar'));
+
+  const sankeySeries = (buildOption([
+    { from: 'D1', to: 'kpi', w: 2 },
+    { from: 'D1', to: 'kpi', w: 3 },
+    { from: 'kpi', to: 'r1', w: 4 },
+  ], { kind: 'sankey', title: null, x: 'from', value: 'w', series: 'to' } as never).option as {
+    series: Array<{ data: Array<{ name: string }>; links: Array<{ source: string; target: string; value: number }> }>;
+  }).series[0]!;
+  ok('sankey：行是边，同一对起终点累加合并',
+    sankeySeries.links.length === 2
+    && sankeySeries.links.some((link) => link.source === 'D1' && link.target === 'kpi' && link.value === 5));
+  ok('sankey：节点按首次出现定序并去重',
+    sankeySeries.data.map((node) => node.name).join(',') === 'D1,kpi,r1');
+  const sankeyDefault = buildOption(
+    [{ from: 'A', to: 'B' }, { from: 'B', to: 'C' }],
+    { kind: 'sankey', title: null, x: 'from', value: '', series: 'to' } as never,
+  ).option as { series: Array<{ links: Array<{ value: number }> }> };
+  ok('sankey：不给 value 时每条边计 1',
+    sankeyDefault.series[0]!.links.every((link) => link.value === 1));
 
 for (const file of reportBodies) rmSync(resolve(DEV_ROOT, '.work', file), { force: true });
 

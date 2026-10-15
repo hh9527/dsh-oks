@@ -149,6 +149,146 @@ const emptyOption = (spec: OptionInput, layout: ReturnType<typeof resolveLayout>
  * 所有图元共用同一套规则：色板按序列轮转、负值用区分色、空序列跳过、类别密度决定标签斜排。
  */
 export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: EChartsCoreOption; height: number } => {
+  // 桑基图：行是**边**——`x` 起点、`series` 终点、`value` 权重（不填时每条边计 1）。
+  // 布局由 echarts 从 DAG 自己分层，作者不给层级。它与别的图元不同，先于通用分组处理。
+  if (spec.kind === 'sankey') {
+    const layout = resolveLayout({ categories: [], overrides: spec.layout ?? {}, defaultHeight: 340 });
+    const title = spec.title === null ? undefined : {
+      text: spec.title,
+      left: 'center' as const,
+      textStyle: { fontSize: layout.titleFont, fontWeight: 'bold' as const, color: '#1c2b3a' },
+    };
+    const weights = spec.style?.colors !== undefined && spec.style.colors.length > 0 ? spec.style.colors : SERIES_COLORS;
+    const links = new Map<string, { source: string; target: string; value: number }>();
+    const nodes: Array<{ name: string; itemStyle?: { color: string } }> = [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const source = toLabel(row[spec.x]);
+      const target = spec.series === null ? '' : toLabel(row[spec.series]);
+      // 自环、空节点与不成对的边不进图：sankey 不接受它们。
+      if (source === '' || target === '' || source === target) continue;
+      const weight = spec.value === '' ? 1 : toNumber(row[spec.value]);
+      if (weight === null || weight <= 0) continue;
+      const key = `${source}\u0000${target}`;
+      const existing = links.get(key);
+      // 同一对起终点出现多次 → 累加合并（echarts 的 sankey 不接受重复 link）。
+      if (existing === undefined) links.set(key, { source, target, value: weight });
+      else existing.value += weight;
+      for (const name of [source, target]) {
+        if (seen.has(name)) continue;
+        seen.add(name);
+        nodes.push({ name, itemStyle: { color: weights[nodes.length % weights.length]! } });
+      }
+    }
+    if (links.size === 0) {
+      return { option: emptyOption(spec, layout), height: 240 };
+    }
+    return {
+      option: {
+        title,
+        series: [{
+          type: 'sankey',
+          data: nodes,
+          links: [...links.values()],
+          nodeAlign: 'justify',
+          // 标题占着顶部中间，而中间层的节点标签正好落在那里——给它留出上边距，别叠在一起。
+          top: spec.title === null ? 10 : 48,
+          bottom: 26,
+          nodeWidth: 14,
+          nodeGap: 12,
+          // 标签压在色带上很难读：加一圈白色描边，色带再淡一点。
+          label: {
+            fontSize: layout.labelFont,
+            color: '#1c2b3a',
+            textBorderColor: '#ffffff',
+            textBorderWidth: 3,
+          },
+          itemStyle: { borderWidth: 0 },
+          lineStyle: { color: 'gradient', opacity: 0.28, curveness: 0.5 },
+        }],
+      } as EChartsCoreOption,
+      // 高度按节点数走：每个节点给它一个可读的竖直位置。
+      height: Math.max(240, Math.round(120 + nodes.length * Math.max(18, Math.round(layout.labelFont * 1.6)))),
+    };
+  }
+
+  // 仪表盘：行是"一张小仪表"——`x` 名称、`value` 值。v1 限定比率型：值按 0–100 读，
+  // 超出范围明确报错（宁可失败，也不画一张假装合格的图）。同样先于通用分组处理。
+  if (spec.kind === 'gauge') {
+    const layout = resolveLayout({ categories: [], overrides: spec.layout ?? {}, defaultHeight: 340 });
+    const title = spec.title === null ? undefined : {
+      text: spec.title,
+      left: 'center' as const,
+      textStyle: { fontSize: layout.titleFont, fontWeight: 'bold' as const, color: '#1c2b3a' },
+    };
+    const palette = spec.style?.colors !== undefined && spec.style.colors.length > 0 ? spec.style.colors : SERIES_COLORS;
+    const items: Array<{ name: string; value: number }> = [];
+    for (const row of rows) {
+      const name = toLabel(row[spec.x]);
+      const value = spec.value === '' ? null : toNumber(row[spec.value]);
+      if (name === '' || value === null) continue;
+      if (value < 0 || value > 100) {
+        throw new Error(`gauge 是比率型：值要在 0–100 之间，这里是 ${value}（${name}）。`
+          + '要让计数看起来像仪表，先在加工里换算成占比；或者改用 bar / column 这类量值图。');
+      }
+      items.push({ name, value });
+    }
+    if (items.length === 0) return { option: emptyOption(spec, layout), height: 200 };
+    const perRow = Math.min(items.length, 4);
+    const gaugeRows = Math.ceil(items.length / perRow);
+    // 按**像素**摆位：画布宽度是固定的、高度是我们算的。用百分比时 echarts 会按 min(宽,高) 折算，
+    // 一张仪表会缩成一小撮、四周全是空白（真机上就是这样）。
+    const cellWidth = CHART_WIDTH / perRow;
+    const cellHeight = 140;
+    // 标题占着顶部中间——不给它留位置，第一行仪表就会被压住（真机上就是这样）。
+    const titleGap = spec.title === null ? 0 : 34;
+    const radius = Math.min(cellWidth, cellHeight) * 0.4;
+    const series = items.map((item, index) => {
+      const column = index % perRow;
+      const row = Math.floor(index / perRow);
+      const centerX = cellWidth * (column + 0.5);
+      const centerY = titleGap + cellHeight * (row + 0.5);
+      const color = palette[index % palette.length]!;
+      // marks 在仪表上是阈值：刻度值之前是正常色，之后转警戒色。
+      const stops = (spec.marks ?? [])
+        .map((mark) => toNumber((mark as { value?: unknown }).value))
+        .filter((value): value is number => value !== null && value > 0 && value < 100)
+        .sort((a, b) => a - b);
+      const axisColors: Array<[number, string]> = [[0, '#4aa96c']];
+      for (const stop of stops) axisColors.push([stop / 100, '#c0567a']);
+      axisColors.push([1, '#c0567a']);
+      return {
+        type: 'gauge',
+        center: [centerX, centerY],
+        radius,
+        min: 0,
+        max: 100,
+        startAngle: 210,
+        endAngle: -30,
+        axisLine: stops.length === 0
+          ? { lineStyle: { width: 10 } }
+          : { lineStyle: { width: 10, color: axisColors } },
+        axisTick: { show: false },
+        splitLine: { length: 8, lineStyle: { width: 1 } },
+        axisLabel: { show: items.length <= 2, fontSize: Math.max(8, layout.labelFont - 3) },
+        pointer: { width: 4, length: '60%' },
+        progress: { show: true, width: 10, itemStyle: { color } },
+        title: { fontSize: layout.labelFont, color: '#1c2b3a', offsetCenter: [0, '72%'] },
+        detail: {
+          fontSize: layout.labelFont + 2,
+          color: '#1c2b3a',
+          formatter: '{value}',
+          offsetCenter: [0, '30%'],
+        },
+        data: [{ value: item.value, name: item.name }],
+      };
+    });
+    return {
+      option: { title, series } as EChartsCoreOption,
+      height: Math.max(160, titleGap + gaugeRows * cellHeight),
+    };
+  }
+
   const { categories, seriesNames, points } = group(rows, spec);
   const labelFont = spec.layout?.labelFont ?? labelFontSize(categories);
   const layout = resolveLayout({

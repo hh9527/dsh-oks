@@ -7,7 +7,9 @@
  *  宽高必须在 init 时给定：SSR 模式下没有 DOM 可测量，echarts 不做自适应。
  */
 import * as echarts from 'echarts/core';
-import { BarChart, BoxplotChart, HeatmapChart, LineChart, PieChart, RadarChart, ScatterChart } from 'echarts/charts';
+// 图元清单在 shared.ts，但**每一种 series 类型都要在这里注册**：没注册的图元，echarts 会静默不画
+// （工具照样回 ok、SVG 一片空白）。加图元时同步这一行与下面的 use([...])。
+import { BarChart, BoxplotChart, GaugeChart, HeatmapChart, LineChart, PieChart, RadarChart, SankeyChart, ScatterChart } from 'echarts/charts';
 import {
   GraphicComponent,
   GridComponent,
@@ -32,6 +34,8 @@ echarts.use([
   PieChart,
   RadarChart,
   ScatterChart,
+  SankeyChart,
+  GaugeChart,
   GraphicComponent,
   GridComponent,
   LegendComponent,

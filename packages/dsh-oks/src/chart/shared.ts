@@ -9,6 +9,7 @@ export type Row = Record<string, unknown>;
  *  否则加一个图元要改三处，漏掉一处就是"工具收下了、渲染认不得"（或反过来）。 */
 export const CHART_KINDS = [
   'bar', 'line', 'column', 'pie', 'area', 'scatter', 'histogram', 'box', 'heatmap', 'radar',
+  'sankey', 'gauge',
 ] as const;
 export type ChartKind = (typeof CHART_KINDS)[number];
 
@@ -26,7 +27,7 @@ export const EXPRESSION_SUPPORT = {
   /** 第二个度量：另一条线配一个独立的第二数值轴。 */
   second: ['bar', 'column', 'line', 'area'],
   /** 参考线 / 阈值线。 */
-  marks: ['bar', 'column', 'line', 'area'],
+  marks: ['bar', 'column', 'line', 'area', 'gauge'],
 } as const;
 
 /** 图元专属开关的名字。 */
