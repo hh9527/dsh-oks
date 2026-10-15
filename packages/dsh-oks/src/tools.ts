@@ -2018,6 +2018,8 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           errors: checked.errors,
           refs,
           commentCount: checked.comments.length,
+          NumWithoutSource: checked.NumWithoutSource,
+          LitNotOnSpan: checked.LitNotOnSpan,
         };
       },
     },
@@ -2137,6 +2139,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           at: saved.at,
           note,
           figureCount: assembledReport.figureCount,
+          NumWithoutSource: assembledReport.NumWithoutSource,
           tableCount: assembledReport.tableCount,
         };
       },

@@ -4552,10 +4552,42 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     && listedWork.value.files.some((file) => file.name.endsWith('.xhtml')
       && typeof file.bytes === 'number' && typeof file.modifiedAt === 'string'));
 
+  const litFile = 'smoke_check_lit.xhtml';
+  mkdirSync(resolve(DEV_ROOT, '.work'), { recursive: true });
+  writeFileSync(resolve(DEV_ROOT, '.work', litFile), `<article>
+  <p>本期共 1487 条告警。</p>
+  <p><span data-oks-lit="">第 1 步</span> 先看分布，<span data-oks-lit="">24 小时</span> 口径。</p>
+  <p><span data-oks-ref="alarms" data-oks-pick=".rowCount">0</span> 条。</p>
+  <p>样例：<code>value = 42</code>。</p>
+  <p>P95 与 K8s，A-123、A_123、A123、A.1、A.1.2.3 都是标识符。</p>
+  <p>时延 5 ms，集群 3 个。</p>
+  <p data-oks-lit="">写错标签的 99</p>
+  <!-- 注释里的 123 不算 -->
+</article>`, 'utf8');
+  reportBodies.push(litFile);
+
   const goodCheck = await call('oks_report_check', { src: 'smoke_check_good.xhtml' });
   ok('报告校验工具：合规正文 valid=true 且零错误',
     goodCheck.value.valid === true && goodCheck.value.errors.length === 0);
   const badCheck = await call('oks_report_check', { src: 'smoke_check_bad.xhtml' });
+
+  const litCheck = await call('oks_report_check', { src: litFile });
+  const unmarked = litCheck.value.NumWithoutSource.map((item) => item.snippet).join(' | ');
+  ok('数字来源：没来源的数字报出来（带行列与片段）',
+    litCheck.value.NumWithoutSource.length === 4
+    && litCheck.value.NumWithoutSource.every((item) => item.line > 0 && item.column > 0 && item.snippet !== '')
+    && unmarked.includes('1487') && unmarked.includes('99')
+    && unmarked.includes('5 ms') && unmarked.includes('3 个'));
+  ok('数字来源：标识符里的数字不算（P95 / K8s / A-123 / A_123 / A123 / A.1 / A.1.2.3）',
+    !unmarked.includes('都是标识符') && !unmarked.includes('P95 与 K8s'));
+  ok('数字来源：lit span / ref span / pre·code / 注释里的数字都不报',
+    !unmarked.includes('第 1 步') && !unmarked.includes('24 小时')
+    && !unmarked.includes('42') && !unmarked.includes('123'));
+  ok('数字来源：lit 写在 span 以外时报 LitNotOnSpan，且不生效',
+    litCheck.value.LitNotOnSpan.length === 1 && litCheck.value.LitNotOnSpan[0].tag === 'p'
+    && unmarked.includes('99'));
+  ok('数字来源：这些是告警，不影响 valid', litCheck.value.valid === true
+    && litCheck.value.errors.length === 0);
   ok('报告校验工具：不合规正文给出结构化错误（code + 行列）',
     badCheck.value.valid === false
     && badCheck.value.errors.some((error) => error.code === 'author-void' && error.line >= 1 && error.column >= 1));

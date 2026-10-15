@@ -42,6 +42,10 @@ export type AssembleResult = { error: string } | {
   items: Record<string, unknown>;
   figureCount: number;
   tableCount: number;
+  /** 报告正文里「既没有 ref、也没有用 lit 声明」的数字个数（告警）。 */
+  NumWithoutSource: number;
+  /** `data-oks-lit` 写在 span 以外的次数（告警）。 */
+  LitNotOnSpan: number;
 };
 
 /** 正文里 figure 引用的出现顺序。 */
@@ -148,5 +152,6 @@ export function assembleReport(input: AssembleInput): AssembleResult {
     items,
     outline,
   });
-  return { page, origin: archived.origin, assets: archived.assets, items, figureCount, tableCount };
+  return { page, origin: archived.origin, assets: archived.assets, items, figureCount, tableCount,
+    NumWithoutSource: checked.NumWithoutSource.length, LitNotOnSpan: checked.LitNotOnSpan.length };
 }

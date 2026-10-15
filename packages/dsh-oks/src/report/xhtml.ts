@@ -41,7 +41,7 @@ export const AUTHOR_ELEMENTS: readonly string[] = [
 /** 作者正文允许的属性。`data-oks-ref` / `data-oks-pick` / `data-oks-shrink` 是仅有的专用语义。 */
 export const AUTHOR_ATTRIBUTES: readonly string[] = [
   'id', 'class', 'title', 'lang',
-  'data-oks-ref', 'data-oks-pick', 'data-oks-shrink',
+  'data-oks-ref', 'data-oks-pick', 'data-oks-shrink', 'data-oks-lit',
   'href', 'colspan', 'rowspan', 'scope',
 ];
 
@@ -324,6 +324,10 @@ export function checkAuthorXhtml(xhtml: string): {
   figures: string[];
   /** 章节：层级、正文文字与作者写的 `id`（没写就是 null），按出现顺序。 */
   headings: Array<{ level: number; text: string; id: string | null }>;
+  /** 正文里"既没有 ref、也没有用 lit 声明为文字"的数字——告警，不进 errors。 */
+  NumWithoutSource: Array<{ line: number; column: number; snippet: string }>;
+  /** `data-oks-lit` 写在 span 以外的元素上——它不生效，子树照旧扫。 */
+  LitNotOnSpan: Array<{ line: number; column: number; tag: string }>;
 } {
   const errors: XhtmlError[] = [];
   const refs: string[] = [];
@@ -333,6 +337,11 @@ export function checkAuthorXhtml(xhtml: string): {
   const headings: Array<{ level: number; text: string; id: string | null }> = [];
   let heading: { level: number; text: string[]; id: string | null } | null = null;
   const ids = new Set<string>();
+  const numWithoutSource: Array<{ line: number; column: number; snippet: string }> = [];
+  const litNotOnSpan: Array<{ line: number; column: number; tag: string }> = [];
+  /** 进到 ref span / lit span / pre / code 里就静音：代码与引用里的数字不算「没来源」。 */
+  let quiet = 0;
+  const quietStack: boolean[] = [];
   const parser = new SaxesParser({ xmlns: false });
   const elements = new Set(AUTHOR_ELEMENTS);
   const attributes = new Set(AUTHOR_ATTRIBUTES);
@@ -404,6 +413,13 @@ export function checkAuthorXhtml(xhtml: string): {
         }
       }
     }
+    if (own['data-oks-lit'] !== undefined && name !== 'span') {
+      litNotOnSpan.push({ ...at(), tag: name });
+    }
+    const isQuiet = name === 'pre' || name === 'code'
+      || (name === 'span' && (own['data-oks-ref'] !== undefined || own['data-oks-lit'] !== undefined));
+    if (isQuiet) quiet += 1;
+    quietStack.push(isQuiet);
     if (VOID_ELEMENTS.has(name) && !tag.isSelfClosing) {
       fail('author-void', `<${name}> 是空元素：写成 <${name} />。`, name);
     }
@@ -424,9 +440,27 @@ export function checkAuthorXhtml(xhtml: string): {
 
   parser.on('text', (text) => {
     if (heading !== null) heading.text.push(text);
+    if (quiet > 0) return;
+    const end = at();
+    // 记号 = 字母/数字/下划线/点/连字符/斜杠连成的一串。含字母的记号是标识符或术语
+    // （P95、K8s、A-123、A_123、A123、A.1.2.3、HTTP/2），里面的数字不是业务数字。
+    for (const token of text.matchAll(/[A-Za-z0-9_.\-/]+/g)) {
+      if (/[A-Za-z]/.test(token[0])) continue;
+      for (const match of token[0].matchAll(/[+-]?\d+/g)) {
+        const index = (token.index ?? 0) + (match.index ?? 0);
+        const before = text.slice(0, index + match[0].length);
+        const column = before.includes('\n') ? end.column : Math.max(1, end.column - text.length + index);
+        numWithoutSource.push({
+          line: end.line,
+          column,
+          snippet: text.slice(Math.max(0, index - 10), index + match[0].length + 10).replace(/\s+/g, ' ').trim(),
+        });
+      }
+    }
   });
 
   parser.on('closetag', (tag) => {
+    if (quietStack.pop()) quiet -= 1;
     if (heading !== null && tag?.name === `h${heading.level}`) {
       headings.push({ level: heading.level, text: heading.text.join('').trim(), id: heading.id });
       heading = null;
@@ -442,5 +476,5 @@ export function checkAuthorXhtml(xhtml: string): {
   parser.on('cdata', () => fail('author-cdata', '结构区不要 CDATA：正文直接写文本，& 写成 &amp;、< 写成 &lt;。', null));
 
   parser.write(xhtml).close();
-  return { errors, refs, comments, picks, figures, headings };
+  return { errors, refs, comments, picks, figures, headings, NumWithoutSource: numWithoutSource, LitNotOnSpan: litNotOnSpan };
 }
