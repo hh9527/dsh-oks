@@ -1,7 +1,8 @@
-# 插入一行 Host 插件：把**工作区声明的**知识服务与数据文件注册成十七个原生工具——
+# 插入一行 Host 插件：把**工作区声明的**知识服务与数据文件注册成十九个原生工具——
 # oks_search / oks_references / oks_info / oks_check_intent / oks_query / create_data /
-# jq_transform / jq_transform_into / oks_chart / oks_view / oks_report / oks_artifacts / collect /
-# work_read / work_write / work_edit / work_delete（后四个只作用在 .work/ 内的代码区）——
+# jq_transform / jq_transform_into / oks_chart / oks_view / oks_report_check / oks_report / oks_artifacts / collect /
+# work_read / work_write / work_edit / work_list / work_delete（后五个只作用在 .work/ 内的工作区：
+# jq 程序、报告正文、任何草稿文件）——
 # 外加 time_now / time_calc 两个与模型无关的时间辅助工具，以及 va_ask（插件自己装配、自己复用词汇助手）。
 # 知识探索的入口是 oks_info 的 key "index"；这里不写任何形状假设。
 #

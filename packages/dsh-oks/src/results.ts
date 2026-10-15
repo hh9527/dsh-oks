@@ -844,9 +844,7 @@ export function deleteWorkFile(root: string, raw: unknown): { file: string; rema
   try {
     info = statSync(full);
   } catch {
-    const names = listWorkFiles(root).map((entry) => entry.name);
-    throw new Error(`work_delete 找不到 ${rel}：${WORK_DIR}/ 里现在有 `
-      + `${names.length === 0 ? '（空）' : names.join(' / ')}。`);
+    throw new Error(`work_delete 找不到 ${rel}。`);
   }
   if (!info.isFile()) {
     throw new Error(`work_delete 只能删文件：${rel} 是一个目录（先删它里面的文件）。`);
@@ -890,7 +888,8 @@ export function editWorkFile(root: string, path: unknown, old: unknown, next: un
   try {
     text = readFileSync(full, 'utf8');
   } catch {
-    throw new Error(`读不到 ${rel}：${WORK_DIR}/ 里现有 ${listWorkFiles(root).map((f) => f.name).join('、') || '（空）'}`);
+    throw new Error(`读不到 ${rel}`
+      + `。要改它先 work_write 写出这个文件；材料、图表件与报告由工具生成，不在 ${WORK_DIR}/ 下。`);
   }
   const parts = text.split(old);
   const replaced = parts.length - 1;
@@ -918,7 +917,9 @@ function readWorkTextWhole(root: string, path: unknown, tool: string): { rel: st
   try {
     text = readFileSync(full, 'utf8');
   } catch {
-    throw new Error(`读不到 ${rel}：${WORK_DIR}/ 里现有 ${listWorkFiles(root).map((f) => f.name).join('、') || '（空）'}`);
+    throw new Error(`读不到 ${rel}`
+      + `。材料、图表件与报告不在 ${WORK_DIR}/ 下：要读它们用 jq_transform（可按 root 取一段）；`
+      + `${WORK_DIR}/ 只装你自己写的文件。`);
   }
   const bytes = Buffer.byteLength(text, 'utf8');
   if (bytes > WORK_MAX_BYTES) {
@@ -977,7 +978,8 @@ export function readCodeFile(root: string, raw: unknown): { text: string; file: 
   try {
     text = readFileSync(full, 'utf8');
   } catch {
-    throw new Error(`读不到 ${rel}：${WORK_DIR}/ 里现有 ${codeFiles(root)}`);
+    throw new Error(`读不到 ${rel}`
+      + `。byFile 只认 ${WORK_DIR}/ 下的 .jq：先用 work_write 写出这个程序。`);
   }
   const bytes = Buffer.byteLength(text);
   if (bytes > CODE_MAX_BYTES) {

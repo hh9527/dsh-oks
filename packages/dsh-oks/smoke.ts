@@ -1488,15 +1488,16 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
     && intoViaFileRoot?.snipFile === `.work/${progFile}` && intoViaFileBody.data === rowTotal);
   rmSync(resolve(DEV_ROOT, intoViaFile.value.dataSrc), { force: true });
 
-  // 引用的三种不合规：不存在（要列出 .work/ 里现有的）、越界、超过单份代码上限
+  // 引用的三种不合规：不存在（只说找不到）、越界、超过单份代码上限
   writeFileSync(resolve(workDir, 'huge.jq'), `# ${'x'.repeat(70 * 1024)}\n`);
   const missingCode = await failureOf({ inputs: { q: dataSrc }, byFile: 'nope.jq' });
   const outsideCode = await failureOf({ inputs: { q: dataSrc }, byFile: '../evil.jq' });
   const hugeCode = await failureOf({ inputs: { q: dataSrc }, byFile: 'huge.jq' });
   const notCode = await failureOf({ inputs: { q: dataSrc }, byFile: 'notes.txt' });
   console.log(`  代码引用不存在 → ${missingCode.slice(0, 110)}`);
-  ok('代码引用不存在时报出 .work/ 里现有哪些文件',
-    /读不到/.test(missingCode) && missingCode.includes(`.work/${progFile}`));
+  ok('代码引用不存在时只说找不到，不倒 .work/ 里的清单',
+    /读不到/.test(missingCode) && !missingCode.includes(`.work/${progFile}`)
+    && !missingCode.includes('.jq、'));
   ok('程序文件不能越过 .work/、必须是 .jq、超过单份代码上限时明确报错',
     /只能读写工作区 \.work\//.test(outsideCode) && /超过单份代码的上限/.test(hugeCode)
     && /要以 \.jq 结尾/.test(notCode));
@@ -3581,7 +3582,7 @@ console.log('=== work_delete：代码区删除 ===');
   const isDir = await fails({ file_path: 'subdir' });
   const escape = await fails({ file_path: '../evil.jq' });
   console.log(`  work_delete 的三种拒绝 → ${missing.slice(0, 60)} / ${isDir.slice(0, 40)} / ${escape.slice(0, 40)}`);
-  ok('不存在时报出现在有哪些文件', /找不到/.test(missing) && /kept\.jq/.test(missing));
+  ok('删除不存在的文件时只说找不到，不倒清单', /找不到/.test(missing) && !/kept\.jq/.test(missing));
   ok('目标是目录时明确拒绝', /只能删文件/.test(isDir));
   ok('越界被拒', /只能读写工作区 \.work\//.test(escape));
   rmSync(join(DEV_ROOT, '.work', 'subdir'), { recursive: true, force: true });
@@ -4535,6 +4536,16 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     writeFileSync(resolve(DEV_ROOT, '.work', file), body, 'utf8');
     reportBodies.push(file);
   }
+  let nearbyMessage = '';
+  try {
+    await call('work_read', { file_path: 'smoke_missing_probe.jq' });
+  } catch (cause) {
+    nearbyMessage = String((cause as Error)?.message ?? cause);
+  }
+  ok('报错只说找不到文件，不倒整份清单',
+    nearbyMessage.includes('读不到') && nearbyMessage.includes('smoke_missing_probe.jq')
+    && !nearbyMessage.includes('smoke_report_1.xhtml'));
+
   const listedWork = await call('work_list', {});
   ok('work_list：列出 .work/ 下的文件（名字、字节、写入时间）',
     listedWork.value.count > 0

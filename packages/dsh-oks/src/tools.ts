@@ -1700,7 +1700,8 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           outputs: outcome.outputs,
           data,
           ms,
-        }, '让程序少取一点（聚合、投影或前 N 项），不要一次取整份数据。');
+        }, '让程序少取一点（聚合、投影或前 N 项），不要一次取整份数据；'
+        + '读报告（*.report.html）按项取：root 用 ".data.items.<项名>"、".data.structure"、".data.origin"。');
       },
     },
     {
@@ -2200,7 +2201,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'work_read',
-      description: `Read a UTF-8 text file under ${WORK_DIR}/ and return line-numbered content — the same shape as the usual read tool (file_path / offset / limit), except that only ${WORK_DIR}/ is reachable: that is enforced, not requested. ${WORK_DIR}/ is your own code area in this workspace, the place for jq programs you will reference and re-edit. Pass "." as file_path to list what is in ${WORK_DIR}/ instead, so a fresh session can see what it left behind.`,
+      description: `Read a UTF-8 text file under ${WORK_DIR}/ and return line-numbered content — the same shape as the usual read tool (file_path / offset / limit), except that only ${WORK_DIR}/ is reachable: that is enforced, not requested. ${WORK_DIR}/ is your own work area in this workspace: the jq programs a transform runs by 'byFile', the report body you hand to 'oks_report' as 'articleFile', and any other file you write. Pass "." as file_path to list what is in ${WORK_DIR}/ instead, so a fresh session can see what it left behind.`,
       parameters: {
         type: 'object',
         properties: {
@@ -2227,7 +2228,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'work_write',
-      description: `Write a UTF-8 text file under ${WORK_DIR}/, creating or overwriting it — the same shape as the usual write tool (file_path / content), except that only ${WORK_DIR}/ is reachable. It is how a jq program gets somewhere a transform can name it: write "${WORK_DIR}/peek.jq" here, then give "byFile": "peek.jq", and edit the program later without resending the whole thing. Parent directories are created. Keep data out of here: rows and tables belong in .oks/data/ via create_data or jq_transform_into.`,
+      description: `Write a UTF-8 text file under ${WORK_DIR}/, creating or overwriting it — the same shape as the usual write tool (file_path / content), except that only ${WORK_DIR}/ is reachable. It is how a file gets somewhere a tool can name it: write "${WORK_DIR}/peek.jq" here and hand 'byFile: "peek.jq"'; write "${WORK_DIR}/article.xhtml" here and hand 'articleFile: "article.xhtml"'. Edit it later without resending the whole thing. Parent directories are created. Keep data out of here: rows and tables belong in .oks/data/ via create_data or jq_transform_into.`,
       parameters: {
         type: 'object',
         properties: {
@@ -2247,7 +2248,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'work_edit',
-      description: `Replace a literal passage in a text file under ${WORK_DIR}/ — the same shape as the usual edit tool (file_path / old_string / new_string / replace_all), except that only ${WORK_DIR}/ is reachable. It is how a jq program gets iterated: write it once, then fix one line at a time instead of resending the file. old_string must appear in the file exactly as given (whitespace included); it must be unique unless replace_all is true.`,
+      description: `Replace a literal passage in a text file under ${WORK_DIR}/ — the same shape as the usual edit tool (file_path / old_string / new_string / replace_all), except that only ${WORK_DIR}/ is reachable. It is how a file gets iterated: write it once, then fix one passage at a time instead of resending the whole file. old_string must appear in the file exactly as given (whitespace included); it must be unique unless replace_all is true.`,
       parameters: {
         type: 'object',
         properties: {
@@ -2281,7 +2282,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'work_delete',
-      description: `Delete one file under ${WORK_DIR}/ — how a jq program you no longer need goes away. It deletes files only: empty a directory first if you want it gone. The receipt says which file went and how many are left in ${WORK_DIR}/. Deleting a program does not cost provenance: the source chain records the program text itself, so the only thing lost is the ability to run it again.`,
+      description: `Delete one file under ${WORK_DIR}/ — how a file you no longer need goes away (a jq program, a report body, any scratch file). It deletes files only: empty a directory first if you want it gone. The receipt says which file went and how many are left in ${WORK_DIR}/. Deleting a file does not cost provenance: a jq program's text is recorded in the source chain of whatever used it, so what is lost is only the ability to run it again.`,
       parameters: {
         type: 'object',
         properties: {

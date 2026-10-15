@@ -134,7 +134,9 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
                 actualBytes,
                 hint: '回执太大，没有交给你。用更精确的取法再来一次：jq_transform 里用 pick 取一个字段，'
                   + '或在 byFile 的程序里聚合与投影（length / group_by / map({…})）；'
-                  + '要整块数据就让它留在文件里，用 root 只取你要的那一段。',
+                  + '要整块数据就让它留在文件里，用 root 只取你要的那一段。'
+                  + '读报告（*.report.html）永远按项取：root 用 ".data.items.<项名>"、".data.structure"、'
+                  + '".data.origin"，不要一次取整份。',
               },
             }),
           }];
