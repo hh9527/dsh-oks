@@ -15,43 +15,9 @@ mod time;
 mod valx;
 
 use jaq_all::load::{compile_errors, load_errors, FileReports, FileReportsDisp};
-use jaq_core::load::{import, Arena, File, Loader};
+use jaq_core::load::{import, Arena, File, Import, Loader};
 use jaq_core::{Ctx, Vars};
 use jaq_json::{read, Val};
-
-/// 程序里不能有模块指令：这条求值路上没有文件系统。
-///
-/// jq 要求 `include` / `import` 出现在程序**最前面**（写在别处编译器自己会报错，也是响的），
-/// 所以只看开头就够；跳过空白与注释，避免把 `.import`、`"import"`、`# import` 误判。
-fn reject_module_directives(program: &str) -> Result<(), String> {
-    let bytes = program.as_bytes();
-    let mut i = 0;
-    loop {
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i < bytes.len() && bytes[i] == b'#' {
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-        break;
-    }
-    for keyword in ["include", "import"] {
-        let len = keyword.len();
-        if bytes[i..].starts_with(keyword.as_bytes()) {
-            let after = bytes.get(i + len);
-            let is_word = after.is_none_or(|b| !(b.is_ascii_alphanumeric() || *b == b'_'));
-            if is_word {
-                return Err(format!(
-                    "程序里不能用 `{keyword}`：这条求值路上没有文件系统，模块与数据文件都进不来。\n"
-                ) + "要用外面的值，先用工具把它落成材料，再当输入传给程序。");
-            }
-        }
-    }
-    Ok(())
-}
 
 /// 把编译期错误排成「文件名 + 行号 + 出错那一行」——与 jaq CLI 同一套排版，只是**不上色**
 /// （这段文字要进模型上下文与回执，颜色是噪音）。路径由调用方给：`.work/kpi.jq` 就写它。
@@ -63,12 +29,12 @@ fn render(reports: Vec<FileReports<String>>) -> String {
     out.trim_end().to_string()
 }
 
-/// 跑一次：拒绝模块指令 → 解析输入 → 组装 std → 编译（含"没有文件系统"的那一步）→ 求值。
+/// 跑一次：解析输入 → 组装 std → 装载（`include` / `import` 在这里被拒）→ 编译 → 求值。
 ///
-/// `max_chars` 是输出的字符上限（0 = 不限）：到点就停并回退到最后一个换行——
-/// 与"进程被 kill 掉"时的语义一致，绝不留下半个 JSON 值。返回的第二个值表示截断。
+/// 返回值是**一份 JSON 数组**（值流），宿主解析一次就拿到值——引擎不吐"每行一个值"的文本让宿主
+/// 去切。`max_chars` 是字符上限（0 = 不限）：到点就停、把数组闭合，绝不留下半个 JSON 值；
+/// 第二个返回值表示截断。
 fn evaluate(program: &str, path: &str, input: &str, max_chars: usize) -> Result<(String, bool), String> {
-    reject_module_directives(program)?;
     let input = read::parse_single(input.as_bytes()).map_err(|e| format!("输入不是合法的 JSON：{e}"))?;
     let defs = jaq_core::defs()
         .chain(jaq_std::defs())
@@ -93,28 +59,34 @@ fn evaluate(program: &str, path: &str, input: &str, max_chars: usize) -> Result<
         .map_err(|errs| render(load_errors(errs)))?;
     // 这一步就是"没有文件系统"的落点：模块与数据文件都在这里被拒。少了它，未解析的导入变量
     // 会留到运行时，一用就 panic（wasm 里是 trap，实例报废）。
-    import(&modules, |_| Err("file loading not supported".into()))
+    import(&modules, |Import { path, .. }| {
+        Err(format!(
+            "这条求值路上没有文件系统：模块与数据文件（`{path}`）都进不来。\n             要用外面的值，先用工具把它落成材料，再当输入传给程序。"
+        ))
+    })
         .map_err(|errs| render(load_errors(errs)))?;
     let filter = jaq_core::Compiler::default()
         .with_funs(funs)
         .compile(modules)
         .map_err(|errs| render(compile_errors(errs)))?;
     let ctx = Ctx::<jaq_core::data::JustLut<Val>>::new(&filter.lut, Vars::new([]));
-    let mut out = String::new();
+    let mut out = String::from("[");
     let mut truncated = false;
     for value in filter.id.run((ctx, input)) {
         let value = jaq_core::unwrap_valr(value).map_err(|e| format!("{e}"))?;
-        out.push_str(&value.to_string());
-        out.push('\n');
-        if max_chars > 0 && out.len() > max_chars {
-            match out.rfind('\n') {
-                Some(cut) => out.truncate(cut + 1),
-                None => out.clear(),
-            }
+        let text = value.to_string();
+        let separator = usize::from(out.len() > 1);
+        // 放不下就停在这里（`+1` 是闭合的 `]`），已经收下的值一个都不丢。
+        if max_chars > 0 && out.len() + separator + text.len() + 1 > max_chars {
             truncated = true;
             break;
         }
+        if separator == 1 {
+            out.push(',');
+        }
+        out.push_str(&text);
     }
+    out.push(']');
     Ok((out, truncated))
 }
 
@@ -140,7 +112,7 @@ pub extern "C" fn dealloc(ptr: *mut u8, len: usize) {
 ///
 /// `程序名`只用于报错排版（`.work/kpi.jq` → 报错里就写这个名字）；空串按 `<inline>` 处理。
 /// `上限`是输出字符上限（0 = 不限）。
-/// 状态：`0` = 结果、`1` = 错误、`2` = 到上限被截断（`payload` 是回退到最后一个换行的那一段）。
+/// 状态：`0` = 结果、`1` = 错误、`2` = 到上限被截断。前两种之外，`payload` 都是一份 JSON 数组。
 #[no_mangle]
 pub extern "C" fn run(
     program_ptr: *const u8,

@@ -74,7 +74,7 @@
 | `env` / `now` / `localtime` / `strflocaltime` | **不组装** | `jaq-std` 关掉 default features 即可 |
 | `input` / `inputs` | **不组装** | `jaq_std::input` 是单独模块，不组装就没有 |
 | `debug` / `stderr` | 留名，**报错** | `defs.jq` 引用它们，必须有名字；用到就明确失败 |
-| `include` / `import` | **拒** | 引擎里预扫 + `jaq-all` 的 `import()` 那一步（`file loading not supported`）；报错带位置，不误伤字段名/字符串/注释 |
+| `include` / `import` | **拒** | **装载期**就拒（不用任何文本扫描）：`import` 走 `jaq_core::load::import()` 的装载回调（我们给的加载函数直接返回"这条求值路上没有文件系统…"），`include` 由 jaq 自己的装载路径拒；报错都带「文件名 + 行号 + 出错那一行」，字段名 / 字符串 / 注释里的同名词是普通程序 |
 | math / regex / format 三组（含 `defs.jq` 引用的 16 个原生名） | **已接进** | 照 jaq-std 的 `math.rs` / `regex.rs` / format 表改写（MIT）；与 jaq CLI 逐条对照 22/22 一致 |
 
 「不组装」不等于「能跑」：语言层的 `defs.jq` **直接引用**若干原生名，编译器在编译期就解析它们，
@@ -137,7 +137,7 @@ MIT；依赖 `libm` / `regex-bites` / `base64` / `urlencoding` / `bstr`，都只
 
 - **阶段 0**（已完成，见文末）：workspace + crate + ABI + 白名单组装 + `gmtime_tz` + 越界与确定性验收；
 - **阶段 1**（已完成）：补齐那 16 个纯原生名（随 math / regex / format 整组接入），并与 jaq CLI 对照；
-- **阶段 2**（已完成）：模块指令拒绝（引擎预扫 + `import()` 那一步）、错误格式化、trap 行为钉死；
+- **阶段 2**（已完成）：模块指令拒绝（落在**装载期**：`jaq_core::load::import()` 的装载回调）、错误格式化、trap 行为钉死；
 - **阶段 3（桥接）**（已完成）：接进 [`jaq.ts`](../packages/dsh-oks/src/jaq.ts)（契约不变），
   求值改在 worker 里的 wasm 实例上跑；trap 的「丢弃重建」落在 worker 里；
 - **阶段 4（日历运算）**（已完成）：`tzadd` / `tzfloor` / `tzceil` 接进引擎；工具面随之收敛 ——

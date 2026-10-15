@@ -14,8 +14,8 @@ import { errorText } from './host.ts';
 import { JAQ_WORKER_SOURCE } from './jaq-worker.ts';
 
 export interface JaqOutcome {
-  /** 引擎的紧凑输出，一行一个值。 */
-  text: string;
+  /** 程序产出的值流（引擎回的是一份 JSON 数组，宿主只解析一次）。 */
+  values: unknown[];
   /** 输出是否到达上限而被截断。 */
   truncated: boolean;
 }
@@ -37,11 +37,10 @@ export interface JaqOptions {
 /** 引擎的位置：与 `index.mjs` 同目录（profile 里是 `link:` 装的，运行时就是这个 `lib/`）。 */
 const enginePath = (): string => join(dirname(fileURLToPath(import.meta.url)), 'oks-wti.wasm');
 
-interface EngineReply {
-  /** 0 = 结果、1 = 错误、2 = 到上限被截断。 */
-  status: number;
-  text: string;
-}
+/** 引擎回的两种东西：报错文本，或者值流（`2` = 到上限被截断）。 */
+type EngineReply =
+  | { status: 1; message: string }
+  | { status: 0 | 2; values: unknown[] };
 
 interface Pending {
   resolve: (value: EngineReply) => void;
@@ -158,8 +157,8 @@ export const runJaq = (query: string, options: JaqOptions): Promise<JaqOutcome> 
       resolve: (response) => {
         options.signal?.removeEventListener('abort', onAbort);
         // 状态 1 是编译期或运行时错误（连排版都是引擎自己的，和 jaq CLI 同一套）。
-        if (response.status === 1) reject(new Error(`jaq 表达式执行失败：\n${response.text}`));
-        else resolve({ text: response.text, truncated: response.status === 2 });
+        if (response.status === 1) reject(new Error(`jaq 表达式执行失败：\n${response.message}`));
+        else resolve({ values: response.values, truncated: response.status === 2 });
       },
       reject,
       timer,

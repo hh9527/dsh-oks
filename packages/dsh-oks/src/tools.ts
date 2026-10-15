@@ -1136,17 +1136,8 @@ async function runSnip(
   } catch (cause) {
     throw new Error(`${errorText(cause)}\n这次程序看到的输入：\n${inputLines(inputs)}`);
   }
-  // jaq -c 一行一个值；不是 JSON 的行（例如原样输出的字符串）保留成字符串。
-  const values: unknown[] = [];
-  for (const line of outcome.text.split('\n')) {
-    if (line.trim() === '') continue;
-    try {
-      values.push(JSON.parse(line) as unknown);
-    } catch {
-      // 解析不了说明输出被动过，报出来而不是把残片当结果塞给模型。
-      throw new Error(`jaq 输出里有一行不是 JSON 值：${capLine(line, 120)}`);
-    }
-  }
+  // 引擎回的是一份 JSON 数组（值流），`values` 就是程序产出的那些值。
+  const values = outcome.values;
   return { data: values.length === 1 ? values[0] : values, outputs: values.length, truncated: outcome.truncated };
 }
 

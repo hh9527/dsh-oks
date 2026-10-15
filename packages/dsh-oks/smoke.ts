@@ -4266,7 +4266,10 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
       WebAssembly.Module.imports(engine).length === 0);
     const wasm = new WebAssembly.Instance(engine, {}).exports as {
       alloc: (n: number) => number; dealloc: (p: number, n: number) => void;
-      run: (pp: number, pl: number, ip: number, il: number) => number; memory: WebAssembly.Memory;
+      run: (
+        pp: number, pl: number, np: number, nl: number, ip: number, il: number, maxChars: number,
+      ) => number;
+      memory: WebAssembly.Memory;
     };
     const put = (text: string): { ptr: number; len: number } => {
       const bytes = new TextEncoder().encode(text);
@@ -4281,13 +4284,14 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     const outPtr = wasm.run(
       program.ptr, program.len, programName.ptr, programName.len, input.ptr, input.len, 0);
     const view = new DataView(wasm.memory.buffer);
-    const outText = new TextDecoder()
-      .decode(new Uint8Array(wasm.memory.buffer, outPtr + 5, view.getUint32(outPtr + 1, true))).trim();
-    wasm.dealloc(outPtr, outText.length + 5);
+    const outLen = view.getUint32(outPtr + 1, true);
+    const outText = new TextDecoder().decode(new Uint8Array(wasm.memory.buffer, outPtr + 5, outLen)).trim();
+    wasm.dealloc(outPtr, outLen + 5);
     wasm.dealloc(program.ptr, program.len);
     wasm.dealloc(programName.ptr, programName.len);
     wasm.dealloc(input.ptr, input.len);
-    ok('旁资产：wasm 引擎在里面算得出结果', outText === '[2,3,4]');
+    // ABI：成功时 payload 是一份 JSON 数组（值流）；这里一个值，所以是 [[2,3,4]]。
+    ok('旁资产：wasm 引擎在里面算得出结果', outText === '[[2,3,4]]', outText);
     // 求值器不再是子进程：产物里没有 child_process（引擎是 worker 里的 wasm 实例）。
     ok('产物里没有 child_process（求值不再起进程）', !text.includes('child_process'));
   } finally {

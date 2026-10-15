@@ -27,7 +27,9 @@ const put = (exports, text) => {
   return { ptr, len: buf.length };
 };
 
-/** 跑一次：`call(程序, 输入?, 程序名?)` → { status, text }。status 0 = 结果，1 = 错误。 */
+/** 跑一次：`call(程序, 输入?, 程序名?)` → { status, values, text, payload }。
+ *  成功（0）与截断（2）时 `payload` 是一份 JSON 数组（值流），解析一次就拿全 `values`。 */
+
 const call = (program, input = 'null', path = '') => {
   const exports = instance;
   const programBuf = put(exports, program);
@@ -43,7 +45,14 @@ const call = (program, input = 'null', path = '') => {
   exports.dealloc(programBuf.ptr, programBuf.len);
   exports.dealloc(pathBuf.ptr, pathBuf.len);
   exports.dealloc(inputBuf.ptr, inputBuf.len);
-  return { status, text: text.trim() };
+  const payload = text.trim();
+  const values = status === 1 ? undefined : JSON.parse(payload);
+  return {
+    status,
+    payload,
+    values,
+    text: values !== undefined && values.length === 1 ? JSON.stringify(values[0]) : payload,
+  };
 };
 
 let failed = 0;
@@ -75,13 +84,13 @@ for (const [label, program, want] of [
 // ③ 纯能力组（math / regex / format）：整组接进来，期望值是与 jaq CLI 逐条对照过的
 //    （22/22 一致，连浮点打印与 scan 的语义都一样），所以这里既钉住能力、也钉住行为。
 for (const [label, program, want] of [
-  ['pow', 'pow(2;10)', '1024.0'],
-  ['sqrt', '9 | sqrt', '3.0'],
+  ['pow', 'pow(2;10)', '1024'],
+  ['sqrt', '9 | sqrt', '3'],
   ['ilogb', '8 | ilogb', '3'],
-  ['tgamma', '5 | tgamma', '24.0'],
-  ['copysign', 'copysign(3;-1)', '-3.0'],
-  ['scalbln', 'scalbln(1;10)', '1024.0'],
-  ['remainder', 'remainder(10;3)', '1.0'],
+  ['tgamma', '5 | tgamma', '24'],
+  ['copysign', 'copysign(3;-1)', '-3'],
+  ['scalbln', 'scalbln(1;10)', '1024'],
+  ['remainder', 'remainder(10;3)', '1'],
   ['@base64', '"abc" | @base64', '"YWJj"'],
   ['@base64d', '"YWJj" | @base64d', '"abc"'],
   ['@html', '"<a href=\\"x\\">" | @html', '"&lt;a href=&quot;x&quot;&gt;"'],
@@ -95,26 +104,33 @@ for (const [label, program, want] of [
   check(label, status === 0 && text === want, `status=${status} ${text}`);
 }
 
+// 数字排版照 jaq（payload 原文里就是 `1024.0`；宿主解析成数值后是同一个数）。
+{
+  const { status, payload } = call('pow(2;10)');
+  check('数字排版照 jaq（1024.0）', status === 0 && payload === '[1024.0]', `status=${status} ${payload}`);
+}
+
 // ④ 坏输入要明确报错（错误路径是正面行为：说清哪里不对，而不是静默算错）。
 const badZone = call('0 | gmtime_tz("Mars/Olympus")');
 check('未知时区名明确报错', badZone.status === 1 && badZone.text.includes('time zone'), badZone.text);
 
-// ⑤ 模块指令：这条求值路上没有文件系统，`include` / `import` 一律拒（包括"导入了但不使用"
-//    ——以前那种写法会静默成功，用到时把引擎 panic 掉）；但不能误伤字段名、字符串与注释。
-for (const [label, program] of [
-  ['include 被拒', 'include "x"; .'],
-  ['import 被拒', 'import "x" as $y; .'],
-  ['import 后用 $y 也被拒（不再是 panic）', 'import "x" as $y; $y'],
-  ['注释后的 include 也被拒', '# 注释\n include "x"; .'],
+// ⑤ 模块指令：这条求值路上没有文件系统，`include` / `import` 都由**装载器**拒（不是扫文本）——
+//    包括"导入了但不使用"（以前那种写法会静默成功，用到时把引擎 panic 掉）；报错要带
+//    「文件名 + 行号 + 出错那一行」。
+for (const [label, program, needle] of [
+  ['import 被拒，说清没有文件系统', 'import "x" as $y; .', '没有文件系统'],
+  ['import 后用 $y 也被拒（不再是 panic）', 'import "x" as $y; $y', '没有文件系统'],
+  ['include 被拒', 'include "x"; .', 'module loading not supported'],
 ]) {
-  const { status, text } = call(program);
-  check(label, status === 1 && text.includes('没有文件系统'), `status=${status} ${text}`);
+  const { status, text } = call(program, 'null', '.work/probe.jq');
+  check(label, status === 1 && text.includes(needle) && text.includes('.work/probe.jq'),
+    `status=${status} ${text.slice(0, 120)}`);
 }
+// 模块指令是**装载期**的事：程序里正常出现的同名词就是普通程序。
 for (const [label, program, want] of [
-  ['字段名叫 import 不误判', '{"import":1} | .import', '1'],
-  ['字符串里的 import 不误判', '"import"', '"import"'],
-  ['注释里的 import 不误判', '# import\n1', '1'],
-  ['字段名叫 include 不误判', '(.include // 1)', '1'],
+  ['字段名叫 import', '{"import":1} | .import', '1'],
+  ['字符串里的 import', '"import"', '"import"'],
+  ['注释里的 import', '# import\n1', '1'],
 ]) {
   const { status, text } = call(program);
   check(label, status === 0 && text === want, `status=${status} ${text}`);
@@ -177,7 +193,7 @@ for (const [label, program, want] of [
   check(label, status === 0 && text === want, `status=${status} ${text}`);
 }
 
-// ⑧ 上限：引擎自己到点就停（状态 2），并回退到最后一个换行 —— 绝不留下半个 JSON 值。
+// ⑧ 上限：引擎自己到点就停（状态 2），数组闭合、只保留放得下的完整值。
 const cut = (() => {
   const exports = instance;
   const program = put(exports, '[range(1;100)] | .[]');
@@ -194,10 +210,10 @@ const cut = (() => {
   exports.dealloc(input.ptr, input.len);
   return { status, text };
 })();
-check('到上限：状态 2 且按行边界截断',
-  cut.status === 2 && cut.text.endsWith('\n') && cut.text.split('\n').filter((line) => line !== '').every((line) => {
-    try { JSON.parse(line); return true; } catch { return false; }
-  }), `status=${cut.status} ${JSON.stringify(cut.text)}`);
+check('到上限：状态 2，payload 仍是闭合数组、只保留放得下的值',
+  cut.status === 2 && cut.text.startsWith('[') && cut.text.endsWith(']')
+    && JSON.parse(cut.text).length >= 1 && JSON.parse(cut.text).length < 99,
+  `status=${cut.status} ${cut.text}`);
 
 // ⑧ trap：栈溢出这类会让 wasm 实例报废，但**必须可捕获**，且新实例照常可用
 //    （插件侧据此做「丢弃重建」）。
