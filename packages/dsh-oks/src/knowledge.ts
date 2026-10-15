@@ -53,9 +53,9 @@ export function createKnowledge({ ctx, log, config }: {
     const dataFile = settings.dataFile;
     if (typeof dataFile !== 'string' || dataFile.length === 0) {
       throw new Error(
-        `dsh-oks: ${settings.workspaceFile} 没有声明 dataFile，oks_query 无处可查。`
+        `dsh-oks: ${settings.workspaceFile} 没有声明 dataFile，oks_exec_query_intent 无处可查。`
         + '需要 {"dataFile":"<相对 oks.json 的 .sqlite 路径>"}；'
-        + '只做校验可以用 oks_check_intent。',
+        + '只做校验可以用 oks_check_query_intent。',
       );
     }
     const existing = executors.get(dataFile);

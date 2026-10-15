@@ -6,26 +6,26 @@
 // 十九个工具：oks_search（按名词/说法在词汇表里找到 key）、
 // oks_references（按 key 反向找到引用它的节点）、
 // oks_info（按服务给出的不透明 key 读节点，入口是 key "index"）、
-// oks_check_intent（只校验命名 Intent；通过的项给出该项的 key）、
-// oks_query（核 key 后**只读查询**数据文件，成功项落盘、回结构回执；SQL/bindings 只在这一条路径上出现）、
+// oks_check_query_intent（只校验命名 Intent；通过的项给出该项的 key）、
+// oks_exec_query_intent（核 key 后**只读查询**数据文件，成功项落盘、回结构回执；SQL/bindings 只在这一条路径上出现）、
 // create_data（把 agent 自己给的数据落成一份封装——给定数据的唯一入口）、
 // jq_transform（在具名输入上做加工：只看、不落盘；每个输入条目各带 root——jq 点路径，
 //   默认 ".data" 是那份数据本身，".origin" 是来源链，"." 是整份 {meta, origin, data}；不写程序时
 //   结果就是「名字 → 那一段」的对象，pick 再从结果里取回一段；要写表达式就把程序放 .work/*.jq、
 //   参数 byFile 只给文件名——内层语言（jq）不与外层 JSON 的语法相邻，这是实测里整轮失败的主因）、
-// jq_transform_into（同一套求值，结果物化成封装数据——新来源链由工具组装）、
-// oks_chart（在服务端把图画成 SVG 存进工作区：只从一份封装取数，图自带绘图材料与来源链，
-//   回执给出可直接粘进回答的引用）、
-// oks_view（把数据变成展示件并落成 markdown：先支持表格；流里与报表里都能渲染）、
-// oks_report（把 markdown 组装成自足的 HTML 报告：图与表内联，展示项的最终数据与完整来源链
+// jq_transform（同一套求值；给了 save 就把结果物化成封装数据——新来源链由工具组装）、
+// oks_render_figure（按 spec.kind 出图或出表：出图时在服务端画成 SVG 存进工作区，只从一份封装取数，
+//   图自带绘图材料与来源链；出表时落成 markdown，流里与报表里都能渲染；两者都给出可直接粘进回答的引用）、
+// oks_render_report（把 markdown 组装成自足的 HTML 报告：图与表内联，展示项的最终数据与完整来源链
 //   并进页面里的报表级来源结构；缺件或超限整份失败）、
 // 读来源与读报告结构都不再另设工具：换一段 root 用 jq 投影即可。
 // 代码区四个工具只作用在 .work/ 内：work_write（创建/覆盖）、work_read（按行读、"." 列目录）、
 //   work_edit（字面替换）、work_delete（删一份文件）——jq 程序写在那里、由 byFile 按文件名引用。
 //   宿主那三个通用文件工具的沙箱根是整个工作区，给不出"只能 .work/"这条边界，所以边界由插件
 //   自己在执行层给出。
-// oks_artifacts（列出这个工作区产出过什么）、collect（按窗口清掉 .oks/ 下的内部材料；
-//   窗口分 auto/manual 两套，配置在工作区 oks.json 的 retention 里）。
+// oks_artifacts（列出这个工作区产出过什么）。
+// 内部材料的回收由写路径自己保活，要立刻腾地方则用右侧栏「产出」页签的清理按钮（走插件自己的端点）；
+// 窗口分 auto/manual 两套，配置在工作区 oks.json 的 retention 里。
 //
 // **保留（pin）不在工具面里**：那是用户在右侧栏「产出」页签里点一下的动作（走插件自己的端点），
 // agent 不需要知道这件事，也就不会被诱导"出完顺手钉一下"。
@@ -57,7 +57,7 @@ export { renderMarkdown } from './chart/markdown.ts';
 // **查询与加工的结果都落在内部材料目录**：查询写 `<时间>-<名字>-<内容哈希>.qres.json`，
 // 加工写 `<时间>-<名字>-<内容哈希>.tr.json`，agent 自填的输入数据写 `.def.json`——
 // 数据只在这里，默认不进模型上下文，
-// 要看形状或取数由 jq_transform 用表达式选，要留作下一步的输入由 jq_transform_into 物化。
+// 要看形状或取数由 jq_transform 用表达式选，要留作下一步的输入就给它一个 save（物化成新的封装数据）。
 // 每份封装自带 `{ origin, data }`：origin 是产生它的操作及完整上游来源链（节点表）。除此之外没有计划文件、没有缓存产物；
 // 每次执行的 SQL、bindings、行数与耗时写进宿主日志（ctx.logger）。
 //
@@ -116,6 +116,15 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
     // 交出去的是与数据接口同形状的合法 JSON 错误——数据本身不设上限（每份材料有自己的上限），
     // 把门的是"进模型上下文的这一份"。工具自己更精确的提示（如 jq_transform）在它内部先生效。
     const render = definition.output.render.bind(definition.output);
+    // 超限时交出去的那句话按工具来：知识节点与工作区产物是两种东西，把"怎么取小一点"指错路比不说更糟。
+    const oversizeHint = definition.name === 'oks_info'
+      ? '回执太大，没有交给你。这是服务声明里的一个大节点：先用 oks_search 按 dataset / kind 把它下面的'
+        + '成员列出来，再按 key 逐个读小节点。知识节点不在工作区里，jq_transform 读不到它。'
+      : '回执太大，没有交给你。用更精确的取法再来一次：jq_transform 里用 pick 取一个字段，'
+        + '或在 byFile 的程序里聚合与投影（length / group_by / map({…})）；'
+        + '要整块数据就让它留在文件里，用 root 只取你要的那一段。'
+        + '读报告（*.report.html）永远按项取：root 用 ".data.items.<项名>"、".data.structure"、'
+        + '".data.origin"，不要一次取整份。';
     const dispose = ctx.tools.register({
       ...definition,
       output: {
@@ -133,11 +142,7 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
                 tool: definition.name,
                 limitBytes: PAYLOAD_MAX_BYTES,
                 actualBytes,
-                hint: '回执太大，没有交给你。用更精确的取法再来一次：jq_transform 里用 pick 取一个字段，'
-                  + '或在 byFile 的程序里聚合与投影（length / group_by / map({…})）；'
-                  + '要整块数据就让它留在文件里，用 root 只取你要的那一段。'
-                  + '读报告（*.report.html）永远按项取：root 用 ".data.items.<项名>"、".data.structure"、'
-                  + '".data.origin"，不要一次取整份。',
+                hint: oversizeHint,
               },
             }),
           }];

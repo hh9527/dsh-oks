@@ -23,7 +23,7 @@ export function parseArtifactOrigin(src: string, content: string): Envelope | { 
   if (src.endsWith('.report.html')) {
     const parts = readReportPage(content);
     if ('error' in parts) return { error: parts.error };
-    // 报告的来源以 `asset://<key>` 引用形式给出，源码在 `data.assets` 里（RFC 0008 §3）。
+    // 报告的来源以 `src://<key>` 引用形式给出，源码在 `data.assets` 里（RFC 0008 §3）。
     return {
       meta: readArtifactMeta(content) ?? nameParts(src),
       origin: parts.origin,

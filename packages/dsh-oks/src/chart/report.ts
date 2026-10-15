@@ -11,7 +11,7 @@ import type { DataOrigin } from '../results.ts';
 
 export type DisplaySource =
   | { kind: 'chart'; svg: string; origin: DataOrigin; data: unknown; spec: unknown }
-  | { kind: 'table'; markdown: string; origin: DataOrigin; data: unknown; spec: unknown };
+  | { kind: 'table'; embedded: string; origin: DataOrigin; data: unknown; spec: unknown };
 
 /** 收拾一张图表 SVG：去掉外壳与可执行内容、尺寸交给栏宽。内联与单独成件都走这里。 */
 export const cleanChartSvg = (svg: string): string => {

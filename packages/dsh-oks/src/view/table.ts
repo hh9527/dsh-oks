@@ -52,7 +52,7 @@ const isNumericColumn = (rows: readonly Record<string, unknown>[], name: string)
 export function tableMarkdown(
   rows: readonly Record<string, unknown>[],
   spec: TableSpec,
-): { markdown: string; columns: string[] } | { error: string } {
+): { embedded: string; columns: string[] } | { error: string } {
   if (rows.length === 0) return { error: '这份数据没有行：空表不落盘——先查清楚为什么没有数据。' };
   if (rows.length > TABLE_MAX_ROWS) {
     return { error: `表最多 ${TABLE_MAX_ROWS} 行（收到 ${rows.length} 行）：先聚合或投影，再出表；`
@@ -76,5 +76,5 @@ export function tableMarkdown(
   for (const row of rows) {
     lines.push(`| ${columns.map((name) => escapeCell(cellText(row[name]))).join(' | ')} |`);
   }
-  return { markdown: `${lines.join('\n')}\n`, columns };
+  return { embedded: `${lines.join('\n')}\n`, columns };
 }

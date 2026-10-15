@@ -50,8 +50,8 @@ export type AssembleResult = { error: string } | {
 
 /** 正文里 figure 引用的出现顺序。 */
 /** 表在图注之下内联：外层容器是作者写的 figure，这里只给滚动容器。 */
-const tableScroll = (markdown: string): string =>
-  `<div class="table-scroll">${renderMarkdown(markdown, (_info, text) => `<pre><code>${escapeHtml(text)}</code></pre>`)}</div>`;
+const tableScroll = (embedded: string): string =>
+  `<div class="table-scroll">${renderMarkdown(embedded, (_info, text) => `<pre><code>${escapeHtml(text)}</code></pre>`)}</div>`;
 
 export function assembleReport(input: AssembleInput): AssembleResult {
   const checked = checkAuthorXhtml(input.xhtml);
@@ -78,13 +78,13 @@ export function assembleReport(input: AssembleInput): AssembleResult {
   }
   const outline = outlineOf(checked.headings);
   // figure 引用的是**完整展示件**：绑到普通数据材料会画出空图，绑到切片会与 items 不一致，
-  // 两种都在这里挡下（想换切片就先用 oks_chart / oks_view 出一件新的）。
+  // 两种都在这里挡下（想换切片就先用 oks_render_figure 出一件新的）。
   for (const ref of checked.figures) {
     const binding = input.bindings[ref];
     if (binding === undefined) continue;
     if (binding.display === undefined) {
       return {
-        error: `figure 引用的 ${ref} 不是图或表展示件：先 oks_chart 画一张或 oks_view 出一张表，再把它绑给这一项。`,
+        error: `figure 引用的 ${ref} 不是图或表展示件：先用 oks_render_figure 画一张图或出一张表，再把它绑给这一项。`,
       };
     }
     if (binding.root !== '.data') {

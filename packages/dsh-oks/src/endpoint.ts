@@ -61,9 +61,9 @@ export interface PanelDeps {
   /** 记一行（可选）：清单里移除了行时说明一下，事后能自证。 */
   log?(message: string): void;
   /** 落状态：与 `oks_pin` / `oks_unpin` 走的是同一个函数。 */
-  pin(root: string, src: string, pinned: boolean): { file: string; pinned: boolean };
+  pin(root: string, asset: string, pinned: boolean): { asset: string; pinned: boolean };
   /** 删掉一份**未保留**的产物：工作区与清单一起去掉。 */
-  remove(root: string, src: string): { file: string };
+  remove(root: string, src: string): { asset: string };
   /** 这个工作区的报表保留窗口（分钟）：来自它的 `oks.json`，界面据此说明"多久后清理"。 */
   keepAliveMinutes(root: string): number;
   /** 按这个工作区配置的 manual 窗口清一次（材料 + `.work/`）：产出页签里那个按钮的动作。
@@ -283,8 +283,8 @@ export function createDeleteEndpoint(deps: PanelDeps): PanelHandler {
     }
     try {
       const result = deps.remove(await deps.rootFor(sessionId), src);
-      deps.log?.(`[oks] 删除产物 ${result.file}`);
-      reply(res, 200, { ok: true, value: { file: result.file } });
+      deps.log?.(`[oks] 删除产物 ${result.asset}`);
+      reply(res, 200, { ok: true, value: { asset: result.asset } });
     } catch (cause) {
       reply(res, 400, { ok: false, message: String((cause as Error)?.message ?? cause) });
     }
@@ -370,7 +370,7 @@ export function createPinEndpoint(deps: PanelDeps): PanelHandler {
     try {
       const root = await deps.rootFor(sessionId);
       const result = deps.pin(root, src, pinned);
-      reply(res, 200, { ok: true, value: { file: result.file, pinned: result.pinned, keepAliveMinutes: deps.keepAliveMinutes(root) } });
+      reply(res, 200, { ok: true, value: { asset: result.asset, pinned: result.pinned, keepAliveMinutes: deps.keepAliveMinutes(root) } });
     } catch (cause) {
       reply(res, 400, { ok: false, message: String((cause as Error)?.message ?? cause) });
     }

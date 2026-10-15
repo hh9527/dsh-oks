@@ -17,7 +17,7 @@ import type { ElementPolicy } from './xhtml.ts';
 export const REPORT_METADATA_ID = 'oks-metadata';
 
 /** 报告内联资源的引用前缀：工作区路径解析器明确拒绝它，隔离由协议保证。 */
-export const ASSET_SCHEME = 'asset://';
+export const ASSET_SCHEME = 'src://';
 
 /** 元数据区的 JSON。XML 里 `<script>` 是普通文本，所以 `<`、`&` 与 `>` 都写成 JSON 的 \uXXXX 转义：
  *  一个 `</script>`、一个 `&`、或文本里出现 `]]>`（XML 明文里非法）都会让整页不再是良构 XML。
@@ -33,7 +33,7 @@ export function assetKey(snipFile: string | undefined, source: string): string {
   return `${stem}-${createHash('sha256').update(source, 'utf8').digest('hex').slice(0, 16)}`;
 }
 
-/** 组装报告时：把来源节点里内嵌的程序正文提取成资源，节点改用 `asset://` 引用。 */
+/** 组装报告时：把来源节点里内嵌的程序正文提取成资源，节点改用 `src://` 引用。 */
 export function extractAssets(origin: DataOrigin): { origin: DataOrigin; assets: Record<string, string> } {
   const assets: Record<string, string> = {};
   const nodes: Record<string, OriginNode> = {};
@@ -56,7 +56,7 @@ export function extractAssets(origin: DataOrigin): { origin: DataOrigin; assets:
   return { origin: { root: origin.root, nodes }, assets };
 }
 
-/** 读回报告继续加工时：把 `asset://` 引用还原成内嵌正文，节点记录与提取前一致。 */
+/** 读回报告继续加工时：把 `src://` 引用还原成内嵌正文，节点记录与提取前一致。 */
 export function restoreAssets(origin: DataOrigin, assets: Record<string, string>): DataOrigin {
   const nodes: Record<string, OriginNode> = {};
   for (const [id, node] of Object.entries(origin.nodes)) {

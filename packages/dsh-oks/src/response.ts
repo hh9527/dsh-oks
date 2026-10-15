@@ -1,6 +1,5 @@
 import { basename } from 'node:path';
 import { capLine } from './text.ts';
-import { windowText } from './config.ts';
 import { DEFAULT_ROOT } from './results.ts';
 import type { DiagnosticEntry, OkPayload, RenderBlock, ServiceResponse, TraceStep } from './host.ts';
 
@@ -26,7 +25,7 @@ export interface NamedIntentView {
   intent: unknown;
 }
 
-/** oks_check_intent 渲染读到的值。 */
+/** oks_check_query_intent 渲染读到的值。 */
 export interface CheckValue {
   trace?: readonly TraceStep[] | null;
   intents?: readonly NamedIntentView[] | null;
@@ -41,12 +40,12 @@ export interface CheckValue {
   queryCount?: number | null;
 }
 
-/** 渲染层看到的 oks_query 一项：只有结构，没有数据行。 */
+/** 渲染层看到的 oks_exec_query_intent 一项：只有结构，没有数据行。 */
 export interface QueryResult {
   name: string;
   index: number;
   status: string;
-  dataSrc: string | null;
+  asset: string | null;
   columns: ReadonlyArray<{ name: string; types: string[]; nullable: boolean }>;
   rowCount: number | null;
   sql: unknown;
@@ -56,7 +55,7 @@ export interface QueryResult {
   error: unknown;
 }
 
-/** oks_query 渲染读到的值。 */
+/** oks_exec_query_intent 渲染读到的值。 */
 export interface QueryValue {
   trace?: readonly TraceStep[] | null;
   intents?: readonly NamedIntentView[] | null;
@@ -69,7 +68,7 @@ export interface QueryValue {
 
 /** create_data 渲染读到的值（把 agent 自己给的数据落成封装）。 */
 export interface CreateDataValue {
-  dataSrc: string;
+  asset: string;
   name: string;
   shape: string;
   bytes: number;
@@ -81,7 +80,7 @@ export interface CreateDataValue {
  * 时间基准就是要一眼看得见（现在几点、哪个时区、来源是哪一层），否则每写一个边界都得再读一次文件。
  */
 export interface CurrentCtxValue {
-  dataSrc: string;
+  asset: string;
   name: string;
   bytes: number;
   ms: number;
@@ -90,7 +89,7 @@ export interface CurrentCtxValue {
 
 export function renderCurrentCtx(_args: unknown, value: CurrentCtxValue | null | undefined): RenderBlock[] {
   const lines = [
-    `dataSrc:  ${value?.dataSrc ?? ''}`,
+    `asset:  ${value?.asset ?? ''}`,
     `这份时间上下文：${((value?.bytes ?? 0) / 1024).toFixed(1)} KB · ${value?.ms ?? 0} ms`,
     '把它当具名输入交给 jq_transform，边界就在程序里算（tzadd / tzfloor / tzceil，时区显式传）。',
     '',
@@ -102,7 +101,7 @@ export function renderCurrentCtx(_args: unknown, value: CurrentCtxValue | null |
 /** create_data 的模型可见渲染：落点、形状与尺寸。数据本身不重复——要看就再读一次。 */
 export function renderCreateData(_args: unknown, value: CreateDataValue | null | undefined): RenderBlock[] {
   const lines = [
-    `dataSrc:  ${value?.dataSrc ?? ''}`,
+    `asset:  ${value?.asset ?? ''}`,
     `${value?.name ?? '输入数据'}：${value?.shape ?? ''}`
     + ` · ${((value?.bytes ?? 0) / 1024).toFixed(1)} KB · ${value?.ms ?? 0} ms`,
     '来源链里记着这份数据是给定的，动机与它放在一起。',
@@ -110,15 +109,17 @@ export function renderCreateData(_args: unknown, value: CreateDataValue | null |
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 
-/** oks_view 渲染读到的值（表格这类展示件）。 */
+/** oks_render_figure 渲染读到的表格值。 */
 export interface ViewValue {
   ok?: boolean;
   kind?: string;
   title?: string | null;
+  /** 这份表读的那份封装数据（引用）。 */
   src?: string;
-  viewSrc?: string;
+  /** 落盘的表展示件（相对工作区根）。 */
+  asset?: string;
   /** 报表正文里用的那一行 `![表注](路径)`。 */
-  markdown?: string;
+  embedded?: string;
   /** 表本体（表不大时给；大表为 null，只说引用）。 */
   table?: string | null;
   rowCount?: number;
@@ -127,17 +128,17 @@ export interface ViewValue {
   note?: string | null;
 }
 
-/** oks_view 的模型可见回执：先说清"哪一行进报表、哪一段进回答"，再把表本体交出来。 */
+/** 表格的模型可见回执：先说清"哪一行进报表、哪一段进回答"，再把表本体交出来。 */
 export function renderView(_args: unknown, value: ViewValue | null | undefined): RenderBlock[] {
   if (value?.ok !== true) return [{ type: 'text', text: '展示件没有生成。\n' }];
   const lines = [
     `表格：${value.title ?? ''} · ${value.rowCount ?? 0} 行 · 列 ${(value.columns ?? []).join(', ')}`,
+    `文件：${value.asset ?? ''}`,
     `来自：${value.src ?? ''}`,
-    `文件：${value.viewSrc ?? ''}`,
     '',
-    '这一行**放进报告正文**（`oks_report` 的 markdown，独占一行）；它不会被渲染成图片，别粘进回答：',
+    '这一行**放进报告正文**（`oks_render_report` 的 embedded，独占一行）；它不会被渲染成图片，别粘进回答：',
     '',
-    value.markdown ?? '',
+    value.embedded ?? '',
   ];
   if (typeof value.table === 'string' && value.table !== '') {
     lines.push('', '要在这段回答里显示这张表，直接粘下面这一段：', '', value.table.replace(/\n$/, ''));
@@ -216,40 +217,13 @@ export interface TransformValue {
   snipFile?: string;
   /** 省略 `byFile` 时程序是恒等投影：结果是「名字 → 各输入那一段」的对象。 */
   generated?: boolean;
-  inputs: ReadonlyArray<{ name: string; src: string; root?: string; shape: string }>;
+  inputs: ReadonlyArray<{ name: string; asset: string; root?: string; shape: string }>;
   /** 表达式产出了几个值。 */
   outputs: number;
   /** 结果本身：恰好一个输出时是那个值，多个输出时是值的数组，零输出时是空数组。 */
   data: unknown;
   truncated: boolean;
   ms: number;
-}
-
-/** collect 渲染清理材料的结果。 */
-export interface CollectValue {
-  ok?: boolean;
-  ttlSeconds: number;
-  removed: string[];
-  removedCount: number;
-  freedBytes: number;
-  remaining: number;
-  kept: number;
-}
-
-export function renderCollect(_args: unknown, value: CollectValue | null | undefined): RenderBlock[] {
-  if (value?.ok !== true) {
-    return textBlock([JSON.stringify(value ?? { ok: false, error: { code: 'collect_failed' } })]);
-  }
-  const shown = value.removed.slice(0, 20);
-  const lines = [
-    `清理窗口 ${windowText(value.ttlSeconds / 60)} · 清掉 ${value.removedCount} 份材料`
-    + ` · 释放 ${(value.freedBytes / 1024).toFixed(1)} KB · 还剩 ${value.remaining} 份`
-    + `（窗口内保留 ${value.kept} 份）`,
-    ...shown.map((file) => `  ${file}`),
-    value.removed.length > shown.length ? `  …（另有 ${value.removed.length - shown.length} 份）` : '',
-    '之前回执里的 dataSrc 若指向被清掉的材料，已经失效——需要时重新取数。',
-  ].filter((line) => line !== '');
-  return textBlock([lines.join('\n')]);
 }
 
 /** work_delete 渲染删除结果。 */
@@ -260,17 +234,11 @@ export function renderWorkDelete(_args: unknown, value: { ok?: boolean; file?: s
   return textBlock([`${value.file ?? ''} · 已删除 · 代码区还剩 ${value.remaining ?? 0} 个文件`]);
 }
 
-/** jq_transform_into 渲染读到的值（物化：结果写进 .oks/data/）。 */
+/** jq_transform（save 那条路）渲染读到的值：结果写进 .oks/data/。 */
+/** 物化回执的全部内容：落点与大小。其余（值、形状、来源链）都在文件里。 */
 export interface IntoValue {
-  dataSrc: string;
-  name: string;
-  outputs: number;
-  /** 结果的一行形状描述。 */
-  shape: string;
+  asset: string;
   bytes: number;
-  ms: number;
-  /** 本次操作与全部上游，按依赖顺序摊开（输入在前）。 */
-  chain: readonly string[];
 }
 
 /** oks_info 渲染读到的值。 */
@@ -321,7 +289,7 @@ function summarize(response: ServiceResponse | undefined): string {
   return 'error=false';
 }
 
-/** 校验路径的响应：**摘掉 queries**。SQL/bindings 只在 oks_query 的结果里出现，
+/** 校验路径的响应：**摘掉 queries**。SQL/bindings 只在 oks_exec_query_intent 的结果里出现，
  *  而轨迹里的响应会被工具卡与宿主日志留存，所以这里必须真的摘掉，不能只靠渲染不打印。 */
 export function withoutQueries(response: ServiceResponse): ServiceResponse {
   const ok = response?.ok;
@@ -395,7 +363,7 @@ const rejectedIndexes = (diagnostics: readonly DiagnosticEntry[] | null | undefi
     .filter((item) => item?.diagnostic?.severity === 'Error')
     .map((item) => item.index))].sort((left, right) => left - right);
 
-/** oks_check_intent 的模型可见渲染：结论按名字给，通过项带 key，**没有 SQL**。 */
+/** oks_check_query_intent 的模型可见渲染：结论按名字给，通过项带 key，**没有 SQL**。 */
 export function renderCheck(_args: unknown, value: CheckValue | null | undefined): RenderBlock[] {
   const lines = renderTrace(value?.trace);
   const items = value?.intents ?? [];
@@ -422,7 +390,7 @@ export function renderCheck(_args: unknown, value: CheckValue | null | undefined
   }
   const runnable = value?.queryCount ?? 0;
   lines.push('', results.length > 0 && accepted.length === results.length
-    ? `校验结论：${results.length} 个 Intent 全部可用（${runnable} 个查询可执行）。用 oks_query 带同一批名字与各自的 key 提交就能拿到结果。`
+    ? `校验结论：${results.length} 个 Intent 全部可用（${runnable} 个查询可执行）。用 oks_exec_query_intent 带同一批名字与各自的 key 提交就能拿到结果。`
     : `校验结论：${accepted.length}/${results.length} 可用（${runnable} 个查询可执行）。用 oks_info 按服务给出的 key 读它声明的词汇再修，保持业务含义不变。`);
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
@@ -463,7 +431,7 @@ function renderTable(rows: readonly Row[] | null | undefined, budget: number): T
   return { lines, truncated, notes };
 }
 
-/** oks_query 的模型可见渲染：轨迹 → 诊断 → 每项的**结构回执**（没有数据行，也没有语句）。
+/** oks_exec_query_intent 的模型可见渲染：轨迹 → 诊断 → 每项的**结构回执**（没有数据行，也没有语句）。
  *  数据行只在结果文件里；SQL 与 bindings 只在宿主呈现记录（presentationMeta）与调用记录里，
  *  不重复进这段对话。 */
 export function renderQuery(_args: unknown, value: QueryValue | null | undefined): RenderBlock[] {
@@ -475,7 +443,7 @@ export function renderQuery(_args: unknown, value: QueryValue | null | undefined
     if (result.status === 'saved') {
       lines.push(`status:   saved · ${result.rowCount} 行 · ${result.ms} ms`
         + `${result.truncated ? `（已到行数上限 ${value!.queryMaxRows}，结果还有更多）` : ''}`);
-      lines.push(`dataSrc:  ${result.dataSrc}`);
+      lines.push(`asset:  ${result.asset}`);
       lines.push(`columns:  ${result.columns.map((column) => `${column.name}:${column.types.join('|')}`).join(', ')}`);
       lines.push('（数据行与语句都不在回执里：数据按需用 jq_transform 取，语句在执行记录里）');
       if (result.rowCount === 0 && value?.window) {
@@ -502,38 +470,47 @@ export function renderQuery(_args: unknown, value: QueryValue | null | undefined
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 
-/** oks_chart 渲染读到的值。 */
+/** oks_render_figure 渲染读到的值（图这一路）。 */
 export interface ChartValue {
   ok?: boolean;
   kind?: string;
   title?: string | null;
+  /** 这份图读的那份封装数据（引用）。 */
   src?: string | null;
-  svgSrc?: string;
-  markdown?: string;
+  asset?: string;
+  embedded?: string;
   at?: string;
   note?: string | null;
   rowCount?: number;
   columns?: readonly string[];
 }
 
-/** oks_chart 的模型可见回执：图已经落成 SVG，这里把「可以直接粘进回答的那一行」交给 agent。
+/** 图的模型可见回执：图已经落成 SVG，这里把「可以直接粘进回答的那一行」交给 agent。
  *  回执本身不带数据行、也不带图。 */
 export function renderChart(_args: unknown, value: ChartValue | null | undefined): RenderBlock[] {
   if (value?.ok !== true) return [{ type: 'text', text: '图表没有生成。\n' }];
   const lines = [
     `图表：${value.kind ?? '?'}${value.title === null || value.title === undefined ? '' : ` · ${value.title}`}`,
     `数据：${value.rowCount ?? 0} 行 · 列 ${(value.columns ?? []).join(', ')}`,
-    `文件：${value.svgSrc ?? ''}`,
+    `文件：${value.asset ?? ''}`,
+    `来自：${value.src ?? ''}`,
   ];
-  if (value.src !== null && value.src !== undefined) lines.push(`来自：${value.src}`);
   if (value.note !== null && value.note !== undefined) lines.push(`说明：${value.note}`);
   lines.push(
     '',
     '把下面这一行原样放进你的回答，图就会显示在那里（不要改写路径）：',
     '',
-    value.markdown ?? '',
+    value.embedded ?? '',
   );
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
+}
+
+/** oks_render_figure 的模型可见回执：表格与图各自的说辞不一样，按实际产出的是哪一种分派。 */
+export function renderFigure(args: unknown, value: unknown): RenderBlock[] {
+  const kind = (value as { kind?: unknown } | null | undefined)?.kind;
+  return kind === 'table'
+    ? renderView(args, value as ViewValue | null | undefined)
+    : renderChart(args, value as ChartValue | null | undefined);
 }
 
 /** 一个值的一行紧凑渲染：字符串原样，其余交给 JSON。 */
@@ -586,7 +563,7 @@ export function renderJqTransform(_args: unknown, value: TransformValue | null |
     `表达式产出 ${value?.outputs ?? 0} 个值`
     + `${value?.truncated === true ? '（到达输出上限，已截断）' : ''}${picked}${from} · ${value?.ms ?? 0} ms`,
     // 绑定写清：程序里的名字**就是**那个文件按 root 取出来的那一段（不是"文件在那儿"）。
-    ...inputs.map((input) => `输入 ${input.name} ← ${input.src}（取 ${input.root ?? DEFAULT_ROOT}）`
+    ...inputs.map((input) => `输入 ${input.name} ← ${input.asset}（取 ${input.root ?? DEFAULT_ROOT}）`
       + ` → 程序里的 ${input.name} 就是这一份：${input.shape}`),
     value?.generated === true
       ? `无程序：结果是「名字 → 各输入那一段」的对象${value.pick === undefined ? '' : `，再取 ${value.pick}`}`
@@ -602,15 +579,17 @@ export function renderJqTransform(_args: unknown, value: TransformValue | null |
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 
-/** jq_transform_into 的模型可见渲染：落点、形状、尺寸，以及完整的来源链。
- *  值不在这里重复——它已经落在文件里，要看就再探索一次（jq_transform）。 */
+/** `jq_transform` 的渲染：给了 `save` 就是物化回执（只有落点与大小），否则是"看一眼"的回执。 */
+export function renderJqResult(args: unknown, value: unknown): RenderBlock[] {
+  const saved = (args as { save?: unknown } | null | undefined)?.save !== undefined;
+  return saved
+    ? renderJqInto(args, value as IntoValue | null | undefined)
+    : renderJqTransform(args, value as TransformValue | null | undefined);
+}
+
+/** 物化（save）的模型可见回执：只报落点与大小。值、形状与来源链都在文件里——
+ *  要看就再读一次（`jq_transform` 读 `.data` 是值、`.origin` 是来路）。 */
 export function renderJqInto(_args: unknown, value: IntoValue | null | undefined): RenderBlock[] {
-  const lines = [
-    `dataSrc:  ${value?.dataSrc ?? ''}`,
-    `${value?.name ?? '加工结果'}：表达式产出 ${value?.outputs ?? 0} 个值 · ${value?.shape ?? ''}`
-    + ` · ${((value?.bytes ?? 0) / 1024).toFixed(1)} KB · ${value?.ms ?? 0} ms`,
-    '来源链（输入在前，本次操作在最后）：',
-    ...(value?.chain ?? []).map((line) => `  ${line}`),
-  ];
-  return [{ type: 'text', text: `${lines.join('\n')}\n` }];
+  const size = `${((value?.bytes ?? 0) / 1024).toFixed(1)} KB`;
+  return [{ type: 'text', text: `asset:  ${value?.asset ?? ''} · ${size}\n` }];
 }

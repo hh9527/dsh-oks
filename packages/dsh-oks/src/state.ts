@@ -49,7 +49,7 @@ const OURS = new RegExp('^(\\d{8}T\\d{6}Z)-[0-9a-z_~]+(?:-[0-9a-f]{8})?\\.('
 
 /** 清单里的一条制品：文件自述 + 只有状态才知道的 pin。 */
 export interface ArtifactEntry {
-  file: string;
+  asset: string;
   name: string;
   kind: 'chart' | 'report';
   at: string;
@@ -215,7 +215,7 @@ export function listArtifacts(state: State): ArtifactEntry[] {
       title: string; category: string | null; pinned: number;
     }>;
   return rows.map((row) => ({
-    file: row.file,
+    asset: row.file,
     name: row.name,
     kind: row.kind,
     at: row.at,
@@ -294,7 +294,7 @@ export function markCleanup(root: string, kind: 'manual' | 'auto', removed: numb
 
 /** 页签那块概览要的四类占用：材料分"数据"与"图表"（图表与表格合并算一类）、代码区、报表。
  *  报表的份数与保留数来自账本（调用方传进来，与清单显示的是同一批行），字节按磁盘现算。 */
-export function usageByKind(root: string, entries: Array<{ file: string; pinned: boolean }>): Usage {
+export function usageByKind(root: string, entries: Array<{ asset: string; pinned: boolean }>): Usage {
   const data = usageOf(join(root, DATA_DIR), (file) => OURS.test(file));
   const charts = usageOf(join(root, FIGURE_DIR), (file) => OURS.test(file));
   const reports = usageOf(join(root, ARTIFACT_DIR), (file) => OURS.test(file));
@@ -502,7 +502,7 @@ export function pruneArtifacts(
 
 /** `pin` / `unpin` 的入口：把 src 解析成文件名、核对它是可见产物、再落状态。
  *  越界、不存在、不是图或报告，都在解析这一步报错。 */
-export function pinBySrc(root: string, src: unknown, pinned: boolean): { file: string; pinned: boolean } {
+export function pinBySrc(root: string, src: unknown, pinned: boolean): { asset: string; pinned: boolean } {
   const file = artifactFileName(root, src);
   if (!VISIBLE.test(file)) {
     throw new Error(`只有报表可以保留（${VISIBLE.source}）：${JSON.stringify(src)}`);
@@ -514,7 +514,7 @@ export function pinBySrc(root: string, src: unknown, pinned: boolean): { file: s
     if (!setPinned(state, file, pinned)) {
       throw new Error(`这份产物没有自述、进不了清单，因此无法保留：${JSON.stringify(src)}`);
     }
-    return { file, pinned };
+    return { asset: file, pinned };
   } finally {
     state.close();
   }
@@ -527,7 +527,7 @@ export function pinBySrc(root: string, src: unknown, pinned: boolean): { file: s
  *  文件已经不在也照样把行删掉——用户点的是清单上的那一行，而清单是权威。
  *  校验只看"路径在 `artifacts/` 内 + 是可见产物 + 登记过"：**不要求文件存在**（上面那条）。
  *  材料不级联删：同一张图可能被别的报表引用，它们由保活按龄回收。 */
-export function deleteArtifact(root: string, src: unknown): { file: string } {
+export function deleteArtifact(root: string, src: unknown): { asset: string } {
   const text = typeof src === 'string' ? src : '';
   const inside = relative(resolve(root, ARTIFACT_DIR), resolve(root, text));
   if (inside.length === 0 || inside.startsWith('..') || isAbsolute(inside)) {
@@ -548,7 +548,7 @@ export function deleteArtifact(root: string, src: unknown): { file: string } {
       // 已经不在磁盘上了：这一行仍然要清掉。
     }
     state.db.prepare('delete from artifacts where file = ?').run(file);
-    return { file };
+    return { asset: file };
   } finally {
     state.close();
   }

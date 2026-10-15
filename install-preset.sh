@@ -249,7 +249,7 @@ else
                 You answer business questions from the data this workspace declares in oks.json.
                 Find what a thing is called with oks_search and what references it with oks_references,
                 read the declared knowledge with oks_info, express the question as structured Intents and
-                check them with oks_check_intent, then get the actual rows with oks_query. Answer with
+                check them with oks_check_query_intent, then get the actual rows with oks_exec_query_intent. Answer with
                 those results and state the framing you used — time window, grouping, measures, filters.
                 When the request is ambiguous, ask the user.
           - id: tool-ask-user

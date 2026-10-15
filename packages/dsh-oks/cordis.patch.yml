@@ -1,6 +1,6 @@
 # 插入一行 Host 插件：把**工作区声明的**知识服务与数据文件注册成十九个原生工具——
-# oks_search / oks_references / oks_info / oks_check_intent / oks_query / create_data /
-# jq_transform / jq_transform_into / oks_chart / oks_view / oks_report_check / oks_report / oks_artifacts / collect /
+# oks_search / oks_references / oks_info / oks_check_query_intent / oks_exec_query_intent / create_data /
+# jq_transform / oks_render_figure / oks_check_report / oks_render_report / oks_artifacts /
 # work_read / work_write / work_edit / work_list / work_delete（后五个只作用在 .work/ 内的工作区：
 # jq 程序、报告正文、任何草稿文件）——
 # 外加两个与模型无关的辅助工具：create_current_ctx_data（把当轮会话上下文读一次、落成材料——

@@ -69,7 +69,7 @@ export interface ColumnInfo {
 
 /** 落盘成功后的回执信息。 */
 export interface SavedResult {
-  dataSrc: string;
+  asset: string;
   columns: ColumnInfo[];
   rowCount: number;
 }
@@ -90,7 +90,7 @@ export interface OriginNode {
   snip?: string;
   /** transform：这段程序来自哪份代码文件（`byFile` 给出的那一份）。 */
   snipFile?: string;
-  /** 报告序列化形态：源码集中放在报告的 `assets` 里，节点用 `asset://<key>` 引用它。
+  /** 报告序列化形态：源码集中放在报告的 `assets` 里，节点用 `src://<key>` 引用它。
    *  报告是唯一使用这种引用形态的地方——普通材料照旧把程序正文内嵌在 `snip` 里。 */
   byFile?: string;
   /** transform：从结果里取回的那一段（jq 点路径，`snip` 是 `.` 时它就是这次操作的全部内容）。 */
@@ -517,7 +517,7 @@ export function describeRows(
   return { columns, rows: encoded };
 }
 
-/** 落盘一个 Intent 的结果，返回相对工作区根的 dataSrc。
+/** 落盘一个 Intent 的结果，返回相对工作区根的 asset。
  *  目标重名或写入失败都抛错，并且不留下半个文件。 */
 export function saveResult(options: {
   root: string;
@@ -551,7 +551,7 @@ export function saveResult(options: {
   const body = `${JSON.stringify(payload, null, 2)}\n`;
   const fileName = artifactName({ at, name: options.name, kind: 'qres', extension: '.json', content: body });
   writeExclusive(join(directory, fileName), body, 'query');
-  return { dataSrc: `${DATA_DIR}/${fileName}`, columns, rowCount: rows.length };
+  return { asset: `${DATA_DIR}/${fileName}`, columns, rowCount: rows.length };
 }
 
 /** 物化一次加工：来源链由这一层组装——合并各输入的链、加入本次操作、把根指向它。
@@ -564,7 +564,7 @@ export function saveTransform(options: {
   node: OriginNode;
   inputs: readonly DataOrigin[];
   data: unknown;
-}): { dataSrc: string; bytes: number; origin: DataOrigin } {
+}): { asset: string; bytes: number; origin: DataOrigin } {
   const problem = nameProblem(options.name);
   if (problem !== null) throw new Error(`加工结果名不合法：${problem}`);
   const at = resultStamp();
@@ -584,7 +584,7 @@ export function saveTransform(options: {
   mkdirSync(directory, { recursive: true });
   const fileName = artifactName({ at, name: options.name, kind: 'tr', extension: '.json', content: body });
   writeExclusive(join(directory, fileName), body, 'transform');
-  return { dataSrc: `${DATA_DIR}/${fileName}`, bytes, origin };
+  return { asset: `${DATA_DIR}/${fileName}`, bytes, origin };
 }
 
 /** 把 agent 自己给的一份数据落成封装：这是"给定数据"进入工作区的唯一入口。
@@ -597,7 +597,7 @@ export function saveInputData(options: {
   data: unknown;
   /** `data` 是 `create_data` 那份"给定的数据"；`context` 是"读到的当轮会话上下文"。 */
   kind?: 'data' | 'context';
-}): { dataSrc: string; bytes: number } {
+}): { asset: string; bytes: number } {
   const problem = nameProblem(options.name);
   if (problem !== null) throw new Error(`输入数据名不合法：${problem}`);
   const kind = options.kind ?? 'data';
@@ -617,7 +617,7 @@ export function saveInputData(options: {
   mkdirSync(directory, { recursive: true });
   const fileName = artifactName({ at, name: options.name, kind: fileKindOf(kind), extension: '.json', content: body });
   writeExclusive(join(directory, fileName), body, kind);
-  return { dataSrc: `${DATA_DIR}/${fileName}`, bytes };
+  return { asset: `${DATA_DIR}/${fileName}`, bytes };
 }
 
 /** 表展示件里的材料：来源链 + 展示数据（与它自己的自述一起）。表没有原生自述元素，
@@ -633,13 +633,13 @@ const viewComment = (material: ViewMaterial): string =>
 
 /** 读一份表展示件：材料（从注释里抓）与 markdown 本体（注释之后的部分）。
  *  注释不在，说明这不是我们写的表——报 null，让调用方明确失败。 */
-export function readTableView(content: string): { material: ViewMaterial; markdown: string } | null {
+export function readTableView(content: string): { material: ViewMaterial; embedded: string } | null {
   const match = new RegExp(`^<!-- ${VIEW_MARKER} (.*?) -->\n`).exec(content);
   if (match === null) return null;
   try {
     const material = JSON.parse(match[1]) as ViewMaterial;
     if (material?.origin === undefined || material?.data === undefined) return null;
-    return { material, markdown: content.slice(match[0].length) };
+    return { material, embedded: content.slice(match[0].length) };
   } catch {
     return null;
   }
@@ -653,8 +653,8 @@ export function saveTableView(options: {
   title?: string;
   origin: DataOrigin;
   data: DisplayData;
-  markdown: string;
-}): { src: string; bytes: number } {
+  embedded: string;
+}): { asset: string; bytes: number } {
   const problem = nameProblem(options.name);
   if (problem !== null) throw new Error(`表格名不合法：${problem}`);
   const at = resultStamp();
@@ -668,7 +668,7 @@ export function saveTableView(options: {
     origin: options.origin,
     data: options.data,
   };
-  const body = `${viewComment(material)}${options.markdown}`;
+  const body = `${viewComment(material)}${options.embedded}`;
   const bytes = Buffer.byteLength(body);
   if (bytes > ENVELOPE_MAX_BYTES) {
     throw new Error(`这张表 ${(bytes / 1024 / 1024).toFixed(1)} MB，超过单份展示件上限 `
@@ -678,11 +678,11 @@ export function saveTableView(options: {
   mkdirSync(directory, { recursive: true });
   const fileName = artifactName({ at, name: options.name, kind: 'table', extension: '.md', content: body });
   writeExclusive(join(directory, fileName), body, 'table');
-  return { src: `${FIGURE_DIR}/${fileName}`, bytes };
+  return { asset: `${FIGURE_DIR}/${fileName}`, bytes };
 }
 
 /** 把一份产物（图、报告）写成文件：与结果文件同一套命名与独占创建规则。
- *  返回的 src 是相对工作区根的路径，交给 agent 粘进回答引用。 */
+ *  返回的 asset 是相对工作区根的路径，交给 agent 粘进回答引用。 */
 export interface SaveArtifactOptions {
   root: string;
   name: string;
@@ -701,7 +701,7 @@ export interface SaveArtifactOptions {
   contentHasMeta?: boolean;
 }
 
-export function saveArtifact(options: SaveArtifactOptions): { src: string; at: string; meta: ArtifactMeta } {
+export function saveArtifact(options: SaveArtifactOptions): { asset: string; at: string; meta: ArtifactMeta } {
   const problem = nameProblem(options.name);
   if (problem !== null) {
     throw new Error(`${KIND_LABEL[options.kind]}名不合法（${JSON.stringify(options.name)}）：${problem}`);
@@ -732,16 +732,16 @@ export function saveArtifact(options: SaveArtifactOptions): { src: string; at: s
   writeExclusive(join(options.root, directory, fileName), content, options.kind);
   // 把**同一个 meta 对象**交回调用方去记账：产出方手里本来就有它，不必再从文件里读回来
   // （读回来还要解一遍 XML 转义、还要赌文件形状，而这两件事都会以"清单里少一条"收场）。
-  return { src: `${directory}/${fileName}`, at, meta };
+  return { asset: `${directory}/${fileName}`, at, meta };
 }
 
 /** 定位一个引用：它必须落在某个可读目录里（内部材料或交付物），并返回那个目录。
  *  越界与"不在任何目录里"是同一类错误：修法都是换一个引用。 */
-function locate(root: string, src: unknown): { directory: string; target: string } {
-  if (typeof src !== 'string' || src.length === 0) {
-    throw new Error('需要一个 src（工具回执里给的那个相对路径）');
+function locate(root: string, asset: unknown): { directory: string; target: string } {
+  if (typeof asset !== 'string' || asset.length === 0) {
+    throw new Error('需要一个 asset（工具回执里给的那个相对路径）');
   }
-  const target = resolve(root, src);
+  const target = resolve(root, asset);
   for (const directory of READABLE_DIRS) {
     const base = resolve(root, directory);
     const inside = relative(base, target);
@@ -749,28 +749,28 @@ function locate(root: string, src: unknown): { directory: string; target: string
       return { directory, target };
     }
   }
-  throw new Error(`引用只能指向工作区里的 ${READABLE_DIRS.join(' / ')}：${JSON.stringify(src)}`);
+  throw new Error(`引用只能指向工作区里的 ${READABLE_DIRS.join(' / ')}：${JSON.stringify(asset)}`);
 }
 
-/** dataSrc 的语法范围：只接受能在工作区可读目录里落位的相对路径。 */
-export function resolveDataSrc(root: string, dataSrc: unknown): string {
-  return locate(root, dataSrc).target;
+/** asset 的语法范围：只接受能在工作区可读目录里落位的相对路径。 */
+export function resolveDataSrc(root: string, asset: unknown): string {
+  return locate(root, asset).target;
 }
 
 /** 把一个 artifacts/ 里的产物定位到真实路径：先按前缀收窄，再用真实路径复核（挡住符号链接逃逸）。
  *  "找不到"与"越界"要分开报——这两种错，修法完全不同。 */
-function artifactPath(root: string, src: unknown): string {
-  const { directory, target } = locate(root, src);
+function artifactPath(root: string, asset: unknown): string {
+  const { directory, target } = locate(root, asset);
   let real: string;
   try {
     real = realpathSync(target);
   } catch {
-    throw new Error(`找不到 ${JSON.stringify(src)}`);
+    throw new Error(`找不到 ${JSON.stringify(asset)}`);
   }
   const realDirectory = realpathSync(resolve(root, directory));
   const inside = relative(realDirectory, real);
   if (inside.length === 0 || inside.startsWith('..') || isAbsolute(inside)) {
-    throw new Error(`引用指向的路径不在工作区 ${directory}/ 里：${JSON.stringify(src)}`);
+    throw new Error(`引用指向的路径不在工作区 ${directory}/ 里：${JSON.stringify(asset)}`);
   }
   return real;
 }
@@ -996,8 +996,8 @@ export function readCodeFile(root: string, raw: unknown): { text: string; file: 
 
 /** 文件名的三段：时间、类别、名字。它与 `artifactName` 互为反函数——
  *  自述缺失时（老文件、外部写下的文件）自述就从名字里现造一份，于是读的人不必面对"没有自述"。 */
-export function nameParts(src: unknown): { at: string; name: string; kind: ArtifactKind } {
-  const file = String(src).split('/').pop() ?? '';
+export function nameParts(asset: unknown): { at: string; name: string; kind: ArtifactKind } {
+  const file = String(asset).split('/').pop() ?? '';
   const at = /^\d{8}T\d{6}Z/.exec(file)?.[0] ?? '';
   const rest = at === '' ? file : file.slice(at.length + 1);
   const fileKind = /\.([a-z_]+)\.[a-z]+$/.exec(rest)?.[1] ?? '';
@@ -1013,10 +1013,10 @@ export function nameParts(src: unknown): { at: string; name: string; kind: Artif
 
 /** 自述的读取归一：写着的就用写着的，没写（老文件）就按文件名现造一份。
  *  形状对不上时报错而不是猜——认不出的结构说明这不是本插件写下的文件。 */
-export function envelopeMetaOf(raw: unknown, src: unknown): EnvelopeMeta {
-  if (raw === undefined || raw === null) return nameParts(src);
+export function envelopeMetaOf(raw: unknown, asset: unknown): EnvelopeMeta {
+  if (raw === undefined || raw === null) return nameParts(asset);
   if (!isRecord(raw) || typeof raw.name !== 'string' || typeof raw.at !== 'string') {
-    throw new Error(`自述结构不完整（要 { kind, name, at }）：${JSON.stringify(src)}`);
+    throw new Error(`自述结构不完整（要 { kind, name, at }）：${JSON.stringify(asset)}`);
   }
   return raw as unknown as EnvelopeMeta;
 }
@@ -1024,46 +1024,46 @@ export function envelopeMetaOf(raw: unknown, src: unknown): EnvelopeMeta {
 /** 来源链的读取校验：根节点、节点形状，以及**引用必须在文件内闭合**。
  *  早期写下的文件里 origin 是平面的（没有节点表），这里归一成单节点链：
  *  它们是可回收的内部材料，清理时自然消失，不专门迁移。 */
-function normalizeOrigin(raw: unknown, data: unknown, src: unknown): DataOrigin {
-  if (!isRecord(raw)) throw new Error(`封装里没有来源信息（origin）：${JSON.stringify(src)}`);
+function normalizeOrigin(raw: unknown, data: unknown, asset: unknown): DataOrigin {
+  if (!isRecord(raw)) throw new Error(`封装里没有来源信息（origin）：${JSON.stringify(asset)}`);
   // 平面形状（早期写下的）：一个操作，直接当单节点链——身份按同一套规则现算。
   if (typeof raw.kind === 'string') return originOf(raw as unknown as OriginNode, data);
   if (!isRecord(raw.nodes) || typeof raw.root !== 'string') {
-    throw new Error(`来源链结构不完整（要 { root, nodes }）：${JSON.stringify(src)}`);
+    throw new Error(`来源链结构不完整（要 { root, nodes }）：${JSON.stringify(asset)}`);
   }
   const nodes = raw.nodes as Record<string, OriginNode>;
   for (const [id, node] of Object.entries(nodes)) {
     const kinds = ['query', 'transform', 'input', 'extract', 'derive', 'report'];
     if (!isRecord(node) || !kinds.includes(String(node.kind))) {
-      throw new Error(`来源链里的节点不是一次操作（${id}）：${JSON.stringify(src)}`);
+      throw new Error(`来源链里的节点不是一次操作（${id}）：${JSON.stringify(asset)}`);
     }
     for (const [name, upstream] of Object.entries(node.inputs ?? {})) {
       if (typeof upstream !== 'string' || !(upstream in nodes)) {
         throw new Error(`来源链里 ${id} 的输入 ${name} 指向的节点不在这个文件里（${String(upstream)}）：`
-          + `引用必须在文件内闭合，${JSON.stringify(src)} 已经缺了上游`);
+          + `引用必须在文件内闭合，${JSON.stringify(asset)} 已经缺了上游`);
       }
     }
   }
-  if (!(raw.root in nodes)) throw new Error(`来源链的根节点不在节点表里（${raw.root}）：${JSON.stringify(src)}`);
+  if (!(raw.root in nodes)) throw new Error(`来源链的根节点不在节点表里（${raw.root}）：${JSON.stringify(asset)}`);
   return { root: raw.root, nodes };
 }
 
 /** 读一份封装（`.oks/data/` 里的那些 JSON）：校验 `{ meta, origin, data }` 并归一化来源链。
  *  data 的形状不在这里约束——那是消费者入口的事。 */
-export function readEnvelope(root: string, src: unknown): Envelope {
-  return parseEnvelope(readFileSync(artifactPath(root, src), 'utf8'), src);
+export function readEnvelope(root: string, asset: unknown): Envelope {
+  return parseEnvelope(readFileSync(artifactPath(root, asset), 'utf8'), asset);
 }
 
 /** 与 `readEnvelope` 同一套校验，只是内容已经读进来了（调用方负责路径约束与读文件）。
  *  图、表、报告的读取层拿到的是文件内容，所以校验与读取分在两处。 */
-export function parseEnvelope(content: string, src: unknown): Envelope {
+export function parseEnvelope(content: string, asset: unknown): Envelope {
   const parsed: unknown = JSON.parse(content);
   if (!isRecord(parsed) || !('data' in parsed)) {
-    throw new Error(`封装结构不完整（要 { meta, origin, data }）：${JSON.stringify(src)}`);
+    throw new Error(`封装结构不完整（要 { meta, origin, data }）：${JSON.stringify(asset)}`);
   }
   return {
-    meta: envelopeMetaOf(parsed.meta, src),
-    origin: normalizeOrigin(parsed.origin, parsed.data, src),
+    meta: envelopeMetaOf(parsed.meta, asset),
+    origin: normalizeOrigin(parsed.origin, parsed.data, asset),
     data: parsed.data,
   };
 }
@@ -1071,16 +1071,16 @@ export function parseEnvelope(content: string, src: unknown): Envelope {
 /** 从一份 data 里取行对象数组：`{ rows, … }` 与"data 直接就是数组"两种形状都认。
  *  标量、对象、嵌套是加工结果的常态，读它们用 readEnvelope；这里明确拒绝，
  *  免得形状不对的数据一路走到绘图那层才报出一句看不懂的错。 */
-export function rowsOf(data: unknown, src: unknown): Array<Record<string, unknown>> {
+export function rowsOf(data: unknown, asset: unknown): Array<Record<string, unknown>> {
   const rows = isRecord(data) ? data.rows : data;
   if (!Array.isArray(rows)) {
-    throw new Error(`这份数据的 data 不是行对象数组：${JSON.stringify(src)}。`
+    throw new Error(`这份数据的 data 不是行对象数组：${JSON.stringify(asset)}。`
       + '要画图就先把它加工成行对象数组再保存。');
   }
   return rows as Array<Record<string, unknown>>;
 }
 
-/** 把一个 src 解析成 artifacts/ 里的**文件名**（越界与不存在都在这里报错）。
+/** 把一个 asset 解析成 artifacts/ 里的**文件名**（越界与不存在都在这里报错）。
  *  状态层只记文件名——路径是工作区属性，换个工作区（同一份产物被拷过去）就该重新解析。 */
 export function artifactFileName(root: string, src: unknown): string {
   const real = artifactPath(root, src);
@@ -1090,5 +1090,5 @@ export function artifactFileName(root: string, src: unknown): string {
 /** 读一份已经落盘的产物（报告里引用的图）：路径约束与结果文件相同，另加一条扩展名核对。 */
 export function readArtifact(root: string, src: string, extension: string): string {
   if (!src.endsWith(extension)) throw new Error(`只认 ${extension} 产物：${JSON.stringify(src)}`);
-  return readFileSync(artifactPath(root, src), 'utf8');
+  return readFileSync(artifactPath(root, src), "utf8");
 }

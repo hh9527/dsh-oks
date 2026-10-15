@@ -106,7 +106,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['work_read', 'work_write', 'work_edit', 'work_list', 'work_delete', 'oks_search', 'oks_references', 'oks_info', 'oks_check_intent', 'oks_query', 'create_data', 'jq_transform', 'jq_transform_into', 'oks_chart', 'oks_view', 'oks_report_check', 'oks_report', 'oks_artifacts', 'collect', 'create_current_ctx_data', 'va_ask'];
+const EXPECTED_TOOLS = ['work_read', 'work_write', 'work_edit', 'work_list', 'work_delete', 'oks_search', 'oks_references', 'oks_info', 'oks_check_query_intent', 'oks_exec_query_intent', 'create_data', 'jq_transform', 'oks_render_figure', 'oks_check_report', 'oks_render_report', 'oks_artifacts', 'create_current_ctx_data', 'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -128,7 +128,6 @@ for (const name of EXPECTED_TOOLS) {
 
   if (!described) throw new Error('有工具的描述为空');
 }
-
 // exec 模拟 harness 传进来的 ToolRunContext：工作区从会话头里取，不由调用方给。
 const sessions = new Map();
 const sessionFor = (cwd) => {
@@ -157,7 +156,7 @@ const prog = (program) => {
   writeFileSync(resolve(progDir, name), program.endsWith('\n') ? program : `${program}\n`);
   return name;
 };
-/** 冒烟里的报告正文：用例仍写"一段 markdown + ![](材料) 引用"，这里翻成 oks_report 的新入参
+/** 冒烟里的报告正文：用例仍写"一段 markdown + ![](材料) 引用"，这里翻成 oks_render_report 的新入参
  *  （`{ xhtml, inputs }`）。绕开的只有写法，走的仍是真实的 spec 形状。 */
 const reportBodies = [];
 const reportSpec = (markdown) => {
@@ -245,7 +244,7 @@ const buildCtx = (config) => {
   const harness = makeHarness(config);
   return { tools: harness.tools, events: harness.events, logs: harness.logs };
 };
-// 只有 oks_info / oks_check_intent / oks_query 需要工作区；时间工具不需要。
+// 只有 oks_info / oks_check_query_intent / oks_exec_query_intent 需要工作区；时间工具不需要。
 const NOWHERE = `${SCRATCH}/nowhere`;
 mkdirSync(NOWHERE, { recursive: true });
 
@@ -265,7 +264,7 @@ console.log('=== 自带技能（注册进 runtime 层，所有工作区可见）
 
 // ── 会话上下文材料（与模型无关、不解释领域格式）──────────────────────────────
 // 求值器里**没有时钟**：相对时间的绝对边界只能由这份材料在 jq 里算出来（tzadd / tzfloor / tzceil），
-// 所以它必须落盘、必须给 dataSrc（后续 jq 才加工得了），而且**一次任务只取一份**。
+// 所以它必须落盘、必须给 asset（后续 jq 才加工得了），而且**一次任务只取一份**。
 console.log('=== 会话上下文材料 ===');
 {
   const Z = 'Asia/Shanghai';
@@ -274,14 +273,14 @@ console.log('=== 会话上下文材料 ===');
     if (list.length === 0) throw new Error('插件没有监听 agent/pre-step');
     return waterfall(list, { agent: { session: sessionFor(cwd).agent.session }, messages }, async () => ({ kind: 'enter' }));
   };
-  const readMaterial = (src) => JSON.parse(readFileSync(resolve(DEV_ROOT, src), 'utf8'));
+  const readMaterial = (asset) => JSON.parse(readFileSync(resolve(DEV_ROOT, asset), 'utf8'));
 
-  // 上下文里有浏览器时区：读一次 → 落成 .ctx.json → 回执同时给 dataSrc 与 data
+  // 上下文里有浏览器时区：读一次 → 落成 .ctx.json → 回执同时给 asset 与 data
   await firePreStep(DEV_ROOT, [{ source: { kind: 'user', rpcId: 'r1', clientTimeZone: Z } }]);
   const made = await call('create_current_ctx_data', {}, DEV_ROOT);
-  console.log(`  落点 ${made.value.dataSrc}`);
+  console.log(`  落点 ${made.value.asset}`);
   console.log(`  回执里的上下文：${JSON.stringify(made.value.data)}`);
-  if (!/^\.oks\/data\/\d{8}T\d{6}Z-current-[0-9a-f]{8}\.ctx\.json$/.test(made.value.dataSrc)) {
+  if (!/^\.oks\/data\/\d{8}T\d{6}Z-current-[0-9a-f]{8}\.ctx\.json$/.test(made.value.asset)) {
     throw new Error('上下文材料没有落在 .oks/data/ 下、也不叫 <date>-current-<hash>.ctx.json');
   }
   if (made.value.data?.tz?.client?.id !== Z) {
@@ -298,10 +297,10 @@ console.log('=== 会话上下文材料 ===');
     || JSON.stringify(utcKeys) !== '["epochMillis","rfc3339"]') {
     throw new Error(`材料形状不对：${JSON.stringify(made.value.data)}`);
   }
-  if (!made.text.includes(made.value.dataSrc) || !made.text.includes('tzadd')) {
-    throw new Error('回执要给出 dataSrc，并说清边界在 jq 里算');
+  if (!made.text.includes(made.value.asset) || !made.text.includes('tzadd')) {
+    throw new Error('回执要给出 asset，并说清边界在 jq 里算');
   }
-  const body = readMaterial(made.value.dataSrc);
+  const body = readMaterial(made.value.asset);
   const node = body.origin.nodes[body.origin.root];
   console.log(`  材料：kind=${body.meta.kind} · 节点 kind=${node?.kind} · ${node?.motivation ?? '(没有动机)'}`);
   if (body.meta.kind !== 'context' || node?.kind !== 'input' || body.data.tz.client.id !== Z) {
@@ -313,19 +312,19 @@ console.log('=== 会话上下文材料 ===');
   // 注意：jq 里 `|` 比 `,` 松，所以两个元素各自要括号（否则 ceil 会把两个都再算一遍）。
   const weekFile = prog('(.ctx.utc.epochMillis / 1000 | floor) as $at | .ctx.tz.client.id as $tz'
     + ' | [($at | tzfloor("week"; $tz)), ($at | tzceil("week"; $tz))]');
-  const week = await call('jq_transform', { inputs: { ctx: made.value.dataSrc }, byFile: weekFile });
+  const week = await call('jq_transform', { inputs: { ctx: made.value.asset }, byFile: weekFile });
   const span = Array.isArray(week.value.data) ? week.value.data : [];
   console.log(`  同一份锚点算出的本周（上海，半开）：[${span[0]}, ${span[1]}) · 跨度 ${span[1] - span[0]} 秒`);
   if (span.length !== 2 || span[1] - span[0] !== 7 * 86400) {
     throw new Error('由上下文材料算出的周区间不对（tzfloor / tzceil）');
   }
-  rmSync(resolve(DEV_ROOT, made.value.dataSrc), { force: true });
+  rmSync(resolve(DEV_ROOT, made.value.asset), { force: true });
 
   // 再调一次：它没有参数，同一毫秒内内容相同就落到同一个文件（"同名即同内容"），不报错
   const again = await call('create_current_ctx_data', {}, DEV_ROOT);
-  if (!/\.ctx\.json$/.test(again.value.dataSrc)) throw new Error('重复调用没有落成上下文材料');
+  if (!/\.ctx\.json$/.test(again.value.asset)) throw new Error('重复调用没有落成上下文材料');
   console.log('  ✓ 重复调用照常落盘（同名同内容视为同一份，不冲突）');
-  rmSync(resolve(DEV_ROOT, again.value.dataSrc), { force: true });
+  rmSync(resolve(DEV_ROOT, again.value.asset), { force: true });
 
   // 上下文里没有时区 → 报错并要求向用户澄清（不猜）
   await firePreStep(DEV_ROOT, [{ source: { kind: 'user', rpcId: 'r0' } }]);
@@ -358,7 +357,7 @@ console.log('=== 会话上下文材料 ===');
     throw new Error('空消息的那一步把上下文时区覆盖掉了');
   }
   console.log('  ✓ 同回合后续步骤（无用户消息）不会覆盖已取到的上下文时区');
-  rmSync(resolve(DEV_ROOT, afterEmptyStep.value.dataSrc), { force: true });
+  rmSync(resolve(DEV_ROOT, afterEmptyStep.value.asset), { force: true });
 
   // 没有工作区 → 明确报错（它要落盘，不能凭空调用）
   try {
@@ -381,7 +380,7 @@ console.log('=== 会话上下文材料 ===');
       .execute({}, { signal: new AbortController().signal, agent: { session } });
     console.log('  config.timeZone=UTC 时实际用 → ' + value.data.tz.client.id);
     if (value.data.tz.client.id !== Z) throw new Error('时区应当只来自上下文');
-    rmSync(resolve(DEV_ROOT, value.dataSrc), { force: true });
+    rmSync(resolve(DEV_ROOT, value.asset), { force: true });
   }
 
   // 会话头里没有 cwd 时明确报错，而不是回落到别的目录
@@ -1219,9 +1218,9 @@ console.log('=== oks_references（按 key 反向找引用）===');
 const countNamed = { count: { op: 'Graph', root: 'x', nodes: [{ id: 'x', entity: member.id }], edges: [], select: [], count: 'x', limit: 100 } };
 const brokenNamed = { broken: { op: 'Graph', root: 'x', nodes: [{ id: 'x', entity: 'no_such_entity_from_smoke' }], edges: [], select: [], count: 'x', limit: 100 } };
 
-/** 先用 oks_check_intent 取 key，再拼成 oks_query 要的 {intent, key}。 */
+/** 先用 oks_check_query_intent 取 key，再拼成 oks_exec_query_intent 要的 {intent, key}。 */
 const withKeys = async (named, dir) => {
-  const checked = await call('oks_check_intent', { intents: named }, dir);
+  const checked = await call('oks_check_query_intent', { intents: named }, dir);
   return Object.fromEntries(Object.entries(named).map(([name, intent]) => {
     const item = (checked.value.results ?? []).find((result) => result.name === name);
     if (item === undefined || typeof item.key !== 'string') throw new Error(`校验没有通过：${name}`);
@@ -1230,17 +1229,17 @@ const withKeys = async (named, dir) => {
 };
 
 // ── 校验路径：只回诊断与 key，不回任何语句 ──────────────────────────────────
-console.log('=== oks_check_intent（只校验，通过项给 key）===');
+console.log('=== oks_check_query_intent（只校验，通过项给 key）===');
 {
   // 批次名字也走同一套校验：名字是标识不是标题，所以在**校验阶段**就被挡下，不会白跑一次查询。
   {
-    const bad = await call('oks_check_intent', { intents: { '告警-分布': countNamed.count } });
+    const bad = await call('oks_check_query_intent', { intents: { '告警-分布': countNamed.count } });
     // 校验工具把名字问题当"这一批的结论"回出来（不抛），所以断言看回执正文。
     if (!/0-9/.test(bad.text)) throw new Error(`批次名字里的中文与连字符应当被拒：${bad.text.slice(0, 120)}`);
     if ((bad.value.results ?? []).some((item) => item.key !== null)) throw new Error('名字不合法时不该给出 key');
     console.log(`  批次名字的字符集：${bad.text.split('\n').find((line) => /0-9/.test(line))?.trim().slice(0, 70)}`);
   }
-  const accepted = await call('oks_check_intent', { intents: countNamed });
+  const accepted = await call('oks_check_query_intent', { intents: countNamed });
   console.log(accepted.text.split('\n').filter((line) => /◂|key=|校验结论/.test(line)).map((l) => `  ${l}`).join('\n'));
   if (!/全部可用/.test(accepted.text)) throw new Error('有效批次应当判定为可用');
   const item = (accepted.value.results ?? [])[0] ?? null;
@@ -1253,7 +1252,7 @@ console.log('=== oks_check_intent（只校验，通过项给 key）===');
   console.log(`  结构化值里也没有 queries: ${/"queries"/.test(structured) ? '✗' : '✓'}`);
   if (/"queries"/.test(structured)) throw new Error('校验路径的结构化值里仍然带着 queries');
 
-  const partial = await call('oks_check_intent', { intents: { ...countNamed, ...brokenNamed } });
+  const partial = await call('oks_check_query_intent', { intents: { ...countNamed, ...brokenNamed } });
   console.log(partial.text.split('\n').filter((line) => /◂|✕|再校验|校验结论/.test(line)).map((l) => `  ${l}`).join('\n').slice(0, 700));
   if (!/✕\s*Error/.test(partial.text)) throw new Error('坏 Intent 应当报 Error 诊断');
   if (!/再校验一次.*通过/.test(partial.text)) throw new Error('未报 Error 的子集应当被单独确认');
@@ -1266,19 +1265,19 @@ console.log('=== oks_check_intent（只校验，通过项给 key）===');
 }
 
 // ── 查询路径：真的执行、结果落盘，模型可见面只留引用 ────────────────────────
-console.log('=== oks_query（只读执行 + 结果落盘）===');
+console.log('=== oks_exec_query_intent（只读执行 + 结果落盘）===');
 {
-  const answer = await call('oks_query', {
+  const answer = await call('oks_exec_query_intent', {
     intents: await withKeys(countNamed),
     motivation: '冒烟：核对动机进入来源链',
   });
   const first = answer.value.results?.[0] ?? null;
-  console.log(answer.text.split('\n').filter((line) => /◂|── |status:|dataSrc:|columns:|sql:/.test(line)).map((l) => `  ${l}`).join('\n').slice(0, 800));
+  console.log(answer.text.split('\n').filter((line) => /◂|── |status:|asset:|columns:|sql:/.test(line)).map((l) => `  ${l}`).join('\n').slice(0, 800));
   if (first === null) throw new Error('有效查询没有产生结果');
   if (first.status !== 'saved') throw new Error(`查询没有保存成功：${first.status} ${first.error ?? ''}`);
   console.log(`  行数 ${first.rowCount} · 渲染 ${answer.text.length} 字符（pruner 阈值 8192）`);
   if (first.rowCount < 1) throw new Error('查询应当至少返回一行');
-  if (typeof first.dataSrc !== 'string' || !first.dataSrc.startsWith('.oks/data/')) throw new Error('成功项应当返回 .oks/data/ 下的 dataSrc');
+  if (typeof first.asset !== 'string' || !first.asset.startsWith('.oks/data/')) throw new Error('成功项应当返回 .oks/data/ 下的 asset');
   if (/sql:/.test(answer.text) || !/status:\s+saved/.test(answer.text)) throw new Error('回执应当是结构（保存状态），语句不进模型可见文本');
   const metaSql = answer.meta?.results?.[0]?.sql ?? null;
   console.log(`  语句只留在呈现记录里（meta.sql ${typeof metaSql === 'string' ? `${metaSql.length} 字符` : '缺失'}）: ${typeof metaSql === 'string' && metaSql.length > 0 ? '✓' : '✗'}`);
@@ -1286,8 +1285,8 @@ console.log('=== oks_query（只读执行 + 结果落盘）===');
   if (answer.text.length >= 8192) throw new Error('模型可见文本超过了 pruner 阈值');
   if (/^\|.*\|$/m.test(answer.text)) throw new Error('数据行不该出现在查询回执里（它们只在结果文件里）');
 
-  const saved = JSON.parse(readFileSync(resolve(DEV_ROOT, first.dataSrc), 'utf8'));
-  console.log(`  结果文件 ${first.dataSrc}：${saved.data.rows.length} 行 · 列 ${saved.data.columns.map((column) => column.name).join(',')}`);
+  const saved = JSON.parse(readFileSync(resolve(DEV_ROOT, first.asset), 'utf8'));
+  console.log(`  结果文件 ${first.asset}：${saved.data.rows.length} 行 · 列 ${saved.data.columns.map((column) => column.name).join(',')}`);
   if (saved.data.rows.length !== first.rowCount) throw new Error('结果文件的行数与回执不一致');
   if (!Array.isArray(saved.data.rows) || saved.data.rows.length !== first.rowCount) throw new Error('结果文件里没有完整数据行');
   if (saved.data.columns.some((column) => !Array.isArray(column.types) || column.types.length === 0)) throw new Error('结果文件的列信息缺少类型');
@@ -1388,14 +1387,14 @@ console.log('=== oks_query（只读执行 + 结果落盘）===');
   }
 
   // key 对得上（自算），但这个 Intent 本身被服务拒：这才是 rejected。
-  const rejected = await call('oks_query', { intents: { broken: { intent: brokenNamed.broken, key: intentKey(brokenNamed.broken) } } });
+  const rejected = await call('oks_exec_query_intent', { intents: { broken: { intent: brokenNamed.broken, key: intentKey(brokenNamed.broken) } } });
   const rejectedFirst = rejected.value.results?.[0] ?? null;
   console.log(rejected.text.split('\n').filter((line) => /◂|✕|被拒绝|status:/.test(line)).map((l) => `  ${l}`).join('\n').slice(0, 600));
-  console.log(`  被拒项 status=${rejectedFirst?.status} · dataSrc=${rejectedFirst?.dataSrc}`);
-  if (rejectedFirst?.status !== 'rejected' || rejectedFirst?.dataSrc !== null) throw new Error('被拒批次应当给出 rejected 且没有 dataSrc');
+  console.log(`  被拒项 status=${rejectedFirst?.status} · asset=${rejectedFirst?.asset}`);
+  if (rejectedFirst?.status !== 'rejected' || rejectedFirst?.asset !== null) throw new Error('被拒批次应当给出 rejected 且没有 asset');
 
   // key 与 Intent 不符：不执行，直接拒。
-  const mismatched = await call('oks_query', { intents: { count: { intent: countNamed.count, key: 'f'.repeat(32) } } });
+  const mismatched = await call('oks_exec_query_intent', { intents: { count: { intent: countNamed.count, key: 'f'.repeat(32) } } });
   const mismatchFirst = mismatched.value.results?.[0] ?? null;
   console.log(`  改了 Intent 复用别的 key → status=${mismatchFirst?.status}`);
   if (mismatchFirst?.status !== 'key_mismatch') throw new Error('key 与 Intent 不符时应当拒掉');
@@ -1403,13 +1402,13 @@ console.log('=== oks_query（只读执行 + 结果落盘）===');
 }
 
 // ── 加工：探索（只看）与物化（写进 .oks/data/）共用一套具名输入与求值语义 ──────
-console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源链）===');
+console.log('=== jq_transform（具名输入 + save 时自动来源链）===');
 {
-  const answer = await call('oks_query', { intents: await withKeys(countNamed) });
+  const answer = await call('oks_exec_query_intent', { intents: await withKeys(countNamed) });
   const first = answer.value.results?.[0] ?? null;
   const column = first.columns[0]?.name;
   const numeric = first.columns.find((entry) => entry.types.includes('number'))?.name ?? column;
-  const dataSrc = first.dataSrc;
+  const asset = first.asset;
   const rowTotal = first.rowCount;
   const failureOf = async (args) => {
     try {
@@ -1421,13 +1420,13 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
   };
 
   // 具名输入：程序读到的是一个对象，键就是 inputs 里的名字
-  const one = await call('jq_transform', { inputs: { q: dataSrc }, byFile: prog(`.q.rows[0].${column}`) });
+  const one = await call('jq_transform', { inputs: { q: asset }, byFile: prog(`.q.rows[0].${column}`) });
   console.log(`  .q.rows[0].${column} → ${JSON.stringify(one.value.data)} · outputs=${one.value.outputs}`);
   ok('探索：恰好一个输出时 data 就是那个值',
     one.value.outputs === 1 && !Array.isArray(one.value.data) && one.value.inputs?.[0]?.name === 'q');
   // 查询结果的 data 是 { rows, columns }：行在 .q.rows，列信息也在同一份数据里。
   ok('探索：回执报告每份输入的形状（查询结果是 { rows, columns }）',
-    one.value.inputs?.[0]?.shape.startsWith('对象 · 字段 rows, columns') && one.value.inputs?.[0]?.src === dataSrc);
+    one.value.inputs?.[0]?.shape.startsWith('对象 · 字段 rows, columns') && one.value.inputs?.[0]?.src === asset);
 
   // 一个数组值 vs 多个输出：data 形状一样，靠 outputs 分开（这就是约定要消掉的那个歧义）
   const arrayValue = await call('jq_transform', { byFile: prog('[range(3)]') });
@@ -1438,7 +1437,7 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
     && stream.value.outputs === 3 && JSON.stringify(stream.value.data) === '[0,1,2]');
 
   // 零输出：data 是空数组，回执明说没有产出值
-  const none = await call('jq_transform', { inputs: { q: dataSrc }, byFile: prog('empty') });
+  const none = await call('jq_transform', { inputs: { q: asset }, byFile: prog('empty') });
   console.log(`  empty → outputs=${none.value.outputs} · data=${JSON.stringify(none.value.data)}`);
   ok('探索：零输出是 outputs=0 且 data 为空数组',
     none.value.outputs === 0 && Array.isArray(none.value.data) && none.value.data.length === 0);
@@ -1493,29 +1492,28 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
   const progFile = 'snip_probe.jq';
   writeFileSync(resolve(workDir, progFile), '# 冒烟：程序正文来自 .work/\n.q.rows\n| length\n');
   rmSync(resolve(workDir, 'smoke_prog.jq'), { force: true });
-  const viaFile = await call('jq_transform', { inputs: { q: dataSrc }, byFile: progFile });
+  const viaFile = await call('jq_transform', { inputs: { q: asset }, byFile: progFile });
   console.log(`  byFile: ${progFile} → ${JSON.stringify(viaFile.value.data)} · snipFile=${viaFile.value.snipFile}`);
   ok('by 指向 .work/ 下的程序文件，回执写明程序来自哪份文件',
     viaFile.value.ok !== false && viaFile.value.data === rowTotal && viaFile.value.snipFile === `.work/${progFile}`);
-  const intoViaFile = await call('jq_transform_into', {
-    name: 'from_code_file',
-    motivation: '冒烟：程序来自 .work/ 里的文件',
-    inputs: { q: dataSrc },
+  const intoViaFile = await call('jq_transform', {
+    save: { name: 'from_code_file', motivation: '冒烟：程序来自 .work/ 里的文件' },
+    inputs: { q: asset },
     byFile: progFile,
   });
-  const intoViaFileBody = JSON.parse(readFileSync(resolve(DEV_ROOT, intoViaFile.value.dataSrc), 'utf8'));
+  const intoViaFileBody = JSON.parse(readFileSync(resolve(DEV_ROOT, intoViaFile.value.asset), 'utf8'));
   const intoViaFileRoot = intoViaFileBody.origin.nodes[intoViaFileBody.origin.root];
   ok('来源链记的是程序正文（另附 snipFile）：.work/ 被清掉也不影响来路',
     intoViaFileRoot?.snip?.startsWith('# 冒烟') === true
     && intoViaFileRoot?.snipFile === `.work/${progFile}` && intoViaFileBody.data === rowTotal);
-  rmSync(resolve(DEV_ROOT, intoViaFile.value.dataSrc), { force: true });
+  rmSync(resolve(DEV_ROOT, intoViaFile.value.asset), { force: true });
 
   // 引用的三种不合规：不存在（只说找不到）、越界、超过单份代码上限
   writeFileSync(resolve(workDir, 'huge.jq'), `# ${'x'.repeat(70 * 1024)}\n`);
-  const missingCode = await failureOf({ inputs: { q: dataSrc }, byFile: 'nope.jq' });
-  const outsideCode = await failureOf({ inputs: { q: dataSrc }, byFile: '../evil.jq' });
-  const hugeCode = await failureOf({ inputs: { q: dataSrc }, byFile: 'huge.jq' });
-  const notCode = await failureOf({ inputs: { q: dataSrc }, byFile: 'notes.txt' });
+  const missingCode = await failureOf({ inputs: { q: asset }, byFile: 'nope.jq' });
+  const outsideCode = await failureOf({ inputs: { q: asset }, byFile: '../evil.jq' });
+  const hugeCode = await failureOf({ inputs: { q: asset }, byFile: 'huge.jq' });
+  const notCode = await failureOf({ inputs: { q: asset }, byFile: 'notes.txt' });
   console.log(`  代码引用不存在 → ${missingCode.slice(0, 110)}`);
   ok('代码引用不存在时只说找不到，不倒 .work/ 里的清单',
     /读不到/.test(missingCode) && !missingCode.includes(`.work/${progFile}`)
@@ -1526,13 +1524,13 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
   rmSync(resolve(workDir, 'huge.jq'), { force: true });
   rmSync(resolve(workDir, progFile), { force: true });
   // 不写程序时结果就是「名字 → 那一段」的对象；pick 再从它里面取回一段。
-  const shortForm = await call('jq_transform', { inputs: { q: dataSrc } });
-  const explicit = await call('jq_transform', { inputs: { q: { src: dataSrc, root: '.data' } } });
-  const picked = await call('jq_transform', { inputs: { q: dataSrc }, pick: '.q' });
-  const rowsSlice = await call('jq_transform', { inputs: { q: { src: dataSrc, root: '.data.rows' } } });
+  const shortForm = await call('jq_transform', { inputs: { q: asset } });
+  const explicit = await call('jq_transform', { inputs: { q: { src: asset, root: '.data' } } });
+  const picked = await call('jq_transform', { inputs: { q: asset }, pick: '.q' });
+  const rowsSlice = await call('jq_transform', { inputs: { q: { src: asset, root: '.data.rows' } } });
   console.log(`  短写法 → ${JSON.stringify(shortForm.value.data).slice(0, 60)}`
     + ` · pick → ${JSON.stringify(picked.value.data).slice(0, 60)}`);
-  ok('不写程序：结果是「名字 → 那一段」的对象，短写法与 {src, root: ".data"} 等价',
+  ok('不写程序：结果是「名字 → 那一段」的对象，短写法与 {src: asset, root: ".data"} 等价',
     shortForm.value.ok !== false && shortForm.value.generated === true
     && Array.isArray(shortForm.value.data?.q?.rows) && shortForm.value.data.q.rows.length === rowTotal
     && JSON.stringify(shortForm.value.data) === JSON.stringify(explicit.value.data));
@@ -1546,16 +1544,16 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
   ok('零输入：结果是 {}（常量走程序文件）',
     zeroInput.value.ok !== false && JSON.stringify(zeroInput.value.data) === '{}'
     && zeroInput.value.inputs.length === 0);
-  const bothWays = await failureOf({ inputs: { q: dataSrc }, pick: '.q', byFile: prog('.') });
-  const strayBy = await failureOf({ inputs: { q: dataSrc }, by: 'peek.jq' });
-  const strayRoot = await failureOf({ inputs: { q: dataSrc }, root: '.origin' });
+  const bothWays = await failureOf({ inputs: { q: asset }, pick: '.q', byFile: prog('.') });
+  const strayBy = await failureOf({ inputs: { q: asset }, by: 'peek.jq' });
+  const strayRoot = await failureOf({ inputs: { q: asset }, root: '.origin' });
   console.log(`  取法互斥 → ${bothWays.slice(0, 90)}`);
   ok('pick 与 byFile 二选一；退场的 by 与顶层 root 各自指到现在的写法',
     /二选一/.test(bothWays) && /byFile/.test(strayBy) && /pick/.test(strayRoot));
 
   // 嵌套结构：加工结果是通用 JSON，投影只产出选中的字段
   const projected = await call('jq_transform', {
-    inputs: { q: dataSrc },
+    inputs: { q: asset },
     byFile: prog(`{n: (.q.rows | length), first: (.q.rows[0] | {${column}, ${numeric}})}`),
   });
   const keys = Object.keys(projected.value.data?.first ?? {});
@@ -1571,7 +1569,7 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
     /输入 q ← /.test(none.text) && /形状：/.test(none.text) && /没有产出值/.test(none.text));
 
   // 明确回执：语法错误带求值器自己的话；读不到的输入报出是哪一个；越界引用被拒
-  const syntax = await failureOf({ inputs: { q: dataSrc }, byFile: prog('.q.rows[] |') });
+  const syntax = await failureOf({ inputs: { q: asset }, byFile: prog('.q.rows[] |') });
   console.log(`  表达式错误 → ${syntax.split('\n')[0].slice(0, 96)}`);
   ok('探索：表达式错误带回求值器自己的报错', /jaq 表达式执行失败/.test(syntax));
   // 语法错要**自足**：报错里指出是哪份文件的哪一行（`-f` 让 jaq 自己读文件，于是不是 `<inline>`），
@@ -1580,7 +1578,7 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
   ok('语法错指出是哪份文件的哪一行（程序按文件交给求值器）',
     /\.work\/smoke_p\d+\.jq/.test(syntax) && /\d+ │/.test(syntax));
   ok('失败回执附上这次各输入交出的形状', /输入 q ← /.test(syntax) && /对象 · 字段 rows, columns/.test(syntax));
-  const shapeError = await failureOf({ inputs: { q: dataSrc }, byFile: prog('.q.rows | .foo') });
+  const shapeError = await failureOf({ inputs: { q: asset }, byFile: prog('.q.rows | .foo') });
   console.log(`  形状错 → ${shapeError.split('\n')[0].slice(0, 90)}`);
   ok('取错键时：求值器原话 + 输入形状一起给（少写一个探针程序）',
     /cannot index/.test(shapeError) && /输入 q ← /.test(shapeError) && /\.data/.test(shapeError));
@@ -1588,7 +1586,7 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
   console.log(`  读不到的输入 → ${missing.slice(0, 120)}`);
   ok('探索：读不到的输入报出是哪一个', /读不到输入 rows/.test(missing));
   const outside = await failureOf({ inputs: { rows: '../oks.json' }, byFile: prog('.') });
-  ok('探索：越界的 dataSrc 被拒', /只能指向/.test(outside));
+  ok('探索：越界的 asset 被拒', /只能指向/.test(outside));
   // 不填 by 的语义见后面的「纯读取」断言：缺程序不再是错误。
 
 
@@ -1598,11 +1596,11 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
     motivation: '业务口头给的阈值（冒烟夹具）',
     data: { warn: 1, crit: 2 },
   });
-  console.log(`  create_data → ${created.value.dataSrc} · ${created.value.shape} · ${created.value.bytes} B`);
-  const createdFile = JSON.parse(readFileSync(resolve(DEV_ROOT, created.value.dataSrc), 'utf8'));
+  console.log(`  create_data → ${created.value.asset} · ${created.value.shape} · ${created.value.bytes} B`);
+  const createdFile = JSON.parse(readFileSync(resolve(DEV_ROOT, created.value.asset), 'utf8'));
   const createdRoot = createdFile.origin.nodes[createdFile.origin.root];
   ok('create_data：落成 .oks/data/ 下的封装，节点记着"数据是给定的"与动机',
-    created.value.dataSrc.startsWith('.oks/data/') && created.value.dataSrc.endsWith('.def.json')
+    created.value.asset.startsWith('.oks/data/') && created.value.asset.endsWith('.def.json')
     && createdRoot?.kind === 'input' && createdRoot.motivation === '业务口头给的阈值（冒烟夹具）'
     && createdFile.meta.kind === 'data' && createdFile.data.warn === 1
     && createdRoot.outputs === undefined);
@@ -1626,15 +1624,14 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
   ok('create_data：名字不合法时明确报错', /名字只能是/.test(badDataName));
 
   // 给定数据当具名输入：加工链因此有两个起点（查询与给定），各自记在一处
-  const mixed = await call('jq_transform_into', {
-    name: 'with_thresholds',
-    motivation: '冒烟：查询结果与给定数据一起用',
-    inputs: { q: dataSrc, thresholds: created.value.dataSrc },
+  const mixed = await call('jq_transform', {
+    save: { name: 'with_thresholds', motivation: '冒烟：查询结果与给定数据一起用' },
+    inputs: { q: asset, thresholds: created.value.asset },
     byFile: prog('{n: (.q.rows | length), warn: .thresholds.warn}'),
   });
-  const mixedFile = JSON.parse(readFileSync(resolve(DEV_ROOT, mixed.value.dataSrc), 'utf8'));
+  const mixedFile = JSON.parse(readFileSync(resolve(DEV_ROOT, mixed.value.asset), 'utf8'));
   const mixedRoot = mixedFile.origin.nodes[mixedFile.origin.root];
-  const queryRootId = JSON.parse(readFileSync(resolve(DEV_ROOT, dataSrc), 'utf8')).origin.root;
+  const queryRootId = JSON.parse(readFileSync(resolve(DEV_ROOT, asset), 'utf8')).origin.root;
   console.log(`  给定数据参与加工 · ${Object.keys(mixedFile.origin.nodes).length} 个节点 · 输入 ${JSON.stringify(mixedRoot?.inputs)}`);
   ok('create_data：给定数据能作为具名输入参与加工（链上两个起点）',
     mixedRoot?.inputs?.thresholds === createdFile.origin.root
@@ -1653,17 +1650,16 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
     motivation: '同一句动机，两份不同的数据',
     data: { v: 2 },
   });
-  const rootOf = (src) => JSON.parse(readFileSync(resolve(DEV_ROOT, src), 'utf8')).origin.root;
-  console.log(`  同定义两份数据 → root ${rootOf(twinA.value.dataSrc)} / ${rootOf(twinB.value.dataSrc)}`);
+  const rootOf = (asset) => JSON.parse(readFileSync(resolve(DEV_ROOT, asset), 'utf8')).origin.root;
+  console.log(`  同定义两份数据 → root ${rootOf(twinA.value.asset)} / ${rootOf(twinB.value.asset)}`);
   ok('同定义、不同数据是两条记录（节点 ID 不同）',
-    rootOf(twinA.value.dataSrc) !== rootOf(twinB.value.dataSrc));
-  const twinUse = await call('jq_transform_into', {
-    name: 'twin_use',
-    motivation: '冒烟：把两份同定义的数据一起用上',
-    inputs: { a: twinA.value.dataSrc, b: twinB.value.dataSrc },
+    rootOf(twinA.value.asset) !== rootOf(twinB.value.asset));
+  const twinUse = await call('jq_transform', {
+    save: { name: 'twin_use', motivation: '冒烟：把两份同定义的数据一起用上' },
+    inputs: { a: twinA.value.asset, b: twinB.value.asset },
     byFile: prog('{sum: (.a.v + .b.v)}'),
   });
-  const twinFile = JSON.parse(readFileSync(resolve(DEV_ROOT, twinUse.value.dataSrc), 'utf8'));
+  const twinFile = JSON.parse(readFileSync(resolve(DEV_ROOT, twinUse.value.asset), 'utf8'));
   const twinRoot = twinFile.origin.nodes[twinFile.origin.root];
   console.log(`  两份一起用 · ${Object.keys(twinFile.origin.nodes).length} 个节点`);
   ok('两份同定义的给定数据在链上各占一个节点（合并不会把它们混成一个）',
@@ -1672,12 +1668,11 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
     && twinFile.data.sum === 3);
 
   // 常量也可以由 snip 生成（省略 inputs）：这时来源链里留下的是代码与动机，而不是"给定"
-  const derived = await call('jq_transform_into', {
-    name: 'thresholds_by_snip',
-    motivation: '冒烟：用 snip 算出来的常量',
+  const derived = await call('jq_transform', {
+    save: { name: 'thresholds_by_snip', motivation: '冒烟：用 snip 算出来的常量' },
     byFile: prog('{warn: 70, crit: 90}'),
   });
-  const derivedFile = JSON.parse(readFileSync(resolve(DEV_ROOT, derived.value.dataSrc), 'utf8'));
+  const derivedFile = JSON.parse(readFileSync(resolve(DEV_ROOT, derived.value.asset), 'utf8'));
   const derivedRoot = derivedFile.origin.nodes[derivedFile.origin.root];
   ok('物化：无输入的 snip 生成常量封装（记下代码与动机，没有上游）',
     derivedRoot?.kind === 'transform' && derivedRoot.snip === '{warn: 70, crit: 90}'
@@ -1686,7 +1681,7 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
 
   // 截断：按行边界截断，绝不留下半个 JSON 值；这一条在物化那边必须变成失败
   // 数据接口不截断：求值到上限 → 报错（合法 JSON）；返回体超上限 → 报错（合法 JSON）。
-  const bulk = await call('jq_transform', { inputs: { rows: dataSrc }, byFile: prog('range(1; 200000)') });
+  const bulk = await call('jq_transform', { inputs: { rows: asset }, byFile: prog('range(1; 200000)') });
   console.log(`  求值到上限 → ${bulk.text.trim().slice(0, 150)}`);
   ok('探索：求值到上限时报错而不是返回半份数据（错误本身是合法 JSON）',
     bulk.value.ok === false && bulk.value.error?.code === 'evaluation_truncated'
@@ -1701,20 +1696,18 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
     && (() => { try { JSON.parse(big.text.trim()); return true; } catch { return false; } })());
 
   // 物化：来源链由工具组装——本次操作 + 各输入的根节点，上游的 data 不进新链
-  const queryOrigin = JSON.parse(readFileSync(resolve(DEV_ROOT, dataSrc), 'utf8')).origin;
-  const snap = await call('jq_transform_into', {
-    name: 'snap',
-    motivation: '物化：取第一行',
-    inputs: { q: dataSrc },
+  const queryOrigin = JSON.parse(readFileSync(resolve(DEV_ROOT, asset), 'utf8')).origin;
+  const snap = await call('jq_transform', {
+    save: { name: 'snap', motivation: '物化：取第一行' },
+    inputs: { q: asset },
     byFile: prog('.q.rows[0]'),
   });
-  console.log(`  物化 snap → ${snap.value.dataSrc} · ${snap.value.shape} · outputs=${snap.value.outputs}`);
-  const snapFile = JSON.parse(readFileSync(resolve(DEV_ROOT, snap.value.dataSrc), 'utf8'));
+  console.log(`  物化 snap → ${snap.value.asset} · ${snap.value.bytes} B`);
+  const snapFile = JSON.parse(readFileSync(resolve(DEV_ROOT, snap.value.asset), 'utf8'));
   const snapRoot = snapFile.origin.nodes[snapFile.origin.root];
-  console.log(snap.value.chain.map((line) => `    ${line}`).join('\n'));
-  ok('物化：落点是 .oks/data/ 下的加工结果，回执给形状与输出个数',
-    snap.value.dataSrc.startsWith('.oks/data/') && snap.value.dataSrc.endsWith('.tr.json')
-    && snap.value.outputs === 1 && snap.value.shape.startsWith('对象'));
+  ok('物化：落点是 .oks/data/ 下的加工结果，回执给落点与大小',
+    snap.value.asset.startsWith('.oks/data/') && snap.value.asset.endsWith('.tr.json')
+    && typeof snap.value.bytes === 'number' && snap.value.bytes > 0);
   ok('物化：新链 = 上游节点 + 本次操作（snip 与动机都记下）',
     Object.keys(snapFile.origin.nodes).length === 2 && snapRoot?.kind === 'transform'
     && snapRoot.snip === '.q.rows[0]' && snapRoot.motivation === '物化：取第一行');
@@ -1723,17 +1716,18 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
   ok('物化：上游的 data 不进新来源链（链里只有操作）',
     Object.values(snapFile.origin.nodes).every((node) => !('data' in node))
     && JSON.stringify(snapFile.origin).includes('"intent"'));
-  ok('物化：回执里的来源链是易读视图（输入在前、本次操作在最后）',
-    snap.value.chain.some((line) => line.includes('query')) && snap.value.chain.some((line) => line.includes('本次操作')));
+  // 回执只有落点与大小：值、形状、来源链都不回模型可见面，它们留在文件里（要读就再读一次）。
+  ok('物化：回执就是落点与大小两件东西',
+    Object.keys(snap.value).sort().join(',') === 'asset,bytes'
+    && snap.text.trim() === `asset:  ${snap.value.asset} · ${(snap.value.bytes / 1024).toFixed(1)} KB`);
 
   // 多输入 + 共享祖先：raw 直接引用查询，snapshot 引用上一级加工——查询节点只该留一份
-  const both = await call('jq_transform_into', {
-    name: 'both',
-    motivation: '物化：两份输入一起用',
-    inputs: { raw: dataSrc, snapshot: snap.value.dataSrc },
+  const both = await call('jq_transform', {
+    save: { name: 'both', motivation: '物化：两份输入一起用' },
+    inputs: { raw: asset, snapshot: snap.value.asset },
     byFile: prog(`{rows: (.raw.rows | length), value: .snapshot.${column}}`),
   });
-  const bothFile = JSON.parse(readFileSync(resolve(DEV_ROOT, both.value.dataSrc), 'utf8'));
+  const bothFile = JSON.parse(readFileSync(resolve(DEV_ROOT, both.value.asset), 'utf8'));
   const bothRoot = bothFile.origin.nodes[bothFile.origin.root];
   console.log(`  物化 both · ${Object.keys(bothFile.origin.nodes).length} 个节点 · 输入 ${JSON.stringify(bothRoot?.inputs)}`);
   ok('物化：多输入按名字各自指向自己的来源',
@@ -1742,13 +1736,12 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
     Object.keys(bothFile.origin.nodes).length === 3);
 
   // 第三级：链继续长，后面的文件仍带着最前面的 Intent
-  const again = await call('jq_transform_into', {
-    name: 'again',
-    motivation: '物化：再加工一级',
-    inputs: { prev: both.value.dataSrc },
+  const again = await call('jq_transform', {
+    save: { name: 'again', motivation: '物化：再加工一级' },
+    inputs: { prev: both.value.asset },
     byFile: prog('.prev.rows'),
   });
-  const againFile = JSON.parse(readFileSync(resolve(DEV_ROOT, again.value.dataSrc), 'utf8'));
+  const againFile = JSON.parse(readFileSync(resolve(DEV_ROOT, again.value.asset), 'utf8'));
   console.log(`  物化 again · ${Object.keys(againFile.origin.nodes).length} 个节点 · data=${JSON.stringify(againFile.data)}`);
   ok('物化：三级加工后链仍是 4 个节点，根是最新一级',
     Object.keys(againFile.origin.nodes).length === 4
@@ -1760,7 +1753,8 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
   // 明确回执：名字不合法、缺 name、截断的结果不物化
   const badName = await (async () => {
     try {
-      await call('jq_transform_into', { name: '告警-分布', inputs: { q: dataSrc }, byFile: prog('.q.rows[0]') });
+      await call('jq_transform', {
+      save: { name: '告警-分布', motivation: '冒烟：名字不合法的那一种' }, inputs: { q: asset }, byFile: prog('.q.rows[0]') });
       return '';
     } catch (cause) {
       return String(cause?.message ?? cause);
@@ -1770,7 +1764,8 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
   ok('物化：名字不合法时明确报错', /名字只能是/.test(badName));
   const noName = await (async () => {
     try {
-      await call('jq_transform_into', { inputs: { q: dataSrc }, byFile: prog('.q.rows[0]') });
+      await call('jq_transform', {
+      save: { motivation: '冒烟：缺 name 的那一种' }, inputs: { q: asset }, byFile: prog('.q.rows[0]') });
       return '';
     } catch (cause) {
       return String(cause?.message ?? cause);
@@ -1779,7 +1774,8 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
   ok('物化：缺 name 明确报错', /需要 name/.test(noName));
   const truncatedInto = await (async () => {
     try {
-      await call('jq_transform_into', { name: 'bulk', inputs: { rows: dataSrc }, byFile: prog('range(1; 200000)') });
+      await call('jq_transform', {
+      save: { name: 'bulk', motivation: '冒烟：一次产出很多值' }, inputs: { rows: asset }, byFile: prog('range(1; 200000)') });
       return '';
     } catch (cause) {
       return String(cause?.message ?? cause);
@@ -1789,13 +1785,13 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
   ok('物化：截断的结果是残缺的，明确失败而不落盘', /不完整，没有物化/.test(truncatedInto));
 
   // 祖先文件删掉之后，最后一份封装仍然读得出完整来源链（操作与关系都在文件里）
-  rmSync(resolve(DEV_ROOT, dataSrc), { force: true });
-  rmSync(resolve(DEV_ROOT, snap.value.dataSrc), { force: true });
-  rmSync(resolve(DEV_ROOT, both.value.dataSrc), { force: true });
-  rmSync(resolve(DEV_ROOT, mixed.value.dataSrc), { force: true });
-  rmSync(resolve(DEV_ROOT, derived.value.dataSrc), { force: true });
-  for (const made of [twinA, twinB, twinUse]) rmSync(resolve(DEV_ROOT, made.value.dataSrc), { force: true });
-  const orphan = readEnvelope(DEV_ROOT, again.value.dataSrc);
+  rmSync(resolve(DEV_ROOT, asset), { force: true });
+  rmSync(resolve(DEV_ROOT, snap.value.asset), { force: true });
+  rmSync(resolve(DEV_ROOT, both.value.asset), { force: true });
+  rmSync(resolve(DEV_ROOT, mixed.value.asset), { force: true });
+  rmSync(resolve(DEV_ROOT, derived.value.asset), { force: true });
+  for (const made of [twinA, twinB, twinUse]) rmSync(resolve(DEV_ROOT, made.value.asset), { force: true });
+  const orphan = readEnvelope(DEV_ROOT, again.value.asset);
   const orphanView = chainLines(orphan.origin);
   console.log(orphanView.map((line) => `    ${line}`).join('\n'));
   ok('祖先被删后仍读出完整来源链（4 次操作，含最初的 Intent 与三级 snip）',
@@ -1803,7 +1799,7 @@ console.log('=== jq_transform / jq_transform_into（具名输入 + 自动来源�
     && orphanView.filter((line) => /^\[/.test(line)).length === 4
     && orphanView.some((line) => line.startsWith('[') && line.includes('query'))
     && orphanView.some((line) => line.includes('.prev.rows')));
-  rmSync(resolve(DEV_ROOT, again.value.dataSrc), { force: true });
+  rmSync(resolve(DEV_ROOT, again.value.asset), { force: true });
 }
 
 // ── 行数由 Intent 的 limit 决定：服务限行，插件完整保存（不再另有 queryMaxRows 截断）──
@@ -1819,19 +1815,19 @@ if (dimension === null) {
     },
   };
   const exec = { signal: new AbortController().signal, ...sessionFor(DEV_ROOT) };
-  const checked = await tools.get('oks_check_intent').execute({ intents: named }, exec);
+  const checked = await tools.get('oks_check_query_intent').execute({ intents: named }, exec);
   const key = (checked.results ?? [])[0]?.key ?? null;
   const args = { intents: { rows: { intent: named.rows, key } } };
-  const tool = tools.get('oks_query');
+  const tool = tools.get('oks_exec_query_intent');
   const value = await tool.execute(args, exec);
   const text = tool.output.render(args, value).map((block) => block.text ?? '').join('');
   const first = value.results?.[0] ?? null;
-  console.log(text.split('\n').filter((line) => /status:|dataSrc:/.test(line)).map((l) => `  ${l}`).join('\n'));
+  console.log(text.split('\n').filter((line) => /status:|asset:/.test(line)).map((l) => `  ${l}`).join('\n'));
   if (first === null || first.status !== 'saved') throw new Error(`多行查询失败：${first?.status ?? '(无结果)'} ${first?.error ?? ''}`);
   console.log(`  limit=2 → 落盘 ${first.rowCount} 行`);
   if (first.rowCount > 2) throw new Error('limit 应当在服务侧限行');
   if (first.truncated) throw new Error('服务已按 limit 限行时，插件不该再报「还有更多」');
-  const savedFile = JSON.parse(readFileSync(resolve(DEV_ROOT, first.dataSrc), 'utf8'));
+  const savedFile = JSON.parse(readFileSync(resolve(DEV_ROOT, first.asset), 'utf8'));
   if (savedFile.data.rows.length !== first.rowCount) throw new Error('结果文件应当完整保存这次 Intent 的结果');
   if (savedFile.data.rows.length !== 2) throw new Error('limit=2 的结果文件里应当只有两行');
 }
@@ -1898,12 +1894,12 @@ console.log('=== 产物自述 ===');
   console.log(`  自述：${back?.title} · at=${back?.at}`);
 }
 
-console.log('=== oks_chart（服务端出图）===');
+console.log('=== oks_render_figure：出图 ===');
 {
-  // 图表只认封装引用：自填的行先经 create_data 变成一份封装（.def.json），再当 src 用。
+  // 出图只认封装引用：自填的行先经 create_data 变成一份封装（.def.json），再用它的 asset 当 src。
   // 这个 helper 只活在冒烟里——工具面上没有"内联 data"这条路。
   const chart = async (args) => {
-    if (args.data === undefined) return call('oks_chart', args);
+    if (args.data === undefined) return call('oks_render_figure', args);
     const made = await call('create_data', {
       name: typeof args.name === 'string' ? `${args.name}_data` : 'smoke_chart_rows',
       motivation: '冒烟夹具：把自填的行变成一份封装，图才能引用它',
@@ -1911,13 +1907,13 @@ console.log('=== oks_chart（服务端出图）===');
     });
     const { data: inlineRows, ...rest } = args;
     void inlineRows;
-    return call('oks_chart', { ...rest, src: made.value.dataSrc });
+    return call('oks_render_figure', { ...rest, src: made.value.asset });
   };
-  // 自填数据：先 create_data 落成一份封装（.def.json），图再用 src 引用它——
+  // 自填数据：先 create_data 落成一份封装（.def.json），图再用 asset 引用它——
   // 工具面上没有内联 data 这条路；图里也不再画"来源标识"——标签说不清，改由来源链自己说。
   const inlineRejected = await (async () => {
     try {
-      await call('oks_chart', {
+      await call('oks_render_figure', {
         spec: { kind: 'bar', x: 'label', value: 'value' },
         data: [{ label: 'A', value: 3 }],
       });
@@ -1936,14 +1932,14 @@ console.log('=== oks_chart（服务端出图）===');
   console.log(inline.text.split('\n').filter(Boolean).map((line) => `  ${line}`).join('\n').slice(0, 520));
   if (inline.value.ok !== true) throw new Error('自填数据（先落成封装）应当能画出图');
   if (inline.value.rowCount !== 2) throw new Error('图应当报告画了多少行');
-  const inlineRaw = readFileSync(resolve(DEV_ROOT, inline.value.svgSrc), 'utf8');
+  const inlineRaw = readFileSync(resolve(DEV_ROOT, inline.value.asset), 'utf8');
   if (/自主填写|基于查询结果/.test(inline.text) || /自主填写|基于查询结果/.test(inlineRaw)) {
     throw new Error('来源标签已经取消：图与回执里都不该再出现它');
   }
   if (inline.value.title !== '方案对比') throw new Error('回执里的标题应当是 agent 给的那个');
   // 图真的落成了 SVG
-  const inlineSvg = readFileSync(resolve(DEV_ROOT, inline.value.svgSrc), 'utf8');
-  console.log(`  落盘 ${inline.value.svgSrc}（${inlineSvg.length} 字符）: ${inlineSvg.startsWith('<svg') ? '✓' : '✗'}`);
+  const inlineSvg = readFileSync(resolve(DEV_ROOT, inline.value.asset), 'utf8');
+  console.log(`  落盘 ${inline.value.asset}（${inlineSvg.length} 字符）: ${inlineSvg.startsWith('<svg') ? '✓' : '✗'}`);
   if (!inlineSvg.startsWith('<svg')) throw new Error('产物应当是 SVG');
   // 自述就写在文件最前面：标题、类别、时间、来源都在里面，读开头一段就够。
   const inlineMeta = readArtifactMeta(inlineSvg);
@@ -1951,13 +1947,13 @@ console.log('=== oks_chart（服务端出图）===');
   if (inlineMeta.title !== '方案对比' || inlineMeta.kind !== 'chart') {
     throw new Error(`自述里的 title / kind / source 不对：${JSON.stringify(inlineMeta)}`);
   }
-  if (inlineMeta.at !== inline.value.at || !inline.value.svgSrc.includes(inlineMeta.at)) {
+  if (inlineMeta.at !== inline.value.at || !inline.value.asset.includes(inlineMeta.at)) {
     throw new Error('自述里的 at 应当与回执、文件名里的时间一致');
   }
   if (inlineSvg.indexOf('dsh-oks-artifact') > 400) throw new Error('自述应当写在文件最前面');
   // 名字自证内容：`sha256sum` 出来的前 8 位就是名字里那一段，回执的 at 就是名字里那段时间。
   {
-    const fileName = String(inline.value.svgSrc).split('/').pop();
+    const fileName = String(inline.value.asset).split('/').pop();
     const digest = createHash('sha256').update(inlineSvg).digest('hex').slice(0, 8);
     if (!fileName.includes(`-${digest}.bar.svg`)) {
       throw new Error(`文件名里的哈希应当等于内容的 sha256 前 8 位：${fileName} vs ${digest}`);
@@ -1977,11 +1973,11 @@ console.log('=== oks_chart（服务端出图）===');
   }
   if (inline.value.title !== '方案对比') throw new Error('回执应当带上标题');
   // 回执给出的 markdown 指向同一个文件
-  const expectedMarkdown = `![方案对比](${inline.value.svgSrc})`;
-  if (inline.value.markdown !== expectedMarkdown) {
-    throw new Error(`回执应当给出指向该 SVG 的 markdown，收到 ${JSON.stringify(inline.value.markdown)}`);
+  const expectedMarkdown = `![方案对比](${inline.value.asset})`;
+  if (inline.value.embedded !== expectedMarkdown) {
+    throw new Error(`回执应当给出指向该 SVG 的 markdown，收到 ${JSON.stringify(inline.value.embedded)}`);
   }
-  console.log(`  回执给出的 markdown: ${inline.value.markdown}`);
+  console.log(`  回执给出的 embedded: ${inline.value.embedded}`);
 
   // 同一份产物写两次：名字里有内容哈希，所以"撞名"只可能是同一份内容。
   // 同一秒里是去重（指同一个文件），跨秒就是两个文件——两条路都不该出现"-2"这种序号补丁。
@@ -1992,7 +1988,7 @@ console.log('=== oks_chart（服务端出图）===');
     const first = await chart({ spec, data, name: 'probe_dup' });
     const second = await chart({ spec, data, name: 'probe_dup' });
     const added = readdirSync(resolve(DEV_ROOT, '.oks', 'figures')).filter((name) => !before.has(name));
-    const same = first.value.svgSrc === second.value.svgSrc;
+    const same = first.value.asset === second.value.asset;
     console.log(`  同一份产物写两次：${same ? '同一秒 → 去重' : '跨了秒 → 各存一份'}（新增 ${added.length} 个）`);
     if (same ? added.length !== 1 : added.length !== 2) {
       throw new Error(`去重与否都只该按内容算，新增文件数 ${added.length}`);
@@ -2005,24 +2001,27 @@ console.log('=== oks_chart（服务端出图）===');
     }
   }
 
-  // src 路径：引用一份查询结果封装，回执给出它的来源链。
-  const answer = await call('oks_query', { intents: await withKeys(countNamed) });
+  // asset 路径：引用一份查询结果封装，回执给出它的来源链。
+  const answer = await call('oks_exec_query_intent', { intents: await withKeys(countNamed) });
   const saved = (answer.value.results ?? [])[0] ?? null;
   const firstColumn = saved.columns[0]?.name;
   const numeric = saved.columns.find((entry) => entry.types.includes('number'))?.name ?? firstColumn;
   const fromSrc = await chart({
     spec: { kind: 'bar', x: firstColumn, value: numeric, title: '来自查询' },
-    src: saved.dataSrc,
+    src: saved.asset,
     note: '来源是查询结果文件',
   });
   if (fromSrc.value.ok !== true) throw new Error('引用查询结果的图应当画得出来');
-  if (fromSrc.value.src !== saved.dataSrc) throw new Error('src 路径应当回带 dataSrc');
+  if (typeof fromSrc.value.asset !== 'string' || !fromSrc.value.asset.endsWith('.svg')
+    || fromSrc.value.asset === saved.asset) {
+    throw new Error('回执的 asset 应当是落盘的 SVG（不是输入那份数据）');
+  }
   if (!Array.isArray(fromSrc.value.chain) || !fromSrc.value.chain.some((line) => line.includes('query'))) {
     throw new Error('回执应当给出这份图的来源链（易读视图）');
   }
-  const fromSrcSvg = readFileSync(resolve(DEV_ROOT, fromSrc.value.svgSrc), 'utf8');
-  if (!fromSrcSvg.startsWith('<svg')) throw new Error('src 路径也应当落一份 SVG');
-  console.log(`  src 路径：${fromSrc.value.rowCount} 行 → ${fromSrc.value.svgSrc} · 来源链 ${fromSrc.value.chain.length} 行`);
+  const fromSrcSvg = readFileSync(resolve(DEV_ROOT, fromSrc.value.asset), 'utf8');
+  if (!fromSrcSvg.startsWith('<svg')) throw new Error('asset 路径也应当落一份 SVG');
+  console.log(`  asset 路径：${fromSrc.value.rowCount} 行 → ${fromSrc.value.asset} · 来源链 ${fromSrc.value.chain.length} 行`);
   // 图自带绘图材料：画出来的行、绘图规格与完整来源链都写在 SVG 里——
   // 工作区是可回收的，图要能自己说清这些数字从哪来。
   const carried = readChartInput(fromSrcSvg);
@@ -2031,20 +2030,20 @@ console.log('=== oks_chart（服务端出图）===');
     && carried.data.spec?.kind === 'bar' && carried.origin.root !== undefined
     && carried.origin.nodes[carried.origin.root]?.kind === 'query');
 
-  // 给定数据当 src：来源标签由来源链推导，数据文件被回收后图仍旧说得清
+  // 给定数据当 asset：来源标签由来源链推导，数据文件被回收后图仍旧说得清
   const given = await call('create_data', {
     name: 'chart_given',
     motivation: '冒烟夹具：一小组自填的行',
     data: [{ label: 'A', value: 1 }, { label: 'B', value: 2 }],
   });
-  const givenChart = await call('oks_chart', {
+  const givenChart = await call('oks_render_figure', {
     spec: { kind: 'bar', title: '自填数据', x: 'label', value: 'value' },
-    src: given.value.dataSrc,
+    src: given.value.asset,
   });
-  rmSync(resolve(DEV_ROOT, given.value.dataSrc), { force: true });
-  const givenSvg = readFileSync(resolve(DEV_ROOT, givenChart.value.svgSrc), 'utf8');
+  rmSync(resolve(DEV_ROOT, given.value.asset), { force: true });
+  const givenSvg = readFileSync(resolve(DEV_ROOT, givenChart.value.asset), 'utf8');
   const givenCarried = readChartInput(givenSvg);
-  ok('create_data 的封装能直接当图的 src', givenChart.value.ok === true && givenChart.value.rowCount === 2);
+  ok('create_data 的封装能直接当图的 asset', givenChart.value.ok === true && givenChart.value.rowCount === 2);
   ok('数据文件被回收后，图仍带着那些行与自己的来源链',
     givenCarried?.data?.rows?.[0]?.label === 'A' && givenCarried?.data?.rows?.length === 2
     && givenCarried?.origin?.nodes?.[givenCarried.origin.root]?.kind === 'input'
@@ -2070,7 +2069,7 @@ console.log('=== oks_chart（服务端出图）===');
     data: [{ label: '正', value: 5 }, { label: '负', value: -3 }],
     name: 'probe_signed',
   });
-  const signedSvg = readFileSync(resolve(DEV_ROOT, signed.value.svgSrc), 'utf8');
+  const signedSvg = readFileSync(resolve(DEV_ROOT, signed.value.asset), 'utf8');
   console.log(`  正负对照：${signedSvg.includes('#c0567a') ? '负值用区分色 ✓' : '✗ 没有区分色'}`);
   if (!signedSvg.includes('#c0567a')) throw new Error('负值应当用区分色绘制');
 
@@ -2088,8 +2087,8 @@ console.log('=== oks_chart（服务端出图）===');
     ],
     name: 'probe_column',
   });
-  const columnSvg = readFileSync(resolve(DEV_ROOT, column.value.svgSrc), 'utf8');
-  console.log(`  分组柱：${column.value.rowCount} 行 → ${column.value.svgSrc} · ${(columnSvg.match(/<path/g) ?? []).length} 个 <path>`);
+  const columnSvg = readFileSync(resolve(DEV_ROOT, column.value.asset), 'utf8');
+  console.log(`  分组柱：${column.value.rowCount} 行 → ${column.value.asset} · ${(columnSvg.match(/<path/g) ?? []).length} 个 <path>`);
   if (!columnSvg.startsWith('<svg')) throw new Error('分组柱应当落一份 SVG');
   if (!columnSvg.includes('<path')) throw new Error('分组柱的 SVG 里应当有图形');
 
@@ -2105,7 +2104,7 @@ console.log('=== oks_chart（服务端出图）===');
     ],
     name: 'probe_pie',
   });
-  const pieSvg = readFileSync(resolve(DEV_ROOT, pie.value.svgSrc), 'utf8');
+  const pieSvg = readFileSync(resolve(DEV_ROOT, pie.value.asset), 'utf8');
   console.log(`  饼图：${pie.value.rowCount} 行 → ${(pieSvg.match(/<path/g) ?? []).length} 个 <path>`);
   if (!pieSvg.startsWith('<svg') || !pieSvg.includes('<path')) throw new Error('饼图应当落一份有图形的 SVG');
   // 没有正数时也不该报错：出一张只有说明的图。
@@ -2122,7 +2121,7 @@ console.log('=== oks_chart（服务端出图）===');
     data: [{ day: 0, count: 15 }, { day: 1, count: 25 }, { day: 2, count: 18 }],
     name: 'probe_area',
   });
-  const areaSvg = readFileSync(resolve(DEV_ROOT, area.value.svgSrc), 'utf8');
+  const areaSvg = readFileSync(resolve(DEV_ROOT, area.value.asset), 'utf8');
   console.log(`  面积图：${area.value.rowCount} 行 → ${(areaSvg.match(/<path/g) ?? []).length} 个 <path>`);
   if (!areaSvg.startsWith('<svg') || !areaSvg.includes('<path')) throw new Error('面积图应当落一份有图形的 SVG');
 
@@ -2132,7 +2131,7 @@ console.log('=== oks_chart（服务端出图）===');
     data: [{ label: '甲', value: 3 }, { label: '乙', value: 5 }],
     name: 'probe_layout',
   });
-  const tunedSvg = readFileSync(resolve(DEV_ROOT, tuned.value.svgSrc), 'utf8');
+  const tunedSvg = readFileSync(resolve(DEV_ROOT, tuned.value.asset), 'utf8');
   console.log(`  排版覆盖：labelFont/height/slantTicks 生效 → ${(tunedSvg.match(/<path/g) ?? []).length} 个 path`);
   if (!tunedSvg.includes('<path')) throw new Error('覆盖排版后仍应出图');
   // 这张图没有标题：自述里那一行**永不为空**，工具按"维度 × 度量"造一个（只进自述，不改绘制）。
@@ -2148,7 +2147,7 @@ console.log('=== oks_chart（服务端出图）===');
 
   // 报告：markdown 正文（章节 + 叙述 + 引用的图）→ 自足的 HTML（图内联、无外链、无脚本）。
   // 图只有一种来源：工作区里**已经画好**的 SVG（上面那张 tuned 就是现成的）。
-  const report = await call('oks_report', {
+  const report = await call('oks_render_report', {
     spec: {
       title: '周报（冒烟）',
       subtitle: '2026-09-09 ~ 10-08',
@@ -2160,7 +2159,7 @@ console.log('=== oks_chart（服务端出图）===');
         '- 严重 15 条',
         '- 提示 36 条',
         '',
-        `![各级别条数](${tuned.value.svgSrc})`,
+        `![各级别条数](${tuned.value.asset})`,
         '',
         '## 二、口径说明',
         '',
@@ -2191,10 +2190,10 @@ console.log('=== oks_chart（服务端出图）===');
     },
     name: 'probe_report',
   });
-  ok('oks_report 回执带 NumWithoutSource 与 LitNotOnSpan 两个数',
+  ok('oks_render_report 回执带 NumWithoutSource 与 LitNotOnSpan 两个数',
     typeof report.value.NumWithoutSource === 'number' && typeof report.value.LitNotOnSpan === 'number');
-  const reportHtml = readFileSync(resolve(DEV_ROOT, report.value.htmlSrc), 'utf8');
-  console.log(`  报告：${report.value.figureCount} 张引用的图 → ${report.value.htmlSrc}`);
+  const reportHtml = readFileSync(resolve(DEV_ROOT, report.value.asset), 'utf8');
+  console.log(`  报告：${report.value.figureCount} 张引用的图 → ${report.value.asset}`);
   if (report.value.figureCount !== 1) throw new Error(`这份报告引用了一张图，收到 ${report.value.figureCount}`);
   if (!reportHtml.includes('<figcaption><span class="item-no">图 1</span>各级别条数</figcaption>')) {
     throw new Error('引用的图应当按出现顺序拿到编号与图注');
@@ -2208,7 +2207,7 @@ console.log('=== oks_chart（服务端出图）===');
   if (reportMeta.source !== undefined) throw new Error('自述里不该有来源这一项（它已经取消）');
   if (reportHtml.indexOf('dsh-oks-artifact') > 400) throw new Error('自述应当写在文件最前面');
   if (/<script(?![^>]*type="application\/json")/.test(reportHtml)) throw new Error('报告里不应有可执行脚本');
-  if (/src="http/.test(reportHtml)) throw new Error('报告应当是自足的，不该有外链');
+  if (/asset="http/.test(reportHtml)) throw new Error('报告应当是自足的，不该有外链');
   // 图是内联的，所以可以直接在 HTML 里核对内容；也顺带确认清理没有漏掉脚本。
   if (/来源：agent 自主填写|来源：基于查询结果/.test(reportHtml)) throw new Error('图内来源脚注已经取消');
   if (/<svg[^>]*\son[a-z]+=/i.test(reportHtml)) throw new Error('内联 SVG 上不应留下事件属性');
@@ -2226,7 +2225,7 @@ console.log('=== oks_chart（服务端出图）===');
       data: stackRows,
       name: 'probe_stack_' + stack,
     });
-    const svg = readFileSync(resolve(DEV_ROOT, stacked.value.svgSrc), 'utf8');
+    const svg = readFileSync(resolve(DEV_ROOT, stacked.value.asset), 'utf8');
     console.log(`  堆叠（${label}）：${(svg.match(/<path/g) ?? []).length} 个 path`);
     if (!svg.includes('<path')) throw new Error(`堆叠（${label}）应当出图`);
   }
@@ -2241,7 +2240,7 @@ console.log('=== oks_chart（服务端出图）===');
     ],
     name: 'probe_scatter',
   });
-  const scatterSvg = readFileSync(resolve(DEV_ROOT, scatter.value.svgSrc), 'utf8');
+  const scatterSvg = readFileSync(resolve(DEV_ROOT, scatter.value.asset), 'utf8');
   console.log(`  散点（带点大小）：${(scatterSvg.match(/<path/g) ?? []).length} 个 path`);
   if (!scatterSvg.includes('<path')) throw new Error('散点应当出图');
 
@@ -2255,11 +2254,28 @@ console.log('=== oks_chart（服务端出图）===');
     data: comboRows,
     name: 'probe_combo',
   });
-  const comboSvg = readFileSync(resolve(DEV_ROOT, combo.value.svgSrc), 'utf8');
+  const comboSvg = readFileSync(resolve(DEV_ROOT, combo.value.asset), 'utf8');
   // 两个轴的名字都要在：右侧轴是第二维度的落地标志。
   if (!comboSvg.includes('CPU 使用率')) throw new Error('组合图应当有左轴说明');
   if (!comboSvg.includes('端口数（个）')) throw new Error('组合图应当有右侧数值轴');
   console.log('  组合图：两个数值轴都在（' + (comboSvg.match(/<path/g) ?? []).length + ' 个 path）');
+  // 可选字段不给时，回执里**不能出现 undefined**：那会让宿主把整份结果判成"不是无损 JSON"，
+  // 模型拿到一条 invalid output 而不是图，而图其实已经落盘了（真机上出现过三次）。
+  // 两个度量位各走一条：第二轴、参考线。
+  const bareOptional = await chart({
+    spec: {
+      kind: 'line', title: '只给必填项的第二轴与参考线', x: 'm', value: 'cpu',
+      second: { value: 'ports' }, marks: [{ value: 90 }],
+    },
+    data: comboRows,
+    name: 'probe_optional_bare',
+  });
+  ok('第二轴与参考线只给必填项：回执是无损 JSON，可选键不出现',
+    bareOptional.value.ok === true
+    && bareOptional.value.spec.second.value === 'ports'
+    && !('label' in bareOptional.value.spec.second) && !('unit' in bareOptional.value.spec.second)
+    && bareOptional.value.spec.marks[0].value === 90 && !('label' in bareOptional.value.spec.marks[0])
+    && readFileSync(resolve(DEV_ROOT, bareOptional.value.asset), 'utf8').includes('ports'));
 
   // 阈值线：值超出数据范围时，轴要撑开把它容纳进去（否则 echarts 直接不画）。
   const threshold = await chart({
@@ -2267,7 +2283,7 @@ console.log('=== oks_chart（服务端出图）===');
     data: comboRows,
     name: 'probe_marks',
   });
-  const marksSvg = readFileSync(resolve(DEV_ROOT, threshold.value.svgSrc), 'utf8');
+  const marksSvg = readFileSync(resolve(DEV_ROOT, threshold.value.asset), 'utf8');
   if (!marksSvg.includes('stroke-dasharray')) throw new Error('阈值线应当是虚线');
   if (!marksSvg.includes('基线 40%') || !marksSvg.includes('上限 55%')) {
     throw new Error('两条阈值线都应当画出来（超出数据范围的那条靠撑开的轴容纳）');
@@ -2291,7 +2307,7 @@ console.log('=== oks_chart（服务端出图）===');
     data: comboRows,
     name: 'probe_bar_second',
   });
-  const barSvg = readFileSync(resolve(DEV_ROOT, barSecond.value.svgSrc), 'utf8');
+  const barSvg = readFileSync(resolve(DEV_ROOT, barSecond.value.asset), 'utf8');
   if (!barSvg.includes('端口数（个）')) throw new Error('横条图上的第二个度量应当有自己的轴');
   if (!barSvg.includes('阈值 50%') || !barSvg.includes('重点')) throw new Error('横条图上的两条参考线标签都该在');
   const barDashed = [...barSvg.matchAll(/<path d="M([\d.]+) ([\d.]+)L([\d.]+) ([\d.]+)"[^>]*stroke-dasharray/g)]
@@ -2351,7 +2367,7 @@ console.log('=== oks_chart（服务端出图）===');
     data: pctRows,
     name: 'probe_percent_headroom',
   });
-  const pctSvg = readFileSync(resolve(DEV_ROOT, pct.value.svgSrc), 'utf8');
+  const pctSvg = readFileSync(resolve(DEV_ROOT, pct.value.asset), 'utf8');
   const pctTicks = [...pctSvg.matchAll(/<text[^>]*>([^<]{1,10})<\/text>/g)].map((m) => m[1].trim()).filter((t) => /%$/.test(t));
   if (!pctTicks.includes('100%')) throw new Error('百分比堆叠的刻度应当到 100%');
   if (pctTicks.some((t) => t !== '100%' && Number.parseInt(t, 10) > 100)) {
@@ -2378,7 +2394,7 @@ console.log('=== oks_chart（服务端出图）===');
     data: timePctRows,
     name: 'probe_time_percent',
   });
-  const timePctSvg = readFileSync(resolve(DEV_ROOT, timePct.value.svgSrc), 'utf8');
+  const timePctSvg = readFileSync(resolve(DEV_ROOT, timePct.value.asset), 'utf8');
   // 总和线 = 最后一条系列的描边；归一化生效时它应当是一条平线（y 的极差极小）。
   const sumTags = [...timePctSvg.matchAll(/<path[^>]*>/g)].map((m) => m[0])
     .filter((t) => t.includes('stroke-width="2"') && /stroke="(#[0-9a-fA-F]{6})"/.test(t) && /d="M[0-9.]+ /.test(t) && !/d="M0 /.test(t));
@@ -2399,7 +2415,7 @@ console.log('=== oks_chart（服务端出图）===');
     data: manyRows,
     name: 'probe_hist',
   });
-  const histSvg = readFileSync(resolve(DEV_ROOT, hist.value.svgSrc), 'utf8');
+  const histSvg = readFileSync(resolve(DEV_ROOT, hist.value.asset), 'utf8');
   const histLabels = [...histSvg.matchAll(/<text[^>]*>([^<]{1,20})<\/text>/g)].map((m) => m[1].trim());
   if (!histSvg.includes('设备数')) throw new Error('直方图的数值轴该有名字');
   if (!histLabels.some((t) => t.includes('–'))) throw new Error('直方图的横轴该是分箱区间');
@@ -2416,7 +2432,7 @@ console.log('=== oks_chart（服务端出图）===');
     data: boxRows,
     name: 'probe_box',
   });
-  const boxSvg = readFileSync(resolve(DEV_ROOT, box.value.svgSrc), 'utf8');
+  const boxSvg = readFileSync(resolve(DEV_ROOT, box.value.asset), 'utf8');
   if (!boxSvg.includes('响应时间')) throw new Error('箱线图的数值轴该有名字');
   if (!boxSvg.includes('甲') || !boxSvg.includes('乙')) throw new Error('箱线图每个类别一个箱');
   console.log('  箱线图：两个类别都在');
@@ -2430,7 +2446,7 @@ console.log('=== oks_chart（服务端出图）===');
   ];
   const heatSpec = { kind: 'heatmap', title: '等级 × 星期', x: 'day', value: 'n', series: 'level' };
   const heat = await chart({ spec: heatSpec, data: heatRows, name: 'probe_heatmap' });
-  const heatSvg = readFileSync(resolve(DEV_ROOT, heat.value.svgSrc), 'utf8');
+  const heatSvg = readFileSync(resolve(DEV_ROOT, heat.value.asset), 'utf8');
   if (!heatSvg.startsWith('<svg') || !heatSvg.includes('<path')) throw new Error('矩阵应当落一份有图形的 SVG');
   const heatBuilt = buildOption(heatRows, {
     kind: 'heatmap', title: null, sourceLabel: 'agent 自主填写', x: 'day', value: 'n', series: 'level',
@@ -2461,7 +2477,7 @@ console.log('=== oks_chart（服务端出图）===');
     ],
     name: 'probe_heatmap_light',
   });
-  const wideSvg = readFileSync(resolve(DEV_ROOT, wide.value.svgSrc), 'utf8');
+  const wideSvg = readFileSync(resolve(DEV_ROOT, wide.value.asset), 'utf8');
   const fills = [...wideSvg.matchAll(/fill="rgb\((\d+),(\d+),(\d+)\)"/g)]
     .map((match) => [Number(match[1]), Number(match[2]), Number(match[3])]);
   const lightest = fills.reduce((best, fill) => (Math.min(...fill) > Math.min(...best) ? fill : best), [0, 0, 0]);
@@ -2480,7 +2496,7 @@ console.log('=== oks_chart（服务端出图）===');
   ];
   const radarSpec = { kind: 'radar', title: '两台设备', x: 'metric', value: 'v', series: 'device' };
   const radar = await chart({ spec: radarSpec, data: radarRows, name: 'probe_radar' });
-  const radarSvg = readFileSync(resolve(DEV_ROOT, radar.value.svgSrc), 'utf8');
+  const radarSvg = readFileSync(resolve(DEV_ROOT, radar.value.asset), 'utf8');
   if (!radarSvg.includes('核心') || !radarSvg.includes('汇聚')) throw new Error('雷达上的每个对象都该出现（图例）');
   const radarBuilt = buildOption(radarRows, {
     kind: 'radar', title: null, sourceLabel: 'agent 自主填写', x: 'metric', value: 'v', series: 'device',
@@ -2499,7 +2515,7 @@ console.log('=== oks_chart（服务端出图）===');
     data: comboRows,
     name: 'probe_unit_once',
   });
-  const dupSvg = readFileSync(resolve(DEV_ROOT, dupUnit.value.svgSrc), 'utf8');
+  const dupSvg = readFileSync(resolve(DEV_ROOT, dupUnit.value.asset), 'utf8');
   if (!dupSvg.includes('CPU 使用率 (%)')) throw new Error('轴名应当保留 valueLabel');
   if (dupSvg.includes('(%)（%）') || dupSvg.includes('(%)(%)')) {
     throw new Error('valueLabel 里已带单位时不该再拼一次');
@@ -2510,7 +2526,7 @@ console.log('=== oks_chart（服务端出图）===');
     data: comboRows,
     name: 'probe_unit_second',
   });
-  const secondSvg = readFileSync(resolve(DEV_ROOT, secondUnit.value.svgSrc), 'utf8');
+  const secondSvg = readFileSync(resolve(DEV_ROOT, secondUnit.value.asset), 'utf8');
   if (secondSvg.includes('(个)（个）') || secondSvg.includes('(个)(个)')) {
     throw new Error('第二个度量的轴名也不该重复单位');
   }
@@ -2522,7 +2538,7 @@ console.log('=== oks_chart（服务端出图）===');
     data: comboRows,
     name: 'probe_marks_x',
   });
-  const vertSvg = readFileSync(resolve(DEV_ROOT, vertical.value.svgSrc), 'utf8');
+  const vertSvg = readFileSync(resolve(DEV_ROOT, vertical.value.asset), 'utf8');
   if (!vertSvg.includes('变更窗口')) throw new Error('纵向参考线的标签应当画出来');
   console.log('  纵向参考线：标签在');
 
@@ -2532,7 +2548,7 @@ console.log('=== oks_chart（服务端出图）===');
     data: [{ site: '甲', n: 1 }, { site: '乙', n: 9 }, { site: '丙', n: 5 }],
     name: 'probe_style',
   });
-  const styledSvg = readFileSync(resolve(DEV_ROOT, styled.value.svgSrc), 'utf8');
+  const styledSvg = readFileSync(resolve(DEV_ROOT, styled.value.asset), 'utf8');
   console.log(`  表达开关（排序 + 标签 + 配色）：${styledSvg.includes('#8a6ad0') ? '配色生效' : '✗ 配色没生效'}`);
   if (!styledSvg.includes('#8a6ad0')) throw new Error('style.colors 应当覆盖色板');
 
@@ -2565,26 +2581,27 @@ console.log('=== oks_chart（服务端出图）===');
 
   // 展示件各有各的来路，报表不要求"同源"。这里验三件事：一张给定数据的图、一张查询结果的图、
   // 一张查询结果的**表**——表与图共用同一份查询，报表级节点表里那个查询只该有一个节点。
-  const sharedView = await call('oks_view', {
-    spec: { kind: 'table', src: saved.dataSrc, title: '查询结果的表' },
+  const sharedView = await call('oks_render_figure', {
+    spec: { kind: 'table', title: '查询结果的表' },
+    src: saved.asset,
     name: 'probe_report_table',
   });
-  const mixed = await call('oks_report', {
+  const mixed = await call('oks_render_report', {
     spec: {
       title: '多来源报告（冒烟）',
       ...reportSpec([
         '## 多来源',
         '',
-        `![自填的那张](${tuned.value.svgSrc})`,
+        `![自填的那张](${tuned.value.asset})`,
         '',
-        `![查询结果的那张](${fromSrc.value.svgSrc})`,
+        `![查询结果的那张](${fromSrc.value.asset})`,
         '',
-        `![查询结果的表](${sharedView.value.viewSrc})`,
+        `![查询结果的表](${sharedView.value.asset})`,
       ].join('\n')),
     },
     name: 'probe_report_mixed',
   });
-  const mixedHtml = readFileSync(resolve(DEV_ROOT, mixed.value.htmlSrc), 'utf8');
+  const mixedHtml = readFileSync(resolve(DEV_ROOT, mixed.value.asset), 'utf8');
   console.log(`  多来源报告：${mixed.value.figureCount} 张图，各自带着自己那份来源链`);
   // 辨识度：有来源的展示项戴编号 chip 并且可寻址；手打的表既没有编号、也没有锚点。
   if ((mixedHtml.match(/class="item-no"/g) ?? []).length !== 3) {
@@ -2644,7 +2661,7 @@ console.log('=== oks_chart（服务端出图）===');
       data: [{ label: '甲', value: 3 }, { label: '乙', value: 5 }],
       name: 'probe_report_ref',
     });
-    const refPath = drawn.value.svgSrc;                       // .oks/figures/<...>.bar.svg
+    const refPath = drawn.value.asset;                       // .oks/figures/<...>.bar.svg
     const bare = refPath.replace('.oks/figures/', '');             // 图就住在 .oks/figures/ 里，裸名同样自然
     // 再画一张，用来充当"报告里的第一张图"。
     const extra = await chart({
@@ -2655,13 +2672,13 @@ console.log('=== oks_chart（服务端出图）===');
     const fence = (label) => ['```chart', JSON.stringify({
       kind: 'bar', x: 'label', value: 'value', data: [{ label, value: 2 }], caption: `${label}图`,
     }), '```'].join('\n');
-    const ref = await call('oks_report', {
+    const ref = await call('oks_render_report', {
       spec: {
         title: '引用图（冒烟）',
         ...reportSpec([
           '## 一、引用的第一张',
           '',
-          `![第一张](${extra.value.svgSrc})`,
+          `![第一张](${extra.value.asset})`,
           '',
           '## 二、引用已落盘的',
           '',
@@ -2671,7 +2688,7 @@ console.log('=== oks_chart（服务端出图）===');
           '',
           '## 三、再引一张，编号要接着走',
           '',
-          `![第四张](${tuned.value.svgSrc})`,
+          `![第四张](${tuned.value.asset})`,
           '',
           '## 四、chart 块已经不接受',
           '',
@@ -2680,7 +2697,7 @@ console.log('=== oks_chart（服务端出图）===');
       },
       name: 'probe_report_ref',
     });
-    const refHtml = readFileSync(resolve(DEV_ROOT, ref.value.htmlSrc), 'utf8');
+    const refHtml = readFileSync(resolve(DEV_ROOT, ref.value.asset), 'utf8');
     const inline = (refHtml.match(/<svg class="chart"/g) ?? []).length;
     const captions = [...refHtml.matchAll(/<figcaption><span class="item-no">图 (\d+)<\/span>([^<]*)<\/figcaption>/g)]
       .map((m) => `${m[1]}:${m[2]}`);
@@ -2698,7 +2715,7 @@ console.log('=== oks_chart（服务端出图）===');
     for (const broken of ['nope.bar.svg', 'nope.table.md', '../oks.json']) {
       let failure = '';
       try {
-        await call('oks_report', {
+        await call('oks_render_report', {
           spec: { title: '取不到材料', ...reportSpec(`正文\n\n![取不到](${broken})\n`) },
           name: 'probe_report_broken',
         });
@@ -2731,8 +2748,8 @@ console.log('=== oks_chart（服务端出图）===');
   const columnSpec = { kind: 'column', x: 'q', value: 'v', series: 'c' };
   const grouped = await chart({ spec: columnSpec, data: groupRows, name: 'probe_grouped' });
   const stacked = await chart({ spec: { ...columnSpec, stack: 'total' }, data: groupRows, name: 'probe_stacked' });
-  const groupedBars = barsOf(readFileSync(resolve(DEV_ROOT, grouped.value.svgSrc), 'utf8'));
-  const stackedBars = barsOf(readFileSync(resolve(DEV_ROOT, stacked.value.svgSrc), 'utf8'));
+  const groupedBars = barsOf(readFileSync(resolve(DEV_ROOT, grouped.value.asset), 'utf8'));
+  const stackedBars = barsOf(readFileSync(resolve(DEV_ROOT, stacked.value.asset), 'utf8'));
   const distinctX = (bars) => [...new Set(bars.map((bar) => bar.x))];
   // 并排：6 根柱子各占一个 x，而且都踩在同一条基线上。
   if (groupedBars.length !== 6 || distinctX(groupedBars).length !== 6 || barSpread(groupedBars.map((bar) => bar.y)) > 1) {
@@ -2759,7 +2776,7 @@ console.log('=== oks_chart（服务端出图）===');
     data: groupRows,
     name: 'probe_bar_grouped',
   });
-  const barBars = barsOf(readFileSync(resolve(DEV_ROOT, groupedBar.value.svgSrc), 'utf8'));
+  const barBars = barsOf(readFileSync(resolve(DEV_ROOT, groupedBar.value.asset), 'utf8'));
   if (barBars.length !== 6) throw new Error(`横条分组应当是 6 条，收到 ${barBars.length}`);
   if (new Set(barBars.map((bar) => bar.y)).size !== 6) throw new Error('横条分组应当是 6 条各自一个 y');
   if (Math.min(...barBars.map((bar) => Math.abs(bar.h))) < 12) {
@@ -2777,13 +2794,13 @@ console.log('=== oks_chart（服务端出图）===');
     .map((match) => match[1].trim()).filter((text) => /^-?[\d.]+$/.test(text)).map(Number);
   const lineSpec = { kind: 'line', x: 'month', value: 'v', series: 'device', unit: '%' };
   const kpiLine = await chart({ spec: lineSpec, data: kpiRows, name: 'probe_line_kpi' });
-  const lineTicks = axisTicksOf(readFileSync(resolve(DEV_ROOT, kpiLine.value.svgSrc), 'utf8'));
+  const lineTicks = axisTicksOf(readFileSync(resolve(DEV_ROOT, kpiLine.value.asset), 'utf8'));
   if (Math.min(...lineTicks) < 90) {
     throw new Error(`折线的数值轴应当贴住数据（98.4% 起），实际最低刻度 ${Math.min(...lineTicks)}`);
   }
   // 面积与柱不从 0 起会说谎（长度/面积本身就是量），所以它们照旧。
   const kpiArea = await chart({ spec: { ...lineSpec, kind: 'area' }, data: kpiRows, name: 'probe_area_kpi' });
-  const areaTicks = axisTicksOf(readFileSync(resolve(DEV_ROOT, kpiArea.value.svgSrc), 'utf8'));
+  const areaTicks = axisTicksOf(readFileSync(resolve(DEV_ROOT, kpiArea.value.asset), 'utf8'));
   if (Math.min(...areaTicks) !== 0) throw new Error(`面积的数值轴应当从 0 起，实际最低刻度 ${Math.min(...areaTicks)}`);
   // 轴收紧之后，比数据还低的参考线不能像上一波那样静默消失。
   const marked = await chart({
@@ -2791,7 +2808,7 @@ console.log('=== oks_chart（服务端出图）===');
     data: kpiRows,
     name: 'probe_line_mark_low',
   });
-  const markedSvg = readFileSync(resolve(DEV_ROOT, marked.value.svgSrc), 'utf8');
+  const markedSvg = readFileSync(resolve(DEV_ROOT, marked.value.asset), 'utf8');
   if (!markedSvg.includes('可用率下限')) throw new Error('低于数据的参考线也该画出来（轴要为它让出下界）');
   console.log(`  折线轴收紧：线图最低刻度 ${Math.min(...lineTicks)} · 面积图 ${Math.min(...areaTicks)} · 轴外阈值线仍在`);
 
@@ -2803,7 +2820,7 @@ console.log('=== oks_chart（服务端出图）===');
     spec: { kind, x: 'k', value: 'v' },
     data: rankRows,
     name,
-  })).value.svgSrc), 'utf8'));
+  })).value.asset), 'utf8'));
   const horizontalBars = (await rankBars('bar', 'probe_bar_rank')).sort((a, b) => b.w - a.w);
   if (!(horizontalBars[0].y < horizontalBars[horizontalBars.length - 1].y)) {
     throw new Error(`横条最长的那根（第一名）应当在最上面，实际 y=${horizontalBars[0].y} 与 ${horizontalBars[2].y}`);
@@ -2818,7 +2835,7 @@ console.log('=== oks_chart（服务端出图）===');
     data: rankRows.flatMap((row, index) => [{ ...row, s: '甲' }, { ...row, s: '乙', v: 3 - index }]),
     name: 'probe_heatmap_rows',
   });
-  const matrixSvg = readFileSync(resolve(DEV_ROOT, matrixRows.value.svgSrc), 'utf8');
+  const matrixSvg = readFileSync(resolve(DEV_ROOT, matrixRows.value.asset), 'utf8');
   const labelY = (svg, text) => {
     for (const match of svg.matchAll(/<text[^>]*transform="translate\(([\d.]+) ([\d.]+)\)"[^>]*>([\s\S]*?)<\/text>/g)) {
       if (match[3].includes(text)) return Number(match[2]);
@@ -2842,7 +2859,7 @@ console.log('=== oks_chart（服务端出图）===');
     data: [{ k: 'D1', s: 'kpi', w: 2 }, { k: 'kpi', s: 'r1', w: 1 }],
     name: 'probe_sankey_registered',
   })).value;
-  const sankeySvg = readFileSync(resolve(DEV_ROOT, sankeyBlank.svgSrc), 'utf8');
+  const sankeySvg = readFileSync(resolve(DEV_ROOT, sankeyBlank.asset), 'utf8');
   ok('sankey：渲染出的 SVG 里有节点名（不是空白）',
     sankeySvg.includes('D1') && sankeySvg.includes('kpi'));
   const gaugeBlank = (await chart({
@@ -2850,11 +2867,11 @@ console.log('=== oks_chart（服务端出图）===');
     data: [{ k: '可用率', w: 88 }],
     name: 'probe_gauge_registered',
   })).value;
-  const gaugeSvg = readFileSync(resolve(DEV_ROOT, gaugeBlank.svgSrc), 'utf8');
+  const gaugeSvg = readFileSync(resolve(DEV_ROOT, gaugeBlank.asset), 'utf8');
   ok('gauge：渲染出的 SVG 里有名称与数值（不是空白）',
     gaugeSvg.includes('可用率') && gaugeSvg.includes('88'));
 
-  // graph 走"两张表"的路：节点表与边表各自落成材料，再一起交给 oks_chart。
+  // graph 走"两张表"的路：节点表与边表各自落成材料，再一起交给 oks_render_figure。
   const graphNodeFile = await call('create_data', {
     name: 'probe_graph_nodes',
     motivation: '冒烟夹具：关系图的节点表（每行一个节点，至少给 id 与 depth）',
@@ -2863,10 +2880,10 @@ console.log('=== oks_chart（服务端出图）===');
   const graphChart = (await chart({
     spec: { kind: 'graph', x: 'from', series: 'to' },
     data: [{ from: 'core', to: 'edge1', label: '经 site_id' }],
-    nodesSrc: graphNodeFile.value.dataSrc,
+    nodesSrc: graphNodeFile.value.asset,
     name: 'probe_graph_registered',
   })).value;
-  const graphSvg = readFileSync(resolve(DEV_ROOT, graphChart.svgSrc), 'utf8');
+  const graphSvg = readFileSync(resolve(DEV_ROOT, graphChart.asset), 'utf8');
   ok('graph：渲染出的 SVG 里有节点名与关系名（不是空白）',
     graphSvg.includes('核心') && graphSvg.includes('经 site_id'));
 
@@ -2918,7 +2935,7 @@ console.log('=== oks_chart（服务端出图）===');
 
   const failures = [
     ['两个都缺', { spec: { kind: 'bar', x: 'a', value: 'b' } }],
-    ['两个都给', { spec: { kind: 'bar', x: 'a', value: 'b' }, src: saved.dataSrc, data: [{}] }],
+    ['两个都给', { spec: { kind: 'bar', x: 'a', value: 'b' }, src: saved.asset, data: [{}] }],
     ['未知 kind', { spec: { kind: 'pie' }, data: [{}] }],
     ['table 退场', { spec: { kind: 'table' }, data: [{}] }],
     ['列不存在', { spec: { kind: 'bar', x: 'nope', value: 'nope2' }, data: [{ a: 1 }] }],
@@ -2964,7 +2981,7 @@ console.log('=== oks_chart（服务端出图）===');
     let message = '';
     try { await chart( args); } catch (cause) { rejected = true; message = String(cause?.message ?? cause); }
     console.log(`  ${String(label).padEnd(10)} → ${rejected ? '✓ 被拒' : '✗ 未拒'} ${message.slice(0, 64)}`);
-    if (!rejected) throw new Error(`oks_chart ${label} 应当被拒`);
+    if (!rejected) throw new Error(`oks_render_figure ${label} 应当被拒`);
   }
   const empty = await chart({ spec: { kind: 'bar', x: 'label', value: 'value' }, data: [] });
   console.log(`  空数组有效: ${empty.value.ok === true && empty.value.rowCount === 0 ? '✓' : '✗'}`);
@@ -2973,29 +2990,30 @@ console.log('=== oks_chart（服务端出图）===');
 
 // ── limit 必填、范围 1..100：插件在调用服务之前就判定 ────────────────────────
 // ── 展示件：表格落成 markdown 文件（流里与报表里都能渲染），材料藏在文件头 ──────────
-console.log('=== oks_view（表格展示件）===');
+console.log('=== oks_render_figure：出表 ===');
 {
-  const answer = await call('oks_query', { intents: await withKeys(countNamed) });
+  const answer = await call('oks_exec_query_intent', { intents: await withKeys(countNamed) });
   const first = (answer.value.results ?? [])[0] ?? null;
-  const rowsSrc = first?.dataSrc;
+  const rowsSrc = first?.asset;
   const rowsTotal = first?.rowCount ?? 0;
   const column = first?.columns?.[0]?.name;
 
-  const view = await call('oks_view', {
-    spec: { kind: 'table', src: rowsSrc, title: '汇总表' },
+  const view = await call('oks_render_figure', {
+    spec: { kind: 'table', title: '汇总表' },
+    src: rowsSrc,
     name: 'summary_table',
   });
   console.log(view.text.split('\n').filter(Boolean).map((line) => `  ${line}`).join('\n').slice(0, 640));
   ok('表格落成 .oks/figures/ 下的 markdown 文件，回执给报表用的那一行',
-    view.value.viewSrc?.startsWith('.oks/figures/') === true && view.value.viewSrc?.endsWith('.table.md') === true
-    && view.value.markdown === `![汇总表](${view.value.viewSrc})`);
+    view.value.asset?.startsWith('.oks/figures/') === true && view.value.asset?.endsWith('.table.md') === true
+    && view.value.embedded === `![汇总表](${view.value.asset})`);
   ok('回执同时给可粘贴的 markdown 表本体（流里直接显示）',
     typeof view.value.table === 'string' && view.value.table.includes(`| ${column} |`)
     && view.value.table.split('\n').length === rowsTotal + 3);
   ok('数字列右对齐（markdown 的 ---: 两处都认）',
     (view.value.table.split('\n')[1] ?? '').includes('---:'));
 
-  const viewFile = readFileSync(resolve(DEV_ROOT, view.value.viewSrc), 'utf8');
+  const viewFile = readFileSync(resolve(DEV_ROOT, view.value.asset), 'utf8');
   const parsedView = readTableView(viewFile);
   const sourceRoot = JSON.parse(readFileSync(resolve(DEV_ROOT, rowsSrc), 'utf8')).origin.root;
   ok('文件头藏着材料：自述、来源链、展示数据与规格',
@@ -3005,26 +3023,28 @@ console.log('=== oks_view（表格展示件）===');
     && parsedView.material.data.spec.kind === 'table'
     && parsedView.material.data.spec.title === '汇总表');
   ok('文件本体就是一段 markdown 表（工作区里直接打开也读得懂）',
-    viewFile.startsWith('<!-- dsh-oks-table-input ') && parsedView?.markdown.startsWith('| ') === true);
+    viewFile.startsWith('<!-- dsh-oks-table-input ') && parsedView?.embedded.startsWith('| ') === true);
 
   // 材料是**复制**：数据文件被回收之后，表仍说得清自己展示的是什么
   rmSync(resolve(DEV_ROOT, rowsSrc), { force: true });
-  const orphanView = readTableView(readFileSync(resolve(DEV_ROOT, view.value.viewSrc), 'utf8'));
+  const orphanView = readTableView(readFileSync(resolve(DEV_ROOT, view.value.asset), 'utf8'));
   ok('数据文件被回收后，表里仍带着自己展示的那些行',
     orphanView?.material.data.rows.length === rowsTotal
     && orphanView.material.origin.nodes[orphanView.material.origin.root] !== undefined);
 
   // 明确回执：空数据、超列数、缺列、不支持的 kind 都在工具里挡住
+  // 夹具：表这一路要展示的那份封装走顶层 src，所以这里把它从 spec 里分出来。
   const failureOfView = async (spec, name = 'probe_bad_view') => {
+    const { src, ...rest } = spec;
     try {
-      await call('oks_view', { spec, name });
+      await call('oks_render_figure', { spec: rest, src, name });
       return '';
     } catch (cause) {
       return String(cause?.message ?? cause);
     }
   };
   const empty = await call('create_data', { name: 'empty_rows', motivation: '冒烟：空数据', data: [] });
-  const emptyMessage = await failureOfView({ kind: 'table', src: empty.value.dataSrc });
+  const emptyMessage = await failureOfView({ kind: 'table', src: empty.value.asset });
   console.log(`  空表 → ${emptyMessage.slice(0, 80)}`);
   ok('空数据明确报错（空表不落盘）', /没有行/.test(emptyMessage));
   const wideRows = Array.from({ length: 2 }, () => Object.fromEntries(
@@ -3032,10 +3052,10 @@ console.log('=== oks_view（表格展示件）===');
   ));
   const wide = await call('create_data', { name: 'wide_rows', motivation: '冒烟：列太多', data: wideRows });
   ok('列数超上限时报错并指出用 spec.columns 选列',
-    /最多 12 列/.test(await failureOfView({ kind: 'table', src: wide.value.dataSrc })));
-  const chosen = await failureOfView({ kind: 'table', src: wide.value.dataSrc, columns: ['nope'] });
+    /最多 12 列/.test(await failureOfView({ kind: 'table', src: wide.value.asset })));
+  const chosen = await failureOfView({ kind: 'table', src: wide.value.asset, columns: ['nope'] });
   ok('要展示的列不在数据里时报错', /不在数据里/.test(chosen));
-  ok('不支持的展示件明确报错', /不支持的展示件/.test(await failureOfView({ kind: 'chart', src: wide.value.dataSrc })));
+  ok('认不出的图元明确报错', /spec.kind 必须是/.test(await failureOfView({ kind: 'treemap', src: wide.value.asset })));
 
   // 纯函数那一层：转义、截断与列选择
   const messy = tableMarkdown(
@@ -3043,14 +3063,14 @@ console.log('=== oks_view（表格展示件）===');
     {},
   );
   ok('单元格里的竖线与换行被挡住（表不会因此断列）',
-    'error' in messy === false && messy.markdown.includes('一\\|二') && messy.markdown.includes('A B'));
+    'error' in messy === false && messy.embedded.includes('一\\|二') && messy.embedded.includes('A B'));
   const truncated = tableMarkdown([{ long: 'x'.repeat(200) }], {});
   ok('超长单元格截断并留 …（完整值在来源块的 data 里）',
-    'error' in truncated === false && truncated.markdown.includes('…'));
+    'error' in truncated === false && truncated.embedded.includes('…'));
   const picked = tableMarkdown([{ a: 1, b: 'x' }], { columns: ['b'] });
   ok('spec.columns 决定展示哪几列与顺序', 'error' in picked === false && picked.columns.join() === 'b');
 
-  for (const made of [empty, wide]) rmSync(resolve(DEV_ROOT, made.value.dataSrc), { force: true });
+  for (const made of [empty, wide]) rmSync(resolve(DEV_ROOT, made.value.asset), { force: true });
 }
 
 console.log('=== Intent 的 limit 必填且限于 1..100 ===');
@@ -3064,7 +3084,7 @@ console.log('=== Intent 的 limit 必填且限于 1..100 ===');
     ['101', { ...base, limit: 101 }],
   ];
   for (const [label, intent] of cases) {
-    const answer = await call('oks_check_intent', { intents: { x: intent } });
+    const answer = await call('oks_check_query_intent', { intents: { x: intent } });
     const message = (answer.value.diagnostics ?? [])[0]?.diagnostic?.message ?? '';
     const rejected = /limit/.test(message);
     console.log(`  ${String(label).padEnd(6)} → ${rejected ? '✓ 被拒' : '✗ 未拒'} ${message.slice(0, 76)}`);
@@ -3085,7 +3105,7 @@ console.log('=== 第二个工作区（嵌套目录，路径都相对 oks.json）
   };
   if (typeof anchor.dataFile === 'string') entry.dataFile = relative(nested, resolve(DEV_ROOT, anchor.dataFile));
   writeFileSync(`${nested}/oks.json`, `${JSON.stringify(entry, null, 2)}\n`);
-  const nestedAnswer = await call('oks_query', { intents: await withKeys(countNamed, nested) }, nested);
+  const nestedAnswer = await call('oks_exec_query_intent', { intents: await withKeys(countNamed, nested) }, nested);
   const first = nestedAnswer.value.results?.[0] ?? null;
   console.log(`  相对路径解析 → ${first === null ? '✗ 无结果' : `行数 ${first.rowCount} ✓`}`);
   if (first === null || first.status !== 'saved') throw new Error('嵌套工作区的相对路径没有解析对');
@@ -3101,15 +3121,15 @@ console.log('=== 没有 dataFile 的工作区（只能校验）===');
     version: 1, domain: anchor.domain, model: relative(dir, resolve(DEV_ROOT, anchor.model)),
   }, null, 2)}\n`);
   try {
-    await call('oks_query', { intents: await withKeys(countNamed, dir) }, dir);
+    await call('oks_exec_query_intent', { intents: await withKeys(countNamed, dir) }, dir);
     console.log('  ✗ 没有 dataFile 却查成功了');
-    throw new Error('没有 dataFile 时 oks_query 应当报错');
+    throw new Error('没有 dataFile 时 oks_exec_query_intent 应当报错');
   } catch (cause) {
     if (!/没有声明 dataFile/.test(String(cause?.message ?? cause))) throw cause;
-    console.log(`  ✓ oks_query 拒绝: ${String(cause.message).split('\n')[0].slice(0, 110)}`);
+    console.log(`  ✓ oks_exec_query_intent 拒绝: ${String(cause.message).split('\n')[0].slice(0, 110)}`);
   }
-  const checked = await call('oks_check_intent', { intents: countNamed }, dir);
-  console.log(`  oks_check_intent 仍可用: ${/全部可用/.test(checked.text) ? '✓' : '✗'}`);
+  const checked = await call('oks_check_query_intent', { intents: countNamed }, dir);
+  console.log(`  oks_check_query_intent 仍可用: ${/全部可用/.test(checked.text) ? '✓' : '✗'}`);
 }
 
 // ── 第四个工作区：dataFile 不是数据库 → 结果里说明执行失败 ──────────────────
@@ -3124,12 +3144,12 @@ console.log('=== 坏 dataFile（不是 SQLite）===');
     model: relative(dir, resolve(DEV_ROOT, anchor.model)),
     dataFile: 'junk.txt',
   }, null, 2)}\n`);
-  const failed = await call('oks_query', { intents: await withKeys(countNamed, dir) }, dir);
+  const failed = await call('oks_exec_query_intent', { intents: await withKeys(countNamed, dir) }, dir);
   const first = failed.value.results?.[0] ?? null;
   console.log(`  ${String(first?.error ?? '(没有错误)').slice(0, 120)}`);
   console.log(`  渲染里写明执行失败: ${/status:\s+query_error/.test(failed.text) ? '✓' : '✗'}`);
   if (!/status:\s+query_error/.test(failed.text)) throw new Error('坏数据文件必须在结果里写明');
-  if (first?.dataSrc !== null) throw new Error('执行失败不应留下 dataSrc');
+  if (first?.asset !== null) throw new Error('执行失败不应留下 asset');
 }
 
 // ── 没有 oks.json 的工作区：明确报错，不回落到别的模型 ─────────────────────
@@ -3212,9 +3232,9 @@ console.log('=== 超时强杀 + 复活（requestTimeoutMs=1）===');
 console.log('=== 查询超时 + 复活（queryTimeoutMs=1）===');
 {
   const { tools } = buildCtx({ queryTimeoutMs: 1 });
-  const tool = tools.get('oks_query');
+  const tool = tools.get('oks_exec_query_intent');
   const attempt = async () => {
-    const checked = await tools.get('oks_check_intent').execute(
+    const checked = await tools.get('oks_check_query_intent').execute(
       { intents: countNamed },
       { signal: new AbortController().signal, ...sessionFor(DEV_ROOT) },
     );
@@ -3243,22 +3263,22 @@ console.log('=== 清单、pin 与保活清理 ===');
   const entries = listed.value.entries;
   console.log(`  清单：${entries.length} 条（保留 ${entries.filter((entry) => entry.pinned).length} 条）`);
   ok('清单列出了产物', entries.length >= 2);
-  ok('查询结果是内部制品，不进清单', !entries.some((entry) => entry.file.endsWith('.qres.json')));
+  ok('查询结果是内部制品，不进清单', !entries.some((entry) => entry.asset.endsWith('.qres.json')));
   ok('清单里每一条都有标题（自述里那一行永不为空）',
     entries.every((entry) => typeof entry.title === 'string' && entry.title.length > 0));
   ok('清单最新在前', entries.every((entry, index) => index === 0 || entries[index - 1].at >= entry.at));
 
   // 保留：只改存留、不改位置。这条能力**不在工具面里**（界面端点直接调它），所以这里直接调函数。
-  const target = entries.find((entry) => entry.file.endsWith('.report.html')) ?? entries[0];
-  const src = `artifacts/${target.file}`;
-  const indexBefore = entries.findIndex((entry) => entry.file === target.file);
-  pinBySrc(DEV_ROOT, src, true);
+  const target = entries.find((entry) => entry.asset.endsWith('.report.html')) ?? entries[0];
+  const asset = `artifacts/${target.asset}`;
+  const indexBefore = entries.findIndex((entry) => entry.asset === target.asset);
+  pinBySrc(DEV_ROOT, asset, true);
   const afterPin = (await call('oks_artifacts', {})).value.entries;
-  ok('保留之后清单里那一条是已保留', afterPin.find((entry) => entry.file === target.file)?.pinned === true);
-  ok('保留不改变条目在清单里的位置', afterPin.findIndex((entry) => entry.file === target.file) === indexBefore);
-  ok('取消保留之后回到未保留', pinBySrc(DEV_ROOT, src, false).pinned === false);
+  ok('保留之后清单里那一条是已保留', afterPin.find((entry) => entry.asset === target.asset)?.pinned === true);
+  ok('保留不改变条目在清单里的位置', afterPin.findIndex((entry) => entry.asset === target.asset) === indexBefore);
+  ok('取消保留之后回到未保留', pinBySrc(DEV_ROOT, asset, false).pinned === false);
 
-  // 非法 src 要有明确的话：越界、不是可见产物、找不到。
+  // 非法 asset 要有明确的话：越界、不是可见产物、找不到。
   const refused = (bad) => {
     try {
       pinBySrc(DEV_ROOT, bad, true);
@@ -3310,7 +3330,7 @@ console.log('=== 清单、pin 与保活清理 ===');
     motivation: '冒烟夹具：保活清理要用的图',
     data: [{ label: 'A', value: 1 }],
   });
-  await call('oks_chart', { spec: { kind: 'bar', x: 'label', value: 'value' }, src: pruneRows.value.dataSrc, name: 'probe_prune' });
+  await call('oks_render_figure', { spec: { kind: 'bar', x: 'label', value: 'value' }, src: pruneRows.value.asset, name: 'probe_prune' });
   ok('过期且未保留的产物被清理', !existsSync(join(DEV_ROOT, 'artifacts', oldReport)));
   ok('保留过的产物不会被清理', existsSync(join(DEV_ROOT, 'artifacts', keptReport)));
   ok('没登记的文件不在清理范围里（清理只认账本上的行）', existsSync(join(DEV_ROOT, 'artifacts', stranger)));
@@ -3321,8 +3341,8 @@ console.log('=== 清单、pin 与保活清理 ===');
   ok('清理留痕（宿主日志里有一行、至少清了一条、保留数也报出来）',
     cleanedCount >= 1 && typeof pruneLog === 'string' && /保留 \d+ 个/.test(pruneLog));
   const listedAfter = (await call('oks_artifacts', {})).value.entries;
-  ok('清理之后清单里没有它了', !listedAfter.some((entry) => entry.file === oldReport));
-  ok('保留的那条还在清单里', listedAfter.some((entry) => entry.file === keptReport && entry.pinned === true));
+  ok('清理之后清单里没有它了', !listedAfter.some((entry) => entry.asset === oldReport));
+  ok('保留的那条还在清单里', listedAfter.some((entry) => entry.asset === keptReport && entry.pinned === true));
 
   // 清单能从目录重建：删掉状态库再列一次，条目还在——pin 丢了，这是预期（它是唯一不能重建的东西）。
   rmSync(join(DEV_ROOT, '.oks'), { recursive: true, force: true });
@@ -3346,22 +3366,22 @@ console.log('=== 页签的交付形态 ===');
 // ── 精确分类：报表可以带 category；清单里只有报表（图当前不算制品）────────────────────
 console.log('=== 分类与"当前只算报表" ===');
 {
-  const saved = await call('oks_report', {
+  const saved = await call('oks_render_report', {
     spec: { title: '分类探针', ...reportSpec('## 一\n\n正文。') },
     name: 'probe_category',
     category: '周报',
   });
-  ok('报表可以带精确分类', String(saved.value.htmlSrc).includes('probe_category'));
+  ok('报表可以带精确分类', String(saved.value.asset).includes('probe_category'));
   const listed = await call('oks_artifacts', {});
   const entries = listed.value.entries;
-  const probe = entries.find((entry) => entry.file.includes('probe_category'));
+  const probe = entries.find((entry) => entry.asset.includes('probe_category'));
   ok('清单里带着那个分类', probe?.category === '周报');
-  const others = entries.filter((entry) => !entry.file.includes('probe_category'));
+  const others = entries.filter((entry) => !entry.asset.includes('probe_category'));
   ok('没给分类的报表落在默认分类上（即时分析）',
     others.length === 0 || others.every((entry) => entry.category === '即时分析'));
   ok('清单里只有报表（图当前不算制品）', entries.every((entry) => entry.kind === 'report'));
   // 自述在 HTML 里是转义过的（&quot;），所以只看键与值都在。
-  const described = readFileSync(join(DEV_ROOT, 'artifacts', String(probe?.file)), 'utf8');
+  const described = readFileSync(join(DEV_ROOT, 'artifacts', String(probe?.asset)), 'utf8');
   ok('自述里也写着分类（换成别的工具读也一样）',
     described.includes('category') && described.includes('周报'));
 }
@@ -3420,11 +3440,11 @@ console.log('=== 账本：清单不依赖文件系统 ===');
       reconciled.adopted === 1 && listArtifacts(state).length === 3);
 
     // 行是权威：文件还在、自述读不出时**不重新解析**，原来那一行（含标题与保留）照旧。
-    const before = listArtifacts(state).find((row) => row.file === String(report));
+    const before = listArtifacts(state).find((row) => row.asset === String(report));
     pinBySrc(dir, `artifacts/${String(report)}`, true);
     writeFileSync(target, '<!doctype html><html><head><title>只写了一半');
     const afterHalf = reconcileArtifacts(state, dir);
-    const kept = listArtifacts(state).find((row) => row.file === String(report));
+    const kept = listArtifacts(state).find((row) => row.asset === String(report));
     ok('文件还在但读不出自述：那一行照旧，标题与保留都不动（不重新解析文件）',
       afterHalf.unreadable.length === 0 && kept?.title === before?.title && kept?.pinned === true);
 
@@ -3446,9 +3466,9 @@ console.log('=== 账本：清单不依赖文件系统 ===');
     const pruned = pruneArtifacts(state, dir, KEEP_ALIVE_MINUTES);
     ok('保活清理按行做：过期的文件与行一起没，保留的那份（行与文件）都不动',
       pruned.removed.includes(stale) && !existsSync(join(dir, 'artifacts', stale))
-      && !listArtifacts(state).some((row) => row.file === stale)
+      && !listArtifacts(state).some((row) => row.asset === stale)
       && existsSync(join(dir, 'artifacts', keep))
-      && listArtifacts(state).some((row) => row.file === keep && row.pinned === true));
+      && listArtifacts(state).some((row) => row.asset === keep && row.pinned === true));
     ok('目录看不见时保活清理什么都不做（那次"看不见"不当成"都没了"）',
       (() => {
         rmSync(join(dir, 'artifacts'), { recursive: true, force: true });
@@ -3466,9 +3486,9 @@ console.log('=== 账本：清单不依赖文件系统 ===');
       kind: 'report',
       title: raw,
     });
-    recordArtifact(state, written.src.slice(written.src.lastIndexOf('/') + 1), written.meta);
-    const onDisk = readFileSync(join(dir, written.src), 'utf8');
-    const row = listArtifacts(state).find((item) => item.file === written.src.slice(written.src.lastIndexOf('/') + 1));
+    recordArtifact(state, written.asset.slice(written.asset.lastIndexOf('/') + 1), written.meta);
+    const onDisk = readFileSync(join(dir, written.asset), 'utf8');
+    const row = listArtifacts(state).find((item) => item.asset === written.asset.slice(written.asset.lastIndexOf('/') + 1));
     ok('库里的标题是原文，文件里的自述是转义后的（不靠解析文件记账）',
       row?.title === raw && onDisk.includes('&amp;') && onDisk.includes('&quot;')
       && readArtifactMeta(onDisk)?.title === raw);
@@ -3546,6 +3566,11 @@ console.log('=== 清理窗口的配置 ===');
     ok('秒级窗口的解析与写法：15s / 5 分钟 / 2 小时',
       retentionMinutes('15s', 'x') === 0.25 && retentionMinutes('90', 'x') === 90
       && windowText(0.25) === '15 秒' && windowText(5) === '5 分钟' && windowText(120) === '2 小时');
+    const floorMessage = (ttl: unknown): string => {
+      try { retentionMinutes(ttl, 'x'); return ''; } catch (cause) { return String((cause as Error).message); }
+    };
+    ok('显式窗口的下限是 5 秒（"4s" 与 0 都被拒）',
+      /下限是 5 秒/.test(floorMessage('4s')) && /下限是 5 秒/.test(floorMessage(0)));
     const bogus = parsed({ auto: { materials: 'soon' } });
     ok('写错的时长被拒，并给出写法', typeof bogus === 'string' && /例如 "15s"/.test(bogus));
     const withSwitch = parsed({ auto: { enabled: true } });
@@ -3589,44 +3614,6 @@ console.log('=== 最后清理的记账 ===');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
-}
-
-console.log('=== collect：材料清理 ===');
-{
-  const stamp = resultStamp();
-  mkdirSync(join(DEV_ROOT, '.oks', 'data'), { recursive: true });
-  const fresh = `${stamp}-collect_fresh-aaaaaaaa.qres.json`;
-  const old = `${stamp}-collect_old-bbbbbbbb.qres.json`;
-  const stranger2 = 'user_notes.json';
-  writeFileSync(join(DEV_ROOT, '.oks', 'data', fresh), '{"rows":[],"columns":[]}');
-  writeFileSync(join(DEV_ROOT, '.oks', 'data', old), '{"rows":[],"columns":[]}');
-  writeFileSync(join(DEV_ROOT, '.oks', 'data', stranger2), '用户自己放的');
-  const tenMin = new Date(Date.now() - 10 * 60_000);
-  const fortyMin = new Date(Date.now() - 40 * 60_000);
-  utimesSync(join(DEV_ROOT, '.oks', 'data', fresh), tenMin, tenMin);
-  utimesSync(join(DEV_ROOT, '.oks', 'data', old), fortyMin, fortyMin);
-  const reportBefore = readdirSync(join(DEV_ROOT, 'artifacts')).length;
-  const workBefore = readdirSync(join(DEV_ROOT, '.work')).length;
-  const wide = await call('collect', { ttl: '30m' });
-  ok('collect 按 ttl 删材料：40 分钟前的走了、10 分钟前的留着',
-    wide.value.ok === true && wide.value.ttlSeconds === 1800
-    && (wide.value.removed as string[]).includes(`.oks/data/${old}`)
-    && !existsSync(join(DEV_ROOT, '.oks', 'data', old))
-    && existsSync(join(DEV_ROOT, '.oks', 'data', fresh)));
-  ok('collect 只碰 .oks/ 材料：artifacts/ 与 .work/ 一份没动',
-    readdirSync(join(DEV_ROOT, 'artifacts')).length === reportBefore
-    && readdirSync(join(DEV_ROOT, '.work')).length === workBefore);
-  ok('不是我们命名的文件不动', existsSync(join(DEV_ROOT, '.oks', 'data', stranger2)));
-  const narrow = await call('collect', { ttl: '5m' });
-  ok('窗口收窄到 5 分钟，10 分钟前那份也走',
-    narrow.value.ttlSeconds === 300 && !existsSync(join(DEV_ROOT, '.oks', 'data', fresh))
-    && typeof narrow.value.remaining === 'number' && typeof narrow.value.freedBytes === 'number');
-  const floor = async (ttl: unknown): Promise<string> => {
-    try { await call('collect', { ttl }); return ''; } catch (cause) { return String((cause as Error).message); }
-  };
-  ok('collect 的 ttl 下限 5 秒（"4s" 与 0 都被拒）',
-    /下限是 5 秒/.test(await floor('4s')) && /下限是 5 秒/.test(await floor(0)));
-  rmSync(join(DEV_ROOT, '.oks', 'data', stranger2), { force: true });
 }
 
 console.log('=== work_delete：代码区删除 ===');
@@ -3757,13 +3744,13 @@ console.log('=== 界面那两条端点 ===');
   ok('回执带着保活窗口', Number(value?.keepAliveMinutes) > 0);
 
   const target = value?.entries[0];
-  const pinned = await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: `artifacts/${target?.file}`, pinned: true });
+  const pinned = await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: `artifacts/${target?.asset}`, pinned: true });
   ok(`POST 保留：落状态并回执（实际 ${pinned.status} ${JSON.stringify(pinned.body)}）`,
     pinned.status === 200 && (pinned.body.value as { pinned: boolean } | undefined)?.pinned === true);
 
   const again = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
-  const after = (again.body.value as { entries: { file: string; pinned: boolean }[] }).entries;
-  ok('再问一次清单：状态已经变了（界面重读即见）', after.find((item) => item.file === target?.file)?.pinned === true);
+  const after = (again.body.value as { entries: { src: string; pinned: boolean }[] }).entries;
+  ok('再问一次清单：状态已经变了（界面重读即见）', after.find((item) => item.asset === target?.asset)?.pinned === true);
   ok('两条端点都按 sessionId 找过工作区', asked.join(',') === 'probe,probe,probe');
 
   // 同步这一步失败不该让这次刷新变成"读不到清单"：清单是**投影**，库里已有的行照旧给出。
@@ -3787,11 +3774,11 @@ console.log('=== 界面那两条端点 ===');
   // 现场那个形态：文件在磁盘上（能打开），账本里没有它那一行——**一次读**就该补进来，
   // 而不是等下一次写产物。以前只在"库空"时收养，于是这种产物会一直不可见。
   const unlisted = `${resultStamp()}-adopted_by_read.report.html`;
-  copyFileSync(join(DEV_ROOT, 'artifacts', String(target?.file)), join(DEV_ROOT, 'artifacts', unlisted));
+  copyFileSync(join(DEV_ROOT, 'artifacts', String(target?.asset)), join(DEV_ROOT, 'artifacts', unlisted));
   const adoptedRead = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
   const adoptedEntries = (adoptedRead.body.value as { entries: { file: string }[] }).entries;
   ok('文件在、账本上没有时：一次读就补进来（不必等写操作）',
-    adoptedEntries.some((entry) => entry.file === unlisted));
+    adoptedEntries.some((entry) => entry.asset === unlisted));
   await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: `artifacts/${unlisted}` });
 
   // 主动删除（界面每行那个 x）：只有未保留的能删；文件与行一起去掉。
@@ -3803,28 +3790,28 @@ console.log('=== 界面那两条端点 ===');
     kind: 'report',
     title: '待删的冒烟报告',
   });
-  const doomedFile = doomed.src.slice(doomed.src.lastIndexOf('/') + 1);
+  const doomedFile = doomed.asset.slice(doomed.asset.lastIndexOf('/') + 1);
   const listFiles = async (): Promise<string[]> => {
     const listing = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
     return ((listing.body.value as { entries: { file: string }[] } | undefined)?.entries ?? [])
-      .map((entry) => entry.file);
+      .map((entry) => entry.asset);
   };
   {
     const state = openState(DEV_ROOT);
     try { reconcileArtifacts(state, DEV_ROOT); } finally { state.close(); }
   }
   ok('删除前：产物在磁盘上、也在清单里',
-    existsSync(join(DEV_ROOT, doomed.src)) && (await listFiles()).includes(doomedFile));
-  await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: doomed.src, pinned: true });
-  const pinnedDelete = await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: doomed.src });
+    existsSync(join(DEV_ROOT, doomed.asset)) && (await listFiles()).includes(doomedFile));
+  await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: doomed.asset, pinned: true });
+  const pinnedDelete = await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: doomed.asset });
   ok('保留中的产物删不掉：报错，文件与那一行都还在',
     pinnedDelete.status === 400 && /先取消保留/.test(String(pinnedDelete.body.message))
-    && existsSync(join(DEV_ROOT, doomed.src)) && (await listFiles()).includes(doomedFile));
-  await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: doomed.src, pinned: false });
-  const removed = await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: doomed.src });
+    && existsSync(join(DEV_ROOT, doomed.asset)) && (await listFiles()).includes(doomedFile));
+  await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: doomed.asset, pinned: false });
+  const removed = await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: doomed.asset });
   ok('未保留的产物能删：文件与那一行一起没了',
     removed.status === 200 && removed.body.ok === true
-    && !existsSync(join(DEV_ROOT, doomed.src)) && !(await listFiles()).includes(doomedFile));
+    && !existsSync(join(DEV_ROOT, doomed.asset)) && !(await listFiles()).includes(doomedFile));
   // 文件已经不在磁盘上时，那一行仍然删得掉：用户点的是**清单上的那一行**，清单是权威。
   // （这里不经过清单端点，避免读路径的同步先把那一行收掉。）
   const orphan = saveArtifact({
@@ -3835,22 +3822,22 @@ console.log('=== 界面那两条端点 ===');
     kind: 'report',
     title: '文件先没了',
   });
-  const orphanFile = orphan.src.slice(orphan.src.lastIndexOf('/') + 1);
+  const orphanFile = orphan.asset.slice(orphan.asset.lastIndexOf('/') + 1);
   {
     const state = openState(DEV_ROOT);
     try { reconcileArtifacts(state, DEV_ROOT); } finally { state.close(); }
   }
-  rmSync(join(DEV_ROOT, orphan.src), { force: true });
-  const orphanGone = await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: orphan.src });
+  rmSync(join(DEV_ROOT, orphan.asset), { force: true });
+  const orphanGone = await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: orphan.asset });
   const orphanRows = (() => {
     const state = openState(DEV_ROOT);
     try { return listArtifacts(state); } finally { state.close(); }
   })();
   ok('文件已经不在时那一行照样能删掉（清单是权威，用户点的是清单上的行）',
-    orphanGone.status === 200 && !orphanRows.some((row) => row.file === orphanFile));
+    orphanGone.status === 200 && !orphanRows.some((row) => row.asset === orphanFile));
 
   ok('再删一次明确报错（登记已经没了）',
-    (await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: doomed.src })).status === 400);
+    (await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: doomed.asset })).status === 400);
   ok('删除只接受 POST', (await call(del, 'GET', '/oks/delete')).status === 405);
   ok('删除缺字段明确报错', (await call(del, 'POST', '/oks/delete', { sessionId: 'probe' })).status === 400);
 
@@ -3859,18 +3846,18 @@ console.log('=== 界面那两条端点 ===');
   ok('保留只接受 POST', (await call(pin, 'GET', '/oks/pin')).status === 405);
   ok('清单缺 sessionId 明确报错', (await call(artifacts, 'GET', '/oks/artifacts')).status === 400);
   ok('保留缺字段明确报错', (await call(pin, 'POST', '/oks/pin', { sessionId: 'probe' })).status === 400);
-  ok('pinned 必须是布尔', (await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: `artifacts/${target?.file}`, pinned: 'yes' })).status === 400);
+  ok('pinned 必须是布尔', (await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: `artifacts/${target?.asset}`, pinned: 'yes' })).status === 400);
   ok('不存在的产物不静默成功',
     (await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: '.oks/figures/nope.bar.svg', pinned: true })).status === 400);
 
-  await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: `artifacts/${target?.file}`, pinned: false });
+  await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: `artifacts/${target?.asset}`, pinned: false });
 
   // 下载：报表内容原样交给浏览器（带 attachment 头），界面用一个普通链接就能下载。
-  const file = encodeURIComponent(String(target?.file));
+  const file = encodeURIComponent(String(target?.asset));
   const got = await call(download, 'GET', `/oks/download?sessionId=probe&file=${file}`);
   ok('GET 下载：报表内容原样返回', got.status === 200 && /<html/i.test(got.text));
   ok('下载带 attachment 头（浏览器才当下载）', /attachment/.test(got.headers['content-disposition'] ?? ''));
-  ok('下载带文件名', (got.headers['content-disposition'] ?? '').includes(String(target?.file)));
+  ok('下载带文件名', (got.headers['content-disposition'] ?? '').includes(String(target?.asset)));
   ok('下载只接受 GET', (await call(download, 'POST', `/oks/download?sessionId=probe&file=${file}`)).status === 405);
   ok('下载不接受路径', (await call(download, 'GET', '/oks/download?sessionId=probe&file=../state.db')).status === 400);
   const figureFile = (existsSync(join(DEV_ROOT, '.oks', 'figures'))
@@ -3945,30 +3932,31 @@ console.log('=== 界面那两条端点 ===');
 // ── 报表自足：它引用的材料全被回收之后，报表仍带着最终展示数据与每次操作 ──────────
 console.log('=== 报表自足（材料回收之后）===');
 {
-  const answer = await call('oks_query', { intents: await withKeys(countNamed) });
+  const answer = await call('oks_exec_query_intent', { intents: await withKeys(countNamed) });
   const first = (answer.value.results ?? [])[0] ?? null;
-  const src = first?.dataSrc;
+  const asset = first?.asset;
   const column = first?.columns?.[0]?.name;
-  const view = await call('oks_view', {
-    spec: { kind: 'table', src, title: '自足用表' },
+  const view = await call('oks_render_figure', {
+    spec: { kind: 'table', title: '自足用表' },
+    src: asset,
     name: 'self_contained_table',
   });
-  const figure = await call('oks_chart', {
+  const figure = await call('oks_render_figure', {
     spec: { kind: 'bar', x: column, value: column, title: '自足用图' },
-    src,
+    src: asset,
   });
-  const report = await call('oks_report', {
+  const report = await call('oks_render_report', {
     spec: {
       title: '自足（冒烟）',
-      ...reportSpec([`![自足用表](${view.value.viewSrc})`, '', `![自足用图](${figure.value.svgSrc})`].join('\n')),
+      ...reportSpec([`![自足用表](${view.value.asset})`, '', `![自足用图](${figure.value.asset})`].join('\n')),
     },
     name: 'probe_self_contained',
   });
   // 三份材料都被回收：数据、表、图。
-  for (const gone of [src, view.value.viewSrc, figure.value.svgSrc]) {
+  for (const gone of [asset, view.value.asset, figure.value.asset]) {
     rmSync(resolve(DEV_ROOT, gone), { force: true });
   }
-  const html = readFileSync(resolve(DEV_ROOT, report.value.htmlSrc), 'utf8');
+  const html = readFileSync(resolve(DEV_ROOT, report.value.asset), 'utf8');
   const parts = readReportPage(html);
   const itemValues = 'error' in parts ? [] : Object.values(parts.items);
   console.log(`  材料清空后：${'error' in parts ? 0 : Object.keys(parts.origin.nodes).length} 个节点 · `
@@ -3985,22 +3973,23 @@ console.log('=== 报表自足（材料回收之后）===');
 // ── 报表里的 JSON 块：数据里的尖括号要挡住（`<script>` 是 raw text，实体不还原）──────
 console.log('=== 来源结构的转义 ===');
 {
-  const nasty = '</script><img src=x onerror=alert(1)><!--';
+  const nasty = '</script><img asset=x onerror=alert(1)><!--';
   const literal = 'backslash-u003c: \\u003c';
   const made = await call('create_data', {
     name: 'nasty_rows',
     motivation: '冒烟：数据里带尖括号与转义序列',
     data: [{ text: nasty }, { text: literal }],
   });
-  const view = await call('oks_view', {
-    spec: { kind: 'table', src: made.value.dataSrc, title: '危险文本' },
+  const view = await call('oks_render_figure', {
+    spec: { kind: 'table', title: '危险文本' },
+    src: made.value.asset,
     name: 'nasty_table',
   });
-  const report = await call('oks_report', {
-    spec: { title: '转义（冒烟）', ...reportSpec(`![危险文本](${view.value.viewSrc})\n`) },
+  const report = await call('oks_render_report', {
+    spec: { title: '转义（冒烟）', ...reportSpec(`![危险文本](${view.value.asset})\n`) },
     name: 'probe_report_escape',
   });
-  const html = readFileSync(resolve(DEV_ROOT, report.value.htmlSrc), 'utf8');
+  const html = readFileSync(resolve(DEV_ROOT, report.value.asset), 'utf8');
   const raw = new RegExp(`<script type="application/json" id="${REPORT_METADATA_ID}">([\\s\\S]*?)</script>`).exec(html)?.[1] ?? '';
   ok('元数据块里没有裸的 <（`</script>` 挡得住）', raw !== '' && !raw.includes('<'));
   const escaped = readReportPage(html);
@@ -4012,31 +4001,32 @@ console.log('=== 来源结构的转义 ===');
   ok('页面上的单元格是转义后的文本，没有变成标签',
     html.includes('&lt;/script&gt;') && !html.includes('<img')
     && !/<script(?![^>]*type="application\/json")/.test(html));
-  for (const gone of [made.value.dataSrc, view.value.viewSrc]) rmSync(resolve(DEV_ROOT, gone), { force: true });
+  for (const gone of [made.value.asset, view.value.asset]) rmSync(resolve(DEV_ROOT, gone), { force: true });
 }
 
 // ── 报告侧四个工具：清单 → 取数（看）→ 取数（物化）→ 来源跟踪 ────────────────────
 console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
 {
   // 先造一份报告，再把它的三份材料删掉——验"报告自足，所以材料回收后照样能取数"。
-  const answer = await call('oks_query', { intents: await withKeys(countNamed) });
-  const rowsSrc = (answer.value.results ?? [])[0]?.dataSrc;
+  const answer = await call('oks_exec_query_intent', { intents: await withKeys(countNamed) });
+  const rowsSrc = (answer.value.results ?? [])[0]?.asset;
   const column = (answer.value.results ?? [])[0]?.columns?.[0]?.name;
-  const view = await call('oks_view', {
-    spec: { kind: 'table', src: rowsSrc, title: '取数用表' },
+  const view = await call('oks_render_figure', {
+    spec: { kind: 'table', title: '取数用表' },
+    src: rowsSrc,
     name: 'probe_extract_table',
   });
-  const figure = await call('oks_chart', {
+  const figure = await call('oks_render_figure', {
     spec: { kind: 'bar', x: column, value: column, title: '取数用图' },
     src: rowsSrc,
   });
-  const built = await call('oks_report', {
+  const built = await call('oks_render_report', {
     spec: {
       title: '取数（冒烟）',
       ...reportSpec([
         '## 一、级别与清除',
         '',
-        `![取数用表](${view.value.viewSrc})`,
+        `![取数用表](${view.value.asset})`,
         '',
         '| 手打 | 表 |',
         '| --- | --- |',
@@ -4044,15 +4034,15 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
         '',
         '### 1.1 明细',
         '',
-        `![取数用图](${figure.value.svgSrc})`,
+        `![取数用图](${figure.value.asset})`,
       ].join('\n')),
     },
     name: 'probe_extract_report',
   });
-  const reportSrc = built.value.htmlSrc;
+  const reportSrc = built.value.asset;
   // 图的读路径先验（下面就把它的材料删掉，用来验"报告自足"）。
   const viaChart = await call('jq_transform', {
-    inputs: { c: figure.value.svgSrc },
+    inputs: { c: figure.value.asset },
     byFile: prog('{kind: .c.spec.kind, rows: (.c.rows | length)}'),
   });
   console.log(`  jq 读图 → ${JSON.stringify(viaChart.value.data)}`);
@@ -4062,7 +4052,7 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
   // 读产物是**就地**的：图、表、报告的材料块在读的那一刻解析，不落派生文件。
   const dataFilesBefore = readdirSync(resolve(DEV_ROOT, '.oks', 'data')).length;
   const chartOrigin = await call('jq_transform', {
-    inputs: { c: { src: figure.value.svgSrc, root: '.origin' } },
+    inputs: { c: { src: figure.value.asset, root: '.origin' } },
     byFile: prog('{root: .c.root, kinds: [.c.nodes[].kind]}'),
   });
   const dataFilesAfter = readdirSync(resolve(DEV_ROOT, '.oks', 'data')).length;
@@ -4071,7 +4061,7 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
     chartOrigin.value.ok !== false && chartOrigin.value.data?.kinds?.includes('query')
     && dataFilesAfter === dataFilesBefore);
 
-  for (const gone of [rowsSrc, view.value.viewSrc, figure.value.svgSrc]) {
+  for (const gone of [rowsSrc, view.value.asset, figure.value.asset]) {
     rmSync(resolve(DEV_ROOT, gone), { force: true });
   }
   // 材料已经全部回收：读这份报告只有一条路——jq 投影它的 data。
@@ -4152,15 +4142,15 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
     name: 'origin_probe', motivation: '冒烟：读封装就是读它自己', data: [{ n: 1 }],
   });
   const beforeProbe = readdirSync(resolve(DEV_ROOT, '.oks', 'data')).length;
-  const probeJq = await call('jq_transform', { inputs: { p: probe.value.dataSrc }, byFile: prog('.p[0].n') });
+  const probeJq = await call('jq_transform', { inputs: { p: probe.value.asset }, byFile: prog('.p[0].n') });
   const probeOrigin = await call('jq_transform', {
-    inputs: { p: { src: probe.value.dataSrc, root: '.origin' } },
+    inputs: { p: { src: probe.value.asset, root: '.origin' } },
     byFile: prog('.p.nodes[.p.root].motivation'),
   });
   ok('读数据封装：jq 拿到的就是它的 data，读来源就地取 .origin，都不落新文件',
     probeJq.value.data === 1 && probeOrigin.value.data === '冒烟：读封装就是读它自己'
     && readdirSync(resolve(DEV_ROOT, '.oks', 'data')).length === beforeProbe);
-  rmSync(resolve(DEV_ROOT, probe.value.dataSrc), { force: true });
+  rmSync(resolve(DEV_ROOT, probe.value.asset), { force: true });
 
   // 报表来源块是"理解面"的权威：逐项带着最终展示数据、规格与根节点（工具的读法只是 jq 投影）。
   const reportParts = readReportPage(readFileSync(resolve(DEV_ROOT, reportSrc), 'utf8'));
@@ -4245,7 +4235,7 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
       on: () => () => {},
     }, {});
     ok('空目录里只放整个 lib/ 就能加载', typeof mod.apply === 'function' && captured.length === 1);
-    ok('技能正文来自内联（与 src/skill.md 逐字一致）',
+    ok('技能正文来自内联（与 asset/skill.md 逐字一致）',
       captured[0]?.content === readFileSync(new URL('./src/skill.md', import.meta.url), 'utf8'));
     const text = readFileSync(join(alone, 'index.mjs'), 'utf8');
     ok('助手提示词也内联在产物里（占位符在同一份源码里）',
@@ -4299,7 +4289,7 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
   }
 }
 
-// 结构区 XHTML（RFC 0008 的地基）：校验、缩水与读回都只走 src/report/xhtml.ts 这一层。
+// 结构区 XHTML（RFC 0008 的地基）：校验、缩水与读回都只走 asset/report/xhtml.ts 这一层。
 // 这里守的是三处输入各自的严格度：作者正文最严，我们自己的 .svg 与页面按词法进出。
 {
   const good = '<article id="a"><!-- 先看趋势。 --><h2>趋势</h2>'
@@ -4373,7 +4363,7 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     stripped.includes('<style>.a{fill:red}</style>') && stripped.includes('<path d="M0 0"></path>'));
 }
 
-// 报告页面（RFC 0008 §3）：元数据区 + 结构区，写出来与读回来都走 src/report/page.ts。
+// 报告页面（RFC 0008 §3）：元数据区 + 结构区，写出来与读回来都走 asset/report/page.ts。
 {
   const origin = {
     root: 'r1',
@@ -4386,8 +4376,8 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
   const archived = extractAssets(origin);
   const key = Object.keys(archived.assets)[0];
   ok('资源归档：key 是「文件名主干-源码哈希前 16 位」', /^count-[0-9a-f]{16}$/.test(key ?? ''));
-  ok('资源归档：节点改成 asset:// 引用，正文只存在于 assets',
-    archived.origin.nodes.t1?.byFile === `asset://${key}` && archived.origin.nodes.t1?.snip === undefined);
+  ok('资源归档：节点改成 src:// 引用，正文只存在于 assets',
+    archived.origin.nodes.t1?.byFile === `src://${key}` && archived.origin.nodes.t1?.snip === undefined);
   ok('资源归档：还原后与提取前逐字段一致',
     JSON.stringify(restoreAssets(archived.origin, archived.assets)) === JSON.stringify(origin));
   ok('资源归档：没有程序的节点原样保留',
@@ -4465,9 +4455,9 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     },
     valueOf: (ref, pick) => (pick === '.growth' ? { value: '12%' } : { error: `缺值 ${ref}${pick ?? ''}` }),
   });
-  ok('组装：产出页面、来源与资源（源码以 asset:// 引用）',
+  ok('组装：产出页面、来源与资源（源码以 src:// 引用）',
     !('error' in assembled) && assembled.page.includes(`id="${REPORT_METADATA_ID}"`)
-    && assembled.page.includes('asset://') && Object.keys(assembled.assets).length === 1);
+    && assembled.page.includes('src://') && Object.keys(assembled.assets).length === 1);
   ok('组装：图按出现顺序编号并戴上 chip',
     !('error' in assembled) && assembled.page.includes('图 1</span>趋势'));
   ok('组装：内联的图剥掉了它自己的材料块',
@@ -4549,7 +4539,7 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
   const nested = await call('create_data', {
     name: 'nested_probe', motivation: '冒烟：数组下标取值', data: { regions: [{ name: '华东' }, { name: '华北' }] },
   });
-  const arrayPick = await call('oks_report', {
+  const arrayPick = await call('oks_render_report', {
     spec: {
       title: '数组下标（冒烟）',
       articleFile: (() => {
@@ -4560,23 +4550,23 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
         reportBodies.push(file);
         return file;
       })(),
-      inputs: { nested: { src: nested.value.dataSrc, root: '.data' } },
+      inputs: { nested: { src: nested.value.asset, root: '.data' } },
     },
     name: 'probe_report_array_pick',
   });
-  const arrayHtml = readFileSync(resolve(DEV_ROOT, arrayPick.value.htmlSrc), 'utf8');
+  const arrayHtml = readFileSync(resolve(DEV_ROOT, arrayPick.value.asset), 'utf8');
   ok('正文取值支持数组下标（.regions.0.name）', arrayHtml.includes('华东'));
 
   // 加工结果要把"每个输入切了哪一段"记下来（输入切片是来源的一部分）。
   const slicedInput = await call('create_data', {
     name: 'slice_probe', motivation: '冒烟：记输入切片', data: { rows: [{ n: 1 }, { n: 2 }] },
   });
-  const slicedTransform = await call('jq_transform_into', {
-    name: 'slice_probe_out',
-    inputs: { src: { src: slicedInput.value.dataSrc, root: '.data.rows' } },
+  const slicedTransform = await call('jq_transform', {
+    save: { name: 'slice_probe_out', motivation: '冒烟：把这一步的结果留作下一步的输入' },
+    inputs: { src: { src: slicedInput.value.asset, root: '.data.rows' } },
     byFile: prog('[.src[] | .n]'),
   });
-  const slicedSaved = JSON.parse(readFileSync(resolve(DEV_ROOT, slicedTransform.value.dataSrc), 'utf8'));
+  const slicedSaved = JSON.parse(readFileSync(resolve(DEV_ROOT, slicedTransform.value.asset), 'utf8'));
   const slicedNode = slicedSaved.origin.nodes[slicedSaved.origin.root];
   ok('加工结果记下每个输入的切片（inputs + inputPaths 成对）',
     slicedNode.inputs?.src === slicedSaved.origin.root || typeof slicedNode.inputs?.src === 'string'
@@ -4624,7 +4614,7 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     name: 'big_probe', motivation: '冒烟：回执上限',
     data: { rows: Array.from({ length: 3000 }, (_, index) => ({ n: index, text: 'x'.repeat(24) })) },
   });
-  const bigRead = await call('jq_transform', { inputs: { r: bigRows.value.dataSrc }, byFile: prog('.r.rows') });
+  const bigRead = await call('jq_transform', { inputs: { r: bigRows.value.asset }, byFile: prog('.r.rows') });
   const bigError = (() => { try { return JSON.parse(bigRead.text).error; } catch { return null; } })();
   ok('回执超过 16 KiB 时不把数据交出去，而是给同形状的错误与更精确取法的提示',
     bigError?.code === 'payload_too_large' && bigError?.limitBytes === 16384
@@ -4666,12 +4656,12 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
 </article>`, 'utf8');
   reportBodies.push(litFile);
 
-  const goodCheck = await call('oks_report_check', { src: 'smoke_check_good.xhtml' });
+  const goodCheck = await call('oks_check_report', { articleFile: 'smoke_check_good.xhtml' });
   ok('报告校验工具：合规正文 valid=true 且零错误',
     goodCheck.value.valid === true && goodCheck.value.errors.length === 0);
-  const badCheck = await call('oks_report_check', { src: 'smoke_check_bad.xhtml' });
+  const badCheck = await call('oks_check_report', { articleFile: 'smoke_check_bad.xhtml' });
 
-  const litCheck = await call('oks_report_check', { src: litFile });
+  const litCheck = await call('oks_check_report', { articleFile: litFile });
   const unmarked = litCheck.value.NumWithoutSource.map((item) => item.snippet).join(' | ');
   ok('数字来源：没来源的数字报出来（带行列与片段）',
     litCheck.value.NumWithoutSource.length === 4

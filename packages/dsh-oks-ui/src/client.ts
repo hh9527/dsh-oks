@@ -25,7 +25,8 @@ import type { ReactElement } from 'react';
 
 /** 一条制品（与宿主侧 `ArtifactEntry` 同形）。 */
 interface ArtifactEntry {
-  file: string;
+  /** 产物在工作区里的相对路径（`.oks/figures/…` 那种）：回执里叫 `asset`，引用时当 `src` 用。 */
+  asset: string;
   name: string;
   kind: 'chart' | 'report';
   at: string;
@@ -237,7 +238,7 @@ window.__ModuleLoader__.load({
       return a.entries.every((entry, index) => {
         const other = b.entries[index];
         return other !== undefined
-          && entry.file === other.file && entry.title === other.title && entry.at === other.at
+          && entry.asset === other.asset && entry.title === other.title && entry.at === other.at
           && entry.kind === other.kind && entry.pinned === other.pinned;
       });
     };
@@ -419,7 +420,7 @@ window.__ModuleLoader__.load({
           }
           setBusy(true);
           try {
-            await postDelete(sessionId, `artifacts/${entry.file}`);
+            await postDelete(sessionId, `artifacts/${entry.asset}`);
             await load();   // 删完重读一次，列表立刻少一条
           } catch (cause) {
             setError(String((cause as Error)?.message ?? cause));
@@ -435,7 +436,7 @@ window.__ModuleLoader__.load({
           }
           setBusy(true);
           try {
-            await postPin(sessionId, `artifacts/${entry.file}`, !entry.pinned);
+            await postPin(sessionId, `artifacts/${entry.asset}`, !entry.pinned);
             await load();   // 落完状态重新读一次，界面与后台一致
           } catch (cause) {
             setError(String((cause as Error)?.message ?? cause));
@@ -557,7 +558,7 @@ window.__ModuleLoader__.load({
             return;
           }
           try {
-            ctx.sidebarRight.openResource(artifactAddress(sessionId, entry.file));
+            ctx.sidebarRight.openResource(artifactAddress(sessionId, entry.asset));
           } catch (cause) {
             setError(String((cause as Error)?.message ?? cause));
           }
@@ -565,7 +566,7 @@ window.__ModuleLoader__.load({
 
         const now = Date.now();
         const rows = listing.entries.map((entry) => createElement('div', {
-          key: entry.file,
+          key: entry.asset,
           className: 'oks-artifact-row',
           onClick: () => { openArtifact(entry); },
           title: '点一下在右栏新开一个页签打开它',
@@ -589,8 +590,8 @@ window.__ModuleLoader__.load({
           ? createElement('a', {
             key: 'download',
             className: 'oks-artifact-download',
-            href: downloadHref(sessionId, entry.file),
-            download: entry.file,
+            href: downloadHref(sessionId, entry.asset),
+            download: entry.asset,
             onClick: (event?: { stopPropagation?(): void }) => { event?.stopPropagation?.(); },
             title: '下载这份报表',
             'aria-label': '下载这份报表',
