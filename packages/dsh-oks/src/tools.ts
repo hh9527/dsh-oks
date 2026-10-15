@@ -236,6 +236,7 @@ const resolveReportDisplay = (root: string, href: string): { source: DisplaySour
 
 /** oks_chart 的入参：图表规格 + 恰好一个数据路径（src 或 data）。 */
 interface ChartArgs {
+  nodesSrc?: string;
   spec?: unknown;
   src?: unknown;
   data?: unknown;
@@ -623,6 +624,12 @@ const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: string } =
     return {
       error: 'gauge 需要 spec.x（每张仪表的名称列）与 spec.value（数值列）。它是比率型：值按 0–100 读，'
         + '要展示计数就先换算成占比，或者改用 bar / column。',
+    };
+  }
+  if (spec.kind === 'graph' && (spec.x === '' || spec.series === null)) {
+    return {
+      error: 'graph 需要 spec.x（边的起点列）与 spec.series（边的终点列）；spec.value 可选，'
+        + '填的是边的权重列。节点表另用 oks_chart 的 nodesSrc 给。',
     };
   }
   if (spec.kind === 'sankey' && (spec.x === '' || spec.series === null)) {
@@ -1862,6 +1869,10 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       parameters: {
         type: 'object',
         properties: {
+          nodesSrc: {
+            type: 'string',
+            description: 'graph 的节点表：一份行数据（前面回执给的 dataSrc / 文件路径）。每行一个节点，至少给 id 与 depth；可选 label / category / status / x / y。depth 由你在 jq 里算——拓扑深度、到某个节点的跳数、网络层级都行；给了 x 与 y 就用给的坐标。',
+          },
           spec: {
             type: 'object',
             description: 'Figure specification. kind is required: bar needs x (the category column) and value; column needs x and value — one bar per category, or grouped bars when series is given, or stacked ones when stack is given; line needs x and value (xType is inferred from the column, override it with number or time), plus an optional series for several lines; area is a line with the region below it filled, and takes the same fields as line (stack works here too); pie needs x (the slice label column) and value, and only positive values are drawn; scatter needs x and value (two numeric columns) and takes an optional size column for bubble charts; histogram needs only value (one numeric column) and shows how those values are distributed; box needs x (the category) and value, and draws one box per category; heatmap needs x (the horizontal category), series (the vertical category) and value, and colours each cell by its value — a combination with no row stays blank, not zero; radar needs x (the indicator), series (the object compared) and value, at least three indicators, and gives every indicator its own scale. title / xLabel / valueLabel / unit are display text you supply.',
@@ -1957,6 +1968,17 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         const file = readProduct(entry.settings.workspaceRoot, args.src);
         const rows = rowsOf(file.data, args.src);
         const columns = columnsOf(file.data, rows);
+        // 关系图的数据分两张表：边是 src，节点是 nodesSrc（每行一个节点，至少给 id 与 depth）。
+        let nodeRows: readonly Record<string, unknown>[] | undefined;
+        if (spec.kind === 'graph') {
+          if (typeof args?.nodesSrc !== 'string' || args.nodesSrc.length === 0) {
+            throw new Error('graph 需要 nodesSrc：一份行数据当节点表，每行一个节点，至少给 id 与 depth'
+              + '（depth 由你在 jq 里算：拓扑深度、到某个节点的跳数、网络层级都行）；'
+              + '节点表给了 x 与 y 就用给的坐标。');
+          }
+          const nodeFile = readProduct(entry.settings.workspaceRoot, args.nodesSrc);
+          nodeRows = rowsOf(nodeFile.data, args.nodesSrc);
+        }
         const missing = missingColumns(spec, columns, rows.length);
         if (missing.length > 0) {
           throw new Error(`这些列不在数据里：${missing.join(', ')}。可用的列：${columns.join(', ') || '(没有列)'}`);
@@ -1968,7 +1990,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         // 图里不写来源标签：同一份数据经过几层加工就归不到一个入口，标签说不清；
         // 要说来源，看随后嵌进去的那份来源链。
         // 所有图元都走同一条 echarts 链路：规格 + 结果行 → option → SVG。
-        const { option, height } = buildOption(rows, spec);
+        const { option, height } = buildOption(rows, spec, nodeRows);
         const svg = renderEchartsSvg(option, CHART_WIDTH, height);
         const title = chartTitle(spec);
         // 图把**自己用的那份材料**带上：画出来的行、绘图规格、完整来源链。

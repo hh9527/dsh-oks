@@ -9,7 +9,7 @@
 import * as echarts from 'echarts/core';
 // 图元清单在 shared.ts，但**每一种 series 类型都要在这里注册**：没注册的图元，echarts 会静默不画
 // （工具照样回 ok、SVG 一片空白）。加图元时同步这一行与下面的 use([...])。
-import { BarChart, BoxplotChart, GaugeChart, HeatmapChart, LineChart, PieChart, RadarChart, SankeyChart, ScatterChart } from 'echarts/charts';
+import { BarChart, BoxplotChart, GaugeChart, GraphChart, HeatmapChart, LineChart, PieChart, RadarChart, SankeyChart, ScatterChart } from 'echarts/charts';
 import {
   GraphicComponent,
   GridComponent,
@@ -36,6 +36,7 @@ echarts.use([
   ScatterChart,
   SankeyChart,
   GaugeChart,
+  GraphChart,
   GraphicComponent,
   GridComponent,
   LegendComponent,

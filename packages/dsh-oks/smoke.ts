@@ -2832,6 +2832,22 @@ console.log('=== oks_chart（服务端出图）===');
   ok('gauge：渲染出的 SVG 里有名称与数值（不是空白）',
     gaugeSvg.includes('可用率') && gaugeSvg.includes('88'));
 
+  // graph 走"两张表"的路：节点表与边表各自落成材料，再一起交给 oks_chart。
+  const graphNodeFile = await call('create_data', {
+    name: 'probe_graph_nodes',
+    motivation: '冒烟夹具：关系图的节点表（每行一个节点，至少给 id 与 depth）',
+    data: [{ id: 'core', label: '核心', depth: 0 }, { id: 'edge1', label: '接入', depth: 1 }],
+  });
+  const graphChart = (await chart({
+    spec: { kind: 'graph', x: 'from', series: 'to' },
+    data: [{ from: 'core', to: 'edge1', label: '经 site_id' }],
+    nodesSrc: graphNodeFile.value.dataSrc,
+    name: 'probe_graph_registered',
+  })).value;
+  const graphSvg = readFileSync(resolve(DEV_ROOT, graphChart.svgSrc), 'utf8');
+  ok('graph：渲染出的 SVG 里有节点名与关系名（不是空白）',
+    graphSvg.includes('核心') && graphSvg.includes('经 site_id'));
+
   const minimalSpec: Record<string, Record<string, unknown>> = {
     bar: { x: 'k', value: 'w' },
     line: { x: 'k', value: 'w' },
@@ -2847,6 +2863,7 @@ console.log('=== oks_chart（服务端出图）===');
     // （gauge 缺 x/value 时会被"必须给 x 与 value"拒掉，看起来却像开关不支持）。
     sankey: { x: 'k', series: 's', value: 'w' },
     gauge: { x: 'k', value: 'w' },
+    graph: { x: 'k', series: 's', value: 'w' },
   };
   const switchValue: Record<string, unknown> = {
     stack: 'total', size: 'w', bins: 4, second: { value: 'w' }, marks: [{ value: 1 }],
@@ -4648,6 +4665,67 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
   }
   ok('gauge：超出 0–100 明确报错并给出两条出路',
     gaugeOverflow.includes('0–100') && gaugeOverflow.includes('bar'));
+
+  const graphRows = [
+    { id: 'core', label: '核心', depth: 0 },
+    { id: 'agg', label: '汇聚', depth: 1 },
+    { id: 'acc1', label: '接入 1', depth: 2 },
+    { id: 'acc2', label: '接入 2', depth: 2 },
+  ];
+  const graphEdges = [
+    { from: 'core', to: 'agg' }, { from: 'agg', to: 'acc1' },
+    { from: 'agg', to: 'acc2' }, { from: 'agg', to: 'acc1' },   // 重复边 → 合并
+    { from: 'ghost', to: 'agg' },                                // 端点不在节点表 → 不进图
+  ];
+  const graphSpec = { kind: 'graph', title: null, x: 'from', series: 'to', value: '' };
+  const graphOf = (rows, spec, nodes) => (buildOption(rows, spec as never, nodes as never).option as {
+    series: Array<{ data: Array<{ name: string; x: number; y: number }>; links: unknown[] }>;
+  }).series[0]!;
+  const graphOne = graphOf(graphEdges, graphSpec, graphRows);
+  const graphTwo = graphOf(graphEdges, graphSpec, graphRows);
+  const at = new Map(graphOne.data.map((node) => [node.name, node]));
+  ok('graph：按 depth 分层（同层同列、层间递进）',
+    at.get('core')!.x < at.get('agg')!.x && at.get('agg')!.x < at.get('acc1')!.x
+    && at.get('acc1')!.x === at.get('acc2')!.x && at.get('acc1')!.y !== at.get('acc2')!.y);
+  ok('graph：两次渲染坐标一致（分层是确定的，不靠力引导）',
+    JSON.stringify(graphOne.data) === JSON.stringify(graphTwo.data));
+  ok('graph：重复边合并、端点不在节点表里的边不进图', graphOne.links.length === 3);
+  const parallel = graphOf(
+    [{ from: 'core', to: 'agg', label: '经 site_id' }, { from: 'core', to: 'agg', label: '经 region' },
+      { from: 'core', to: 'agg', label: '经 site_id' }],
+    graphSpec,
+    graphRows,
+  );
+  ok('graph：平行边按关系名区分（不同关系名各留一条，三样都相同才合并）',
+    parallel.links.length === 2
+    && (parallel.links as Array<{ label: string }>).map((link) => link.label).sort().join(',')
+      === '经 region,经 site_id');
+  const colored = graphOf([{ from: 'a', to: 'b' }], graphSpec, [
+    { id: 'a', category: '机房', depth: 0 }, { id: 'b', category: '机房', depth: 1 },
+    { id: 'c', category: '链路', depth: 2 },
+  ]);
+  ok('graph：category 决定颜色（同类同色、异类异色）',
+    (colored.data as Array<{ name: string; itemStyle?: { color?: string } }>)[0]!.itemStyle?.color
+      === (colored.data as Array<{ name: string; itemStyle?: { color?: string } }>)[1]!.itemStyle?.color
+    && (colored.data as Array<{ name: string; itemStyle?: { color?: string } }>)[0]!.itemStyle?.color
+      !== (colored.data as Array<{ name: string; itemStyle?: { color?: string } }>)[2]!.itemStyle?.color);
+
+  const focused = graphOf([{ from: 'a', to: 'b' }], graphSpec, [
+    { id: 'a', status: 'focus', depth: 0 }, { id: 'b', depth: 1 },
+  ]);
+  const focusNodes = focused.data as unknown as Array<{
+    name: string; symbolSize: number; itemStyle?: { color?: string };
+  }>;
+  ok('graph：status=focus 的节点强调、其余退为灰',
+    focusNodes[0]!.symbolSize > focusNodes[1]!.symbolSize
+    && focusNodes[1]!.itemStyle?.color === '#c8d2dc'
+    && focusNodes[0]!.itemStyle?.color !== '#c8d2dc');
+
+  let graphDepth = '';
+  try {
+    graphOf([{ from: 'a', to: 'b' }], graphSpec, [{ id: 'a' }, { id: 'b' }]);
+  } catch (cause) { graphDepth = String((cause as Error)?.message ?? cause); }
+  ok('graph：节点缺 depth 又没给坐标时明确报错', graphDepth.includes('depth'));
 
   const sankeySeries = (buildOption([
     { from: 'D1', to: 'kpi', w: 2 },

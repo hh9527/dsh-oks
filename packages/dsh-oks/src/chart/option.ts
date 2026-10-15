@@ -148,7 +148,11 @@ const emptyOption = (spec: OptionInput, layout: ReturnType<typeof resolveLayout>
  * 规格 + 结果行 → echarts option。
  * 所有图元共用同一套规则：色板按序列轮转、负值用区分色、空序列跳过、类别密度决定标签斜排。
  */
-export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: EChartsCoreOption; height: number } => {
+export const buildOption = (
+  rows: readonly Row[],
+  spec: OptionInput,
+  nodes: readonly Row[] | undefined = undefined,
+): { option: EChartsCoreOption; height: number } => {
   // 桑基图：行是**边**——`x` 起点、`series` 终点、`value` 权重（不填时每条边计 1）。
   // 布局由 echarts 从 DAG 自己分层，作者不给层级。它与别的图元不同，先于通用分组处理。
   if (spec.kind === 'sankey') {
@@ -286,6 +290,145 @@ export const buildOption = (rows: readonly Row[], spec: OptionInput): { option: 
     return {
       option: { title, series } as EChartsCoreOption,
       height: Math.max(160, titleGap + gaugeRows * cellHeight),
+    };
+  }
+
+  // 关系图：`x` / `series` 是**边**的两端（与 sankey 同一套列语义），节点来自第二张表（`nodesSrc`）。
+  // 布局默认**按 `depth` 列分层**（层号由 agent 在 jq 里算：拓扑深度、到中心的跳数、网络层级都成）；
+  // 节点表同时给了 `x`/`y` 就用给的坐标。力引导不做——排障图两次打开必须一样，随机观感不适合。
+  if (spec.kind === 'graph') {
+    const layout = resolveLayout({ categories: [], overrides: spec.layout ?? {}, defaultHeight: 340 });
+    const title = spec.title === null ? undefined : {
+      text: spec.title,
+      left: 'center' as const,
+      textStyle: { fontSize: layout.titleFont, fontWeight: 'bold' as const, color: '#1c2b3a' },
+    };
+    const palette = spec.style?.colors !== undefined && spec.style.colors.length > 0 ? spec.style.colors : SERIES_COLORS;
+    const titleGap = spec.title === null ? 0 : 34;
+    const parsed = (nodes ?? []).map((row) => ({
+      id: toLabel(row['id']),
+      label: toLabel(row['label'] === undefined ? row['id'] : row['label']),
+      depth: toNumber(row['depth']),
+      category: toLabel(row['category'] === undefined ? '' : row['category']),
+      status: toLabel(row['status'] === undefined ? '' : row['status']),
+      given: toNumber(row['x']) !== null && toNumber(row['y']) !== null
+        ? { x: toNumber(row['x'])!, y: toNumber(row['y'])! }
+        : null,
+    })).filter((node) => node.id !== '');
+    if (parsed.length === 0) {
+      throw new Error('graph 需要节点表：用 nodesSrc 指向一份行数据，每行一个节点，至少给 id 与 depth。');
+    }
+    // 同 id 只留先出现的那个；分层要的层号缺了就明确报错，不猜。
+    const unique = new Map<string, (typeof parsed)[number]>();
+    for (const node of parsed) if (!unique.has(node.id)) unique.set(node.id, node);
+    const all = [...unique.values()];
+    if (all.every((node) => node.given === null)) {
+      for (const node of all) {
+        if (node.depth === null) {
+          throw new Error(`节点 ${node.id} 没有 depth：分层布局要一列层号`
+            + '（在加工里算出来——拓扑深度、到某个节点的跳数、网络层级都行）；或者给每个节点 x 与 y 坐标。');
+        }
+      }
+    }
+    // 坐标：给了 x/y 就用它；否则按 depth 分列、层内按出现顺序从上到下（确定、可复现）。
+    const levels = [...new Set(all.filter((node) => node.given === null).map((node) => node.depth!))].sort((a, b) => a - b);
+    const columnGap = Math.max(120, Math.round((CHART_WIDTH - 180) / Math.max(levels.length - 1, 1)));
+    const rowGap = Math.max(30, Math.round(layout.labelFont * 2.4));
+    const seenInLevel = new Map<number, number>();
+    const placed = new Map<string, { x: number; y: number }>();
+    for (const node of all) {
+      if (node.given !== null) {
+        placed.set(node.id, node.given);
+        continue;
+      }
+      const index = seenInLevel.get(node.depth!) ?? 0;
+      seenInLevel.set(node.depth!, index + 1);
+      placed.set(node.id, { x: 90 + levels.indexOf(node.depth!) * columnGap, y: 40 + index * rowGap });
+    }
+    const deepest = Math.max(1, ...[...seenInLevel.values()]);
+    // 焦点用**数据**表达：节点或边写了 `status: 'focus'` 就强调它、其余退为灰；没有任何焦点时保持原样。
+    const focusNodes = new Set(all.filter((node) => node.status === 'focus').map((node) => node.id));
+    const anyFocus = focusNodes.size > 0 || rows.some((row) => toLabel(row['status'] ?? '') === 'focus');
+    const colorsOfCategories = new Map<string, string>();
+    const graphNodes = all.map((node) => {
+      const key = node.category === '' ? node.status : node.category;
+      if (key !== '' && !colorsOfCategories.has(key)) {
+        colorsOfCategories.set(key, palette[colorsOfCategories.size % palette.length]!);
+      }
+      return {
+        name: node.id,
+        x: placed.get(node.id)!.x,
+        y: placed.get(node.id)!.y,
+        symbolSize: focusNodes.has(node.id) ? 26 : anyFocus ? 12 : 18,
+        itemStyle: {
+          color: anyFocus && !focusNodes.has(node.id)
+            ? '#c8d2dc'
+            : key === '' ? palette[0]! : colorsOfCategories.get(key)!,
+        },
+        label: {
+          show: true,
+          formatter: node.label === '' ? node.id : node.label,
+          position: 'bottom' as const,
+          fontSize: layout.labelFont,
+          color: '#1c2b3a',
+          fontWeight: focusNodes.has(node.id) ? 'bold' as const : 'normal' as const,
+          textBorderColor: '#ffffff',
+          textBorderWidth: 3,
+        },
+      };
+    });
+    // 边按「起点 / 终点 / 关系名」去重：同一对节点之间的**不同关系名是信息**，各留一条并用曲率错开；
+    // 三样都相同的才合并。关系名取边表的 `label` 列（与节点表同一列名），没有就不写。
+    const graphLinks = new Map<string, { source: string; target: string; label: string; focused: boolean }>();
+    for (const row of rows) {
+      const source = toLabel(row[spec.x]);
+      const target = spec.series === null ? '' : toLabel(row[spec.series]);
+      if (source === '' || target === '' || source === target) continue;
+      if (!placed.has(source) || !placed.has(target)) continue;
+      const label = row['label'] === undefined ? '' : toLabel(row['label']);
+      const key = `${source}\u0000${target}\u0000${label}`;
+      if (!graphLinks.has(key)) {
+        graphLinks.set(key, {
+          source,
+          target,
+          label,
+          focused: toLabel(row['status'] ?? '') === 'focus',
+        });
+      }
+    }
+    if (graphLinks.size === 0) return { option: emptyOption(spec, layout), height: 240 };
+    return {
+      option: {
+        title,
+        series: [{
+          type: 'graph',
+          layout: 'none',
+          data: graphNodes,
+          links: [...graphLinks.values()].map((link, index) => ({
+            ...link,
+            // 同一对节点上的第 2、3 条边弯得更明显，免得叠在一起看不出来。
+            lineStyle: {
+              curveness: 0.08 + (index % 3) * 0.12,
+              color: link.focused ? '#5a8cf0' : anyFocus ? '#e4e9ef' : '#b9c6d8',
+              width: link.focused ? 2 : 1.2,
+            },
+          })),
+          edgeSymbol: ['none', 'arrow'],
+          edgeSymbolSize: 8,
+          lineStyle: { color: '#b9c6d8', width: 1.2 },
+          // 平行边用曲率错开；关系名写在边上，带白描边压在灰线上也读得清。
+          edgeLabel: {
+            show: true,
+            fontSize: Math.max(9, layout.labelFont - 2),
+            color: '#5c6b7a',
+            textBorderColor: '#ffffff',
+            textBorderWidth: 3,
+            formatter: (params: { data?: { label?: string } }) => params.data?.label ?? '',
+          },
+          label: { fontSize: layout.labelFont, color: '#1c2b3a' },
+        }],
+      } as EChartsCoreOption,
+      height: Math.max(240, titleGap + 80 + deepest * rowGap),
     };
   }
 

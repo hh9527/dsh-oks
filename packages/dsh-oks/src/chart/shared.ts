@@ -9,7 +9,7 @@ export type Row = Record<string, unknown>;
  *  否则加一个图元要改三处，漏掉一处就是"工具收下了、渲染认不得"（或反过来）。 */
 export const CHART_KINDS = [
   'bar', 'line', 'column', 'pie', 'area', 'scatter', 'histogram', 'box', 'heatmap', 'radar',
-  'sankey', 'gauge',
+  'sankey', 'gauge', 'graph',
 ] as const;
 export type ChartKind = (typeof CHART_KINDS)[number];
 
