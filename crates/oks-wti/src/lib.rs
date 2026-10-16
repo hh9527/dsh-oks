@@ -8,6 +8,7 @@
 //! C ABI：`alloc` / `dealloc` / `run` / `load_document` / `run_document`。
 //! `run` 的返回缓冲：`[status u8][len u32 LE][payload]`，status 0 = 结果，1 = 错误。
 
+mod diagnostic;
 mod format;
 mod maths;
 mod regexp;
@@ -83,7 +84,7 @@ fn evaluate_value(program: &str, path: &str, input: Val, max_chars: usize) -> Re
     let mut out = String::from("[");
     let mut truncated = false;
     for value in filter.id.run((ctx, input)) {
-        let value = jaq_core::unwrap_valr(value).map_err(|e| format!("{e}"))?;
+        let value = jaq_core::unwrap_valr(value).map_err(diagnostic::runtime_error)?;
         let text = value.to_string();
         let separator = usize::from(out.len() > 1);
         // 放不下就停在这里（`+1` 是闭合的 `]`），已经收下的值一个都不丢。

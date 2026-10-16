@@ -1,11 +1,11 @@
-// dsh-oks —— DSH 能力扩展：把"某个领域的知识服务（OKS）"接成十九个原生工具。
+// dsh-oks —— DSH 能力扩展：把"某个领域的知识服务（OKS）"接成原生工具。
 // 插件不认识任何模型：开放哪个模型、模型在哪，由**会话所在工作区**根目录的 oks.json 声明
 // （{"domain":"...","model":"...wasm","dataFile":"...sqlite"}）。
 // 工作区是会话属性，所以一份插件能服务任意多工作区。
 //
-// 十九个工具：oks_search（按名词/说法在词汇表里找到 key）、
+// 工具包括：oks_search（按名词/说法在词汇表里找到 key）、
 // oks_references（按 key 反向找到引用它的节点）、
-// oks_info（按服务给出的不透明 key 读节点，入口是 key "index"）、
+// kq（在常驻知识图上投影或运行 jq，默认入口是 .guide）、
 // oks_check_query_intent（只校验命名 Intent；通过的项给出该项的 key）、
 // oks_exec_query_intent（核 key 后**只读查询**数据文件，成功项落盘、回结构回执；SQL/bindings 只在这一条路径上出现）、
 // create_data（把 agent 自己给的数据落成一份封装——给定数据的唯一入口）、
@@ -32,6 +32,8 @@
 
 // 出图的 lowering 与渲染层也在这里导出：插件入口是单文件打包，导出它们便于单独测试，
 // 对宿主没有影响（宿主只认 apply 与 inject）。
+export { createProjector } from './project.ts';
+export type { JsonValue, ProjectRule, Projector } from './project.ts';
 export { buildOption, CHART_WIDTH, plotHeight } from './chart/option.ts';
 // 产物的命名规则也导出：它是对外可核对的约定（名字里那段 = 文件内容的 sha256 前 8 位），
 // 冒烟按它断言，别的工具按它解析。
@@ -43,7 +45,7 @@ export { renderMarkdown } from './chart/markdown.ts';
 // 外加一个与模型无关的上下文工具：create_current_ctx_data —— 把当轮会话上下文（时刻与时区）
 // **读一次**并落成 .oks/data/ 下的材料。服务不读时钟，求值器里也没有时钟：相对时间的绝对边界
 // 只能由这份材料在 jq 里算出来（tzadd / tzfloor / tzceil），于是一组问题共用一个时间基准。
-// 第十五个是 va_ask：咨询一个**词汇助手**——插件自己建（顶层 agent，同工作区、同 preset）、
+// va_ask：咨询一个**词汇助手**——插件自己建（顶层 agent，同工作区、同 preset）、
 // 自己喂（**把整份词表渲染成一条提示词**，加上角色与回答方法）、自己收（每次拿到回答后把问答
 // 从模型可见表面收回到标记点）；助手没有任何工具，每轮只看到「词汇 + 方法 + 标记 + 当前这个问题」，
 // 会话日志保持 append-only。
@@ -51,8 +53,8 @@ export { renderMarkdown } from './chart/markdown.ts';
 // 词汇表与引用图：第一次用到检索时（三个检索出口都用这一份），插件按服务声明的**发现契约**
 // （`<domain>/discovery` 声明 revision、入口 roots、每类 key 的 key 模式，以及哪些 kind 进
 // 词汇表、每类词条的归属字段与必须非空的字段；沿 `info` 的引用图走完，再在本地派生）在内存里
-// 建好词汇表与反向引用索引，之后整个进程按模型内容的 sha256 复用。索引里只有词汇与
-// 引用边，不含节点内容——读节点始终由 oks_info 透传给服务。它不进模型上下文。
+// 建好词汇表与反向引用索引，之后整个进程按模型内容的 sha256 复用。知识图保留完整节点，
+// 由 kq 按需读取；词汇表与引用索引用于检索。完整知识不进模型上下文。
 //
 // **查询与加工的结果都落在内部材料目录**：查询写 `<时间>-<名字>-<内容哈希>.qres.json`，
 // 加工写 `<时间>-<名字>-<内容哈希>.tr.json`，agent 自填的输入数据写 `.def.json`——
@@ -118,10 +120,7 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
     const render = definition.output.render.bind(definition.output);
     // 超限时交出去的那句话按工具来：知识节点与工作区产物是两种东西，把"怎么取小一点"指错路比不说更糟。
     const oversizeHint = definition.name === 'kq'
-      ? '用 kq 的 byFile 程序缩小筛选、投影、聚合或分段读取；省略 byFile 可读自述入口。'
-      : definition.name === 'oks_info'
-      ? '回执太大，没有交给你。这是服务声明里的一个大节点：先用 oks_search 按 dataset / kind 把它下面的'
-        + '成员列出来，再按 key 逐个读小节点。知识节点不在工作区里，jq_transform 读不到它。'
+      ? '用 project 选择所需字段或以 "$shape" 探测形状；需要复杂筛选、聚合或分段读取时，用 kq 的 byFile 程序。'
       : '回执太大，没有交给你。用更精确的取法再来一次：jq_transform 里用 pick 取一个字段，'
         + '或在 byFile 的程序里聚合与投影（length / group_by / map({…})）；'
         + '要整块数据就让它留在文件里，用 root 只取你要的那一段。'

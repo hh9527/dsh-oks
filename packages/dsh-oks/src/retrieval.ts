@@ -183,19 +183,25 @@ function deriveIndex(nodes: KnowledgeNode[], contract: {
   const datasets = [...new Set(terms
     .filter((term) => term.owner === 'dataset')
     .map((term) => String(term.ownerValue)))].sort();
+  if (byKey.has('guide')) throw new Error('dsh-oks: 知识 key guide 与内置读取入口冲突。');
   return {
-    knowledge: {
-      index: 'guide',
-      guide: {
-        说明: 'discovery 是服务声明的发现契约；documents 是原始知识 key 到节点全文的映射。',
-        起点: '读取 .documents.index 获得领域入口；读取 .discovery 了解服务声明的发现方式。',
-        寻址: '将知识返回的 key 原样作为 documents 的对象键读取词条。',
-        关联: '节点 links 中的 key 指向 documents 中的词条，关系含义以知识声明为准。',
-        范围: '包含发现入口沿 links 与 Index.detail.schemas 可达的全部节点。',
-      },
-      discovery: contract.discovery,
-      documents: Object.fromEntries(nodes.map((node) => [node.key, node])),
-    },
+    knowledge: Object.fromEntries([
+      ...nodes.map((node) => [node.key, node] as const),
+      ['guide', {
+        type: 'Index',
+        key: 'guide',
+        description: '知识图的读取指引与发现契约。',
+        detail: {
+          说明: '知识图是以原始知识 key 为键、以带 type 的完整条目为值的对象。',
+          起点: '读取 .index 获得领域入口；发现契约中的 roots 也是可读取的入口 key。',
+          寻址: '将知识返回的 key 原样作为顶层对象键读取条目，例如 .["index"]。',
+          关联: '条目 links 中的 key 指向同一对象中的条目，关系含义以知识声明为准。',
+          范围: '包含发现入口沿 links 与 Index.detail.schemas 可达的全部节点。',
+          discovery: contract.discovery,
+        },
+        links: [{ key: 'index', type: 'Related' }],
+      }],
+    ]),
     revision: contract.revision,
     terms,
     keys: new Set(byKey.keys()),
@@ -219,7 +225,7 @@ function kindError(index: RetrievalIndex, kind: string, where: string): Error {
       + `词汇表收录的 kind：${available}。`);
   }
   return new Error(`dsh-oks: ${where} 的 kind ${kind} 不可检索：它有声明的 key 模式 ${pattern}，`
-    + `但不属这个产物的词汇表；这类 key 从节点自身的引用里得到（oks_info / oks_references）。`
+    + `但不属这个产物的词汇表；这类 key 从节点自身的引用里得到（kq / oks_references）。`
     + `词汇表收录的 kind：${available}。`);
 }
 
@@ -430,7 +436,7 @@ export function renderSearch(_args: unknown, value: SearchResult): RenderBlock[]
       '换个说法，或用 kind= / dataset= 收窄。');
   } else {
     for (const row of value.matched) lines.push(termLine(row));
-    lines.push('', '用 index 里声明的 key 模式把 kind/name[/owner] 拼成 key，再用 oks_info 读节点。');
+    lines.push('', '用 index 里声明的 key 模式把 kind/name[/owner] 拼成 key，再用 kq 按顶层 key 读节点。');
   }
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }

@@ -4,6 +4,8 @@ import { statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { capLine } from './text.ts';
 import { runJaq } from './jaq.ts';
+import { createProjector } from './project.ts';
+import type { JsonValue, ProjectRule } from './project.ts';
 import type { JaqOutcome } from './jaq.ts';
 import { buildOption, CHART_WIDTH } from './chart/option.ts';
 import { renderEchartsSvg } from './chart/echarts.ts';
@@ -43,10 +45,15 @@ import { appendNode, ARTIFACT_DIR, chainLines, DEFAULT_ROOT, embedChartInput, FI
 import type { ColumnInfo, DataOrigin, Envelope, OriginNode, SaveArtifactOptions } from './results.ts';
 
 
-/** oks_info 的入参。 */
-interface InfoArgs {
-  key?: unknown;
-}
+/** 递归规则由公共投影函数完整校验；参数 schema 描述四种合法外形。 */
+const PROJECT_PARAMETER = {
+  description: 'Pure JSON projection rule: "*" keeps a value, "$shape" returns its type and size (objects also list up to 20 sorted keys), an object selects literal own keys and recursively projects their values, and [rule] applies one rule to every array element or object value. Missing keys stay absent; object rules pass non-objects through and [rule] passes scalars/null through. Pass object and array rules as nested JSON values. Full call example: kq({"project":{"guide":"*","index":"$shape"}}). String rules are exactly "*" or "$shape". String size counts Unicode code points. Projection preserves the input and creates no files.',
+  oneOf: [
+    { type: 'string', enum: ['*', '$shape'] },
+    { type: 'object', additionalProperties: true },
+    { type: 'array', items: {} },
+  ],
+};
 
 /** oks_check_query_intent / oks_exec_query_intent 的入参：命名对象（名字 → Intent）。
  *  query 路径的每项形如 {intent, key}，check 路径的值就是 Intent 本身。 */
@@ -1487,22 +1494,35 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
   const definitions: ToolDefinition[] = [
     {
       name: 'kq',
-      description: 'Explore this workspace’s knowledge graph with jq. The program input (.) is the built-in knowledge object. Call with {} first: the default program .[.index] reads its self-description, which explains the structure and where to go next. Discover field names, knowledge keys and relationships there, then write a jq program in a .work/ .jq file with work_write and pass its name as byFile. Read, filter and join the knowledge in one program; use the canonical IDs declared by the knowledge when constructing query Intents. The graph stays loaded between calls. The engine and value-stream semantics are the same as jq_transform: one output is that value, several are an array, none is []. Only the complete result is returned; narrow the program when output exceeds the context budget. This tool reads knowledge; data queries and materialisation use their own tools.',
+      description: 'Explore this workspace’s knowledge graph. Call with {} first to read the self-description at .guide; discover field names, knowledge keys and relationships there. Choose project for a pure JSON projection of the entire graph in one call, or byFile for a jq program written with work_write into a .work/ .jq file. Projection runs in JS on the loaded graph and returns one value; use "$shape" to inspect a part before expanding it. A jq program receives the graph as its input (.); filter, join and aggregate there, with one output returned as that value, several as an array, none as []. The graph stays loaded between calls. Use canonical IDs declared by the knowledge when constructing query Intents. Only complete results are returned; narrow the fields or query when output exceeds the context budget. Data queries and materialisation use their own tools.',
       parameters: {
         type: 'object',
         properties: {
-          byFile: { type: 'string', description: 'Optional .work/ .jq program file, e.g. knowledge_query.jq. Omit it to read the self-description with .[.index]. The program receives the knowledge graph directly as its input.' },
+          project: PROJECT_PARAMETER,
+          byFile: { type: 'string', description: 'Optional .work/ .jq program file, e.g. knowledge_query.jq. Choose byFile or project. Omit both to read the self-description with .guide. The program receives the knowledge graph directly as its input.' },
         },
         additionalProperties: false,
       },
       output: { schema: OBJECT_OUTPUT, render: renderValue },
-      async execute(args: { byFile?: unknown }, exec: ToolExec) {
-        if (!isRecord(args) || Object.keys(args).some((key) => key !== 'byFile')) {
-          throw new Error('kq 只接受可选的 byFile：程序读取内置知识图；省略时读取自述入口。');
+      async execute(args: { byFile?: unknown; project?: unknown }, exec: ToolExec) {
+        if (!isRecord(args) || Object.keys(args).some((key) => key !== 'byFile' && key !== 'project')) {
+          throw new Error('kq 接受 project 或 byFile；省略两者时读取自述入口。');
         }
+        const hasProject = Object.hasOwn(args, 'project');
+        if (hasProject && Object.hasOwn(args, 'byFile')) throw new Error('kq 的 project 与 byFile 二选一。');
+        const projector = hasProject ? createProjector(args.project as ProjectRule) : undefined;
         const entry = knowledge.ensureWorkspace(exec);
+        const hint = '用 project 选择字段或以 "$shape" 探测形状；复杂筛选、聚合或分段读取用 byFile 的 jq 程序。';
+        if (projector !== undefined) {
+          const started = Date.now();
+          const index = await knowledge.ensureIndex(entry);
+          const data = projector(index.knowledge as JsonValue);
+          log(`[oks] kq · model=${entry.modelHash.slice(0, 12)} domain=${entry.settings.domain}`
+            + ` · project → 1 个值 · ${Date.now() - started} ms`);
+          return payloadGuard('kq', { ok: true as const, outputs: 1, data }, hint);
+        }
         const code = args.byFile === undefined
-          ? { text: '.[.index]', file: undefined }
+          ? { text: '.guide', file: undefined }
           : readCodeFile(entry.settings.workspaceRoot, args.byFile);
         const started = Date.now();
         const result = await knowledge.queryKnowledge(entry, code.text, {
@@ -1510,8 +1530,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           signal: exec?.signal, ...(code.file === undefined ? {} : { programFile: code.file }),
         });
         log(`[oks] kq · model=${entry.modelHash.slice(0, 12)} domain=${entry.settings.domain}`
-          + ` · program=${code.file ?? '.[.index]'} → ${result.values.length} 个值 · ${Date.now() - started} ms`);
-        const hint = '用 kq 的 byFile 程序缩小筛选、投影、聚合或分段读取；知识结构从默认入口 .[.index] 发现。';
+          + ` · program=${code.file ?? '.guide'} → ${result.values.length} 个值 · ${Date.now() - started} ms`);
         if (result.truncated) return truncatedError('kq', hint);
         return payloadGuard('kq', {
           ok: true as const, outputs: result.values.length,
@@ -1520,41 +1539,8 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       },
     },
     {
-      name: 'oks_info',
-      description: 'Read one knowledge node of this workspace\'s knowledge service by its opaque string key. Start with key "index" — the one key you may supply from memory; it tells you where to go next. From there, follow the keys the service returns, whatever shape it declares, and copy each key verbatim: never construct, split or decode one. Use only the canonical IDs the service declares when writing Intents; display names and physical column names are not substitutes.',
-      parameters: {
-        type: 'object',
-        properties: {
-          key: {
-            type: 'string',
-            description: 'Opaque knowledge key, copied verbatim from what the service returned — another node, a link, or a diagnostic. "index" is the one key you may supply from memory.',
-          },
-        },
-        required: ['key'],
-        additionalProperties: false,
-      },
-      output: { schema: OBJECT_OUTPUT, render: renderJson },
-      async execute(args: InfoArgs, exec: ToolExec) {
-        const entry = knowledge.ensureWorkspace(exec);
-        const method = `${entry.settings.domain}/info`;
-        const request = args?.key !== undefined && args?.key !== null ? { key: args.key } : null;
-        if (request === null) {
-          return {
-            trace: [{
-              method,
-              request: {},
-              response: { error: true, diagnostics: [{ message: 'oks_info needs a knowledge key' }] },
-            }],
-          };
-        }
-        const runner = entry.runner!;
-        const response = await runner.send(method, request, exec?.signal);
-        return { trace: [{ method, request, response }] };
-      },
-    },
-    {
       name: 'oks_search',
-      description: 'Find this workspace\'s knowledge vocabulary by name, alias or description and get what you need to address a node: its kind, its name, its owner, where the term matched and how well. Keys are not returned — compose the key with the pattern the service declares for that kind in index.detail.key_patterns, then read the node with oks_info. That is how a knowledge key is addressed; an Intent key is a different thing, handed to you by oks_check_query_intent and never composed. Use it when you know what a thing is called but not its key; narrow with kind= or dataset=, and page with skip=.',
+      description: 'Find this workspace\'s knowledge vocabulary by name, alias or description and get what you need to address a node: its kind, its name, its owner, where the term matched and how well. Keys are not returned — compose the key with the pattern the service declares for that kind in index.detail.key_patterns, then read the node with kq. That is how a knowledge key is addressed; an Intent key is a different thing, handed to you by oks_check_query_intent and never composed. Use it when you know what a thing is called but not its key; narrow with kind= or dataset=, and page with skip=.',
       parameters: {
         type: 'object',
         properties: {
@@ -1581,7 +1567,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_references',
-      description: 'List what references a knowledge key, from the reference graph the plugin derives when the vocabulary is built. Each row names the reference kind and the referencing node\'s key, so you can read that node with oks_info or follow it further. Use it to see what depends on a term before you change how you address it.',
+      description: 'List what references a knowledge key, from the reference graph the plugin derives when the vocabulary is built. Each row names the reference kind and the referencing node\'s key, so you can read that node with kq or follow it further. Use it to see what depends on a term before you change how you address it.',
       parameters: {
         type: 'object',
         properties: {
@@ -2395,7 +2381,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'va_ask',
-      description: 'Consult this session\'s vocabulary helper and get its answer back: send one paraphrase — a word, a phrase or a sentence, any language — and you receive the vocabulary\'s own equivalent or near expressions, one per line and verbatim. The helper holds the whole vocabulary in its system prompt, so the first call sets it up and takes longer; each later call is one question. Treat what it returns as leads: look the strings up with oks_search and read the declarations with oks_info.',
+      description: 'Consult this session\'s vocabulary helper and get its answer back: send one paraphrase — a word, a phrase or a sentence, any language — and you receive the vocabulary\'s own equivalent or near expressions, one per line and verbatim. The helper holds the whole vocabulary in its system prompt, so the first call sets it up and takes longer; each later call is one question. Treat what it returns as leads: look the strings up with oks_search and read the declarations with kq.',
       parameters: {
         type: 'object',
         properties: {

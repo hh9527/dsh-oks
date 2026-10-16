@@ -106,7 +106,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['kq', 'work_read', 'work_write', 'work_edit', 'work_list', 'work_delete', 'oks_search', 'oks_references', 'oks_info', 'oks_check_query_intent', 'oks_exec_query_intent', 'create_data', 'jq_transform', 'oks_render_figure', 'oks_check_report', 'oks_render_report', 'oks_artifacts', 'create_current_ctx_data', 'va_ask'];
+const EXPECTED_TOOLS = ['kq', 'work_read', 'work_write', 'work_edit', 'work_list', 'work_delete', 'oks_search', 'oks_references', 'oks_check_query_intent', 'oks_exec_query_intent', 'create_data', 'jq_transform', 'oks_render_figure', 'oks_check_report', 'oks_render_report', 'oks_artifacts', 'create_current_ctx_data', 'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -223,7 +223,7 @@ const reportSpec = (markdown) => {
   return { articleFile: file, inputs };
 };
 
-const foundOf = (value) => value?.trace?.[0]?.response?.ok?.Document?.Found;
+const foundOf = (value) => Object.values(value?.data ?? {})[0];
 // 每个实例一套独立的假 ctx：工具表、事件表（按名字收全部监听器）、日志。disposer 统一在最后收尾。
 const makeHarness = (config = {}) => {
   const tools = new Map();
@@ -244,7 +244,7 @@ const buildCtx = (config) => {
   const harness = makeHarness(config);
   return { tools: harness.tools, events: harness.events, logs: harness.logs };
 };
-// 只有 oks_info / oks_check_query_intent / oks_exec_query_intent 需要工作区；时间工具不需要。
+// 知识与查询工具需要工作区；时间工具不需要。
 const NOWHERE = `${SCRATCH}/nowhere`;
 mkdirSync(NOWHERE, { recursive: true });
 
@@ -386,7 +386,7 @@ console.log('=== 会话上下文材料 ===');
 
   // 会话头里没有 cwd 时明确报错，而不是回落到别的目录
   try {
-    await registered.get('oks_info').execute({ key: 'index' }, { signal: new AbortController().signal, agent: { session: { meta: {} } } });
+    await registered.get('kq').execute({}, { signal: new AbortController().signal, agent: { session: { meta: {} } } });
     console.log('  ✗ 会话头没有 cwd 却成功了');
     throw new Error('没有 cwd 时不应成功');
   } catch (cause) {
@@ -412,34 +412,115 @@ const refusalOf = async (run) => {
   try { await run(); return null; } catch (cause) { return String(cause?.message ?? cause); }
 };
 
+// 可指定实际宿主的 dsh-tools 模块，覆盖 schema/SDK 层而非仅直调工具。
+if (process.env.OKS_TOOLS_MODULE) {
+  const host = await import(pathToFileURL(resolve(process.env.OKS_TOOLS_MODULE)).href);
+  for (const name of ['kq']) {
+    const schema = registered.get(name).parameters;
+    host.assertSupportedJsonSchema(schema);
+    ok(`${name} 参数 schema 属于宿主支持的子集`, true);
+    const args = { project: { datasets: '$shape', index: '$shape' } };
+    ok(`${name} 宿主 schema 接受嵌套对象`, host.validateJsonSchemaValue(schema, args).length === 0);
+    ok(`${name} 宿主 schema 拒绝 JSON 字符串对象`, host.validateJsonSchemaValue(schema, {
+      ...args, project: JSON.stringify(args.project),
+    }).length > 0);
+    const sdk = host.jsonSchemaToTs(schema);
+    ok(`${name} 生成 SDK 包含对象与数组类型`, sdk.includes('Record<string, JsonValue>') && sdk.includes('JsonValue[]'));
+  }
+}
+
+console.log('=== project：JS 读取投影与形状探测 ===');
+{
+  // 只复制 JS 产物到临时目录，验证纯投影无需 WTI，原产物保持原样。
+  const alone = mkdtempSync(join(tmpdir(), 'oks-project-'));
+  const projectionTools = new Map();
+  const cleanup = [];
+  copyFileSync(fileURLToPath(new URL('./lib/index.mjs', import.meta.url)), join(alone, 'index.mjs'));
+  const plugin = await import(pathToFileURL(join(alone, 'index.mjs')).href);
+  plugin.apply({
+    ...ctx,
+    logger: { info: () => {} }, get: () => undefined,
+    tools: { register: (tool) => { projectionTools.set(tool.name, tool); return () => {}; } },
+    effect: (fn) => { const dispose = fn(); if (typeof dispose === 'function') cleanup.push(dispose); },
+    inject: () => {}, on: () => () => {},
+  }, {});
+  const call = async (name, args) => {
+    const tool = projectionTools.get(name);
+    const value = await tool.execute(args, { signal: new AbortController().signal, ...sessionFor(DEV_ROOT) });
+    return { value, text: tool.output.render(args, value).map((block) => block.text ?? '').join('') };
+  };
+  try {
+    const discovered = await call('kq', { project: '$shape' });
+    ok('无 WTI 时可直接投影整个知识图', discovered.value.ok && discovered.value.outputs === 1
+      && discovered.value.data.type === 'object' && discovered.value.data.size > 0);
+    ok('知识摘要键名列表有界', discovered.value.data.keys.length <= 20);
+    const projected = await call('kq', { project: { index: { key: '*', detail: '$shape' } } });
+    ok('多层对象投影保持完整外壳', projected.value.data.index.key === 'index'
+      && projected.value.data.index.detail.type === 'object');
+    const whole = await call('kq', { project: '*' });
+    ok('整图超限报告实际字节数且无半份数据', whole.value.error?.code === 'payload_too_large'
+      && whole.value.error.actualBytes > 256 * 1024 && whole.value.data === undefined);
+    const tiny = await call('kq', { project: {} });
+    ok('空对象投影仍是一个输出值', tiny.value.outputs === 1 && JSON.stringify(tiny.value.data) === '{}');
+    for (const tool of ['kq']) {
+      const args = { project: JSON.stringify({ datasets: '$shape', index: '$shape' }) };
+      const quoted = await refusalOf(() => call(tool, args));
+      ok(`${tool} 双重编码规则提示实际类型与正确调用`, /收到 string/.test(quoted ?? '') && quoted.includes('对象规则直接嵌套传入'));
+    }
+    const both = await refusalOf(() => call('kq', { byFile: 'unused.jq', project: '*' }));
+    ok('project 与 byFile 在读取文件前拒绝混用', /二选一/.test(both ?? ''));
+    for (const tool of ['kq']) {
+      const invalid = await refusalOf(() => call(tool, { project: { docs: ['$bad'] } }));
+      ok(`${tool} 完整校验规则且报错带位置`, invalid?.includes('$["docs"][0]'));
+      const nullRule = await refusalOf(() => call(tool, { project: null }));
+      ok(`${tool} 显式 null 是非法规则`, /非法/.test(nullRule ?? ''));
+    }
+  } finally {
+    for (const dispose of cleanup.reverse()) await dispose();
+    rmSync(alone, { recursive: true, force: true });
+  }
+}
+
 console.log('=== kq：知识发现、值流与独立求值 ===');
 {
   const [a, b] = await Promise.all([call('kq', {}), call('kq', {})]);
   ok('默认入口可发现结构，并发调用结果一致',
-    a.value.ok && a.value.data.说明.includes('documents') && JSON.stringify(a.value) === JSON.stringify(b.value));
-  const looked = await call('kq', { byFile: prog('.documents.index') });
-  const original = foundOf((await call('oks_info', { key: 'index' })).value);
+    a.value.ok && a.value.data.key === 'guide' && a.value.data.type === 'Index' && JSON.stringify(a.value) === JSON.stringify(b.value));
+  const looked = await call('kq', { byFile: prog('.index') });
+  const original = foundOf((await call('kq', { project: { ['index']: '*' } })).value);
   ok('kq 保留原始 index 节点全文', JSON.stringify(looked.value.data) === JSON.stringify(original));
-  const joined = await call('kq', { byFile: prog('.documents as $docs | [$docs.index.links[] | $docs[.key].key]') });
+  const largest = await call('kq', { byFile: prog('to_entries | max_by(.value | tojson | length) | .key') });
+  const big = await call('kq', { byFile: prog(`.[${JSON.stringify(largest.value.data)}] as $node | [range(10) | $node]`) });
+  ok('大节点批量读取被回执预算拒绝', big.value.error?.code === 'payload_too_large');
+  const trimmed = await call('kq', { project: { [largest.value.data]: { key: '*', detail: '$shape' } } });
+  ok('大节点可先投影再检查预算', trimmed.value.data[largest.value.data].key === largest.value.data
+    && trimmed.value.data[largest.value.data].detail.type === 'object' && Buffer.byteLength(trimmed.text) < 16384);
+  ok('kq 超限提示引导 project', big.value.error.hint.includes('project'));
+  const direct = await call('kq', { project: { index: '*' } });
+  ok('JS 读取与 jq 读取为同一知识原文', JSON.stringify(direct.value.data.index) === JSON.stringify(original));
+  ok('oks_info 不暴露为工具', !registered.has('oks_info'));
+  const typed = await call('kq', { byFile: prog('all(.[]; (.type | type) == "string")') });
+  ok('知识图顶层每项均为带类型的条目', typed.value.data === true);
+  const joined = await call('kq', { byFile: prog('. as $docs | [$docs.index.links[] | $docs[.key].key]') });
   ok('jq 按链接关联原始节点', JSON.stringify(joined.value.data) === JSON.stringify(original.links.map((link) => link.key)));
-  const edge = await call('kq', { byFile: prog('[.documents[] | select(.links | length > 0) | {source: .key, target: .links[0].key}][0]') });
+  const edge = await call('kq', { byFile: prog('[.[] | select(.links | length > 0) | {source: .key, target: .links[0].key}][0]') });
   const target = edge.value.data?.target;
   ok('发现一条实际知识链接', typeof target === 'string');
   {
     const targetJson = JSON.stringify(target);
-    const related = await call('kq', { byFile: prog(`.documents | to_entries | map(select(any(.value.links[]?; .key == ${targetJson}))) | map(.key)`) });
+    const related = await call('kq', { byFile: prog(`to_entries | map(select(any(.value.links[]?; .key == ${targetJson}))) | map(.key)`) });
     ok('jq 可自主反查引用来源', related.value.data.includes(edge.value.data.source));
-    const node = await call('kq', { byFile: prog(`.documents[${targetJson}]`) });
-    const serviceNode = foundOf((await call('oks_info', { key: target })).value);
-    ok('关联节点与知识服务全文一致', JSON.stringify(node.value.data) === JSON.stringify(serviceNode));
+    const node = await call('kq', { byFile: prog(`.[${targetJson}]`) });
+    const serviceNode = foundOf((await call('kq', { project: { [target]: '*' } })).value);
+    ok('关联节点与 JS 投影全文一致', JSON.stringify(node.value.data) === JSON.stringify(serviceNode));
   }
   const stream = await call('kq', { byFile: prog('range(3)') });
   const array = await call('kq', { byFile: prog('[range(3)]') });
   const empty = await call('kq', { byFile: prog('empty') });
   ok('kq 值流：多个输出、数组值与零输出', stream.value.outputs === 3 && array.value.outputs === 1
     && empty.value.outputs === 0 && JSON.stringify(empty.value.data) === '[]');
-  await call('kq', { byFile: prog('.documents.index = null') });
-  const unchanged = await call('kq', { byFile: prog('.documents.index') });
+  await call('kq', { byFile: prog('.index = null') });
+  const unchanged = await call('kq', { byFile: prog('.index') });
   ok('jq 更新不修改常驻知识', JSON.stringify(unchanged.value.data) === JSON.stringify(original));
   const syntax = await refusalOf(() => call('kq', { byFile: prog('. |') }));
   ok('kq 语法错误定位到程序文件', /smoke_p[0-9]+.jq/.test(syntax ?? ''));
@@ -1088,7 +1169,7 @@ let reached = null;
 const walk = async (key, depth) => {
   if (depth > 6 || seenKeys.size >= 24 || seenKeys.has(key)) return;
   seenKeys.add(key);
-  const found = foundOf((await call('oks_info', { key })).value);
+  const found = foundOf((await call('kq', { project: { [key]: '*' } })).value);
   trail.push(`${'· '.repeat(depth)}${found?.type ?? '?'}  ${key}`);
   const detail = found?.detail;
   if (reached === null && typeof detail?.id === 'string' && detail.id !== '') {
@@ -1112,14 +1193,14 @@ console.log(`  跟随 ${seenKeys.size} 个 key${reached === null ? '（入口没
 // 拼出 key 去读节点——这就是 agent 的拼法（填声明的模式，名字各编码一次）。
 let member = reached !== null && reached.type === 'Dataset' ? reached : null;
 if (member === null) {
-  const indexNode = foundOf((await call('oks_info', { key: 'index' })).value);
+  const indexNode = foundOf((await call('kq', { project: { ['index']: '*' } })).value);
   const pattern = (indexNode?.detail?.key_patterns ?? []).find((item) => item.kind === 'Dataset'
     || String(item.pattern).startsWith('Dataset/'));
   const datasets = await call('oks_search', { kind: 'Dataset' });
   for (const row of datasets.value.matched) {
     if (pattern === undefined) break;
     const key = String(pattern.pattern).replace(/\{(\w+)\}/g, () => encodeURIComponent(row.name));
-    const found = foundOf((await call('oks_info', { key })).value);
+    const found = foundOf((await call('kq', { project: { [key]: '*' } })).value);
     if (found?.type === 'Dataset' && typeof found.detail?.id === 'string') {
       member = { key, id: found.detail.id, type: found.type, links: found.links ?? [] };
       console.log(`  按声明的模式拼出实体 key: ${key} → id=${found.detail.id}`);
@@ -1138,7 +1219,7 @@ let dimension = null;
   const seek = async (key, depth) => {
     if (dimension !== null || budget <= 0 || depth > 6 || seen.has(key)) return;
     seen.add(key); budget -= 1;
-    const found = foundOf((await call('oks_info', { key })).value);
+    const found = foundOf((await call('kq', { project: { [key]: '*' } })).value);
     const detail = found?.detail;
     if (found?.type === 'Dimension' && typeof detail?.id === 'string') { dimension = { key, id: detail.id }; return; }
     const children = [];
@@ -1227,7 +1308,7 @@ console.log('=== 与发布物对比 ===');
 console.log('=== oks_references（按 key 反向找引用）===');
 {
   // 用正向图做往返验证：节点 A 指向 B，则 B 的反向引用里必须能看到 A
-  const node = foundOf((await call('oks_info', { key: member.key })).value);
+  const node = foundOf((await call('kq', { project: { [member.key]: '*' } })).value);
   const forward = (node?.links ?? []).find((link) => typeof link?.key === 'string');
   if (forward === undefined) {
     console.log('  该成员没有正向引用，跳过往返验证');
@@ -3338,7 +3419,7 @@ console.log('=== 没有 oks.json 的工作区 ===');
   const bare = `${SCRATCH}/bare`;
   mkdirSync(bare, { recursive: true });
   try {
-    await call('oks_info', { key: 'index' }, bare);
+    await call('kq', {}, bare);
     console.log('  ✗ 本该报错，却成功了');
   } catch (cause) {
     console.log(`  ✓ 拒绝: ${String(cause?.message ?? cause).split('\n')[0].slice(0, 120)}`);
@@ -3355,7 +3436,7 @@ console.log('=== 非快照产物（只有 wasm 头，没有 telora.snapshot 段�
     version: 1, domain: 'ic', model: 'empty.wasm',
   }, null, 2)}\n`);
   try {
-    await call('oks_info', { key: 'index' }, empty);
+    await call('kq', {}, empty);
     console.log('  ✗ 本该报错，却成功了');
   } catch (cause) {
     console.log(`  ✓ 拒绝: ${String(cause?.message ?? cause).split('\n')[0].slice(0, 140)}`);
@@ -3396,10 +3477,10 @@ console.log('=== 插件只写 artifacts/、.oks/ 与 .work/ ===');
 console.log('=== 超时强杀 + 复活（requestTimeoutMs=1）===');
 {
   const { tools } = buildCtx({ requestTimeoutMs: 1 });
-  const tool = tools.get('oks_info');
+  const tool = tools.get('kq');
   const attempt = async () => {
     try {
-      await tool.execute({ key: 'index' }, { signal: new AbortController().signal, ...sessionFor(DEV_ROOT) });
+      await tool.execute({}, { signal: new AbortController().signal, ...sessionFor(DEV_ROOT) });
       return 'ok（在 1 ms 内完成）';
     } catch (cause) {
       return `拒绝: ${String(cause?.message ?? cause).slice(0, 80)}`;

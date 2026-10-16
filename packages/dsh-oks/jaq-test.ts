@@ -24,6 +24,22 @@ try {
     assert.deepEqual(await query(program), await calculator.run(program, { ...options, input: value }));
   }
   await assert.rejects(query('. |', { programFile: '.work/broken.jq' }), /broken\.jq/);
+  const huge = Array.from({ length: 812 }, (_, n) => ({ n, text: '中文🙂'.repeat(100) }));
+  for (const run of [
+    () => calculator.run('.data', { ...options, input: huge }),
+    () => other.runDocument('.data', huge, options),
+    () => calculator.run('error(.)', { ...options, input: '错误🙂'.repeat(10000) }),
+  ]) {
+    await assert.rejects(run(), (error: Error) => {
+      assert.ok(Buffer.byteLength(error.message) <= 4096 + Buffer.byteLength('jaq 表达式执行失败：\n'));
+      assert.match(error.message, /错误信息已截断/);
+      return true;
+    });
+  }
+  await assert.rejects(calculator.run('.data', { ...options, input: 1 }), /cannot index 1 with "data"/);
+  other.dispose(); // 大数组夹具随实例释放，后续隔离检查装载自己的文档。
+  console.log('✓ 大数组与显式 error 的运行时诊断限长，短错误与编译定位保留');
+
   assert.deepEqual((await query('.rows[0].n')).values, [1]);
   assert.equal((await query('range(100)', { maxChars: 12 })).truncated, true);
 
