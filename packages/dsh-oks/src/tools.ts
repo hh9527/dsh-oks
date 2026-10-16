@@ -1733,7 +1733,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             ],
           },
           project: PROJECT_PARAMETER,
-          jq: { type: 'object', properties: { src: { type: 'string', description: 'Full workspace-relative .jq path, e.g. .work/analysis.jq.' } }, required: ['src'], additionalProperties: false },
+          jq: { type: 'object', properties: { src: { type: 'string', description: 'Full workspace-relative path to the jq program file. The file extension must be .jq, e.g. .work/analysis.jq.' } }, required: ['src'], additionalProperties: false },
           save: {
             type: 'object',
             description: 'Keep the result instead of only looking at it: give it a name and say why, and the tool writes {meta, origin, data} into .oks/data/ — the origin records this operation and the complete source chain of every input, so the numbers can be explained later. Leave save out to only look at the result.',
