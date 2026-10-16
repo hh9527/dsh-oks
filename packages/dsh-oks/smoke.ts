@@ -23,12 +23,12 @@ import { singleFlight } from './src/single-flight.ts';
 import { intentKey } from './src/key.ts';
 import { CHART_KINDS, SERIES_COLORS, supports } from './src/chart/shared.ts';
 import { tableMarkdown } from './src/view/table.ts';
-// 保留走的是 `pinBySrc`——界面端点与冒烟都直接调它（这条能力不在工具面里）。
+// 保留走的是 `pinByAsset`——界面端点与冒烟都直接调它（这条能力不在工具面里）。
 import { adoptArtifacts, collectMaterials, collectWithWindows, deleteArtifact, KEEP_ALIVE_MINUTES, markCleanup,
-  listArtifacts, MATERIAL_KEEP_ALIVE_MINUTES, openState, pinBySrc, pruneArtifacts, reconcileArtifacts,
+  listArtifacts, MATERIAL_KEEP_ALIVE_MINUTES, openState, pinByAsset, pruneArtifacts, reconcileArtifacts,
   recordArtifact, VISIBLE } from './src/state.ts';
 // 来源链的读取与易读视图：冒烟直接调这一层，验证编码与边界（不经工具）。
-import { chainLines, readChartInput, readEnvelope, readTableView, rowsOf } from './src/results.ts';
+import { canonicalJson, chainLines, readChartInput, readEnvelope, readTableView, recordId, rowsOf } from './src/results.ts';
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync,
   utimesSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -303,8 +303,9 @@ console.log('=== 会话上下文材料 ===');
   const body = readMaterial(made.value.asset);
   const node = body.origin.nodes[body.origin.root];
   console.log(`  材料：kind=${body.meta.kind} · 节点 kind=${node?.kind} · ${node?.motivation ?? '(没有动机)'}`);
-  if (body.meta.kind !== 'context' || node?.kind !== 'input' || body.data.tz.client.id !== Z) {
-    throw new Error('材料的自述/来源节点/数据不符合约定');
+  if (body.meta.kind !== 'context' || node?.kind !== 'context' || body.data.tz.client.id !== Z
+    || canonicalJson(node?.data) !== canonicalJson(body.data)) {
+    throw new Error('材料的自述/来源节点/数据不符合约定（ctx 也是"造数据的根"，payload 要随链走）');
   }
   if (!/上下文/.test(String(node?.motivation ?? ''))) throw new Error('节点动机应当说清这是读来的上下文');
 
@@ -2886,6 +2887,146 @@ console.log('=== oks_render_figure：出图 ===');
   const graphSvg = readFileSync(resolve(DEV_ROOT, graphChart.asset), 'utf8');
   ok('graph：渲染出的 SVG 里有节点名与关系名（不是空白）',
     graphSvg.includes('核心') && graphSvg.includes('经 site_id'));
+  // 多输入消费的边界：图用了两份材料，两份都要进产物、进链，而且从根可达；产物还要自足到能再画一次。
+  const graphInput = readChartInput(graphSvg);
+  const graphOrigin = graphInput?.origin;
+  const graphRoot = graphOrigin === undefined ? undefined : graphOrigin.nodes[graphOrigin.root];
+  ok('graph：节点表与边表都进了产物（data.rows 与 data.nodeRows）',
+    graphInput !== null && graphInput !== undefined
+    && Array.isArray(graphInput.data.rows) && graphInput.data.rows.length === 1
+    && Array.isArray(graphInput.data.nodeRows) && graphInput.data.nodeRows.length === 2
+    && graphInput.data.spec.nodesSrc === graphNodeFile.value.asset);
+  ok('graph：图自己记了一个展示件节点，两路输入都挂在它下面',
+    graphRoot?.kind === 'display'
+    && typeof graphRoot.inputs?.src === 'string' && typeof graphRoot.inputs?.nodesSrc === 'string');
+  const graphWalk = graphOrigin === undefined ? '' : chainLines(graphOrigin).join('\n');
+  ok('graph：从根走出来的链里两路输入都在（节点表那条也可达）',
+    graphRoot !== undefined && graphWalk.includes(`[${String(graphRoot.inputs?.src)}]`)
+    && graphWalk.includes(`[${String(graphRoot.inputs?.nodesSrc)}]`));
+  const redrawnGraph = (await call('oks_render_figure', {
+    spec: { kind: 'graph', x: 'from', series: 'to' },
+    src: graphChart.asset,
+    name: 'probe_graph_redraw',
+  })).value;
+  ok('graph：不带 nodesSrc 也能从图上再画一次（节点表就在产物里）',
+    typeof redrawnGraph?.asset === 'string' && redrawnGraph.asset.endsWith('.graph.svg'));
+
+  // ── 只留 Z + 配方：从报告本身重放整条链（中间材料全删）────────────────────────
+  //
+  // 标准：产物自带配方——查询留 Intent、给定数据与上下文留 payload、加工留程序、展示件留规格与
+  // 它的输入。于是把中间材料全部删掉之后，报告里展示的数据仍能一路重算出来；每一步都逐节点自证
+  // （节点 ID = 这次操作 + 这一步输出数据 的内容哈希），重放对不上就当场失败。
+  {
+    // 链：给定数据（边表 + 节点表）＋ 查询 → 加工 → 关系图 → 报告
+    const replayEdges = await call('create_data', {
+      name: 'replay_edges',
+      motivation: '重放夹具：边表（给定数据）',
+      data: [{ from: '0', to: '1', label: '边' }],
+    });
+    const replayNodes = await call('create_data', {
+      name: 'replay_nodes',
+      motivation: '重放夹具：节点表（给定数据）',
+      data: [{ id: '0', label: '起点', depth: 0 }, { id: '1', label: '终点', depth: 1 }],
+    });
+    const replayQuery = await call('oks_exec_query_intent', {
+      intents: await withKeys(countNamed),
+      motivation: '重放夹具：查询那条根',
+    });
+    const queryAsset = replayQuery.value.results?.[0]?.asset ?? '';
+    const edgeProgram = prog('(.q.rows | length) as $n | [{ from: "0", to: "1", label: ("共 \\($n) 行") }]');
+    const replayTransform = await call('jq_transform', {
+      inputs: { q: queryAsset },
+      byFile: edgeProgram,
+      save: { name: 'replay_edges_tr', motivation: '重放夹具：把查询结果加工成边表' },
+    });
+    const replayFigure = (await call('oks_render_figure', {
+      spec: { kind: 'graph', x: 'from', series: 'to', label: 'label' },
+      src: replayTransform.value.asset,
+      nodesSrc: replayNodes.value.asset,
+      name: 'replay_graph',
+    })).value;
+    const replayReport = await call('oks_render_report', {
+      spec: {
+        title: '重放检查',
+        ...reportSpec('## 重放\n\n这里是一张关系图。\n\n![关系图](' + replayFigure.asset + ')\n'),
+      },
+      name: 'replay_report',
+    });
+    // 中间材料全删：只留报告这一份产物。
+    for (const asset of [replayEdges.value.asset, replayNodes.value.asset, queryAsset,
+      replayTransform.value.asset, replayFigure.asset]) {
+      rmSync(resolve(DEV_ROOT, asset), { force: true });
+    }
+
+    const page = readReportPage(readFileSync(resolve(DEV_ROOT, replayReport.value.asset), 'utf8'));
+    if ('error' in page) throw new Error(`报告读不回：${page.error}`);
+    const chain = restoreAssets(page.origin, page.assets);
+    const memo = new Map();
+    /** 按记录下来的路径切片：用工具自己切，重放器不另写一套路径语义。 */
+    const sliceAt = async (asset, path) => {
+      const looked = await call('jq_transform', { inputs: { x: { src: asset, root: path } }, pick: '.x' });
+      return looked.value.data;
+    };
+    const materialOf = async (data, name) => (await call('create_data', {
+      name, motivation: '重放：把上一步重算出来的结果落成材料', data,
+    })).value.asset;
+    const computeNode = async (id) => {
+      if (memo.has(id)) return memo.get(id);
+      const node = chain.nodes[id];
+      if (node === undefined) throw new Error(`重放：链上没有这个节点 ${id}`);
+      let data;
+      if (node.kind === 'input' || node.kind === 'context') {
+        data = node.data;                                   // payload 随链走
+      } else if (node.kind === 'query') {
+        const again = await call('oks_exec_query_intent', {
+          intents: await withKeys({ replay: node.intent }), motivation: '重放：重跑查询',
+        });
+        data = readEnvelope(DEV_ROOT, again.value.results?.[0]?.asset).data;
+      } else if (node.kind === 'transform') {
+        const inputs = {};
+        for (const [name, upstream] of Object.entries(node.inputs ?? {})) {
+          inputs[name] = {
+            src: await materialOf(await computeNode(upstream), `replay_in_${name.toLowerCase()}`),
+            root: node.inputPaths?.[name] ?? '.data',
+          };
+        }
+        const out = await call('jq_transform', {
+          inputs, byFile: prog(String(node.snip)),
+          ...(node.pick === undefined ? {} : { pick: node.pick }),
+          save: { name: 'replay_step', motivation: '重放：重跑加工' },
+        });
+        data = readEnvelope(DEV_ROOT, out.value.asset).data;
+      } else if (node.kind === 'display') {
+        const parts = {};
+        for (const [name, upstream] of Object.entries(node.inputs ?? {})) {
+          const path = node.inputPaths?.[name] ?? '.data';
+          parts[name] = { asset: await materialOf(await computeNode(upstream), `replay_disp_${name.toLowerCase()}`), path };
+        }
+        const rows = await sliceAt(parts.src.asset, parts.src.path);
+        data = parts.nodesSrc === undefined
+          ? { rows, spec: node.spec }
+          : { rows, spec: node.spec, nodeRows: await sliceAt(parts.nodesSrc.asset, parts.nodesSrc.path) };
+      } else if (node.kind === 'report') {
+        data = Object.entries(node.inputs ?? {}).map(([ref, upstream]) => ({ ref, root: upstream }));
+      } else {
+        throw new Error(`重放器不认识这种节点：${node.kind}`);
+      }
+      if (recordId(node, data) !== id) throw new Error(`重放结果对不上：${id}（${node.kind}）`);
+      memo.set(id, data);
+      return data;
+    };
+
+    const ids = Object.keys(chain.nodes);
+    const kinds = new Set(ids.map((id) => chain.nodes[id].kind));
+    ok('重放：这条链覆盖查询、给定数据、加工、展示件、报告五种节点',
+      ['query', 'input', 'transform', 'display', 'report'].every((kind) => kinds.has(kind)));
+    for (const id of ids) await computeNode(id);
+    ok(`重放：链上 ${ids.length} 个节点逐个自证通过（ID = 操作 + 输出数据 的哈希）`, memo.size === ids.length);
+    const itemKey = Object.keys(page.items)[0] ?? '';
+    const displayId = ids.find((id) => chain.nodes[id].kind === 'display') ?? '';
+    ok('重放：报表 items 里内嵌的那份数据 = 从根一路重算出来的展示件数据',
+      itemKey !== '' && canonicalJson(page.items[itemKey]) === canonicalJson(await computeNode(displayId)));
+  }
 
   const minimalSpec: Record<string, Record<string, unknown>> = {
     bar: { x: 'k', value: 'w' },
@@ -3004,14 +3145,13 @@ console.log('=== oks_render_figure：出表 ===');
     name: 'summary_table',
   });
   console.log(view.text.split('\n').filter(Boolean).map((line) => `  ${line}`).join('\n').slice(0, 640));
-  ok('表格落成 .oks/figures/ 下的 markdown 文件，回执给报表用的那一行',
+  ok('表格落成 .oks/figures/ 下的 markdown 文件，embedded 就是"粘进回答就显示"的那一段（这里是 markdown 表）',
     view.value.asset?.startsWith('.oks/figures/') === true && view.value.asset?.endsWith('.table.md') === true
-    && view.value.embedded === `![汇总表](${view.value.asset})`);
-  ok('回执同时给可粘贴的 markdown 表本体（流里直接显示）',
-    typeof view.value.table === 'string' && view.value.table.includes(`| ${column} |`)
-    && view.value.table.split('\n').length === rowsTotal + 3);
+    && typeof view.value.embedded === 'string' && view.value.embedded.split('\n').length === rowsTotal + 3);
+  ok('回执正文里直接给出这一段（流里可原样粘走），与图的图片行同一个位置',
+    /要在这段回答里显示这张表/.test(view.text) && view.text.includes(`| ${column} |`));
   ok('数字列右对齐（markdown 的 ---: 两处都认）',
-    (view.value.table.split('\n')[1] ?? '').includes('---:'));
+    ((view.value.embedded ?? '').split('\n')[1] ?? '').includes('---:'));
 
   const viewFile = readFileSync(resolve(DEV_ROOT, view.value.asset), 'utf8');
   const parsedView = readTableView(viewFile);
@@ -3273,16 +3413,16 @@ console.log('=== 清单、pin 与保活清理 ===');
   const target = entries.find((entry) => entry.asset.endsWith('.report.html')) ?? entries[0];
   const asset = `artifacts/${target.asset}`;
   const indexBefore = entries.findIndex((entry) => entry.asset === target.asset);
-  pinBySrc(DEV_ROOT, asset, true);
+  pinByAsset(DEV_ROOT, asset, true);
   const afterPin = (await call('oks_artifacts', {})).value.entries;
   ok('保留之后清单里那一条是已保留', afterPin.find((entry) => entry.asset === target.asset)?.pinned === true);
   ok('保留不改变条目在清单里的位置', afterPin.findIndex((entry) => entry.asset === target.asset) === indexBefore);
-  ok('取消保留之后回到未保留', pinBySrc(DEV_ROOT, asset, false).pinned === false);
+  ok('取消保留之后回到未保留', pinByAsset(DEV_ROOT, asset, false).pinned === false);
 
   // 非法 asset 要有明确的话：越界、不是可见产物、找不到。
   const refused = (bad) => {
     try {
-      pinBySrc(DEV_ROOT, bad, true);
+      pinByAsset(DEV_ROOT, bad, true);
       return '';
     } catch (cause) {
       return String(cause?.message ?? cause);
@@ -3324,7 +3464,7 @@ console.log('=== 清单、pin 与保活清理 ===');
       state.close();
     }
   }
-  pinBySrc(DEV_ROOT, `artifacts/${keptReport}`, true);
+  pinByAsset(DEV_ROOT, `artifacts/${keptReport}`, true);
   const logsBefore = logs.length;
   const pruneRows = await call('create_data', {
     name: 'probe_prune_rows',
@@ -3442,7 +3582,7 @@ console.log('=== 账本：清单不依赖文件系统 ===');
 
     // 行是权威：文件还在、自述读不出时**不重新解析**，原来那一行（含标题与保留）照旧。
     const before = listArtifacts(state).find((row) => row.asset === String(report));
-    pinBySrc(dir, `artifacts/${String(report)}`, true);
+    pinByAsset(dir, `artifacts/${String(report)}`, true);
     writeFileSync(target, '<!doctype html><html><head><title>只写了一半');
     const afterHalf = reconcileArtifacts(state, dir);
     const kept = listArtifacts(state).find((row) => row.asset === String(report));
@@ -3463,7 +3603,7 @@ console.log('=== 账本：清单不依赖文件系统 ===');
     writeFileSync(join(dir, 'artifacts', keep), source);
     recordArtifact(state, stale, expiredMeta('stale_probe', '过期的探针报告'));
     recordArtifact(state, keep, expiredMeta('kept_probe', '留住的探针报告'));
-    pinBySrc(dir, `artifacts/${keep}`, true);
+    pinByAsset(dir, `artifacts/${keep}`, true);
     const pruned = pruneArtifacts(state, dir, KEEP_ALIVE_MINUTES);
     ok('保活清理按行做：过期的文件与行一起没，保留的那份（行与文件）都不动',
       pruned.removed.includes(stale) && !existsSync(join(dir, 'artifacts', stale))
@@ -3690,8 +3830,8 @@ console.log('=== 界面那两条端点 ===');
   const asked: string[] = [];
   const deps = {
     rootFor: (sessionId: string) => { asked.push(sessionId); return DEV_ROOT; },
-    pin: (root: string, src: string, pinned: boolean) => pinBySrc(root, src, pinned),
-    remove: (root: string, src: string) => deleteArtifact(root, src),
+    pin: (root: string, asset: string, pinned: boolean) => pinByAsset(root, asset, pinned),
+    remove: (root: string, asset: string) => deleteArtifact(root, asset),
     keepAliveMinutes: () => KEEP_ALIVE_MINUTES,
     // 清理端点走真实路径：窗口来自工作区声明（DEV_ROOT 没写 retention，于是用默认的 manual 5/5）。
     collect: (root: string, ttl?: unknown) => {

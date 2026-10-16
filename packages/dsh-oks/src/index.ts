@@ -81,7 +81,7 @@ import { ARTIFACTS_ENDPOINT, createArtifactsEndpoint, createDeleteEndpoint, crea
   sessionRootResolver } from './endpoint.ts';
 import type { SessionPersistenceLike } from './endpoint.ts';
 import type { LiveSessionsLike } from './endpoint.ts';
-import { collectWithWindows, deleteArtifact, KEEP_ALIVE_MINUTES, markCleanup, pinBySrc } from './state.ts';
+import { collectWithWindows, deleteArtifact, KEEP_ALIVE_MINUTES, markCleanup, pinByAsset } from './state.ts';
 
 // 界面那条机械通道的两条路径（页签与插件约定同一对常量）。
 export { ARTIFACTS_ENDPOINT, DOWNLOAD_ENDPOINT, PIN_ENDPOINT };
@@ -124,7 +124,7 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
         + '或在 byFile 的程序里聚合与投影（length / group_by / map({…})）；'
         + '要整块数据就让它留在文件里，用 root 只取你要的那一段。'
         + '读报告（*.report.html）永远按项取：root 用 ".data.items.<项名>"、".data.structure"、'
-        + '".data.origin"，不要一次取整份。';
+        + '".origin"，不要一次取整份。';
     const dispose = ctx.tools.register({
       ...definition,
       output: {
@@ -197,7 +197,7 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
     const deps = {
       log,
       rootFor,
-      pin: pinBySrc,
+      pin: pinByAsset,
       remove: deleteArtifact,
       // 报表窗口可配置：读不到声明（工作区没有 oks.json）时退回默认值，别让端点因此报错。
       keepAliveMinutes: (root: string) => {

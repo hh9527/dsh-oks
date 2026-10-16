@@ -116,32 +116,26 @@ export interface ViewValue {
   title?: string | null;
   /** 这份表读的那份封装数据（引用）。 */
   src?: string;
-  /** 落盘的表展示件（相对工作区根）。 */
+  /** 产出位置：可当输入被引用，也可被 present（与 `embedded` 平行的一对）。 */
   asset?: string;
-  /** 报表正文里用的那一行 `![表注](路径)`。 */
-  embedded?: string;
-  /** 表本体（表不大时给；大表为 null，只说引用）。 */
-  table?: string | null;
+  /** 粘进回答就显示的那一段：图是一条图片行，表是 markdown 表本体（大表为 null）。 */
+  embedded?: string | null;
   rowCount?: number;
   columns?: readonly string[];
   bytes?: number;
   note?: string | null;
 }
 
-/** 表格的模型可见回执：先说清"哪一行进报表、哪一段进回答"，再把表本体交出来。 */
+/** 表格的模型可见回执：交回落成的那份表，以及可以直接粘进回答的表本体。 */
 export function renderView(_args: unknown, value: ViewValue | null | undefined): RenderBlock[] {
   if (value?.ok !== true) return [{ type: 'text', text: '展示件没有生成。\n' }];
   const lines = [
     `表格：${value.title ?? ''} · ${value.rowCount ?? 0} 行 · 列 ${(value.columns ?? []).join(', ')}`,
     `文件：${value.asset ?? ''}`,
     `来自：${value.src ?? ''}`,
-    '',
-    '这一行**放进报告正文**（`oks_render_report` 的 embedded，独占一行）；它不会被渲染成图片，别粘进回答：',
-    '',
-    value.embedded ?? '',
   ];
-  if (typeof value.table === 'string' && value.table !== '') {
-    lines.push('', '要在这段回答里显示这张表，直接粘下面这一段：', '', value.table.replace(/\n$/, ''));
+  if (typeof value.embedded === 'string' && value.embedded !== '') {
+    lines.push('', '要在这段回答里显示这张表，把下面这一段粘进回答：', '', value.embedded.replace(/\n$/, ''));
   } else {
     lines.push('', `（表有 ${value.rowCount ?? 0} 行，正文形式没有放进这段回执：`
       + '要在这里显示就先聚合或缩小范围，再出一张更小的表。）');
@@ -477,7 +471,9 @@ export interface ChartValue {
   title?: string | null;
   /** 这份图读的那份封装数据（引用）。 */
   src?: string | null;
+  /** 产出位置：可当输入被引用，也可被 present（与 `embedded` 平行的一对）。 */
   asset?: string;
+  /** 可直接粘进回答的那一段。 */
   embedded?: string;
   at?: string;
   note?: string | null;
@@ -498,7 +494,7 @@ export function renderChart(_args: unknown, value: ChartValue | null | undefined
   if (value.note !== null && value.note !== undefined) lines.push(`说明：${value.note}`);
   lines.push(
     '',
-    '把下面这一行原样放进你的回答，图就会显示在那里（不要改写路径）：',
+    '要在这段回答里显示这张图，把下面这一行粘进回答（路径不要改写）：',
     '',
     value.embedded ?? '',
   );

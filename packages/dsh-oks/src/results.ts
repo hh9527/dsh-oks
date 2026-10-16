@@ -76,15 +76,22 @@ export interface SavedResult {
 
 /** 来源链里的一个节点：一次操作的记录。查询与加工各用其中一部分字段。 */
 export interface OriginNode {
-  /** 产生这份数据的操作：查询、加工、agent 给定、从报告取出，或（早期版本的）派生视图。
-   *  `extract` 与 `derive` 都已经不再产生，读取时仍认——旧文件是可回收的内部材料，随保活消失。 */
-  kind: 'query' | 'transform' | 'input' | 'extract' | 'derive' | 'report';
+  /** 产生这份数据的操作：查询、加工、agent 给定、读到的当轮上下文、把若干材料合成一份展示件、
+   *  组装报告，或（早期版本的）派生视图。`extract` 与 `derive` 都已经不再产生，读取时仍认——
+   *  旧文件是可回收的内部材料，随保活消失。 */
+  kind: 'query' | 'transform' | 'input' | 'context' | 'display' | 'extract' | 'derive' | 'report';
   /** query：实际提交并通过校验的意图（相对时间已解析成绝对边界）。 */
   intent?: unknown;
   /** 这次操作的动机：一句自然语言，写给人读。 */
   motivation?: string;
   /** query：执行时**实际**用的数据来源（与 intent 的"请求什么"形成对照）。 */
   source?: unknown;
+  /** input：这份给定数据的**内容**（`create_data` 的 payload）；context：读到的当轮上下文
+   *  （时刻 + 时区）。两者都不是可重算的，所以内容随链走——**链就是配方**，于是只留产物本身
+   *  也能重放整条链。查询相反：它靠 `intent` 重跑，数据不进链。 */
+  data?: unknown;
+  /** display：这次合成用的绘图规格（重放时照它把数据块重建出来）。 */
+  spec?: unknown;
   /** transform：实际执行的 snip（**程序正文**；来自文件的也记正文，`.work/` 被清掉也不影响来路）。
    *  省略 `byFile` 时它是恒等投影 `.`。 */
   snip?: string;
@@ -229,13 +236,16 @@ export function chainLines(origin: DataOrigin, limit = 24): string[] {
   const detail = (node: OriginNode): string => (node.kind === 'query'
     ? `query ${node.intent === undefined ? '' : capLine(canonicalJson(node.intent), 96)}`
     : node.kind === 'input' ? '输入数据（agent 给定）'
-      : node.kind === 'extract'
-        ? `从报告 ${node.report ?? '(未知)'} 的第 ${node.item ?? '?'} 项取出`
-        : node.kind === 'derive'
-          ? `派生自 ${node.from ?? '(未知)'}`
-          : node.kind === 'report'
-            ? `组装这份报告（${Object.keys(node.inputs ?? {}).length} 项）`
-            : `transform ${capLine(program(node), 96)}`);
+      : node.kind === 'context' ? '读到的当轮上下文（时刻与时区）'
+        : node.kind === 'extract'
+          ? `从报告 ${node.report ?? '(未知)'} 的第 ${node.item ?? '?'} 项取出`
+          : node.kind === 'derive'
+            ? `派生自 ${node.from ?? '(未知)'}`
+            : node.kind === 'display'
+              ? `合成展示件（${Object.keys(node.inputs ?? {}).join(' + ')}）`
+              : node.kind === 'report'
+                ? `组装这份报告（${Object.keys(node.inputs ?? {}).length} 项）`
+                : `transform ${capLine(program(node), 96)}`);
   const visit = (id: string): void => {
     if (seen.has(id)) return;
     seen.add(id);
@@ -602,9 +612,14 @@ export function saveInputData(options: {
   if (problem !== null) throw new Error(`输入数据名不合法：${problem}`);
   const kind = options.kind ?? 'data';
   const at = resultStamp();
+  // 给定数据与读到的上下文都不是"可重算"的，所以内容随链走：链就是配方，产物因此能自我重放。
   const payload: Envelope = {
     meta: { kind, name: options.name, at },
-    origin: originOf({ kind: 'input', motivation: options.motivation }, options.data),
+    origin: originOf({
+      kind: kind === 'context' ? 'context' : 'input',
+      motivation: options.motivation,
+      data: options.data,
+    }, options.data),
     data: options.data,
   };
   const body = `${JSON.stringify(payload, null, 2)}\n`;
@@ -750,11 +765,6 @@ function locate(root: string, asset: unknown): { directory: string; target: stri
     }
   }
   throw new Error(`引用只能指向工作区里的 ${READABLE_DIRS.join(' / ')}：${JSON.stringify(asset)}`);
-}
-
-/** asset 的语法范围：只接受能在工作区可读目录里落位的相对路径。 */
-export function resolveDataSrc(root: string, asset: unknown): string {
-  return locate(root, asset).target;
 }
 
 /** 把一个 artifacts/ 里的产物定位到真实路径：先按前缀收窄，再用真实路径复核（挡住符号链接逃逸）。
@@ -1033,7 +1043,7 @@ function normalizeOrigin(raw: unknown, data: unknown, asset: unknown): DataOrigi
   }
   const nodes = raw.nodes as Record<string, OriginNode>;
   for (const [id, node] of Object.entries(nodes)) {
-    const kinds = ['query', 'transform', 'input', 'extract', 'derive', 'report'];
+    const kinds = ['query', 'transform', 'input', 'context', 'display', 'extract', 'derive', 'report'];
     if (!isRecord(node) || !kinds.includes(String(node.kind))) {
       throw new Error(`来源链里的节点不是一次操作（${id}）：${JSON.stringify(asset)}`);
     }
@@ -1082,13 +1092,13 @@ export function rowsOf(data: unknown, asset: unknown): Array<Record<string, unkn
 
 /** 把一个 asset 解析成 artifacts/ 里的**文件名**（越界与不存在都在这里报错）。
  *  状态层只记文件名——路径是工作区属性，换个工作区（同一份产物被拷过去）就该重新解析。 */
-export function artifactFileName(root: string, src: unknown): string {
-  const real = artifactPath(root, src);
+export function artifactFileName(root: string, asset: unknown): string {
+  const real = artifactPath(root, asset);
   return real.slice(real.lastIndexOf(sep) + 1);
 }
 
 /** 读一份已经落盘的产物（报告里引用的图）：路径约束与结果文件相同，另加一条扩展名核对。 */
-export function readArtifact(root: string, src: string, extension: string): string {
-  if (!src.endsWith(extension)) throw new Error(`只认 ${extension} 产物：${JSON.stringify(src)}`);
-  return readFileSync(artifactPath(root, src), "utf8");
+export function readArtifact(root: string, asset: string, extension: string): string {
+  if (!asset.endsWith(extension)) throw new Error(`只认 ${extension} 产物：${JSON.stringify(asset)}`);
+  return readFileSync(artifactPath(root, asset), "utf8");
 }

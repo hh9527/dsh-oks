@@ -128,7 +128,7 @@ const scalarText = (value: unknown, what: string): { value: string } | { error: 
 
 const parseReportSpec = (raw: unknown): { spec: ReportSpec } | { error: string } => {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-    return { error: 'oks_render_report 需要 spec（对象）：title 与 xhtml 必填' };
+    return { error: 'oks_render_report 需要 spec（对象）：title 与 articleFile 必填' };
   }
   const record = raw as Record<string, unknown>;
   const title = record.title;
@@ -151,14 +151,15 @@ const parseReportSpec = (raw: unknown): { spec: ReportSpec } | { error: string }
   for (const [key, value] of Object.entries(rawInputs as Record<string, unknown>)) {
     const entry = typeof value === 'string' ? { src: value, root: '.data' } : value;
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-      return { error: `spec.inputs.${key} 要写成 src 字符串，或 {"src": "…", "root": ".data"}` };
+      return { error: `spec.inputs.${key} 要写成 asset 字符串，或 {"src": "…", "root": ".data"}` };
     }
     const { src, root } = entry as { src?: unknown; root?: unknown };
     if (typeof src !== 'string' || src === '') return { error: `spec.inputs.${key}.src 必填` };
     inputs[key] = { src, root: root === undefined || root === null ? '.data' : String(root) };
   }
   const unknown = Object.keys(record).filter((key) => !['title', 'subtitle', 'articleFile', 'inputs'].includes(key));
-  if (unknown.length > 0) return { error: `spec 里不认识的项：${unknown.join(', ')}` };
+  if (unknown.length > 0) return { error: `spec 里不认识的项：${unknown.join(', ')}`
+    + '（spec 收的字段是 title / subtitle / articleFile / inputs）' };
   return {
     spec: {
       title,
@@ -185,7 +186,7 @@ function observedSource(dataFile: string): Record<string, unknown> {
   return source;
 }
 
-/** 报告里引用的图表件（`![图注](路径)`）：把工作区 `.oks/figures/` 下已经画好的图或表读进来内联。
+/** 报告里引用的展示件（项绑到的那份材料）：把工作区 `.oks/figures/` 下已经画好的图或表读进来内联。
  *
  *  路径两种写法都认——`.oks/figures/x.pie.svg`（相对工作区根，和 src 一样）与 `x.pie.svg`
  *  （相对 `.oks/figures/`：图表件就住在那里，所以这个解释在人看来同样自然）。
@@ -198,10 +199,10 @@ const resolveReportDisplay = (root: string, href: string): { source: DisplaySour
   const extension = isTable ? '.md' : '.svg';
   const label = isTable ? '表' : '图';
   // 两种写法都认：带材料目录前缀，或只给文件名（材料就在那个目录里）。
-  const src = href.startsWith(`${directory}/`) ? href : `${directory}/${href}`;
+  const asset = href.startsWith(`${directory}/`) ? href : `${directory}/${href}`;
   let content: string;
   try {
-    content = readArtifact(root, src, extension);
+    content = readArtifact(root, asset, extension);
   } catch (cause) {
     return {
       error: `报告里引用的${label}取不到：${href}（${errorText(cause)}）。`
@@ -405,9 +406,9 @@ interface ChartAnswer {
   title: string;
   /** 这份图读的那份封装数据：回执里按 `src` 回述（引用侧）。 */
   src: string;
-  /** 落盘的 SVG 相对工作区根的位置（产出侧）。 */
+  /** 产出位置：可当输入被引用，也可被 present（与 `embedded` 平行的一对）。 */
   asset: string;
-  /** 可以直接粘进回答的 markdown 引用。 */
+  /** 可以直接粘进回答的 markdown 引用：图是一条图片行。 */
   embedded: string;
   at: string;
   note: string | null;
@@ -418,20 +419,18 @@ interface ChartAnswer {
   chain: string[];
 }
 
-/** oks_render_figure 出表的返回值（渲染读它）：与图共用 `src` / `asset` / `embedded` 三个词，
- *  只是把"可以粘进回答"的那一段换成表本体。 */
+/** oks_render_figure 出表的返回值（渲染读它）：与图共用 `src` / `asset` / `embedded` 三个词——
+ *  `embedded` 是"粘进回答就显示"的那一段：图是一条图片行，表是 markdown 表本体。 */
 interface TableAnswer {
   ok: true;
   kind: 'table';
   title: string;
   /** 这份表读的那份封装数据。 */
   src: string;
-  /** 落盘的表展示件（相对工作区根）。 */
+  /** 产出位置：可当输入被引用，也可被 present（与 `embedded` 平行的一对）。 */
   asset: string;
-  /** 报告正文里用的那一行 `![表注](路径)`。 */
-  embedded: string;
-  /** 表本体（表不大时给；大表为 null，只说引用）。 */
-  table: string | null;
+  /** 粘进回答就显示的那一段（表不大时给；大表为 null，回执里说明先缩小范围）。 */
+  embedded: string | null;
   rowCount: number;
   columns: string[];
   bytes: number;
@@ -476,7 +475,8 @@ const parseSecond = (raw: unknown, kind: ChartKind): { second: SecondMetric | nu
     return { error: 'spec.second 需要 value（第二个度量的列名）' };
   }
   const unknown = Object.keys(record).filter((key) => !['value', 'kind', 'label', 'unit'].includes(key));
-  if (unknown.length > 0) return { error: `spec.second 里不认识的项：${unknown.join(', ')}` };
+  if (unknown.length > 0) return { error: `spec.second 里不认识的项：${unknown.join(', ')}`
+    + '（second 收的字段是 value / kind / label / unit）' };
   return {
     second: {
       value: record.value,
@@ -1016,7 +1016,7 @@ function readInputs(root: string, inputs: unknown, tool: string): NamedInput[] {
         rootText = parsed.text;
       }
     } else {
-      throw new Error(`输入 ${name} 要写成 src 字符串，或 {"src": "<asset>", "root": ".data.rows"}。`);
+      throw new Error(`输入 ${name} 要写成 asset 字符串，或 {"src": "<asset>", "root": ".data.rows"}。`);
     }
     if (src === '') throw new Error(`输入 ${name} 的 src 不能是空串。`);
     let read: { document: Record<string, unknown>; origin: DataOrigin };
@@ -1361,7 +1361,6 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       data: { rows, spec: { kind: 'table', src: args.src, title, columns: parsed.columns } },
       embedded: drawn.embedded,
     });
-    const embedded = `![${title.replace(/[[\]]/g, '')}](${saved.asset})`;
     // 回执里带不带表本体，看它多大：表本来就是给人看的，但大表塞进上下文不划算。
     const body = drawn.embedded.length <= 4000 && rows.length <= 20 ? drawn.embedded : null;
     const note = typeof args?.note === 'string' && args.note.length > 0 ? args.note : null;
@@ -1373,8 +1372,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       title,
       src: args.src,
       asset: saved.asset,
-      embedded,
-      table: body,
+      embedded: body,
       rowCount: rows.length,
       columns: drawn.columns,
       bytes: saved.bytes,
@@ -1401,14 +1399,26 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     const columns = columnsOf(file.data, rows);
     // 关系图的数据分两张表：边是 src，节点是 nodesSrc（每行一个节点，至少给 id 与 depth）。
     let nodeRows: readonly Record<string, unknown>[] | undefined;
+    let nodeOrigin: DataOrigin | null = null;
+    let nodeSrc: string | null = null;
+    let nodeData: unknown = null;
     if (spec.kind === 'graph') {
-      if (typeof args?.nodesSrc !== 'string' || args.nodesSrc.length === 0) {
-        throw new Error('graph 需要 nodesSrc：一份行数据当节点表，每行一个节点，至少给 id 与 depth'
-          + '（depth 由你在 jq 里算：拓扑深度、到某个节点的跳数、网络层级都行）；'
-          + '节点表给了 x 与 y 就用给的坐标。');
+      if (typeof args?.nodesSrc === 'string' && args.nodesSrc.length > 0) {
+        const nodeFile = readProduct(entry.settings.workspaceRoot, args.nodesSrc);
+        nodeRows = rowsOf(nodeFile.data, args.nodesSrc);
+        nodeOrigin = nodeFile.origin;
+        nodeSrc = args.nodesSrc;
+        nodeData = nodeFile.data;
+      } else {
+        // 从一份已经画好的关系图再画一次：两张表都在它自己的 data 里——图把用过的材料都带上了。
+        const carried = isRecord(file.data) ? file.data.nodeRows : undefined;
+        if (!Array.isArray(carried)) {
+          throw new Error('graph 需要 nodesSrc：一份行数据当节点表，每行一个节点，至少给 id 与 depth'
+            + '（depth 由你在 jq 里算：拓扑深度、到某个节点的跳数、网络层级都行）；'
+            + '节点表给了 x 与 y 就用给的坐标。从一份画好的关系图再画时，它的 data.nodeRows 直接当节点表。');
+        }
+        nodeRows = carried as Array<Record<string, unknown>>;
       }
-      const nodeFile = readProduct(entry.settings.workspaceRoot, args.nodesSrc);
-      nodeRows = rowsOf(nodeFile.data, args.nodesSrc);
     }
     const missing = missingColumns(spec, columns, rows.length);
     if (missing.length > 0) {
@@ -1424,9 +1434,23 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     const { option, height } = buildOption(rows, spec, nodeRows);
     const svg = renderEchartsSvg(option, CHART_WIDTH, height);
     const title = chartTitle(spec);
-    // 图把**自己用的那份材料**带上：画出来的行、绘图规格、完整来源链。
-    // 于是图离开工作区（或工作区被回收）之后仍说得清这些数字从哪来。
-    const content = embedChartInput(svg, { origin: file.origin, data: { rows, spec } });
+    // 图把**自己用的那份材料**带上：画出来的行（关系图还带节点表）、绘图规格、完整来源链。
+    // 于是图离开工作区（或工作区被回收）之后仍说得清这些数字从哪来，也还能照它再画一次。
+    const savedSpec = { ...spec, src: args.src, ...(nodeSrc === null ? {} : { nodesSrc: nodeSrc }) };
+    const data = nodeRows === undefined ? { rows, spec: savedSpec } : { rows, spec: savedSpec, nodeRows };
+    // 用了两份材料的展示件要自己记一个节点：不然节点表那条链在 {root, nodes} 里没有节点指向它，
+    // 从根走出来的链就看不到它。单材料的图/表是那份材料的视图，链保持来源本身。
+    // 记的是**实际消费的那一段**：rowsOf 收 `{rows}` 也收裸数组，路径要跟着形状走，
+    // 不然重放时按记录切不出来（这正是"配方要足以重算"这条标准抓出来的）。
+    const slicePath = (payload: unknown): string =>
+      isRecord(payload) && Array.isArray(payload.rows) ? '.data.rows' : '.data';
+    const origin = nodeOrigin === null ? file.origin : appendNode([file.origin, nodeOrigin], {
+      kind: 'display',
+      inputs: { src: file.origin.root, nodesSrc: nodeOrigin.root },
+      inputPaths: { src: slicePath(file.data), nodesSrc: slicePath(nodeData) },
+      spec: savedSpec,
+    }, data);
+    const content = embedChartInput(svg, { origin, data });
     const saved = saveAndRecord(entry, {
       name: typeof args?.name === 'string' && args.name.length > 0 ? args.name : 'chart',
       content,
@@ -1763,7 +1787,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'create_data',
-      description: 'Turn data you supply yourself into an envelope in the workspace, so that it can be referenced like any other data: give it a name, say why it exists, and pass the JSON. The tool writes {origin, data} into .oks/data/ as <time>-<name>-<content hash>.def.json, where origin is one node saying this data was given and carrying your motivation. The receipt gives you the asset — that is where this file is; hand that value to a figure as its src, to a transform as one of its named inputs, and a later step can read it like anything else. Row objects (an array of objects) are what a figure needs; nested objects, arrays and scalars are fine too. Use this only for data that exists nowhere in the workspace: a handful of values from the user, a threshold table, rows you were handed. Anything already in the workspace — queried rows, a computed result, the rows a figure drew — is reshaped or relabelled with jq_transform with save, never retyped here: retyping cuts the chain to where the numbers came from, and the envelope records only that you supplied them.',
+      description: 'Turn data you supply yourself into an envelope in the workspace, so that it can be referenced like any other data: give it a name, say why it exists, and pass the JSON. The tool writes {origin, data} into .oks/data/ as <time>-<name>-<content hash>.def.json, where origin is one node saying this data was given — it carries your motivation and the payload itself, because the source chain is the recipe: whatever is built from this file can be replayed after this file is gone. The receipt gives you the asset — that is where this file is; hand that value to a figure as its src, to a transform as one of its named inputs, and a later step can read it like anything else. Row objects (an array of objects) are what a figure needs; nested objects, arrays and scalars are fine too. Use this only for data that exists nowhere in the workspace: a handful of values from the user, a threshold table, rows you were handed. Anything already in the workspace — queried rows, a computed result, the rows a figure drew — is reshaped or relabelled with jq_transform with save, never retyped here: retyping cuts the chain to where the numbers came from, and the envelope records only that you supplied them.',
       parameters: {
         type: 'object',
         properties: {
@@ -1808,7 +1832,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'jq_transform',
-      description: 'Run a jaq program over saved data — the same engine throughout: jaq plus gmtime_tz(zone), strftime_tz(fmt; zone), tzadd(unit; amount; zone), tzfloor(unit; zone), tzceil(unit; zone), each taking epoch seconds from the pipe and the zone explicitly; the clock and the environment stay outside it (no now, env, localtime, strflocaltime, input or inputs), so the current instant reaches the program only as a value you pass in, from create_current_ctx_data. Time is in the same dialect: the native jq functions are all here unchanged (gmtime, strftime(fmt), strptime(fmt), mktime, fromdateiso8601 / fromdate, todateiso8601 / todate); a `_tz` suffix is that function plus one explicit zone (gmtime_tz(zone), strftime_tz(fmt; zone)); a `tz` prefix is this engine\'s own addition (native floor / ceil / add are numeric or array operations): tzadd(unit; amount; zone), tzfloor(unit; zone), tzceil(unit; zone). Epoch seconds come from the pipe, and no zone is ever read from the environment. Units are year / quarter / month / week / day / hour / minute / second, weeks starting Monday; calendar units follow that zone\'s wall clock, so a day across a DST change is not 24 hours and a month, quarter or year end clamps — boundary arithmetic wants [tzfloor(unit; tz), tzceil(unit; tz)). A call is resolved by name plus argument count, so write it exactly as shown. utc.rfc3339 in a context material is what todateiso8601 produces, and fromdateiso8601 parses it back, taking Z or an offset, optional seconds and fractions, and the basic form 19700101T000000Z. inputs maps a name of your choosing to an asset a previous receipt gave you; each entry is either that asset or {"src": "<asset>", "root": "<jq dot path>"}, where root is which slice of the file the program gets — the default ".data" is that record\'s own data (a query result is {rows, columns}; a transform is the value it produced; a figure or table is {rows, spec}; a report is {assets, items, structure}, the structure region being the cleared one), ".origin" is the source chain {root, nodes}, ".meta" its description and "." the whole {meta, origin, data}; omit inputs and the program sees {}. The program goes into a .work/ file named by byFile (write it there first with work_write) and reads one object whose keys are the input names, e.g. ".events.rows[] | {level, count}"; leave byFile out and the result is that object itself, with pick taking one part of it back as a jq dot path ("pick": ".events") — pick and byFile are alternatives, so with a program write that step into the program instead ("| .events"). The value stream is collected uniformly: one value is that value, several are an array, none is []. Without save the result is only looked at and nothing is written. With save {name, motivation} it is materialised instead: the tool writes {meta, origin, data} into .oks/data/ (<date>-<name>-<content hash>.tr.json), the origin carrying this operation (snip, motivation, output count, which name used which input and which slice of it) plus the complete source chain of every input while the inputs\' own data stays out; the receipt then gives you exactly two things — the asset (where the file is) and its size in bytes — and nothing else: the values, the shape and the source chain all live in the file, so read it with jq_transform when you need them (`.data` for the values, `.origin` for where they came from). Data you supply yourself does not come in here: create_data makes it an envelope first, so the numbers carry a recorded reason.',
+      description: 'Run a jaq program over saved data — the same engine throughout: jaq plus gmtime_tz(zone), strftime_tz(fmt; zone), tzadd(unit; amount; zone), tzfloor(unit; zone), tzceil(unit; zone), each taking epoch seconds from the pipe and the zone explicitly; the clock and the environment stay outside it (no now, env, localtime, strflocaltime, input or inputs), so the current instant reaches the program only as a value you pass in, from create_current_ctx_data. Time is in the same dialect: the native jq functions are all here unchanged (gmtime, strftime(fmt), strptime(fmt), mktime, fromdateiso8601 / fromdate, todateiso8601 / todate); a `_tz` suffix is that function plus one explicit zone (gmtime_tz(zone), strftime_tz(fmt; zone)); a `tz` prefix is this engine\'s own addition (native floor / ceil / add are numeric or array operations): tzadd(unit; amount; zone), tzfloor(unit; zone), tzceil(unit; zone). Epoch seconds come from the pipe, and no zone is ever read from the environment. Units are year / quarter / month / week / day / hour / minute / second, weeks starting Monday; calendar units follow that zone\'s wall clock, so a day across a DST change is not 24 hours and a month, quarter or year end clamps — boundary arithmetic wants [tzfloor(unit; tz), tzceil(unit; tz)). A call is resolved by name plus argument count, so write it exactly as shown. utc.rfc3339 in a context material is what todateiso8601 produces, and fromdateiso8601 parses it back, taking Z or an offset, optional seconds and fractions, and the basic form 19700101T000000Z. inputs maps a name of your choosing to an asset a previous receipt gave you; each entry is either that asset or {"src": "<asset>", "root": "<jq dot path>"}, where root is which slice of the file the program gets — the default ".data" is that record\'s own data (a query result is {rows, columns}; a transform is the value it produced; a figure or table is {rows, spec} (a relation graph\'s figure also carries its node table as nodeRows); a report is {assets, items, structure}, the structure region being the cleared one), ".origin" is the source chain {root, nodes}, ".meta" its description and "." the whole {meta, origin, data}; omit inputs and the program sees {}. The program goes into a .work/ file named by byFile (write it there first with work_write) and reads one object whose keys are the input names, e.g. ".events.rows[] | {level, count}"; leave byFile out and the result is that object itself, with pick taking one part of it back as a jq dot path ("pick": ".events") — pick and byFile are alternatives, so with a program write that step into the program instead ("| .events"). The value stream is collected uniformly: one value is that value, several are an array, none is []. Without save the result is only looked at and nothing is written. With save {name, motivation} it is materialised instead: the tool writes {meta, origin, data} into .oks/data/ (<date>-<name>-<content hash>.tr.json), the origin carrying this operation (snip, motivation, output count, which name used which input and which slice of it) plus the complete source chain of every input while the inputs\' own data stays out; the receipt then gives you exactly two things — the asset (where the file is) and its size in bytes — and nothing else: the values, the shape and the source chain all live in the file, so read it with jq_transform when you need them (`.data` for the values, `.origin` for where they came from). Data you supply yourself does not come in here: create_data makes it an envelope first, so the numbers carry a recorded reason.',
       parameters: {
         type: 'object',
         properties: {
@@ -1907,12 +1931,12 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           data,
           ms,
         }, '让程序少取一点（聚合、投影或前 N 项），不要一次取整份数据；'
-        + '读报告（*.report.html）按项取：root 用 ".data.items.<项名>"、".data.structure"、".data.origin"。');
+        + '读报告（*.report.html）按项取：root 用 ".data.items.<项名>"、".data.structure"、".origin"。');
       },
     },
     {
       name: 'oks_render_figure',
-      description: 'Render saved data as a figure or a table and write it into the workspace. spec.kind picks the form: "table" writes a markdown table, every other kind draws a figure as an SVG. Data comes in one way only: src, a path copied verbatim from an earlier receipt (oks_exec_query_intent for queried rows, jq_transform with save for a computed result, create_data for rows you supplied yourself) — rows are never written inline here, so every piece has a recorded origin. For a table, columns picks and orders what to show (omit for every column the data has), title is the caption, numeric columns are right-aligned, and the receipt gives you the table itself as ready-to-paste markdown for your reply. For a figure, the receipt gives you a markdown line: put it verbatim into your answer and the figure shows up there. The figure carries the rows it drew, its specification and its whole source chain inside the SVG, so it still explains itself once the workspace is cleaned up. Both receipts also give you the ![caption](path) line for a report body — that line belongs there only, because nothing renders a .table.md as an image and a figure line outside a report shows only where the file is. Each switch applies to a fixed set of kinds (' + expressionMatrix() + '); filling one on a kind outside its set is rejected, so a switch is never silently ignored.',
+      description: 'Render saved data as a figure or a table and write it into the workspace. spec.kind picks the form: "table" writes a markdown table, every other kind draws a figure as an SVG. Data comes in one way only: src, a path copied verbatim from an earlier receipt (oks_exec_query_intent for queried rows, jq_transform with save for a computed result, create_data for rows you supplied yourself) — rows are never written inline here, so every piece has a recorded origin. For a table, columns picks and orders what to show (omit for every column the data has), title is the caption, numeric columns are right-aligned, and the receipt gives you the table itself as ready-to-paste markdown for your reply. For a figure, the receipt gives you a markdown line: put it verbatim into your answer and the figure shows up there. The figure carries the rows it drew, its specification and its whole source chain inside the SVG, so it still explains itself once the workspace is cleaned up. Each switch applies to a fixed set of kinds (' + expressionMatrix() + '); filling one on a kind outside its set is rejected, so a switch is never silently ignored.',
       parameters: {
         type: 'object',
         properties: {
@@ -2004,7 +2028,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             required: ['kind'],
             additionalProperties: false,
           },
-          src: { type: 'string', description: 'A path copied verbatim from an earlier receipt — any product whose data are the rows to draw or show: oks_exec_query_intent returns queried rows ({rows, columns}), jq_transform with save a computed result, create_data the rows you supplied yourself, and a figure, table or report can be rendered again (its data form is {rows, spec} or a report\'s {assets, items, structure}). Rows cannot be written inline.' },
+          src: { type: 'string', description: 'A path copied verbatim from an earlier receipt — any product whose data are the rows to draw or show: oks_exec_query_intent returns queried rows ({rows, columns}), jq_transform with save a computed result, create_data the rows you supplied yourself, and a figure or a table can be drawn again (their data form is {rows, spec}; a relation graph also keeps its node table as data.nodeRows, so it can be drawn again without nodesSrc). A report cannot: its data is its display items, so read those with jq_transform instead. Rows cannot be written inline.' },
           name: { type: 'string', description: 'Optional name for the saved file; defaults to "table" for a table and "chart" for a figure. A name is an identifier, not a title: 0-9, _ and a-z only, at most 60 characters (longer ones are cut and tagged with a ~ plus a short hash). The file is named <time>-<name>-<content hash>.table.md, or .<figure kind>.svg (e.g. .bar.svg), under .oks/figures/.' },
           note: { type: 'string', description: 'Optional short note carried in the receipt — your own narration.' },
         },
@@ -2052,7 +2076,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_render_report',
-      description: 'Assemble a self-contained HTML report from an XHTML body. The body is a strict XML subset: one <article> root; the elements are article, section, h1-h3, p, div, span, figure, figcaption, table, caption, thead, tbody, tfoot, tr, th, td, ul, ol, li, blockquote, pre, code, strong, em, a, br, hr; the attributes are id, class, title, lang, data-oks-ref, data-oks-pick, data-oks-shrink, data-oks-lit, href, colspan, rowspan, scope; empty elements are written self-closed (<br />); and XML comments carry what a section is meant to answer (no "--" inside them). Data comes in by reference only: <figure data-oks-ref="key"> places a figure or table you already produced, <span data-oks-ref="key" data-oks-pick=".path"> fills in one scalar, and every key must be declared in spec.inputs as {"src": "<asset from a receipt>", "root": ".data"}. A number that is prose rather than data — an ordinal, a date, a framing like 近 7 天, a term like P95 — is declared where it stands as <span data-oks-lit="">…</span>: on a span (anywhere else it has no effect and comes back as LitNotOnSpan) and, this being strict XML, carrying an empty value. Tokens containing a letter, numbers written after #, and anything inside pre, code or a reference span are not treated as numbers at all. Everything else is prose you write; mark your own commentary with data-oks-shrink so a later reader gets the reasoning without the conclusions. The tool builds the metadata region itself (source chains, display values, jq sources), numbers figures and tables in body order, inlines each display file, and writes one self-contained HTML. Check the body with oks_check_report first; hand the result to the user with the present tool — an HTML report does not render in the reply body itself.',
+      description: 'Assemble a self-contained HTML report from an XHTML body. The body is a strict XML subset: one <article> root; the elements are article, section, h1-h3, p, div, span, figure, figcaption, table, caption, thead, tbody, tfoot, tr, th, td, ul, ol, li, blockquote, pre, code, strong, em, a, br, hr; the attributes are id, class, title, lang, data-oks-ref, data-oks-pick, data-oks-shrink, data-oks-lit, href, colspan, rowspan, scope; empty elements are written self-closed (<br />); and XML comments carry what a section is meant to answer (no "--" inside them). Data comes in by reference only: <figure data-oks-ref="key"> places a figure or table you already produced, <span data-oks-ref="key" data-oks-pick=".path"> fills in one scalar, and every key must be declared in spec.inputs as {"src": "<asset from a receipt>", "root": ".data"}. A number that is prose rather than data — an ordinal, a date, a framing like 近 7 天, a term like P95 — is declared where it stands as <span data-oks-lit="">…</span>: on a span (anywhere else it has no effect and comes back as LitNotOnSpan) and, this being strict XML, carrying an empty value. Tokens containing a letter, numbers written after #, and anything inside pre, code or a reference span are not treated as numbers at all. Everything else is prose you write; mark your own commentary with data-oks-shrink so a later reader gets the reasoning without the conclusions. The tool builds the metadata region itself (source chains, display values, jq sources), numbers figures and tables in body order, inlines each display file, and writes one self-contained HTML. The report carries the whole recipe of what it shows — every query Intent, the payload of every supplied or context material, and every jq program — so what it displays can be replayed from the report alone once the intermediate materials have been reclaimed. Check the body with oks_check_report first; hand the result to the user with the present tool — an HTML report does not render in the reply body itself.',
       parameters: {
         type: 'object',
         properties: {
@@ -2157,12 +2181,10 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           title: parsed.spec.title,
           category,
         });
-        const embedded = `[${parsed.spec.title}](${saved.asset})`;
         // 来源在报表级：来源链、展示项与源码资源都在页面的元数据区里，回执只报件数。
         return {
           ok: true,
           asset: saved.asset,
-          embedded,
           at: saved.at,
           note,
           figureCount: assembledReport.figureCount,
@@ -2298,7 +2320,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'create_current_ctx_data',
-      description: 'Read the current session context — the instant and the time zone in force — ONCE, and land it as an envelope in .oks/data/ (<date>-current-<hash>.ctx.json), returning both the asset and that data. Takes no arguments. Use it at the start of any question whose answer depends on "now", then read it inside jq (as a named input) and compute the absolute boundaries in the program with tzadd / tzfloor / tzceil / gmtime_tz / strftime_tz (the zone is passed explicitly): the engine has no clock, so every boundary comes from this material. The instant it carries is epoch milliseconds while those functions take epoch seconds, so divide and floor first; the data also carries the zone id and a ready RFC 3339 form of the instant. The zone is the one attached to the current turn (the browser zone); when the context carries none, or carries two that disagree, the call fails and asks you to have the user confirm it — nothing is guessed.',
+      description: 'Read the current session context — the instant and the time zone in force — ONCE, and land it as an envelope in .oks/data/ (<date>-current-<hash>.ctx.json), returning both the asset and that data. Takes no arguments. Use it at the start of any question whose answer depends on "now", then read it inside jq (as a named input) and compute the absolute boundaries in the program with tzadd / tzfloor / tzceil / gmtime_tz / strftime_tz (the zone is passed explicitly): the engine has no clock, so every boundary comes from this material. The instant it carries is epoch milliseconds while those functions take epoch seconds, so divide and floor first; the data also carries the zone id and a ready RFC 3339 form of the instant, and the payload travels in the source chain, so boundaries computed from it stay reproducible after this file is gone. The zone is the one attached to the current turn (the browser zone); when the context carries none, or carries two that disagree, the call fails and asks you to have the user confirm it — nothing is guessed.',
       parameters: {
         type: 'object',
         properties: {},

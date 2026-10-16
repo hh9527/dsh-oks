@@ -500,19 +500,19 @@ export function pruneArtifacts(
   return { removed, kept, missing };
 }
 
-/** `pin` / `unpin` 的入口：把 src 解析成文件名、核对它是可见产物、再落状态。
+/** `pin` / `unpin` 的入口：把 asset 解析成文件名、核对它是可见产物、再落状态。
  *  越界、不存在、不是图或报告，都在解析这一步报错。 */
-export function pinBySrc(root: string, src: unknown, pinned: boolean): { asset: string; pinned: boolean } {
-  const file = artifactFileName(root, src);
+export function pinByAsset(root: string, asset: unknown, pinned: boolean): { asset: string; pinned: boolean } {
+  const file = artifactFileName(root, asset);
   if (!VISIBLE.test(file)) {
-    throw new Error(`只有报表可以保留（${VISIBLE.source}）：${JSON.stringify(src)}`);
+    throw new Error(`只有报表可以保留（${VISIBLE.source}）：${JSON.stringify(asset)}`);
   }
   const state = openState(root);
   try {
     // 保留是写路径：顺手把账本对齐一次（人工放进 artifacts/ 的报告也能就此被保留）。
     reconcileArtifacts(state, root);
     if (!setPinned(state, file, pinned)) {
-      throw new Error(`这份产物没有自述、进不了清单，因此无法保留：${JSON.stringify(src)}`);
+      throw new Error(`这份产物没有自述、进不了清单，因此无法保留：${JSON.stringify(asset)}`);
     }
     return { asset: file, pinned };
   } finally {
@@ -527,21 +527,21 @@ export function pinBySrc(root: string, src: unknown, pinned: boolean): { asset: 
  *  文件已经不在也照样把行删掉——用户点的是清单上的那一行，而清单是权威。
  *  校验只看"路径在 `artifacts/` 内 + 是可见产物 + 登记过"：**不要求文件存在**（上面那条）。
  *  材料不级联删：同一张图可能被别的报表引用，它们由保活按龄回收。 */
-export function deleteArtifact(root: string, src: unknown): { asset: string } {
-  const text = typeof src === 'string' ? src : '';
+export function deleteArtifact(root: string, asset: unknown): { asset: string } {
+  const text = typeof asset === 'string' ? asset : '';
   const inside = relative(resolve(root, ARTIFACT_DIR), resolve(root, text));
   if (inside.length === 0 || inside.startsWith('..') || isAbsolute(inside)) {
-    throw new Error(`只能删除工作区 ${ARTIFACT_DIR}/ 里的产物：${JSON.stringify(src)}`);
+    throw new Error(`只能删除工作区 ${ARTIFACT_DIR}/ 里的产物：${JSON.stringify(asset)}`);
   }
   if (!VISIBLE.test(inside)) {
-    throw new Error(`只有报表可以删除（${VISIBLE.source}）：${JSON.stringify(src)}`);
+    throw new Error(`只有报表可以删除（${VISIBLE.source}）：${JSON.stringify(asset)}`);
   }
   const file = inside;
   const state = openState(root);
   try {
     const row = state.db.prepare('select pinned from artifacts where file = ?').get(file) as { pinned: number } | undefined;
-    if (row === undefined) throw new Error(`这份产物没有登记，删不了：${JSON.stringify(src)}`);
-    if (row.pinned === 1) throw new Error(`这份产物已经保留，先取消保留再删除：${JSON.stringify(src)}`);
+    if (row === undefined) throw new Error(`这份产物没有登记，删不了：${JSON.stringify(asset)}`);
+    if (row.pinned === 1) throw new Error(`这份产物已经保留，先取消保留再删除：${JSON.stringify(asset)}`);
     try {
       unlinkSync(join(root, ARTIFACT_DIR, file));
     } catch {

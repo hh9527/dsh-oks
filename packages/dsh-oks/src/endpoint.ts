@@ -12,13 +12,13 @@
 // 再让前端解析——直接问插件最直接（也因此不需要给前端"读文件"这条路）。写仍然只有插件在做
 // （`.oks/state.db` 是插件的），界面只是发起点；两个端点都只认这一个工作区的产出。
 //
-// 端点是**窄**的：只认这两条路径、只做这一件事（`pinBySrc` 自己会校验 src 属于那个工作区的
+// 端点是**窄**的：只认这两条路径、只做这一件事（`pinByAsset` 自己会校验 asset 属于那个工作区的
 // 产物目录），所以它不成为通用写入口。
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { errorText } from './host.ts';
 import { ARTIFACT_DIR } from './results.ts';
-import { adoptArtifacts, listArtifacts, openState, pinBySrc, readLastCleanup, usageByKind,
+import { adoptArtifacts, listArtifacts, openState, pinByAsset, readLastCleanup, usageByKind,
   VISIBLE } from './state.ts';
 
 /** 端点两头的**最小形状**：req 只要能给 method/url 与异步迭代出请求体，res 只要能 head/end。
@@ -63,7 +63,7 @@ export interface PanelDeps {
   /** 落状态：与 `oks_pin` / `oks_unpin` 走的是同一个函数。 */
   pin(root: string, asset: string, pinned: boolean): { asset: string; pinned: boolean };
   /** 删掉一份**未保留**的产物：工作区与清单一起去掉。 */
-  remove(root: string, src: string): { asset: string };
+  remove(root: string, asset: string): { asset: string };
   /** 这个工作区的报表保留窗口（分钟）：来自它的 `oks.json`，界面据此说明"多久后清理"。 */
   keepAliveMinutes(root: string): number;
   /** 按这个工作区配置的 manual 窗口清一次（材料 + `.work/`）：产出页签里那个按钮的动作。
