@@ -3,27 +3,13 @@
 // （{"domain":"...","model":"...wasm","dataFile":"...sqlite"}）。
 // 工作区是会话属性，所以一份插件能服务任意多工作区。
 //
-// 工具包括：oks_search（按名词/说法在词汇表里找到 key）、
-// oks_references（按 key 反向找到引用它的节点）、
-// kq（在常驻知识图上投影或运行 jq，默认入口是 .guide）、
-// oks_check_query_intent（只校验命名 Intent；通过的项给出该项的 key）、
-// oks_exec_query_intent（核 key 后**只读查询**数据文件，成功项落盘、回结构回执；SQL/bindings 只在这一条路径上出现）、
-// create_data（把 agent 自己给的数据落成一份封装——给定数据的唯一入口）、
-// jq_transform（在具名输入上做加工：只看、不落盘；每个输入条目各带 root——jq 点路径，
-//   默认 ".data" 是那份数据本身，".origin" 是来源链，"." 是整份 {meta, origin, data}；不写程序时
-//   结果就是「名字 → 那一段」的对象，pick 再从结果里取回一段；要写表达式就把程序放 .work/*.jq、
-//   参数 byFile 只给文件名——内层语言（jq）不与外层 JSON 的语法相邻，这是实测里整轮失败的主因）、
-// jq_transform（同一套求值；给了 save 就把结果物化成封装数据——新来源链由工具组装）、
-// oks_render_figure（按 spec.kind 出图或出表：出图时在服务端画成 SVG 存进工作区，只从一份封装取数，
-//   图自带绘图材料与来源链；出表时落成 markdown，流里与报表里都能渲染；两者都给出可直接粘进回答的引用）、
-// oks_render_report（把 markdown 组装成自足的 HTML 报告：图与表内联，展示项的最终数据与完整来源链
-//   并进页面里的报表级来源结构；缺件或超限整份失败）、
-// 读来源与读报告结构都不再另设工具：换一段 root 用 jq 投影即可。
-// 代码区四个工具只作用在 .work/ 内：work_write（创建/覆盖）、work_read（按行读、"." 列目录）、
-//   work_edit（字面替换）、work_delete（删一份文件）——jq 程序写在那里、由 byFile 按文件名引用。
-//   宿主那三个通用文件工具的沙箱根是整个工作区，给不出"只能 .work/"这条边界，所以边界由插件
-//   自己在执行层给出。
-// oks_artifacts（列出这个工作区产出过什么）。
+// 知识与材料统一由 jq_transform 访问：input 指定资源，project 或 jq.src 指定加工；
+// save 物化结果并保留完整来源链。knowledge:// 是常驻知识图，文件默认数据视图、#meta 为描述和来源。
+// 查询经 oks_check_query_intent 校验后由 oks_exec_query_intent 只读执行；
+// create_data 与 create_current_ctx_data 创建给定材料和上下文材料。
+// 图表与报告由 oks_render_figure / oks_render_report 生成，oks_check_report 校验 XHTML 正文。
+// work_* 工具只操作 .work/，所有文件参数使用完整工作区相对路径；.work/ 是目录列表入口。
+// oks_search、oks_references、va_ask 辅助词汇发现；oks_artifacts 列出交付物。
 // 内部材料的回收由写路径自己保活，要立刻腾地方则用右侧栏「产出」页签的清理按钮（走插件自己的端点）；
 // 窗口分 auto/manual 两套，配置在工作区 oks.json 的 retention 里。
 //
@@ -54,7 +40,7 @@ export { renderMarkdown } from './chart/markdown.ts';
 // （`<domain>/discovery` 声明 revision、入口 roots、每类 key 的 key 模式，以及哪些 kind 进
 // 词汇表、每类词条的归属字段与必须非空的字段；沿 `info` 的引用图走完，再在本地派生）在内存里
 // 建好词汇表与反向引用索引，之后整个进程按模型内容的 sha256 复用。知识图保留完整节点，
-// 由 kq 按需读取；词汇表与引用索引用于检索。完整知识不进模型上下文。
+// 由 jq_transform 按需读取；词汇表与引用索引用于检索。完整知识不进模型上下文。
 //
 // **查询与加工的结果都落在内部材料目录**：查询写 `<时间>-<名字>-<内容哈希>.qres.json`，
 // 加工写 `<时间>-<名字>-<内容哈希>.tr.json`，agent 自填的输入数据写 `.def.json`——
@@ -119,13 +105,7 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
     // 把门的是"进模型上下文的这一份"。工具自己更精确的提示（如 jq_transform）在它内部先生效。
     const render = definition.output.render.bind(definition.output);
     // 超限时交出去的那句话按工具来：知识节点与工作区产物是两种东西，把"怎么取小一点"指错路比不说更糟。
-    const oversizeHint = definition.name === 'kq'
-      ? '用 project 选择所需字段或以 "$shape" 探测形状；需要复杂筛选、聚合或分段读取时，用 kq 的 byFile 程序。'
-      : '回执太大，没有交给你。用更精确的取法再来一次：jq_transform 里用 pick 取一个字段，'
-        + '或在 byFile 的程序里聚合与投影（length / group_by / map({…})）；'
-        + '要整块数据就让它留在文件里，用 root 只取你要的那一段。'
-        + '读报告（*.report.html）永远按项取：root 用 ".data.items.<项名>"、".data.structure"、'
-        + '".origin"，不要一次取整份。';
+    const oversizeHint = '回执太大。用 jq_transform 的 project 选择字段或探测形状，或在 jq.src 程序中筛选、聚合；来源链用资源 #meta 视图读取。';
     const dispose = ctx.tools.register({
       ...definition,
       output: {

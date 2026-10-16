@@ -79,12 +79,20 @@ export interface OriginNode {
   /** 产生这份数据的操作：查询、加工、agent 给定、读到的当轮上下文、把若干材料合成一份展示件、
    *  组装报告，或（早期版本的）派生视图。`extract` 与 `derive` 都已经不再产生，读取时仍认——
    *  旧文件是可回收的内部材料，随保活消失。 */
-  kind: 'query' | 'transform' | 'input' | 'context' | 'display' | 'extract' | 'derive' | 'report';
+  kind: 'knowledge' | 'query' | 'transform' | 'input' | 'context' | 'display' | 'extract' | 'derive' | 'report';
   /** query：实际提交并通过校验的意图（相对时间已解析成绝对边界）。 */
   intent?: unknown;
+  /** transform：实际执行的加工方式。 */
+  method?: 'jq' | 'project' | 'identity';
+  /** project：完整的纯 JSON 规则。 */
+  project?: unknown;
+  /** 程序实际看到的输入形状；单输入的 `$` 绑定键仅用于来源链。 */
+  inputShape?: 'single' | 'named' | 'empty';
+  /** 来源绑定键 → 实际资源原文，包含 #meta 选择符。 */
+  inputResources?: Record<string, string>;
   /** 这次操作的动机：一句自然语言，写给人读。 */
   motivation?: string;
-  /** query：执行时**实际**用的数据来源（与 intent 的"请求什么"形成对照）。 */
+  /** query / knowledge：执行时**实际**用的数据来源（与 intent 的"请求什么"形成对照）。 */
   source?: unknown;
   /** input：这份给定数据的**内容**（`create_data` 的 payload）；context：读到的当轮上下文
    *  （时刻 + 时区）。两者都不是可重算的，所以内容随链走——**链就是配方**，于是只留产物本身
@@ -93,9 +101,9 @@ export interface OriginNode {
   /** display：这次合成用的绘图规格（重放时照它把数据块重建出来）。 */
   spec?: unknown;
   /** transform：实际执行的 snip（**程序正文**；来自文件的也记正文，`.work/` 被清掉也不影响来路）。
-   *  省略 `byFile` 时它是恒等投影 `.`。 */
+   *  仅 jq 加工记录此字段。 */
   snip?: string;
-  /** transform：这段程序来自哪份代码文件（`byFile` 给出的那一份）。 */
+  /** transform：这段程序来自哪份代码文件（`jq.src` 指向的那一份）。 */
   snipFile?: string;
   /** 报告序列化形态：源码集中放在报告的 `assets` 里，节点用 `src://<key>` 引用它。
    *  报告是唯一使用这种引用形态的地方——普通材料照旧把程序正文内嵌在 `snip` 里。 */
@@ -107,8 +115,7 @@ export interface OriginNode {
   outputs?: number;
   /** transform / extract：输入名 → 上游操作在**本文件内**的节点 ID。 */
   inputs?: Record<string, string>;
-  /** 与 `inputs` 配套：输入名 → 从那份产物里选取数据用的点路径（RFC 0008 §4）。
-   *  以前只记"用了哪个输入"，这一项把"切了哪一段"也记下来。 */
+  /** 与 inputs 配套：加工节点记录 `.data` / `#meta` 资源视图；展示与报告节点记录封装点路径。 */
   inputPaths?: Record<string, string>;
   /** extract：从哪份报告取的（文件名，不含目录）与报告内的第几项。 */
   report?: string;
@@ -154,7 +161,7 @@ export interface Envelope<T = unknown> {
 /** 自述写在原生元素里的那两种产物（图、报告）的材料块：只剩来源与数据。 */
 export type EnvelopeParts<T = unknown> = Pick<Envelope<T>, 'origin' | 'data'>;
 
-/** 读一份文件时默认取的那一段：`data` 本身。jq 的具名输入没有特别指定 `root` 时就是它。 */
+/** 封装数据区的点路径，供图表与报告绑定使用。 */
 export const DEFAULT_ROOT = '.data';
 
 /** 查询结果的 data：行与列一起表达——"有哪些列"是这份数据的一部分，不是它的同级描述。 */
@@ -230,11 +237,15 @@ export function originOf(node: OriginNode, data: unknown): DataOrigin {
 export function chainLines(origin: DataOrigin, limit = 24): string[] {
   const lines: string[] = [];
   const seen = new Set<string>();
-  /** 一次 transform 实际做了什么：恒等投影时全部内容都在 `pick` 上，所以那份程序先亮出来。 */
-  const program = (node: OriginNode): string =>
-    (node.snip === undefined || node.snip === '.' ? node.pick ?? node.snip ?? '' : node.snip);
+  /** 按实际加工方式展示规则或程序。 */
+  const program = (node: OriginNode): string => {
+    if (node.method === 'project') return canonicalJson(node.project);
+    if (node.method === 'identity') return 'identity';
+    return node.snip === undefined || node.snip === '.' ? node.pick ?? node.snip ?? '' : node.snip;
+  };
   const detail = (node: OriginNode): string => (node.kind === 'query'
     ? `query ${node.intent === undefined ? '' : capLine(canonicalJson(node.intent), 96)}`
+    : node.kind === 'knowledge' ? `知识 ${capLine(canonicalJson(node.source), 160)}`
     : node.kind === 'input' ? '输入数据（agent 给定）'
       : node.kind === 'context' ? '读到的当轮上下文（时刻与时区）'
         : node.kind === 'extract'
@@ -756,7 +767,7 @@ function locate(root: string, asset: unknown): { directory: string; target: stri
   if (typeof asset !== 'string' || asset.length === 0) {
     throw new Error('需要一个 asset（工具回执里给的那个相对路径）');
   }
-  const target = resolve(root, asset);
+  const target = workspaceFilePath(root, asset);
   for (const directory of READABLE_DIRS) {
     const base = resolve(root, directory);
     const inside = relative(base, target);
@@ -785,38 +796,59 @@ function artifactPath(root: string, asset: unknown): string {
   return real;
 }
 
-/** 单份代码文件的字节上限：它是**能被 `snip` 引用为程序**的上限——一份这么大的程序说明该拆开。 */
+/** 单份代码文件的字节上限：它是**能被 `jq.src` 引用为程序**的上限——一份这么大的程序说明该拆开。 */
 export const CODE_MAX_BYTES = 64 * 1024;
 
 /** `.work/` 里单份文本文件的上限（存得住的上限，比"能当程序引用的上限"宽）。 */
 export const WORK_MAX_BYTES = 256 * 1024;
 
-/** `.work/` 下的路径解析：接受 `x.jq` 与 `.work/x.jq` 两种写法，并保证落在 `.work/` 内。
- *
- *  它是**执行层面的约束**：不看提示词、不猜意图，越界一律拒绝。`..` 与绝对路径在词法上就被挡下；
- *  目标或其父目录若是符号链接，再用真实路径复核一遍（挡住"链接指向外面"这种绕法）。 */
+/** 校验工作区相对完整路径，原样使用调用方给定的名称。 */
+function validateFilePath(raw: unknown): asserts raw is string {
+  if (typeof raw !== 'string' || raw === '' || raw !== raw.trim() || isAbsolute(raw)
+    || raw.includes('\\') || raw.includes('#') || raw.includes('\0')
+    || raw.split('/').some(part => part === '' || part === '.' || part === '..')) {
+    throw new Error(`需要工作区相对完整文件路径：${JSON.stringify(raw)}`);
+  }
+}
+
+/** 校验最近的现有父目录，创建目录前也要挡住符号链接逃逸。 */
+function checkRealBoundary(root: string, target: string): void {
+  const workspace = realpathSync(root);
+  let candidate = target;
+  while (!existsSync(candidate)) candidate = dirname(candidate);
+  const actual = realpathSync(candidate);
+  const inside = relative(workspace, actual);
+  if (inside.startsWith('..') || isAbsolute(inside)) throw new Error('路径经符号链接越出工作区。');
+}
+
+/** 完整文件名称的共同边界：词法与真实路径均留在工作区内。 */
+export function workspaceFilePath(root: string, raw: unknown): string {
+  validateFilePath(raw);
+  const target = resolve(root, raw);
+  checkRealBoundary(root, target);
+  return target;
+}
+
+/** `.work/` 文件统一使用完整相对路径，并逐次验证真实边界。 */
 export function workPath(root: string, raw: unknown, tool: string): { rel: string; full: string } {
-  const given = typeof raw === 'string' ? raw.trim() : '';
-  if (given === '') throw new Error(`${tool} 需要 path：${WORK_DIR}/ 下的相对路径，例如 analysis.jq`);
-  const rel = given.startsWith(`${WORK_DIR}/`) ? given.slice(WORK_DIR.length + 1) : given;
-  if (rel === '' || rel.endsWith('/')) {
-    throw new Error(`${tool} 的 path 要指向一个文件：收到 ${JSON.stringify(raw)}`);
-  }
-  if (isAbsolute(given) || isAbsolute(rel)) {
-    throw new Error(`${tool} 的 path 是 ${WORK_DIR}/ 下的相对路径，不能是绝对路径：${JSON.stringify(raw)}`);
-  }
+  validateFilePath(raw);
+  if (!raw.startsWith(`${WORK_DIR}/`)) throw new Error(`${tool} 需要 ${WORK_DIR}/ 下的完整相对文件路径，例如 .work/analysis.jq`);
+  const full = workspaceFilePath(root, raw);
   const base = resolve(root, WORK_DIR);
-  const full = resolve(base, rel);
-  const inside = relative(base, full);
-  if (inside === '' || inside.startsWith('..') || isAbsolute(inside)) {
-    throw new Error(`${tool} 只能读写工作区 ${WORK_DIR}/ 下的文件（不能越出这一层）：${JSON.stringify(raw)}`);
+  if (existsSync(base)) {
+    const realBase = realpathSync(base);
+    let candidate = full;
+    while (!existsSync(candidate)) candidate = dirname(candidate);
+    const inside = relative(realBase, realpathSync(candidate));
+    if (inside.startsWith('..') || isAbsolute(inside)) throw new Error(`${tool} 路径经符号链接越出 ${WORK_DIR}/。`);
   }
-  return { rel: `${WORK_DIR}/${rel}`, full };
+  return { rel: raw, full };
 }
 
 /** `.work/` 里的现有文件（按名字排序）：agent 换会话回来时先看这个。 */
 export function listWorkFiles(root: string): Array<{ name: string; bytes: number; modifiedAt: string }> {
   const base = join(root, WORK_DIR);
+  checkRealBoundary(root, base);
   let entries: string[];
   try {
     entries = readdirSync(base, { withFileTypes: true })
@@ -845,7 +877,8 @@ function ensureInsideWork(root: string, target: string): void {
   if (inside.length > 0 && (inside.startsWith('..') || isAbsolute(inside))) {
     throw new Error(`${WORK_DIR}/ 里的父目录指向了外面，拒绝写入：${JSON.stringify(target)}`);
   }
-  if (existsSync(target) && !realpathSync(target).startsWith(base)) {
+  const targetInside = existsSync(target) ? relative(base, realpathSync(target)) : '';
+  if (targetInside.startsWith('..') || isAbsolute(targetInside)) {
     throw new Error(`${WORK_DIR}/ 里的这个文件指向了外面，拒绝写入`);
   }
 }
@@ -933,7 +966,7 @@ function readWorkTextWhole(root: string, path: unknown, tool: string): { rel: st
     text = readFileSync(full, 'utf8');
   } catch {
     throw new Error(`读不到 ${rel}`
-      + `。材料、图表件与报告不在 ${WORK_DIR}/ 下：要读它们用 jq_transform（可按 root 取一段）；`
+      + `。材料、图表件与报告不在 ${WORK_DIR}/ 下：要读它们用 jq_transform（用 project 或 jq 取一段）；`
       + `${WORK_DIR}/ 只装你自己写的文件。`);
   }
   const bytes = Buffer.byteLength(text, 'utf8');
@@ -978,23 +1011,23 @@ function codeFiles(root: string): string {
 
 export const isCodeFile = (name: string): boolean => name.endsWith('.jq');
 
-/** 读一份代码文件：`.work/` 下的 `.jq`，`jq_transform` 的 `by` 指向它。
+/** 读一份代码文件：`.work/` 下的 `.jq`，`jq_transform` 的 `jq.src` 指向它。
  *
  *  为什么代码只走文件、不进参数：内层语言（jq）与外层序列化（JSON）的语法长得像，模型一进
  *  "代码模式"就会把 jq 的 `{a: b}` 直接写成 JSON 值（实测 13 次整轮失败里有 3 次是这样）。
  *  参数里只留一个文件名，两侧语法就不再相邻；程序本身用 `work_write` 写、`work_edit` 增量改，
  *  还能回读、报错能带上下文。 */
 export function readCodeFile(root: string, raw: unknown): { text: string; file: string } {
-  const { rel, full } = workPath(root, raw, 'by');
+  const { rel, full } = workPath(root, raw, 'jq.src');
   if (!isCodeFile(rel)) {
-    throw new Error(`by 指向的是一段 jq 程序：文件名要以 .jq 结尾（收到 ${JSON.stringify(rel)}）`);
+    throw new Error(`jq.src 指向的是一段 jq 程序：文件名要以 .jq 结尾（收到 ${JSON.stringify(rel)}）`);
   }
   let text: string;
   try {
     text = readFileSync(full, 'utf8');
   } catch {
     throw new Error(`读不到 ${rel}`
-      + `。byFile 只认 ${WORK_DIR}/ 下的 .jq：先用 work_write 写出这个程序。`);
+      + `。jq.src 只认 ${WORK_DIR}/ 下的 .jq：先用 work_write 写出这个程序。`);
   }
   const bytes = Buffer.byteLength(text);
   if (bytes > CODE_MAX_BYTES) {
@@ -1043,7 +1076,7 @@ function normalizeOrigin(raw: unknown, data: unknown, asset: unknown): DataOrigi
   }
   const nodes = raw.nodes as Record<string, OriginNode>;
   for (const [id, node] of Object.entries(nodes)) {
-    const kinds = ['query', 'transform', 'input', 'context', 'display', 'extract', 'derive', 'report'];
+    const kinds = ['knowledge', 'query', 'transform', 'input', 'context', 'display', 'extract', 'derive', 'report'];
     if (!isRecord(node) || !kinds.includes(String(node.kind))) {
       throw new Error(`来源链里的节点不是一次操作（${id}）：${JSON.stringify(asset)}`);
     }

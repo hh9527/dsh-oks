@@ -17,7 +17,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve } from 'node:path';
-import { ARTIFACT_DIR, artifactFileName, DATA_DIR, FIGURE_DIR, readArtifactMeta, WORK_DIR } from './results.ts';
+import { ARTIFACT_DIR, artifactFileName, DATA_DIR, FIGURE_DIR, readArtifactMeta, workspaceFilePath, WORK_DIR } from './results.ts';
 import { CHART_KINDS } from './chart/shared.ts';
 import type { ArtifactMeta } from './results.ts';
 
@@ -528,8 +528,8 @@ export function pinByAsset(root: string, asset: unknown, pinned: boolean): { ass
  *  校验只看"路径在 `artifacts/` 内 + 是可见产物 + 登记过"：**不要求文件存在**（上面那条）。
  *  材料不级联删：同一张图可能被别的报表引用，它们由保活按龄回收。 */
 export function deleteArtifact(root: string, asset: unknown): { asset: string } {
-  const text = typeof asset === 'string' ? asset : '';
-  const inside = relative(resolve(root, ARTIFACT_DIR), resolve(root, text));
+  const target = workspaceFilePath(root, asset);
+  const inside = relative(resolve(root, ARTIFACT_DIR), target);
   if (inside.length === 0 || inside.startsWith('..') || isAbsolute(inside)) {
     throw new Error(`只能删除工作区 ${ARTIFACT_DIR}/ 里的产物：${JSON.stringify(asset)}`);
   }

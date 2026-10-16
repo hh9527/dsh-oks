@@ -201,23 +201,11 @@ export function renderWorkEdit(_args: unknown, value: WorkWriteValue | null | un
   return textBlock([`${value.file ?? ''} · 已替换 ${value.replaced ?? 0} 处 · 现在 ${value.bytes ?? 0} B`]);
 }
 
-/** jq_transform 渲染读到的值（探索：只看，不落盘）。 */
+/** 加工读取回执。 */
 export interface TransformValue {
   ok?: boolean;
-  snip: string;
-  /** 从结果里取回的那一段（jq 点路径）；没给就整个结果都是。 */
-  pick?: string;
-  /** 这段程序来自哪份代码文件（`byFile` 给出的那一份）。 */
-  snipFile?: string;
-  /** 省略 `byFile` 时程序是恒等投影：结果是「名字 → 各输入那一段」的对象。 */
-  generated?: boolean;
-  inputs: ReadonlyArray<{ name: string; asset: string; root?: string; shape: string }>;
-  /** 表达式产出了几个值。 */
   outputs: number;
-  /** 结果本身：恰好一个输出时是那个值，多个输出时是值的数组，零输出时是空数组。 */
   data: unknown;
-  truncated: boolean;
-  ms: number;
 }
 
 /** work_delete 渲染删除结果。 */
@@ -385,7 +373,7 @@ export function renderCheck(_args: unknown, value: CheckValue | null | undefined
   const runnable = value?.queryCount ?? 0;
   lines.push('', results.length > 0 && accepted.length === results.length
     ? `校验结论：${results.length} 个 Intent 全部可用（${runnable} 个查询可执行）。用 oks_exec_query_intent 带同一批名字与各自的 key 提交就能拿到结果。`
-    : `校验结论：${accepted.length}/${results.length} 可用（${runnable} 个查询可执行）。用 kq 按服务给出的顶层 key 读它声明的词汇再修，保持业务含义不变。`);
+    : `校验结论：${accepted.length}/${results.length} 可用（${runnable} 个查询可执行）。用 jq_transform 以 input="knowledge://" 按服务给出的顶层 key 读它声明的词汇再修，保持业务含义不变。`);
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 
@@ -541,38 +529,9 @@ export function shapeOf(value: unknown): string {
   return `标量（${typeof value}）`;
 }
 
-/** 表达式产出的值，按"一个值还是一个流"摊平：探索与物化共用这一条约定。 */
-const streamOf = (value: { outputs?: number; data?: unknown } | null | undefined): unknown[] => {
-  if (value === null || value === undefined) return [];
-  if (value.outputs === 1) return [value.data];
-  return Array.isArray(value.data) ? value.data : [value.data];
-};
-
-/** jq_transform 的模型可见渲染：输入、形状、以及按文本预算截断的采样值。
- *  值本身是 agent 用表达式选出来的，所以这一页不需要再约定列与分页。 */
-export function renderJqTransform(_args: unknown, value: TransformValue | null | undefined): RenderBlock[] {
-  if (value?.ok === false) return textBlock([JSON.stringify(value)]);
-  const inputs = value?.inputs ?? [];
-  const picked = value?.pick === undefined ? '' : ` · pick ${value.pick}`;
-  const from = value?.snipFile === undefined ? '' : ` · 程序来自 ${value.snipFile}`;
-  const lines = [
-    `表达式产出 ${value?.outputs ?? 0} 个值`
-    + `${value?.truncated === true ? '（到达输出上限，已截断）' : ''}${picked}${from} · ${value?.ms ?? 0} ms`,
-    // 绑定写清：程序里的名字**就是**那个文件按 root 取出来的那一段（不是"文件在那儿"）。
-    ...inputs.map((input) => `输入 ${input.name} ← ${input.asset}（取 ${input.root ?? DEFAULT_ROOT}）`
-      + ` → 程序里的 ${input.name} 就是这一份：${input.shape}`),
-    value?.generated === true
-      ? `无程序：结果是「名字 → 各输入那一段」的对象${value.pick === undefined ? '' : `，再取 ${value.pick}`}`
-        + `（等价 jq：${value.pick ?? '.'}）`
-      : '',
-    inputs.length === 0 ? '输入：（无：表达式看到的是 {}）' : '',
-    `形状：${shapeOf(value?.data)}`,
-  ].filter((line) => line !== '');
-  const stream = streamOf(value);
-  // 数据接口不截断：值要么完整给出，要么在工具层就报错（见 tools.ts 的 payloadGuard）。
-  for (const item of stream) lines.push(compact(item));
-  if (stream.length === 0) lines.push('（表达式没有产出值。）');
-  return [{ type: 'text', text: `${lines.join('\n')}\n` }];
+/** 加工查看结果完整输出 JSON；预算由工具与宿主统一约束。 */
+export function renderJqTransform(args: unknown, value: TransformValue | null | undefined): RenderBlock[] {
+  return renderValue(args, value);
 }
 
 /** `jq_transform` 的渲染：给了 `save` 就是物化回执（只有落点与大小），否则是"看一眼"的回执。 */
@@ -584,7 +543,7 @@ export function renderJqResult(args: unknown, value: unknown): RenderBlock[] {
 }
 
 /** 物化（save）的模型可见回执：只报落点与大小。值、形状与来源链都在文件里——
- *  要看就再读一次（`jq_transform` 读 `.data` 是值、`.origin` 是来路）。 */
+ *  要看就再读一次（`jq_transform` 普通资源读值、`#meta` 读来路）。 */
 export function renderJqInto(_args: unknown, value: IntoValue | null | undefined): RenderBlock[] {
   const size = `${((value?.bytes ?? 0) / 1024).toFixed(1)} KB`;
   return [{ type: 'text', text: `asset:  ${value?.asset ?? ''} · ${size}\n` }];

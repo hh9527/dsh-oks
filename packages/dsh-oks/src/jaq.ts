@@ -20,14 +20,14 @@ export interface JaqOutcome {
 }
 
 export interface JaqOptions {
-  /** 表达式作用的输入值（工具那一层把具名输入绑成一个对象）。 */
+  /** 表达式作用的输入值（单资源直接传值，命名输入组装成对象）。 */
   input: unknown;
   /** 墙钟上限，到点终止这一代 worker。 */
   timeoutMs: number;
   /** 输出字符上限：**引擎自己**到点就停并标记截断（不会先造出一个巨大的串再截）。 */
   maxChars: number;
   signal?: AbortSignal;
-  /** 程序来自哪个文件（`byFile` 给出的那一份）：用于报错定位，正文由调用方通过 query 提供。 */
+  /** 程序来自哪个文件（`jq.src` 指向的那一份）：用于报错定位，正文由调用方通过 query 提供。 */
   programFile?: string;
 }
 
