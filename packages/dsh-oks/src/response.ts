@@ -91,7 +91,7 @@ export function renderCurrentCtx(_args: unknown, value: CurrentCtxValue | null |
   const lines = [
     `asset:  ${value?.asset ?? ''}`,
     `这份时间上下文：${((value?.bytes ?? 0) / 1024).toFixed(1)} KB · ${value?.ms ?? 0} ms`,
-    '把它当具名输入交给 jq_transform，边界就在程序里算（tzadd / tzfloor / tzceil，时区显式传）。',
+    '把它当具名输入交给 oks_jaq，边界就在程序里算（tzadd / tzfloor / tzceil，时区显式传）。',
     '',
     JSON.stringify(value?.data ?? null, null, 2),
   ];
@@ -216,7 +216,7 @@ export function renderWorkDelete(_args: unknown, value: { ok?: boolean; file?: s
   return textBlock([`${value.file ?? ''} · 已删除 · 代码区还剩 ${value.remaining ?? 0} 个文件`]);
 }
 
-/** jq_transform（save 那条路）渲染读到的值：结果写进 .oks/data/。 */
+/** oks_jaq（save 那条路）渲染读到的值：结果写进 .oks/data/。 */
 /** 物化回执的全部内容：落点与大小。其余（值、形状、来源链）都在文件里。 */
 export interface IntoValue {
   asset: string;
@@ -373,7 +373,7 @@ export function renderCheck(_args: unknown, value: CheckValue | null | undefined
   const runnable = value?.queryCount ?? 0;
   lines.push('', results.length > 0 && accepted.length === results.length
     ? `校验结论：${results.length} 个 Intent 全部可用（${runnable} 个查询可执行）。用 oks_exec_query_intent 带同一批名字与各自的 key 提交就能拿到结果。`
-    : `校验结论：${accepted.length}/${results.length} 可用（${runnable} 个查询可执行）。用 jq_transform 以 input="knowledge://" 按服务给出的顶层 key 读它声明的词汇再修，保持业务含义不变。`);
+    : `校验结论：${accepted.length}/${results.length} 可用（${runnable} 个查询可执行）。用 oks_jaq 以 input="knowledge://" 按服务给出的顶层 key 读它声明的词汇再修，保持业务含义不变。`);
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 
@@ -427,7 +427,7 @@ export function renderQuery(_args: unknown, value: QueryValue | null | undefined
         + `${result.truncated ? `（已到行数上限 ${value!.queryMaxRows}，结果还有更多）` : ''}`);
       lines.push(`asset:  ${result.asset}`);
       lines.push(`columns:  ${result.columns.map((column) => `${column.name}:${column.types.join('|')}`).join(', ')}`);
-      lines.push('（数据行与语句都不在回执里：数据按需用 jq_transform 取，语句在执行记录里）');
+      lines.push('（数据行与语句都不在回执里：数据按需用 oks_jaq 取，语句在执行记录里）');
       if (result.rowCount === 0 && value?.window) {
         lines.push(`提示：这份数据的窗口是 [${value.window.start}, ${value.window.endExclusive})，被过滤掉的可能是时间落在窗口之外。`);
       }
@@ -534,7 +534,7 @@ export function renderJqTransform(args: unknown, value: TransformValue | null | 
   return renderValue(args, value);
 }
 
-/** `jq_transform` 的渲染：给了 `save` 就是物化回执（只有落点与大小），否则是"看一眼"的回执。 */
+/** `oks_jaq` 的渲染：给了 `save` 就是物化回执（只有落点与大小），否则是"看一眼"的回执。 */
 export function renderJqResult(args: unknown, value: unknown): RenderBlock[] {
   const saved = (args as { save?: unknown } | null | undefined)?.save !== undefined;
   return saved
@@ -543,7 +543,7 @@ export function renderJqResult(args: unknown, value: unknown): RenderBlock[] {
 }
 
 /** 物化（save）的模型可见回执：只报落点与大小。值、形状与来源链都在文件里——
- *  要看就再读一次（`jq_transform` 普通资源读值、`#meta` 读来路）。 */
+ *  要看就再读一次（`oks_jaq` 普通资源读值、`#meta` 读来路）。 */
 export function renderJqInto(_args: unknown, value: IntoValue | null | undefined): RenderBlock[] {
   const size = `${((value?.bytes ?? 0) / 1024).toFixed(1)} KB`;
   return [{ type: 'text', text: `asset:  ${value?.asset ?? ''} · ${size}\n` }];

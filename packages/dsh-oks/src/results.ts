@@ -966,7 +966,7 @@ function readWorkTextWhole(root: string, path: unknown, tool: string): { rel: st
     text = readFileSync(full, 'utf8');
   } catch {
     throw new Error(`读不到 ${rel}`
-      + `。材料、图表件与报告不在 ${WORK_DIR}/ 下：要读它们用 jq_transform（用 project 或 jq 取一段）；`
+      + `。材料、图表件与报告不在 ${WORK_DIR}/ 下：要读它们用 oks_jaq（用 project 或 jq 取一段）；`
       + `${WORK_DIR}/ 只装你自己写的文件。`);
   }
   const bytes = Buffer.byteLength(text, 'utf8');
@@ -1011,7 +1011,7 @@ function codeFiles(root: string): string {
 
 export const isCodeFile = (name: string): boolean => name.endsWith('.jq');
 
-/** 读一份代码文件：`.work/` 下的 `.jq`，`jq_transform` 的 `jq.src` 指向它。
+/** 读一份代码文件：`.work/` 下的 `.jq`，`oks_jaq` 的 `jq.src` 指向它。
  *
  *  为什么代码只走文件、不进参数：内层语言（jq）与外层序列化（JSON）的语法长得像，模型一进
  *  "代码模式"就会把 jq 的 `{a: b}` 直接写成 JSON 值（实测 13 次整轮失败里有 3 次是这样）。

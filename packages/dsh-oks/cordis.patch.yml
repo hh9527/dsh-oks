@@ -1,18 +1,17 @@
-# 插入一行 Host 插件：把**工作区声明的**知识服务与数据文件注册成十九个原生工具——
-# kq / oks_search / oks_references / oks_info / oks_check_query_intent / oks_exec_query_intent / create_data /
-# jq_transform / oks_render_figure / oks_check_report / oks_render_report / oks_artifacts /
-# work_read / work_write / work_edit / work_list / work_delete（后五个只作用在 .work/ 内的工作区：
-# jq 程序、报告正文、任何草稿文件）——
-# 外加两个与模型无关的辅助工具：create_current_ctx_data（把当轮会话上下文读一次、落成材料——
-# 求值器里没有时钟，相对时间的边界都由那份材料在 jq 里算）与 va_ask（插件自己装配、自己复用词汇助手）。
-# 知识探索从 kq({}) 的自述入口开始；oks_info 的 key "index" 也可用于单节点阅读。
+# 将工作区声明的知识服务与数据文件接成原生工具。
+# oks_jaq 统一访问知识和数据，知识入口为：
+# {"input":"knowledge://","project":{"guide":"*"}}。
+# 查询通过 oks_check_query_intent 校验后，由 oks_exec_query_intent 只读执行。
+# 图表与报告分别通过 oks_render_figure、oks_render_report 生成。
+# work_* 工具操作 .work/ 内的完整相对路径；create_current_ctx_data 提供时间材料，
+# va_ask 提供领域词汇线索。
 #
-# 这一行不需要知道任何模型：领域、artifact、dataFile 全部来自工作区根目录的 oks.json
-# （{"domain":"<领域名>","artifact":"<相对 oks.json 的 .wasm 路径>",
+# 这一行不需要知道任何模型：领域、model、dataFile 全部来自工作区根目录的 oks.json
+# （{"domain":"<领域名>","model":"<相对 oks.json 的 .wasm 路径>",
 #   "dataFile":"<相对 oks.json 的 .sqlite 路径>"}），config 留空即可。
 #
 # 需要覆盖工作区声明时才写 config（优先级：config > oks.json > 默认值）：
-#   domain / artifact / dataFile / requestTimeoutMs / retryAcceptedSubset /
+#   domain / model / dataFile / requestTimeoutMs / retryAcceptedSubset /
 #   queryTimeoutMs / queryMaxRows
 #   （时区来自请求上下文或调用参数；工作区来自会话头 cwd；运行时取不到就报错）
 #

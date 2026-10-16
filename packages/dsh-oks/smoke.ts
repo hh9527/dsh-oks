@@ -106,7 +106,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['work_read', 'work_write', 'work_edit', 'work_list', 'work_delete', 'oks_search', 'oks_references', 'oks_check_query_intent', 'oks_exec_query_intent', 'create_data', 'jq_transform', 'oks_render_figure', 'oks_check_report', 'oks_render_report', 'oks_artifacts', 'create_current_ctx_data', 'va_ask'];
+const EXPECTED_TOOLS = ['work_read', 'work_write', 'work_edit', 'work_list', 'work_delete', 'oks_search', 'oks_references', 'oks_check_query_intent', 'oks_exec_query_intent', 'create_data', 'oks_jaq', 'oks_render_figure', 'oks_check_report', 'oks_render_report', 'oks_artifacts', 'create_current_ctx_data', 'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -313,7 +313,7 @@ console.log('=== 会话上下文材料 ===');
   // 注意：jq 里 `|` 比 `,` 松，所以两个元素各自要括号（否则 ceil 会把两个都再算一遍）。
   const weekFile = prog('(.ctx.utc.epochMillis / 1000 | floor) as $at | .ctx.tz.client.id as $tz'
     + ' | [($at | tzfloor("week"; $tz)), ($at | tzceil("week"; $tz))]');
-  const week = await call('jq_transform', { input: { ctx: made.value.asset }, jq: { src: weekFile }});
+  const week = await call('oks_jaq', { input: { ctx: made.value.asset }, jq: { src: weekFile }});
   const span = Array.isArray(week.value.data) ? week.value.data : [];
   console.log(`  同一份锚点算出的本周（上海，半开）：[${span[0]}, ${span[1]}) · 跨度 ${span[1] - span[0]} 秒`);
   if (span.length !== 2 || span[1] - span[0] !== 7 * 86400) {
@@ -386,7 +386,7 @@ console.log('=== 会话上下文材料 ===');
 
   // 会话头里没有 cwd 时明确报错，而不是回落到别的目录
   try {
-    await registered.get('jq_transform').execute({input:'knowledge://', project:{guide:'*'}}, { signal: new AbortController().signal, agent: { session: { meta: {} } } });
+    await registered.get('oks_jaq').execute({input:'knowledge://', project:{guide:'*'}}, { signal: new AbortController().signal, agent: { session: { meta: {} } } });
     console.log('  ✗ 会话头没有 cwd 却成功了');
     throw new Error('没有 cwd 时不应成功');
   } catch (cause) {
@@ -415,7 +415,7 @@ const refusalOf = async (run) => {
 // 可指定实际宿主的 dsh-tools 模块，覆盖 schema/SDK 层而非仅直调工具。
 if (process.env.OKS_TOOLS_MODULE) {
   const host = await import(pathToFileURL(resolve(process.env.OKS_TOOLS_MODULE)).href);
-  for (const name of ['jq_transform']) {
+  for (const name of ['oks_jaq']) {
     const schema = registered.get(name).parameters;
     host.assertSupportedJsonSchema(schema);
     ok(`${name} 参数 schema 属于宿主支持的子集`, true);
@@ -452,26 +452,26 @@ console.log('=== project：JS 读取投影与形状探测 ===');
     return { value, text: tool.output.render(args, value).map((block) => block.text ?? '').join('') };
   };
   try {
-    const discovered = await call('jq_transform', { input: 'knowledge://', project: '$shape' });
+    const discovered = await call('oks_jaq', { input: 'knowledge://', project: '$shape' });
     ok('无 WTI 时可直接投影整个知识图', discovered.value.ok && discovered.value.outputs === 1
       && discovered.value.data.type === 'object' && discovered.value.data.size > 0);
     ok('知识摘要键名列表有界', discovered.value.data.keys.length <= 20);
-    const projected = await call('jq_transform', { input: 'knowledge://', project: { index: { key: '*', detail: '$shape' } } });
+    const projected = await call('oks_jaq', { input: 'knowledge://', project: { index: { key: '*', detail: '$shape' } } });
     ok('多层对象投影保持完整外壳', projected.value.data.index.key === 'index'
       && projected.value.data.index.detail.type === 'object');
-    const whole = await call('jq_transform', { input: 'knowledge://', project: '*' });
+    const whole = await call('oks_jaq', { input: 'knowledge://', project: '*' });
     ok('整图超限报告实际字节数且无半份数据', whole.value.error?.code === 'payload_too_large'
       && whole.value.error.actualBytes > 256 * 1024 && whole.value.data === undefined);
-    const tiny = await call('jq_transform', { input: 'knowledge://', project: {} });
+    const tiny = await call('oks_jaq', { input: 'knowledge://', project: {} });
     ok('空对象投影仍是一个输出值', tiny.value.outputs === 1 && JSON.stringify(tiny.value.data) === '{}');
-    for (const tool of ['jq_transform']) {
+    for (const tool of ['oks_jaq']) {
       const args = { project: JSON.stringify({ datasets: '$shape', index: '$shape' }) };
       const quoted = await refusalOf(() => call(tool, args));
       ok(`${tool} 双重编码规则提示实际类型与正确调用`, /收到 string/.test(quoted ?? '') && quoted.includes('对象规则直接嵌套传入'));
     }
-    const both = await refusalOf(() => call('jq_transform', { input: 'knowledge://', jq: { src: 'unused.jq' }, project: '*' }));
+    const both = await refusalOf(() => call('oks_jaq', { input: 'knowledge://', jq: { src: 'unused.jq' }, project: '*' }));
     ok('project 与 jq 在读取文件前拒绝混用', /二选一/.test(both ?? ''));
-    for (const tool of ['jq_transform']) {
+    for (const tool of ['oks_jaq']) {
       const invalid = await refusalOf(() => call(tool, { project: { docs: ['$bad'] } }));
       ok(`${tool} 完整校验规则且报错带位置`, invalid?.includes('$["docs"][0]'));
       const nullRule = await refusalOf(() => call(tool, { project: null }));
@@ -485,52 +485,52 @@ console.log('=== project：JS 读取投影与形状探测 ===');
 
 console.log('=== kq：知识发现、值流与独立求值 ===');
 {
-  const [a, b] = await Promise.all([call('jq_transform', { input: 'knowledge://', project: {guide:'*'}}), call('jq_transform', {input:'knowledge://',project:{guide:'*'}})]);
+  const [a, b] = await Promise.all([call('oks_jaq', { input: 'knowledge://', project: {guide:'*'}}), call('oks_jaq', {input:'knowledge://',project:{guide:'*'}})]);
   ok('默认入口可发现结构，并发调用结果一致',
     a.value.ok && a.value.data.guide.key === 'guide' && a.value.data.guide.type === 'Index' && JSON.stringify(a.value) === JSON.stringify(b.value));
-  const looked = await call('jq_transform', { input: 'knowledge://', jq: { src: prog('.index') }});
-  const original = foundOf((await call('jq_transform', { input: 'knowledge://', project: { ['index']: '*' } })).value);
+  const looked = await call('oks_jaq', { input: 'knowledge://', jq: { src: prog('.index') }});
+  const original = foundOf((await call('oks_jaq', { input: 'knowledge://', project: { ['index']: '*' } })).value);
   ok('kq 保留原始 index 节点全文', JSON.stringify(looked.value.data) === JSON.stringify(original));
-  const largest = await call('jq_transform', { input: 'knowledge://', jq: { src: prog('to_entries | max_by(.value | tojson | length) | .key') }});
-  const big = await call('jq_transform', { input: 'knowledge://', jq: { src: prog(`.[${JSON.stringify(largest.value.data)}] as $node | [range(10) | $node]`) }});
+  const largest = await call('oks_jaq', { input: 'knowledge://', jq: { src: prog('to_entries | max_by(.value | tojson | length) | .key') }});
+  const big = await call('oks_jaq', { input: 'knowledge://', jq: { src: prog(`.[${JSON.stringify(largest.value.data)}] as $node | [range(10) | $node]`) }});
   ok('大节点批量读取被回执预算拒绝', big.value.error?.code === 'payload_too_large');
-  const trimmed = await call('jq_transform', { input: 'knowledge://', project: { [largest.value.data]: { key: '*', detail: '$shape' } } });
+  const trimmed = await call('oks_jaq', { input: 'knowledge://', project: { [largest.value.data]: { key: '*', detail: '$shape' } } });
   ok('大节点可先投影再检查预算', trimmed.value.data[largest.value.data].key === largest.value.data
     && trimmed.value.data[largest.value.data].detail.type === 'object' && Buffer.byteLength(trimmed.text) < 16384);
   ok('kq 超限提示引导 project', big.value.error.hint.includes('project'));
-  const direct = await call('jq_transform', { input: 'knowledge://', project: { index: '*' } });
+  const direct = await call('oks_jaq', { input: 'knowledge://', project: { index: '*' } });
   ok('JS 读取与 jq 读取为同一知识原文', JSON.stringify(direct.value.data.index) === JSON.stringify(original));
   ok('oks_info 不暴露为工具', !registered.has('oks_info'));
-  const typed = await call('jq_transform', { input: 'knowledge://', jq: { src: prog('all(.[]; (.type | type) == "string")') }});
+  const typed = await call('oks_jaq', { input: 'knowledge://', jq: { src: prog('all(.[]; (.type | type) == "string")') }});
   ok('知识图顶层每项均为带类型的条目', typed.value.data === true);
-  const joined = await call('jq_transform', { input: 'knowledge://', jq: { src: prog('. as $docs | [$docs.index.links[] | $docs[.key].key]') }});
+  const joined = await call('oks_jaq', { input: 'knowledge://', jq: { src: prog('. as $docs | [$docs.index.links[] | $docs[.key].key]') }});
   ok('jq 按链接关联原始节点', JSON.stringify(joined.value.data) === JSON.stringify(original.links.map((link) => link.key)));
-  const edge = await call('jq_transform', { input: 'knowledge://', jq: { src: prog('[.[] | select(.links | length > 0) | {source: .key, target: .links[0].key}][0]') }});
+  const edge = await call('oks_jaq', { input: 'knowledge://', jq: { src: prog('[.[] | select(.links | length > 0) | {source: .key, target: .links[0].key}][0]') }});
   const target = edge.value.data?.target;
   ok('发现一条实际知识链接', typeof target === 'string');
   {
     const targetJson = JSON.stringify(target);
-    const related = await call('jq_transform', { input: 'knowledge://', jq: { src: prog(`to_entries | map(select(any(.value.links[]?; .key == ${targetJson}))) | map(.key)`) }});
+    const related = await call('oks_jaq', { input: 'knowledge://', jq: { src: prog(`to_entries | map(select(any(.value.links[]?; .key == ${targetJson}))) | map(.key)`) }});
     ok('jq 可自主反查引用来源', related.value.data.includes(edge.value.data.source));
-    const node = await call('jq_transform', { input: 'knowledge://', jq: { src: prog(`.[${targetJson}]`) }});
-    const serviceNode = foundOf((await call('jq_transform', { input: 'knowledge://', project: { [target]: '*' } })).value);
+    const node = await call('oks_jaq', { input: 'knowledge://', jq: { src: prog(`.[${targetJson}]`) }});
+    const serviceNode = foundOf((await call('oks_jaq', { input: 'knowledge://', project: { [target]: '*' } })).value);
     ok('关联节点与 JS 投影全文一致', JSON.stringify(node.value.data) === JSON.stringify(serviceNode));
   }
-  const stream = await call('jq_transform', { input: 'knowledge://', jq: { src: prog('range(3)') }});
-  const array = await call('jq_transform', { input: 'knowledge://', jq: { src: prog('[range(3)]') }});
-  const empty = await call('jq_transform', { input: 'knowledge://', jq: { src: prog('empty') }});
+  const stream = await call('oks_jaq', { input: 'knowledge://', jq: { src: prog('range(3)') }});
+  const array = await call('oks_jaq', { input: 'knowledge://', jq: { src: prog('[range(3)]') }});
+  const empty = await call('oks_jaq', { input: 'knowledge://', jq: { src: prog('empty') }});
   ok('kq 值流：多个输出、数组值与零输出', stream.value.outputs === 3 && array.value.outputs === 1
     && empty.value.outputs === 0 && JSON.stringify(empty.value.data) === '[]');
-  await call('jq_transform', { input: 'knowledge://', jq: { src: prog('.index = null') }});
-  const unchanged = await call('jq_transform', { input: 'knowledge://', jq: { src: prog('.index') }});
+  await call('oks_jaq', { input: 'knowledge://', jq: { src: prog('.index = null') }});
+  const unchanged = await call('oks_jaq', { input: 'knowledge://', jq: { src: prog('.index') }});
   ok('jq 更新不修改常驻知识', JSON.stringify(unchanged.value.data) === JSON.stringify(original));
-  const syntax = await refusalOf(() => call('jq_transform', { input: 'knowledge://', jq: { src: prog('. |') }}));
+  const syntax = await refusalOf(() => call('oks_jaq', { input: 'knowledge://', jq: { src: prog('. |') }}));
   ok('kq 语法错误定位到程序文件', /smoke_p[0-9]+.jq/.test(syntax ?? ''));
-  const large = await call('jq_transform', { input: 'knowledge://', jq: { src: prog('[range(8000)]') }});
-  const truncated = await call('jq_transform', { input: 'knowledge://', jq: { src: prog('range(200000)') }});
+  const large = await call('oks_jaq', { input: 'knowledge://', jq: { src: prog('[range(8000)]') }});
+  const truncated = await call('oks_jaq', { input: 'knowledge://', jq: { src: prog('range(200000)') }});
   ok('kq 超限只返回错误，不泄漏半份数据', large.value.error?.code === 'payload_too_large'
     && truncated.value.error?.code === 'evaluation_truncated' && large.value.data === undefined);
-  const calculator = await call('jq_transform', { input: 'knowledge://', jq: { src: prog('1 + 2') }});
+  const calculator = await call('oks_jaq', { input: 'knowledge://', jq: { src: prog('1 + 2') }});
   ok('知识查询失败后计算器继续可用', calculator.value.data === 3);
 }
 
@@ -1171,7 +1171,7 @@ let reached = null;
 const walk = async (key, depth) => {
   if (depth > 6 || seenKeys.size >= 24 || seenKeys.has(key)) return;
   seenKeys.add(key);
-  const found = foundOf((await call('jq_transform', { input: 'knowledge://', project: { [key]: '*' } })).value);
+  const found = foundOf((await call('oks_jaq', { input: 'knowledge://', project: { [key]: '*' } })).value);
   trail.push(`${'· '.repeat(depth)}${found?.type ?? '?'}  ${key}`);
   const detail = found?.detail;
   if (reached === null && typeof detail?.id === 'string' && detail.id !== '') {
@@ -1195,14 +1195,14 @@ console.log(`  跟随 ${seenKeys.size} 个 key${reached === null ? '（入口没
 // 拼出 key 去读节点——这就是 agent 的拼法（填声明的模式，名字各编码一次）。
 let member = reached !== null && reached.type === 'Dataset' ? reached : null;
 if (member === null) {
-  const indexNode = foundOf((await call('jq_transform', { input: 'knowledge://', project: { ['index']: '*' } })).value);
+  const indexNode = foundOf((await call('oks_jaq', { input: 'knowledge://', project: { ['index']: '*' } })).value);
   const pattern = (indexNode?.detail?.key_patterns ?? []).find((item) => item.kind === 'Dataset'
     || String(item.pattern).startsWith('Dataset/'));
   const datasets = await call('oks_search', { kind: 'Dataset' });
   for (const row of datasets.value.matched) {
     if (pattern === undefined) break;
     const key = String(pattern.pattern).replace(/\{(\w+)\}/g, () => encodeURIComponent(row.name));
-    const found = foundOf((await call('jq_transform', { input: 'knowledge://', project: { [key]: '*' } })).value);
+    const found = foundOf((await call('oks_jaq', { input: 'knowledge://', project: { [key]: '*' } })).value);
     if (found?.type === 'Dataset' && typeof found.detail?.id === 'string') {
       member = { key, id: found.detail.id, type: found.type, links: found.links ?? [] };
       console.log(`  按声明的模式拼出实体 key: ${key} → id=${found.detail.id}`);
@@ -1221,7 +1221,7 @@ let dimension = null;
   const seek = async (key, depth) => {
     if (dimension !== null || budget <= 0 || depth > 6 || seen.has(key)) return;
     seen.add(key); budget -= 1;
-    const found = foundOf((await call('jq_transform', { input: 'knowledge://', project: { [key]: '*' } })).value);
+    const found = foundOf((await call('oks_jaq', { input: 'knowledge://', project: { [key]: '*' } })).value);
     const detail = found?.detail;
     if (found?.type === 'Dimension' && typeof detail?.id === 'string') { dimension = { key, id: detail.id }; return; }
     const children = [];
@@ -1310,7 +1310,7 @@ console.log('=== 与发布物对比 ===');
 console.log('=== oks_references（按 key 反向找引用）===');
 {
   // 用正向图做往返验证：节点 A 指向 B，则 B 的反向引用里必须能看到 A
-  const node = foundOf((await call('jq_transform', { input: 'knowledge://', project: { [member.key]: '*' } })).value);
+  const node = foundOf((await call('oks_jaq', { input: 'knowledge://', project: { [member.key]: '*' } })).value);
   const forward = (node?.links ?? []).find((link) => typeof link?.key === 'string');
   if (forward === undefined) {
     console.log('  该成员没有正向引用，跳过往返验证');
@@ -1526,7 +1526,7 @@ console.log('=== oks_exec_query_intent（只读执行 + 结果落盘）===');
 }
 
 // ── 加工：探索（只看）与物化（写进 .oks/data/）共用一套具名输入与求值语义 ──────
-console.log('=== jq_transform（具名输入 + save 时自动来源链）===');
+console.log('=== oks_jaq（具名输入 + save 时自动来源链）===');
 {
   const answer = await call('oks_exec_query_intent', { intents: await withKeys(countNamed) });
   const first = answer.value.results?.[0] ?? null;
@@ -1536,7 +1536,7 @@ console.log('=== jq_transform（具名输入 + save 时自动来源链）===');
   const rowTotal = first.rowCount;
   const failureOf = async (args) => {
     try {
-      await call('jq_transform', args);
+      await call('oks_jaq', args);
       return '';
     } catch (cause) {
       return String(cause?.message ?? cause);
@@ -1544,7 +1544,7 @@ console.log('=== jq_transform（具名输入 + save 时自动来源链）===');
   };
 
   // 具名输入：程序读到的是一个对象，键就是 inputs 里的名字
-  const one = await call('jq_transform', { input: { q: asset }, jq: { src: prog(`.q.rows[0].${column}`) }});
+  const one = await call('oks_jaq', { input: { q: asset }, jq: { src: prog(`.q.rows[0].${column}`) }});
   console.log(`  .q.rows[0].${column} → ${JSON.stringify(one.value.data)} · outputs=${one.value.outputs}`);
   ok('探索：恰好一个输出时 data 就是那个值',
     one.value.outputs === 1 && !Array.isArray(one.value.data));
@@ -1552,21 +1552,21 @@ console.log('=== jq_transform（具名输入 + save 时自动来源链）===');
 
 
   // 一个数组值 vs 多个输出：data 形状一样，靠 outputs 分开（这就是约定要消掉的那个歧义）
-  const arrayValue = await call('jq_transform', { jq: { src: prog('[range(3)]') }});
-  const stream = await call('jq_transform', { jq: { src: prog('range(3)') }});
+  const arrayValue = await call('oks_jaq', { jq: { src: prog('[range(3)]') }});
+  const stream = await call('oks_jaq', { jq: { src: prog('range(3)') }});
   console.log(`  [range(3)] → outputs=${arrayValue.value.outputs} · range(3) → outputs=${stream.value.outputs}`);
   ok('探索：一个数组值与多个输出靠 outputs 分开',
     arrayValue.value.outputs === 1 && JSON.stringify(arrayValue.value.data) === '[0,1,2]'
     && stream.value.outputs === 3 && JSON.stringify(stream.value.data) === '[0,1,2]');
 
   // 零输出：data 是空数组，回执明说没有产出值
-  const none = await call('jq_transform', { input: { q: asset }, jq: { src: prog('empty') }});
+  const none = await call('oks_jaq', { input: { q: asset }, jq: { src: prog('empty') }});
   console.log(`  empty → outputs=${none.value.outputs} · data=${JSON.stringify(none.value.data)}`);
   ok('探索：零输出是 outputs=0 且 data 为空数组',
     none.value.outputs === 0 && Array.isArray(none.value.data) && none.value.data.length === 0);
 
   // 无输入的程序看到 {}：常量也这么算
-  const constant = await call('jq_transform', { jq: { src: prog('{threshold: 100, unit: "ms"}') }});
+  const constant = await call('oks_jaq', { jq: { src: prog('{threshold: 100, unit: "ms"}') }});
   console.log(`  无输入常量 → ${JSON.stringify(constant.value.data)}`);
   ok('探索：无输入的程序看到 {}（常量）',
     constant.value.outputs === 1 && constant.value.data?.threshold === 100);
@@ -1615,11 +1615,11 @@ console.log('=== jq_transform（具名输入 + save 时自动来源链）===');
   const progFile = 'snip_probe.jq';
   writeFileSync(resolve(workDir, progFile), '# 冒烟：程序正文来自 .work/\n.q.rows\n| length\n');
   rmSync(resolve(workDir, 'smoke_prog.jq'), { force: true });
-  const viaFile = await call('jq_transform', { input: { q: asset }, jq: { src: `.work/${progFile}` }});
+  const viaFile = await call('oks_jaq', { input: { q: asset }, jq: { src: `.work/${progFile}` }});
   console.log(`  jq: { src: ${progFile} → ${JSON.stringify(viaFile.value.data)} · snipFile=${viaFile.value.snipFile}`);
   ok('by 指向 .work/ 下的程序文件，回执写明程序来自哪份文件',
     viaFile.value.ok !== false && viaFile.value.data === rowTotal);
-  const intoViaFile = await call('jq_transform', {
+  const intoViaFile = await call('oks_jaq', {
     save: { name: 'from_code_file', motivation: '冒烟：程序来自 .work/ 里的文件' },
     input: { q: asset },
     jq: { src: `.work/${progFile}` },
@@ -1647,20 +1647,20 @@ console.log('=== jq_transform（具名输入 + save 时自动来源链）===');
   rmSync(resolve(workDir, 'huge.jq'), { force: true });
   rmSync(resolve(workDir, progFile), { force: true });
   // 不写程序时结果就是「名字 → 那一段」的对象；pick 再从它里面取回一段。
-  const shortForm = await call('jq_transform', { input: { q: asset } });
-  const picked = await call('jq_transform', { input: asset });
-  const rowsSlice = await call('jq_transform', { input: asset, project: { rows: '*' } });
+  const shortForm = await call('oks_jaq', { input: { q: asset } });
+  const picked = await call('oks_jaq', { input: asset });
+  const rowsSlice = await call('oks_jaq', { input: asset, project: { rows: '*' } });
   ok('单输入直接得到值，命名输入才有名字层',
     JSON.stringify(shortForm.value.data.q) === JSON.stringify(picked.value.data)
     && rowsSlice.value.data.rows.length === rowTotal);
-  const zeroInput = await call('jq_transform', {});
+  const zeroInput = await call('oks_jaq', {});
   ok('零输入恒等处理得到 {}', JSON.stringify(zeroInput.value.data) === '{}');
   for (const args of [{input:null}, {project:'*',jq:{src:'.work/missing.jq'}}, {input:{x:{src:asset}}}, {pick:'.q'}, {inputs:{q:asset}}]) {
     ok('非法契约明确拒绝', !!await failureOf(args));
   }
 
   // 嵌套结构：加工结果是通用 JSON，投影只产出选中的字段
-  const projected = await call('jq_transform', {
+  const projected = await call('oks_jaq', {
     input: { q: asset },
     jq: { src: prog(`{n: (.q.rows | length), first: (.q.rows[0] | {${column}, ${numeric}})}`) },
   });
@@ -1727,7 +1727,7 @@ console.log('=== jq_transform（具名输入 + save 时自动来源链）===');
   ok('create_data：名字不合法时明确报错', /名字只能是/.test(badDataName));
 
   // 给定数据当具名输入：加工链因此有两个起点（查询与给定），各自记在一处
-  const mixed = await call('jq_transform', {
+  const mixed = await call('oks_jaq', {
     save: { name: 'with_thresholds', motivation: '冒烟：查询结果与给定数据一起用' },
     input: { q: asset, thresholds: created.value.asset },
     jq: { src: prog('{n: (.q.rows | length), warn: .thresholds.warn}') },
@@ -1757,7 +1757,7 @@ console.log('=== jq_transform（具名输入 + save 时自动来源链）===');
   console.log(`  同定义两份数据 → root ${rootOf(twinA.value.asset)} / ${rootOf(twinB.value.asset)}`);
   ok('同定义、不同数据是两条记录（节点 ID 不同）',
     rootOf(twinA.value.asset) !== rootOf(twinB.value.asset));
-  const twinUse = await call('jq_transform', {
+  const twinUse = await call('oks_jaq', {
     save: { name: 'twin_use', motivation: '冒烟：把两份同定义的数据一起用上' },
     input: { a: twinA.value.asset, b: twinB.value.asset },
     jq: { src: prog('{sum: (.a.v + .b.v)}') },
@@ -1771,7 +1771,7 @@ console.log('=== jq_transform（具名输入 + save 时自动来源链）===');
     && twinFile.data.sum === 3);
 
   // 常量也可以由 snip 生成（省略 inputs）：这时来源链里留下的是代码与动机，而不是"给定"
-  const derived = await call('jq_transform', {
+  const derived = await call('oks_jaq', {
     save: { name: 'thresholds_by_snip', motivation: '冒烟：用 snip 算出来的常量' },
     jq: { src: prog('{warn: 70, crit: 90}') },
   });
@@ -1784,13 +1784,13 @@ console.log('=== jq_transform（具名输入 + save 时自动来源链）===');
 
   // 截断：按行边界截断，绝不留下半个 JSON 值；这一条在物化那边必须变成失败
   // 数据接口不截断：求值到上限 → 报错（合法 JSON）；返回体超上限 → 报错（合法 JSON）。
-  const bulk = await call('jq_transform', { input: { rows: asset }, jq: { src: prog('range(1; 200000)') }});
+  const bulk = await call('oks_jaq', { input: { rows: asset }, jq: { src: prog('range(1; 200000)') }});
   console.log(`  求值到上限 → ${bulk.text.trim().slice(0, 150)}`);
   ok('探索：求值到上限时报错而不是返回半份数据（错误本身是合法 JSON）',
     bulk.value.ok === false && bulk.value.error?.code === 'evaluation_truncated'
     && bulk.value.error?.limitBytes === 16 * 1024
     && (() => { try { JSON.parse(bulk.text.trim()); return true; } catch { return false; } })());
-  const big = await call('jq_transform', { jq: { src: prog('range(1; 8000)') }});
+  const big = await call('oks_jaq', { jq: { src: prog('range(1; 8000)') }});
   console.log(`  返回体超上限 → ${big.text.trim().slice(0, 150)}`);
   ok('探索：返回体超上限时报错（带上限与实测字节数，错误本身是合法 JSON）',
     big.value.ok === false && big.value.error?.code === 'payload_too_large'
@@ -1800,7 +1800,7 @@ console.log('=== jq_transform（具名输入 + save 时自动来源链）===');
 
   // 物化：来源链由工具组装——本次操作 + 各输入的根节点，上游的 data 不进新链
   const queryOrigin = JSON.parse(readFileSync(resolve(DEV_ROOT, asset), 'utf8')).origin;
-  const snap = await call('jq_transform', {
+  const snap = await call('oks_jaq', {
     save: { name: 'snap', motivation: '物化：取第一行' },
     input: { q: asset },
     jq: { src: prog('.q.rows[0]') },
@@ -1825,7 +1825,7 @@ console.log('=== jq_transform（具名输入 + save 时自动来源链）===');
     && snap.text.trim() === `asset:  ${snap.value.asset} · ${(snap.value.bytes / 1024).toFixed(1)} KB`);
 
   // 多输入 + 共享祖先：raw 直接引用查询，snapshot 引用上一级加工——查询节点只该留一份
-  const both = await call('jq_transform', {
+  const both = await call('oks_jaq', {
     save: { name: 'both', motivation: '物化：两份输入一起用' },
     input: { raw: asset, snapshot: snap.value.asset },
     jq: { src: prog(`{rows: (.raw.rows | length), value: .snapshot.${column}}`) },
@@ -1839,7 +1839,7 @@ console.log('=== jq_transform（具名输入 + save 时自动来源链）===');
     Object.keys(bothFile.origin.nodes).length === 3);
 
   // 第三级：链继续长，后面的文件仍带着最前面的 Intent
-  const again = await call('jq_transform', {
+  const again = await call('oks_jaq', {
     save: { name: 'again', motivation: '物化：再加工一级' },
     input: { prev: both.value.asset },
     jq: { src: prog('.prev.rows') },
@@ -1856,7 +1856,7 @@ console.log('=== jq_transform（具名输入 + save 时自动来源链）===');
   // 明确回执：名字不合法、缺 name、截断的结果不物化
   const badName = await (async () => {
     try {
-      await call('jq_transform', {
+      await call('oks_jaq', {
       save: { name: '告警-分布', motivation: '冒烟：名字不合法的那一种' }, input: { q: asset }, jq: { src: prog('.q.rows[0]') }});
       return '';
     } catch (cause) {
@@ -1867,7 +1867,7 @@ console.log('=== jq_transform（具名输入 + save 时自动来源链）===');
   ok('物化：名字不合法时明确报错', /名字只能是/.test(badName));
   const noName = await (async () => {
     try {
-      await call('jq_transform', {
+      await call('oks_jaq', {
       save: { motivation: '冒烟：缺 name 的那一种' }, input: { q: asset }, jq: { src: prog('.q.rows[0]') }});
       return '';
     } catch (cause) {
@@ -1877,7 +1877,7 @@ console.log('=== jq_transform（具名输入 + save 时自动来源链）===');
   ok('物化：缺 name 明确报错', /需要 name/.test(noName));
   const truncatedInto = await (async () => {
     try {
-      await call('jq_transform', {
+      await call('oks_jaq', {
       save: { name: 'bulk', motivation: '冒烟：一次产出很多值' }, input: { rows: asset }, jq: { src: prog('range(1; 200000)') }});
       return '';
     } catch (cause) {
@@ -3036,7 +3036,7 @@ console.log('=== oks_render_figure：出图 ===');
     });
     const queryAsset = replayQuery.value.results?.[0]?.asset ?? '';
     const edgeProgram = prog('(.q.rows | length) as $n | [{ from: "0", to: "1", label: ("共 \\($n) 行") }]');
-    const replayTransform = await call('jq_transform', {
+    const replayTransform = await call('oks_jaq', {
       input: { q: queryAsset },
       jq: { src: edgeProgram },
       save: { name: 'replay_edges_tr', motivation: '重放夹具：把查询结果加工成边表' },
@@ -3066,7 +3066,7 @@ console.log('=== oks_render_figure：出图 ===');
     const memo = new Map();
     /** 按记录下来的路径切片：用工具自己切，重放器不另写一套路径语义。 */
     const sliceAt = async (asset, path) => {
-      const looked = await call('jq_transform', { input: asset, jq: {src: prog(path === '.data' ? '.' : path.replace(/^\.data/, ''))} });
+      const looked = await call('oks_jaq', { input: asset, jq: {src: prog(path === '.data' ? '.' : path.replace(/^\.data/, ''))} });
       return looked.value.data;
     };
     const materialOf = async (data, name) => (await call('create_data', {
@@ -3089,7 +3089,7 @@ console.log('=== oks_render_figure：出图 ===');
         for (const [name, upstream] of Object.entries(node.inputs ?? {})) {
           inputs[name] = await materialOf(await computeNode(upstream), `replay_in_${name.toLowerCase()}`);
         }
-        const out = await call('jq_transform', {
+        const out = await call('oks_jaq', {
           input: inputs, jq: { src: prog(String(node.snip)) },
           save: { name: 'replay_step', motivation: '重放：重跑加工' },
         });
@@ -3396,7 +3396,7 @@ console.log('=== 没有 oks.json 的工作区 ===');
   const bare = `${SCRATCH}/bare`;
   mkdirSync(bare, { recursive: true });
   try {
-    await call('jq_transform', {}, bare);
+    await call('oks_jaq', {}, bare);
     console.log('  ✗ 本该报错，却成功了');
   } catch (cause) {
     console.log(`  ✓ 拒绝: ${String(cause?.message ?? cause).split('\n')[0].slice(0, 120)}`);
@@ -3413,7 +3413,7 @@ console.log('=== 非快照产物（只有 wasm 头，没有 telora.snapshot 段�
     version: 1, domain: 'ic', model: 'empty.wasm',
   }, null, 2)}\n`);
   try {
-    await call('jq_transform', {}, empty);
+    await call('oks_jaq', {}, empty);
     console.log('  ✗ 本该报错，却成功了');
   } catch (cause) {
     console.log(`  ✓ 拒绝: ${String(cause?.message ?? cause).split('\n')[0].slice(0, 140)}`);
@@ -4280,7 +4280,7 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
   });
   const reportSrc = built.value.asset;
   // 图的读路径先验（下面就把它的材料删掉，用来验"报告自足"）。
-  const viaChart = await call('jq_transform', {
+  const viaChart = await call('oks_jaq', {
     input: { c: figure.value.asset },
     jq: { src: prog('{kind: .c.spec.kind, rows: (.c.rows | length)}') },
   });
@@ -4290,7 +4290,7 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
 
   // 读产物是**就地**的：图、表、报告的材料块在读的那一刻解析，不落派生文件。
   const dataFilesBefore = readdirSync(resolve(DEV_ROOT, '.oks', 'data')).length;
-  const chartOrigin = await call('jq_transform', {
+  const chartOrigin = await call('oks_jaq', {
     input: { c: `${figure.value.asset}#meta` },
     jq: { src: prog('.c |= .origin | ' + '{root: .c.root, kinds: [.c.nodes[].kind]}') },
   });
@@ -4304,7 +4304,7 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
     rmSync(resolve(DEV_ROOT, gone), { force: true });
   }
   // 材料已经全部回收：读这份报告只有一条路——jq 投影它的 data。
-  const viaReport = await call('jq_transform', {
+  const viaReport = await call('oks_jaq', {
     input: { r: reportSrc },
     jq: { src: prog('{structure: .r.structure, keys: (.r.items | keys), '
       + 'figure: (.r.items.item2 | {kind: .spec.kind, rows: (.rows | length)}), '
@@ -4320,7 +4320,7 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
     && viaReport.value.data?.table?.rows > 0 && viaReport.value.data?.keys?.length === 2);
 
   // 展示项清单（原来由专门的读工具给）：现在就是从报告自己的 data 里投影出来的一段。
-  const itemList = await call('jq_transform', {
+  const itemList = await call('oks_jaq', {
     input: { r: reportSrc },
     jq: { src: prog('.r |= .items | ' + '{keys: (.r | keys), sizes: [.r[] | length]}') },
   });
@@ -4330,7 +4330,7 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
     && Array.isArray(itemList.value.data?.sizes));
 
   // root "."：交给程序的是整份文件 { meta, origin, data }——读自述与来源链用它。
-  const whole = await call('jq_transform', {
+  const whole = await call('oks_jaq', {
     input: { r: `${reportSrc}#meta`, rows: reportSrc },
     jq: { src: prog('.r.data = .rows | ' + '{kind: .r.meta.kind, nodes: (.r.origin.nodes | keys | length), '
       + 'kinds: [.r.origin.nodes[].kind], root: .r.origin.nodes[.r.origin.root].kind, '
@@ -4343,11 +4343,11 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
     && (whole.value.data?.kinds ?? []).includes('query'));
 
   // root 只取一段：只要来源链 / 只要骨架，都不必把整份文件交给 jaq；回执里带上实际用的 root。
-  const onlyOrigin = await call('jq_transform', {
+  const onlyOrigin = await call('oks_jaq', {
     input: { r: `${reportSrc}#meta` },
     jq: { src: prog('.r |= .origin | ' + '{nodes: (.r.nodes | keys | length), root: .r.root}') },
   });
-  const onlyChapters = await call('jq_transform', {
+  const onlyChapters = await call('oks_jaq', {
     input: { r: reportSrc },
     jq: { src: prog('.r |= .structure | ' + '(.r | contains("一、级别与清除"))') },
   });
@@ -4356,7 +4356,7 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
     && onlyOrigin.value.data?.nodes >= 2 && typeof onlyOrigin.value.data?.root === 'string'
     && onlyChapters.value.data === true);
   for (const input of [`${reportSrc}#unknown`, `${reportSrc}#meta#meta`, 'knowledge://#meta']) {
-    ok('未知与重复资源选择符明确拒绝', !!await refusalOf(() => call('jq_transform', {input})));
+    ok('未知与重复资源选择符明确拒绝', !!await refusalOf(() => call('oks_jaq', {input})));
   }
 
   // 数据封装（.oks/data/ 里的 JSON）自己就是数据：读它就是读它，不派生也不再写文件。
@@ -4364,8 +4364,8 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
     name: 'origin_probe', motivation: '冒烟：读封装就是读它自己', data: [{ n: 1 }],
   });
   const beforeProbe = readdirSync(resolve(DEV_ROOT, '.oks', 'data')).length;
-  const probeJq = await call('jq_transform', { input: { p: probe.value.asset }, jq: { src: prog('.p[0].n') }});
-  const probeOrigin = await call('jq_transform', {
+  const probeJq = await call('oks_jaq', { input: { p: probe.value.asset }, jq: { src: prog('.p[0].n') }});
+  const probeOrigin = await call('oks_jaq', {
     input: { p: `${probe.value.asset}#meta` },
     jq: { src: prog('.p |= .origin | ' + '.p.nodes[.p.root].motivation') },
   });
@@ -4385,7 +4385,7 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
     && Array.isArray((('error' in reportParts ? {} : reportParts.items)[itemKeys[1]])?.rows));
 
   // 报表整体的 origin 是**一个**：根是组装节点，inputs 指向各展示项。
-  const reportOrigin = await call('jq_transform', {
+  const reportOrigin = await call('oks_jaq', {
     input: { r: `${reportSrc}#meta` },
     jq: { src: prog('.r |= .origin | ' + '{root: .r.root, rootKind: .r.nodes[.r.root].kind, inputs: .r.nodes[.r.root].inputs, '
       + 'nodes: (.r.nodes | keys | length)}') },
@@ -4399,7 +4399,7 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
     && Object.keys(reportOrigin.value.data?.inputs ?? {}).join() === refs.join());
 
   // 从一个数据元关联到 origin 上的来源解释：链上每一项的可读字段都在，不必另有读接口。
-  const figureChain = await call('jq_transform', {
+  const figureChain = await call('oks_jaq', {
     input: { r: `${reportSrc}#meta` },
     jq: { src: prog('.r |= .origin | ' + '[.r.nodes[] | select(.kind == "query") | {intent, source}] | .[0]') },
   });
@@ -4425,7 +4425,7 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
     } } },
     data: { rows: [], columns: [] },
   }, null, 2)}\n`);
-  const observed = await call('jq_transform', {
+  const observed = await call('oks_jaq', {
     input: { o: `${`.oks/data/${fakeSrc}`}#meta` },
     jq: { src: prog('.o |= .origin | ' + '.o.nodes[.o.root].source') },
   });
@@ -4783,7 +4783,7 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
   const slicedInput = await call('create_data', {
     name: 'slice_probe', motivation: '冒烟：记输入切片', data: { rows: [{ n: 1 }, { n: 2 }] },
   });
-  const slicedTransform = await call('jq_transform', {
+  const slicedTransform = await call('oks_jaq', {
     save: { name: 'slice_probe_out', motivation: '冒烟：把这一步的结果留作下一步的输入' },
     input: { src: slicedInput.value.asset },
     jq: { src: prog('.src |= .rows | ' + '[.src[] | .n]') },
@@ -4836,7 +4836,7 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     name: 'big_probe', motivation: '冒烟：回执上限',
     data: { rows: Array.from({ length: 3000 }, (_, index) => ({ n: index, text: 'x'.repeat(24) })) },
   });
-  const bigRead = await call('jq_transform', { input: { r: bigRows.value.asset }, jq: { src: prog('.r.rows') }});
+  const bigRead = await call('oks_jaq', { input: { r: bigRows.value.asset }, jq: { src: prog('.r.rows') }});
   const bigError = (() => { try { return JSON.parse(bigRead.text).error; } catch { return null; } })();
   ok('回执超过 16 KiB 时不把数据交出去，而是给同形状的错误与更精确取法的提示',
     bigError?.code === 'payload_too_large' && bigError?.limitBytes === 16384
@@ -5095,12 +5095,12 @@ console.log('=== RFC 0012：资源、加工方式与报告来源链 ===');
     name: 'unified_seed', motivation: '验证投影与来源继承', data: { count: 7, nested: { label: '样本' } },
   });
   const arraySeed = await call('create_data', {name:'unified_array',motivation:'验证单数组输入',data:[{n:1},{n:2}]});
-  const arrayProject = await call('jq_transform', {input:arraySeed.value.asset,project:[{n:'*'}]});
-  const arrayJq = await call('jq_transform', {input:arraySeed.value.asset,jq:{src:prog('map({n})')}});
+  const arrayProject = await call('oks_jaq', {input:arraySeed.value.asset,project:[{n:'*'}]});
+  const arrayJq = await call('oks_jaq', {input:arraySeed.value.asset,jq:{src:prog('map({n})')}});
   ok('单数组输入在 JS 投影与 jq 中形状一致', canonicalJson(arrayProject.value.data) === '[{"n":1},{"n":2}]'
     && canonicalJson(arrayProject.value.data) === canonicalJson(arrayJq.value.data));
   const rule = { count: '*' };
-  const projected = await call('jq_transform', {
+  const projected = await call('oks_jaq', {
     input: seed.value.asset, project: rule, save: { name: 'unified_project', motivation: '选择结论指标' },
   });
   const projectEnvelope = readEnvelope(DEV_ROOT, projected.value.asset);
@@ -5109,12 +5109,12 @@ console.log('=== RFC 0012：资源、加工方式与报告来源链 ===');
     projectNode.method === 'project' && projectNode.inputShape === 'single'
     && canonicalJson(projectNode.project) === canonicalJson(rule) && projectNode.snip === undefined
     && projectNode.inputResources?.['$'] === seed.value.asset && projectEnvelope.data.count === 7);
-  const meta = await call('jq_transform', { input: `${projected.value.asset}#meta` });
-  const visible = await call('jq_transform', { input: projected.value.asset });
+  const meta = await call('oks_jaq', { input: `${projected.value.asset}#meta` });
+  const visible = await call('oks_jaq', { input: projected.value.asset });
   ok('默认与 #meta 严格分离可见区域',
     Object.keys(meta.value.data).sort().join(',') === 'meta,origin'
     && Object.keys(visible.value.data).join(',') === 'count');
-  const explanation = await call('jq_transform', {
+  const explanation = await call('oks_jaq', {
     input: `${projected.value.asset}#meta`, project: { meta: '*' },
     save: { name: 'unified_meta', motivation: '保留被分析资产的上游' },
   });
@@ -5124,7 +5124,7 @@ console.log('=== RFC 0012：资源、加工方式与报告来源链 ===');
     Object.keys(explained.origin.nodes).length === 3 && explainNode.inputPaths?.['$'] === '#meta'
     && explainNode.inputResources?.['$'] === `${projected.value.asset}#meta`);
   const mixedCode = prog('{count: .fact.count, guideType: .knowledge.guide.type}');
-  const mixed = await call('jq_transform', {
+  const mixed = await call('oks_jaq', {
     input: { fact: projected.value.asset, knowledge: 'knowledge://', sameKnowledge: 'knowledge://' },
     jq: { src: mixedCode }, save: { name: 'unified_mixed', motivation: '关联知识声明与事实' },
   });
@@ -5140,14 +5140,14 @@ console.log('=== RFC 0012：资源、加工方式与报告来源链 ===');
     && knowledgeNodes[0].source.resource === 'knowledge://'
     && /^[a-f0-9]{64}$/.test(knowledgeNodes[0].source.modelHash)
     && typeof knowledgeNodes[0].source.revision === 'string' && knowledgeNodes[0].data === undefined);
-  const identity = await call('jq_transform', {
+  const identity = await call('oks_jaq', {
     input: mixed.value.asset, save: { name: 'unified_identity', motivation: '保留恒等处理' },
   });
   const identityEnvelope = readEnvelope(DEV_ROOT, identity.value.asset);
   ok('恒等处理单独记录并保留结果',
     identityEnvelope.origin.nodes[identityEnvelope.origin.root].method === 'identity'
     && canonicalJson(identityEnvelope.data) === canonicalJson(mixedEnvelope.data));
-  const empty = await call('jq_transform', { input: {}, save: { name: 'unified_empty', motivation: '记录空输入' } });
+  const empty = await call('oks_jaq', { input: {}, save: { name: 'unified_empty', motivation: '记录空输入' } });
   const emptyEnvelope = readEnvelope(DEV_ROOT, empty.value.asset);
   ok('空映射得到空对象且没有上游',
     emptyEnvelope.origin.nodes[emptyEnvelope.origin.root].inputShape === 'empty'
@@ -5157,9 +5157,9 @@ console.log('=== RFC 0012：资源、加工方式与报告来源链 ===');
   const report = await call('oks_render_report', {
     name: 'unified_report', spec: { title: '统一入口来源链', articleFile: '.work/unified.xhtml', inputs: { result: identity.value.asset } },
   });
-  const readReport = await call('jq_transform', { input: report.value.asset,
+  const readReport = await call('oks_jaq', { input: report.value.asset,
     project: { items: '*', assets: '$shape', structure: '*' } });
-  const reportMeta = await call('jq_transform', { input: `${report.value.asset}#meta` });
+  const reportMeta = await call('oks_jaq', { input: `${report.value.asset}#meta` });
   const reportNodes = Object.values(reportMeta.value.data.origin.nodes);
   ok('报告保留投影、恒等处理和知识身份，jq 代码集中为共享资源',
     readReport.value.data.items.result.count === 7 && readReport.value.data.assets.size === 1
@@ -5167,20 +5167,20 @@ console.log('=== RFC 0012：资源、加工方式与报告来源链 ===');
     && reportNodes.some(node => node.method === 'identity') && reportNodes.some(node => node.kind === 'knowledge')
     && reportNodes.some(node => node.method === 'jq' && node.byFile.startsWith('src://'))
     && readReport.value.data.structure.includes('data-oks-ref="result"'));
-  const named = await call('jq_transform', { input: { ['__proto__']: seed.value.asset }, project: { ['__proto__']: { count: '*' } } });
+  const named = await call('oks_jaq', { input: { ['__proto__']: seed.value.asset }, project: { ['__proto__']: { count: '*' } } });
   ok('具名输入按字面键处理特殊对象键', named.value.data['__proto__'].count === 7);
   const invalidInputs = [null, [], {x: 3}, {'': seed.value.asset}, 'knowledge://#meta', `${seed.value.asset}#data`, `${seed.value.asset}#meta#meta`];
   for (const input of invalidInputs) {
-    ok('非法输入或选择符明确拒绝', !!await refusalOf(() => call('jq_transform', { input })));
+    ok('非法输入或选择符明确拒绝', !!await refusalOf(() => call('oks_jaq', { input })));
   }
   for (const args of [{ jq:null }, { jq:{} }, { jq:{src:'.work/nope.jq',extra:1} }, { save:null }, { input:null, jq:{src:'.work/nope.jq'} }]) {
-    ok('参数错误在执行前拒绝', !!await refusalOf(() => call('jq_transform', args)));
+    ok('参数错误在执行前拒绝', !!await refusalOf(() => call('oks_jaq', args)));
   }
   for (const file_path of ['short.jq', '.work/../bad.jq', '.work/./bad.jq', '.work//bad.jq', '.work\\bad.jq', ' .work/bad.jq', '.work/bad.jq ', '/tmp/bad.jq']) {
     ok('路径按完整名称严格校验', !!await refusalOf(() => call('work_write', {file_path,content:'.'})));
   }
   writeFileSync(resolve(DEV_ROOT, '.oks/data/untyped.json'), JSON.stringify(projectEnvelope));
-  ok('任意 JSON 不能伪装成数据资产', !!await refusalOf(() => call('jq_transform', {input:'.oks/data/untyped.json'})));
+  ok('任意 JSON 不能伪装成数据资产', !!await refusalOf(() => call('oks_jaq', {input:'.oks/data/untyped.json'})));
   rmSync(resolve(DEV_ROOT, '.oks/data/untyped.json'));
   const outside = mkdtempSync(join(tmpdir(), 'oks-boundary-'));
   writeFileSync(join(outside, 'protected.jq'), 'original');
@@ -5191,7 +5191,7 @@ console.log('=== RFC 0012：资源、加工方式与报告来源链 ===');
       ['work_edit',{file_path:'.work/escape-test/protected.jq',old_string:'original',new_string:'changed'}],
       ['work_delete',{file_path:'.work/escape-test/protected.jq'}],
       ['work_write',{file_path:'.work/escape-test/new-dir/new.jq',content:'.'}],
-      ['jq_transform',{jq:{src:'.work/escape-test/protected.jq'}}],
+      ['oks_jaq',{jq:{src:'.work/escape-test/protected.jq'}}],
     ]) ok('符号链接逃逸对读取、编辑、删除、创建和执行一律拒绝', !!await refusalOf(() => call(tool,args)));
     ok('越界拒绝后外部文件与目录保持原状', readFileSync(join(outside,'protected.jq'),'utf8') === 'original' && !existsSync(join(outside,'new-dir')));
   } finally {
