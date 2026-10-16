@@ -497,7 +497,8 @@ console.log('=== kq：知识发现、值流与独立求值 ===');
   const trimmed = await call('oks_jaq', { input: 'knowledge://', project: { [largest.value.data]: { key: '*', detail: '$shape' } } });
   ok('大节点可先投影再检查预算', trimmed.value.data[largest.value.data].key === largest.value.data
     && trimmed.value.data[largest.value.data].detail.type === 'object' && Buffer.byteLength(trimmed.text) < 16384);
-  ok('kq 超限提示引导 project', big.value.error.hint.includes('project'));
+  ok('知识结果超限返回形状摘要且无 hint', big.value.shape?.type === 'array'
+    && big.value.shape.size === 10 && !('hint' in big.value.error));
   const direct = await call('oks_jaq', { input: 'knowledge://', project: { index: '*' } });
   ok('JS 读取与 jq 读取为同一知识原文', JSON.stringify(direct.value.data.index) === JSON.stringify(original));
   ok('oks_info 不暴露为工具', !registered.has('oks_info'));
@@ -4838,9 +4839,10 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
   });
   const bigRead = await call('oks_jaq', { input: { r: bigRows.value.asset }, jq: { src: prog('.r.rows') }});
   const bigError = (() => { try { return JSON.parse(bigRead.text).error; } catch { return null; } })();
-  ok('回执超过 16 KiB 时不把数据交出去，而是给同形状的错误与更精确取法的提示',
+  ok('回执超过 16 KiB 时返回错误与结果形状摘要',
     bigError?.code === 'payload_too_large' && bigError?.limitBytes === 16384
-    && typeof bigError?.hint === 'string' && !bigRead.text.includes('xxxx'));
+    && !('hint' in (bigError ?? {})) && bigRead.value.shape?.type === 'array'
+    && bigRead.value.shape.size === 3000 && !bigRead.text.includes('xxxx'));
 
   for (const [file, body] of [['smoke_check_good.xhtml', '<article><p>你好</p><br /></article>'],
     ['smoke_check_bad.xhtml', '<article><p>换行<br>没斜杠</p></article>']]) {

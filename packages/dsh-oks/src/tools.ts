@@ -361,24 +361,27 @@ export interface PayloadError {
     tool: string;
     limitBytes: number;
     actualBytes: number | null;
-    hint: string;
   };
+  shape?: JsonValue;
 }
 
+const payloadShape = createProjector("$shape");
+
 /** 数据接口返回前的守门：完整就放行，超限就把数据换成错误（不返回半份数据）。 */
-function payloadGuard<T extends { ok: true }>(tool: string, value: T, hint: string): T | PayloadError {
+function payloadGuard<T extends { ok: true; data: JsonValue }>(tool: string, value: T): T | PayloadError {
   const actualBytes = Buffer.byteLength(JSON.stringify(value) ?? '');
   if (actualBytes <= PAYLOAD_MAX_BYTES) return value;
   return {
     ok: false,
-    error: { code: 'payload_too_large', tool, limitBytes: PAYLOAD_MAX_BYTES, actualBytes, hint },
+    error: { code: 'payload_too_large', tool, limitBytes: PAYLOAD_MAX_BYTES, actualBytes },
+    shape: payloadShape(value.data),
   };
 }
 
 /** 求值本身被截断（求值器到上限）时同样不返回半份数据，而是报错——调用方收窄程序。 */
-const truncatedError = (tool: string, hint: string): PayloadError => ({
+const truncatedError = (tool: string): PayloadError => ({
   ok: false,
-  error: { code: 'evaluation_truncated', tool, limitBytes: PAYLOAD_MAX_BYTES, actualBytes: null, hint },
+  error: { code: 'evaluation_truncated', tool, limitBytes: PAYLOAD_MAX_BYTES, actualBytes: null },
 });
 
 /** 一份图的实际图元（column / pie / heatmap…）：从绘图规格里取；取不到就给 `?`。 */
@@ -1791,7 +1794,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         if (outcome.truncated) {
           // 看一眼：返回错误值（回执里说清）；物化：直接抛错 —— 残缺数据不该进来源链。
           if (save === undefined) {
-            return truncatedError('oks_jaq', '让程序少取一点（只取你真正要的那部分：聚合、投影或前 N 项）。');
+            return truncatedError('oks_jaq');
           }
           throw new Error(`表达式产出超过求值上限（${JAQ_MAX_CHARS} 字符），这份结果不完整，没有物化：`
             + '先用 oks_jaq 把范围收窄（聚合或投影），再 save。');
@@ -1830,8 +1833,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           // 要看得再读一次（`oks_jaq` 读 `.data`），于是"留下来"这件事不把数据带回上下文。
           return { asset: stored.asset, bytes: stored.bytes };
         }
-        return payloadGuard('oks_jaq', { ok: true as const, data },
-          '用更精确的 project 或 jq 选择需要的字段和数据。');
+        return payloadGuard('oks_jaq', { ok: true as const, data: data as JsonValue });
       },
     },
     {
