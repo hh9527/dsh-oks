@@ -46,7 +46,7 @@ import type { ColumnInfo, DataOrigin, Envelope, OriginNode, SaveArtifactOptions 
 
 /** 递归规则由公共投影函数完整校验；参数 schema 描述四种合法外形。 */
 const PROJECT_PARAMETER = {
-  description: 'Pure JSON projection rule: "*" keeps a value, "$shape" returns its type and size (objects also list up to 20 sorted keys), an object selects literal own keys and recursively projects their values, and [rule] applies one rule to every array element or object value. Missing keys stay absent; object rules pass non-objects through and [rule] passes scalars/null through. Pass object and array rules as nested JSON values. Full call example: jq_transform({"input":"knowledge://","project":{"guide":"*"}}). String rules are exactly "*" or "$shape". String size counts Unicode code points. Projection preserves the input.',
+  description: 'Pure JSON projection rule: "*" keeps a value, "$shape" returns its type and size (objects also list up to 20 sorted keys), an object selects literal own keys and recursively projects their values, and [rule] applies one rule to every array element or object value. Missing keys stay absent; object rules pass non-objects through and [rule] passes scalars/null through. Pass object and array rules directly as nested JSON values, never as JSON-encoded strings. A string rule is a literal selector, not a serialized object or array. Full call example: jq_transform({"input":"knowledge://","project":{"guide":"*"}}). String rules are exactly "*" or "$shape". String size counts Unicode code points. Projection preserves the input.',
   oneOf: [
     { type: 'string', enum: ['*', '$shape'] },
     { type: 'object', additionalProperties: true },
@@ -1722,7 +1722,13 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       parameters: {
         type: 'object',
         properties: {
-          input: { oneOf: [{ type: 'string' }, { type: 'object', additionalProperties: true }], description: 'Resource string or named resources. knowledge:// reads the graph; a complete asset path reads data; #meta reads {meta, origin}.' },
+          input: {
+            description: 'Choose by input meaning: a string names ONE resource; an object maps input names to resource strings. Pass a named map directly as a JSON object, e.g. {"fact":".oks/data/example.tr.json","knowledge":"knowledge://"}. The string branch accepts resource addresses only, never a JSON-encoded object. knowledge:// reads the graph; a complete asset path reads data; #meta reads {meta, origin}.',
+            oneOf: [
+              { type: 'string', description: 'One resource address, e.g. "knowledge://" or ".oks/data/example.tr.json#meta". This is an address, not serialized JSON.' },
+              { type: 'object', additionalProperties: true, description: 'Named resources as a native JSON object: {"fact":".oks/data/example.tr.json"}. Every value is a resource address string. Keep the object nested directly in the call; do not JSON-stringify it.' },
+            ],
+          },
           project: PROJECT_PARAMETER,
           jq: { type: 'object', properties: { src: { type: 'string', description: 'Full workspace-relative .jq path, e.g. .work/analysis.jq.' } }, required: ['src'], additionalProperties: false },
           save: {
