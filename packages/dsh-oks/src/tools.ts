@@ -46,11 +46,11 @@ import type { ColumnInfo, DataOrigin, Envelope, OriginNode, SaveArtifactOptions 
 
 /** 递归规则由公共投影函数完整校验；参数 schema 描述四种合法外形。 */
 const PROJECT_PARAMETER = {
-  description: 'Pure JSON projection rule. A string selects a built-in operation: "*" keeps the value, "$shape" returns its type and size (objects also list up to 20 sorted keys; string size counts Unicode code points). An object selects literal own keys and recursively projects their values; missing keys stay absent and non-object values pass through. An array containing one rule applies that rule to every array element or object value, preserving keys and element count; scalars and null pass through. Example: {"input":"knowledge://","project":{"guide":"*"}}. Projection preserves the input.',
+  description: 'A recursive projection rule applied to the current input value. Grammar: Rule = "*" | "$shape" | {field: Rule, ...} | [Rule]. Start at the input root; each child rule runs on the child value selected by its parent. "*" keeps the current value. "$shape" replaces the current value with its type/size summary (objects include up to 20 sorted keys; string size counts Unicode code points). {field: rule} keeps that literal field name and applies rule to its value, preserving the object layer. [rule] applies its ONE child rule to every member of the current array or dictionary, preserving array length or dictionary keys. Nest these forms to follow the data structure. Example: input value {"rows":[{"id":1,"detail":{"label":"A","count":7}}]}, project {"rows":[{"detail":{"label":"*"}}]} gives {"rows":[{"detail":{"label":"A"}}]}. For a dictionary, input value {"items":{"a":{"type":"Dataset","detail":{}}}}, project {"items":[{"type":"*"}]} gives {"items":{"a":{"type":"Dataset"}}}. Missing fields stay absent. Object rules pass non-objects through; array rules pass scalars/null through. Projection preserves the input.',
   oneOf: [
-    { type: 'string', enum: ['*', '$shape'], description: 'Built-in operation: "*" keeps the current value; "$shape" returns its shape summary.' },
-    { type: 'object', additionalProperties: true, description: 'Literal field names mapped to projection rules, e.g. {"guide":"*","index":"$shape"}.' },
-    { type: 'array', items: {}, description: 'One projection rule applied to each array element or object value, e.g. [{"name":"*"}].' },
+    { type: 'string', enum: ['*', '$shape'], description: 'Operation on the current value: "*" keeps it; "$shape" summarizes it.' },
+    { type: 'object', additionalProperties: true, description: 'Select fields at the current object level; each field value is another Rule. {"detail":{"label":"*"}} keeps detail.label within the detail object. {"rows":[{"name":"*"}]} keeps name in each row.' },
+    { type: 'array', items: {}, description: 'Exactly one child Rule, applied to every member of the current array or dictionary. [{"detail":{"label":"*"}}] selects detail.label in each member. ["$shape"] summarizes each member; "$shape" summarizes the container itself.' },
   ],
 };
 
