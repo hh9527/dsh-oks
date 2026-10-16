@@ -106,7 +106,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['work_read', 'work_write', 'work_edit', 'work_list', 'work_delete', 'oks_search', 'oks_references', 'oks_info', 'oks_check_query_intent', 'oks_exec_query_intent', 'create_data', 'jq_transform', 'oks_render_figure', 'oks_check_report', 'oks_render_report', 'oks_artifacts', 'create_current_ctx_data', 'va_ask'];
+const EXPECTED_TOOLS = ['kq', 'work_read', 'work_write', 'work_edit', 'work_list', 'work_delete', 'oks_search', 'oks_references', 'oks_info', 'oks_check_query_intent', 'oks_exec_query_intent', 'create_data', 'jq_transform', 'oks_render_figure', 'oks_check_report', 'oks_render_report', 'oks_artifacts', 'create_current_ctx_data', 'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -408,6 +408,49 @@ const ok = (label, condition) => {
   console.log(`  ✓ ${label}`);
 };
 
+const refusalOf = async (run) => {
+  try { await run(); return null; } catch (cause) { return String(cause?.message ?? cause); }
+};
+
+console.log('=== kq：知识发现、值流与独立求值 ===');
+{
+  const [a, b] = await Promise.all([call('kq', {}), call('kq', {})]);
+  ok('默认入口可发现结构，并发调用结果一致',
+    a.value.ok && a.value.data.说明.includes('documents') && JSON.stringify(a.value) === JSON.stringify(b.value));
+  const looked = await call('kq', { byFile: prog('.documents.index') });
+  const original = foundOf((await call('oks_info', { key: 'index' })).value);
+  ok('kq 保留原始 index 节点全文', JSON.stringify(looked.value.data) === JSON.stringify(original));
+  const joined = await call('kq', { byFile: prog('.documents as $docs | [$docs.index.links[] | $docs[.key].key]') });
+  ok('jq 按链接关联原始节点', JSON.stringify(joined.value.data) === JSON.stringify(original.links.map((link) => link.key)));
+  const edge = await call('kq', { byFile: prog('[.documents[] | select(.links | length > 0) | {source: .key, target: .links[0].key}][0]') });
+  const target = edge.value.data?.target;
+  ok('发现一条实际知识链接', typeof target === 'string');
+  {
+    const targetJson = JSON.stringify(target);
+    const related = await call('kq', { byFile: prog(`.documents | to_entries | map(select(any(.value.links[]?; .key == ${targetJson}))) | map(.key)`) });
+    ok('jq 可自主反查引用来源', related.value.data.includes(edge.value.data.source));
+    const node = await call('kq', { byFile: prog(`.documents[${targetJson}]`) });
+    const serviceNode = foundOf((await call('oks_info', { key: target })).value);
+    ok('关联节点与知识服务全文一致', JSON.stringify(node.value.data) === JSON.stringify(serviceNode));
+  }
+  const stream = await call('kq', { byFile: prog('range(3)') });
+  const array = await call('kq', { byFile: prog('[range(3)]') });
+  const empty = await call('kq', { byFile: prog('empty') });
+  ok('kq 值流：多个输出、数组值与零输出', stream.value.outputs === 3 && array.value.outputs === 1
+    && empty.value.outputs === 0 && JSON.stringify(empty.value.data) === '[]');
+  await call('kq', { byFile: prog('.documents.index = null') });
+  const unchanged = await call('kq', { byFile: prog('.documents.index') });
+  ok('jq 更新不修改常驻知识', JSON.stringify(unchanged.value.data) === JSON.stringify(original));
+  const syntax = await refusalOf(() => call('kq', { byFile: prog('. |') }));
+  ok('kq 语法错误定位到程序文件', /smoke_p[0-9]+.jq/.test(syntax ?? ''));
+  const large = await call('kq', { byFile: prog('[range(8000)]') });
+  const truncated = await call('kq', { byFile: prog('range(200000)') });
+  ok('kq 超限只返回错误，不泄漏半份数据', large.value.error?.code === 'payload_too_large'
+    && truncated.value.error?.code === 'evaluation_truncated' && large.value.data === undefined);
+  const calculator = await call('jq_transform', { byFile: prog('1 + 2') });
+  ok('知识查询失败后计算器继续可用', calculator.value.data === 3);
+}
+
 console.log('=== 检索层：并发的首次检索只派生一次索引 ===');
 {
   const [left, right] = await Promise.all([
@@ -609,9 +652,6 @@ const makeVaAskHarness = ({ agents = true, config = {}, stuck = false, stuckAfte
     unstick: () => { stuckFrom = Number.POSITIVE_INFINITY; },
     setStatus: (status) => { for (const agent of createdAgents) agent.status = status; },
   };
-};
-const refusalOf = async (run) => {
-  try { await run(); return null; } catch (cause) { return String(cause?.message ?? cause); }
 };
 
 // 调用方是普通会话：id 不以 session-va- 开头、有 cwd，options 带 provider/model。

@@ -1,11 +1,11 @@
 # 插入一行 Host 插件：把**工作区声明的**知识服务与数据文件注册成十九个原生工具——
-# oks_search / oks_references / oks_info / oks_check_query_intent / oks_exec_query_intent / create_data /
+# kq / oks_search / oks_references / oks_info / oks_check_query_intent / oks_exec_query_intent / create_data /
 # jq_transform / oks_render_figure / oks_check_report / oks_render_report / oks_artifacts /
 # work_read / work_write / work_edit / work_list / work_delete（后五个只作用在 .work/ 内的工作区：
 # jq 程序、报告正文、任何草稿文件）——
 # 外加两个与模型无关的辅助工具：create_current_ctx_data（把当轮会话上下文读一次、落成材料——
 # 求值器里没有时钟，相对时间的边界都由那份材料在 jq 里算）与 va_ask（插件自己装配、自己复用词汇助手）。
-# 知识探索的入口是 oks_info 的 key "index"；这里不写任何形状假设。
+# 知识探索从 kq({}) 的自述入口开始；oks_info 的 key "index" 也可用于单节点阅读。
 #
 # 这一行不需要知道任何模型：领域、artifact、dataFile 全部来自工作区根目录的 oks.json
 # （{"domain":"<领域名>","artifact":"<相对 oks.json 的 .wasm 路径>",

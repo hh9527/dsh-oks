@@ -1,3 +1,5 @@
+import { createJaqEngine } from './jaq.ts';
+import type { JaqOptions, JaqOutcome } from './jaq.ts';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolveSettings, workspaceRootFor } from './config.ts';
@@ -11,7 +13,7 @@ import { singleFlight } from './single-flight.ts';
 import { errorText } from './host.ts';
 import type { LogFn, PluginContext, WorkspaceProbe } from './host.ts';
 
-/** 进程级的检索层缓存：模型内容的 sha256 -> 词汇表 + 反向引用索引。
+/** 进程级的检索层缓存：模型内容的 sha256 + domain -> 知识原文、词汇表与反向引用索引。
  *  词汇助手是另一个 agent 作用域里的实例，它和主 agent 共用这一份，不重爬引用图。 */
 const INDEX_BY_ARTIFACT = new Map<string, RetrievalIndex>();
 
@@ -23,6 +25,7 @@ export interface WorkspaceEntry {
   settings: Settings;
   runner: Runner | null;
   index: RetrievalIndex | null;
+  modelHash: string;
 }
 
 /** 一个数据文件一个执行器，外加它目录里的清单（若有）。 */
@@ -34,6 +37,7 @@ export interface ExecutorEntry {
 export interface Knowledge {
   ensureWorkspace(exec: WorkspaceProbe | undefined): WorkspaceEntry;
   ensureIndex(entry: WorkspaceEntry): Promise<RetrievalIndex>;
+  queryKnowledge(entry: WorkspaceEntry, program: string, options: JaqOptions): Promise<JaqOutcome>;
   executorFor(settings: Settings): ExecutorEntry;
   dispose(): void;
 }
@@ -45,6 +49,7 @@ export function createKnowledge({ ctx, log, config }: {
 }): Knowledge {
   // 插件不认识模型：设置与 wasm 宿主都在**第一次用到某个工作区**时按那份 oks.json 惰性建立；
   // 一个进程里可以有任意多个工作区，互不影响。
+  const engines = new Map<string, ReturnType<typeof createJaqEngine>>();
   const workspaces = new Map<string, WorkspaceEntry>(); // root -> entry
   // 执行器按**数据文件**持有：同一个数据文件被多个工作区声明时共享一个只读连接。
   const executors = new Map<string, ExecutorEntry>(); // dataFile -> { executor, manifest }
@@ -85,32 +90,33 @@ export function createKnowledge({ ctx, log, config }: {
     const existing = workspaces.get(root);
     if (existing !== undefined) return existing;
     const settings = resolveSettings(root, config);
+    const bytes = readFileSync(settings.model);
     const entry: WorkspaceEntry = {
       root,
       from,
       settings,
-      runner: null,
+      runner: createRunner(settings, log, bytes),
+      modelHash: createHash('sha256').update(bytes).digest('hex'),
       index: null, // 检索层：词汇表 + 反向引用索引
     };
     workspaces.set(root, entry);
     log(`[oks] workspace ${root} (cwd from ${from}) · domain=${settings.domain} · model=${settings.model}`);
-    entry.runner = createRunner(settings, log);
     return entry;
   };
 
   // 词汇表与引用图按**产物**持有：同一份产物被多个工作区、多个会话声明时只派生一次。
-  // 身份用模型内容的 sha256（服务的 revision 字符串在两次不同构建之间可能不变，不能当身份）。
+  // 身份用模型内容的 sha256 + domain（服务的 revision 字符串在两次不同构建之间可能不变，不能当身份）。
   // 缓存放在**模块级**：词汇助手是另一个 agent 作用域里的实例，它要用同一份数据模型，
   // 而不是把整棵引用图再爬一遍。
   const indexes = INDEX_BY_ARTIFACT;
 
   // 正在进行的索引派生：并发的首次检索共享同一次初始化，不会各爬一遍引用图。
-  const indexFlights = new Map<string, Promise<RetrievalIndex>>(); // 模型内容的 sha256 -> 在飞的 promise
+  const indexFlights = new Map<string, Promise<RetrievalIndex>>(); // 模型内容的 sha256 + domain -> 在飞的 promise
 
   /** 惰性建立检索层：第一次检索时执行，之后按产物哈希复用；并发时 single flight。 */
   const ensureIndex = async (entry: WorkspaceEntry): Promise<RetrievalIndex> => {
     if (entry.index !== null) return entry.index;
-    const sha = createHash('sha256').update(readFileSync(entry.settings.model)).digest('hex');
+    const sha = `${entry.modelHash}:${entry.settings.domain}`;
     const shared = indexes.get(sha);
     if (shared !== undefined) {
       entry.index = shared;
@@ -125,6 +131,17 @@ export function createKnowledge({ ctx, log, config }: {
     return index;
   };
 
+  const queryKnowledge = async (entry: WorkspaceEntry, program: string, options: JaqOptions): Promise<JaqOutcome> => {
+    const index = await ensureIndex(entry);
+    const identity = `${entry.modelHash}:${entry.settings.domain}`;
+    let engine = engines.get(identity);
+    if (engine === undefined) {
+      engine = createJaqEngine();
+      engines.set(identity, engine);
+    }
+    return engine.runDocument(program, index.knowledge, options);
+  };
+
   // 卸载时把每个工作区的 wasm 宿主与每个数据文件的执行器都关掉。
   const dispose = (): void => {
     for (const entry of workspaces.values()) {
@@ -133,6 +150,8 @@ export function createKnowledge({ ctx, log, config }: {
       } catch { /* 尽量都关掉，不让一个失败挡住其余 */ }
     }
     workspaces.clear();
+    for (const engine of engines.values()) engine.dispose();
+    engines.clear();
     for (const entry of executors.values()) {
       try {
         entry.executor?.dispose();
@@ -141,5 +160,5 @@ export function createKnowledge({ ctx, log, config }: {
     executors.clear();
   };
 
-  return { ensureWorkspace, ensureIndex, executorFor, dispose };
+  return { ensureWorkspace, ensureIndex, queryKnowledge, executorFor, dispose };
 }

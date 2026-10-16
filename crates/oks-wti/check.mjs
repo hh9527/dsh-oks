@@ -215,6 +215,38 @@ check('到上限：状态 2，payload 仍是闭合数组、只保留放得下的
     && JSON.parse(cut.text).length >= 1 && JSON.parse(cut.text).length < 99,
   `status=${cut.status} ${cut.text}`);
 
+// 常驻文档 ABI 与逐次输入共用求值语义。
+const takeReply = (out) => {
+  const view = new DataView(instance.memory.buffer);
+  const status = view.getUint8(out);
+  const len = view.getUint32(out + 1, true);
+  const text = new TextDecoder().decode(new Uint8Array(instance.memory.buffer, out + 5, len));
+  instance.dealloc(out, 5 + len);
+  return { status, text };
+};
+const loadDocument = (text) => {
+  const input = put(instance, text);
+  const result = takeReply(instance.load_document(input.ptr, input.len));
+  instance.dealloc(input.ptr, input.len);
+  return result;
+};
+const documentRun = (handle, code) => {
+  const program = put(instance, code);
+  const path = put(instance, '.work/knowledge.jq');
+  const result = takeReply(instance.run_document(handle, program.ptr, program.len, path.ptr, path.len, 0));
+  instance.dealloc(program.ptr, program.len);
+  instance.dealloc(path.ptr, path.len);
+  return result;
+};
+const loaded = loadDocument('{"n":1}');
+const handle = JSON.parse(loaded.text)[0];
+check('文档装载返回 handle', loaded.status === 0 && handle === 1, loaded.text);
+check('文档求值与普通输入一致', documentRun(handle, '.n + 1').text === call('.n + 1', '{"n":1}').payload, '一致');
+documentRun(handle, '.n = 9');
+check('文档更新保留原始值', documentRun(handle, '.n').text === '[1]', documentRun(handle, '.n').text);
+check('无效 handle 明确失败', documentRun(9999, '.').status === 1, documentRun(9999, '.').text);
+check('文档装载拒绝非法 JSON', loadDocument('{').status === 1, '非法 JSON');
+
 // ⑧ trap：栈溢出这类会让 wasm 实例报废，但**必须可捕获**，且新实例照常可用
 //    （插件侧据此做「丢弃重建」）。
 let trapped = '';

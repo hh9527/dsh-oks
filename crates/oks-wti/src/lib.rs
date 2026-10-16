@@ -1,11 +1,11 @@
-//! 探索版：把 jaq 当**库**用，自己组装 std。
+//! 将 jaq 作为库组装为纯求值器，支持逐次输入与实例内常驻文档。
 //!
 //! 目标不是"能跑"，而是"能回答这个引擎会做什么"：
 //!   - `base_funs()` 只给通用纯 filter（`length`/`keys`/…），不含 `env`/`now`；
 //!   - `defs()` 是语言层的定义（`map`/`select`/…）；
 //!   - 其余能力一律**不组装**——于是它们在语义上不存在，而不是"被拦住"。
 //!
-//! 对外只暴露一个 C ABI（wasm）：`alloc` / `dealloc` / `run`。
+//! C ABI：`alloc` / `dealloc` / `run` / `load_document` / `run_document`。
 //! `run` 的返回缓冲：`[status u8][len u32 LE][payload]`，status 0 = 结果，1 = 错误。
 
 mod format;
@@ -18,6 +18,12 @@ use jaq_all::load::{compile_errors, load_errors, FileReports, FileReportsDisp};
 use jaq_core::load::{import, Arena, File, Import, Loader};
 use jaq_core::{Ctx, Vars};
 use jaq_json::{read, Val};
+use std::cell::RefCell;
+
+thread_local! {
+    // 文档随实例存续；Val 的 clone 共享底层值，jq 更新产生新的值。
+    static DOCUMENTS: RefCell<Vec<Val>> = const { RefCell::new(Vec::new()) };
+}
 
 /// 把编译期错误排成「文件名 + 行号 + 出错那一行」——与 jaq CLI 同一套排版，只是**不上色**
 /// （这段文字要进模型上下文与回执，颜色是噪音）。路径由调用方给：`.work/kpi.jq` 就写它。
@@ -36,6 +42,10 @@ fn render(reports: Vec<FileReports<String>>) -> String {
 /// 第二个返回值表示截断。
 fn evaluate(program: &str, path: &str, input: &str, max_chars: usize) -> Result<(String, bool), String> {
     let input = read::parse_single(input.as_bytes()).map_err(|e| format!("输入不是合法的 JSON：{e}"))?;
+    evaluate_value(program, path, input, max_chars)
+}
+
+fn evaluate_value(program: &str, path: &str, input: Val, max_chars: usize) -> Result<(String, bool), String> {
     let defs = jaq_core::defs()
         .chain(jaq_std::defs())
         .chain(jaq_json::defs());
@@ -136,10 +146,59 @@ pub extern "C" fn run(
         Ok((text, true)) => (2u8, text),
         Err(err) => (1u8, err),
     };
+    reply(status, payload)
+}
+
+fn reply(status: u8, payload: String) -> *mut u8 {
     let bytes = payload.into_bytes();
     let mut out = Vec::with_capacity(5 + bytes.len());
     out.push(status);
     out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
     out.extend_from_slice(&bytes);
     boxed(out)
+}
+
+/// 解析并常驻一份 JSON，成功时返回值流 `[handle]`，文档与实例同生命周期。
+#[no_mangle]
+pub extern "C" fn load_document(ptr: *const u8, len: usize) -> *mut u8 {
+    let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
+    match read::parse_single(bytes) {
+        Ok(value) => {
+            let handle = DOCUMENTS.with(|docs| {
+                let mut docs = docs.borrow_mut();
+                docs.push(value);
+                docs.len()
+            });
+            reply(0, format!("[{handle}]"))
+        }
+        Err(error) => reply(1, format!("输入不是合法的 JSON：{error}")),
+    }
+}
+
+/// 在已解析文档上求值；程序与返回缓冲遵循 `run` 的约定。
+#[no_mangle]
+pub extern "C" fn run_document(
+    handle: usize,
+    program_ptr: *const u8,
+    program_len: usize,
+    path_ptr: *const u8,
+    path_len: usize,
+    max_chars: usize,
+) -> *mut u8 {
+    let value = DOCUMENTS.with(|docs| docs.borrow().get(handle.wrapping_sub(1)).cloned());
+    let Some(input) = value else {
+        return reply(1, format!("知识文档 handle 无效：{handle}"));
+    };
+    let program = unsafe { core::slice::from_raw_parts(program_ptr, program_len) };
+    let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len) };
+    match evaluate_value(
+        &String::from_utf8_lossy(program),
+        &String::from_utf8_lossy(path),
+        input,
+        max_chars,
+    ) {
+        Ok((text, false)) => reply(0, text),
+        Ok((text, true)) => reply(2, text),
+        Err(error) => reply(1, error),
+    }
 }

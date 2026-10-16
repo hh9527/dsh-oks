@@ -1130,7 +1130,7 @@ async function runSnip(
       signal,
       ...(programFile === undefined
         ? {}
-        : { programFile, cwd: entry.settings.workspaceRoot }),
+        : { programFile }),
     });
   } catch (cause) {
     throw new Error(`${errorText(cause)}\n这次程序看到的输入：\n${inputLines(inputs)}`);
@@ -1485,6 +1485,40 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
   // 与呈现（收到什么就原样给什么）；具体有哪些种类、入口、字段、格式、路由、分页，
   // 一律由服务自己的声明回答——模型换了形状，这里一行都不用改。
   const definitions: ToolDefinition[] = [
+    {
+      name: 'kq',
+      description: 'Explore this workspace’s knowledge graph with jq. The program input (.) is the built-in knowledge object. Call with {} first: the default program .[.index] reads its self-description, which explains the structure and where to go next. Discover field names, knowledge keys and relationships there, then write a jq program in a .work/ .jq file with work_write and pass its name as byFile. Read, filter and join the knowledge in one program; use the canonical IDs declared by the knowledge when constructing query Intents. The graph stays loaded between calls. The engine and value-stream semantics are the same as jq_transform: one output is that value, several are an array, none is []. Only the complete result is returned; narrow the program when output exceeds the context budget. This tool reads knowledge; data queries and materialisation use their own tools.',
+      parameters: {
+        type: 'object',
+        properties: {
+          byFile: { type: 'string', description: 'Optional .work/ .jq program file, e.g. knowledge_query.jq. Omit it to read the self-description with .[.index]. The program receives the knowledge graph directly as its input.' },
+        },
+        additionalProperties: false,
+      },
+      output: { schema: OBJECT_OUTPUT, render: renderValue },
+      async execute(args: { byFile?: unknown }, exec: ToolExec) {
+        if (!isRecord(args) || Object.keys(args).some((key) => key !== 'byFile')) {
+          throw new Error('kq 只接受可选的 byFile：程序读取内置知识图；省略时读取自述入口。');
+        }
+        const entry = knowledge.ensureWorkspace(exec);
+        const code = args.byFile === undefined
+          ? { text: '.[.index]', file: undefined }
+          : readCodeFile(entry.settings.workspaceRoot, args.byFile);
+        const started = Date.now();
+        const result = await knowledge.queryKnowledge(entry, code.text, {
+          input: null, timeoutMs: entry.settings.queryTimeoutMs, maxChars: JAQ_MAX_CHARS,
+          signal: exec?.signal, ...(code.file === undefined ? {} : { programFile: code.file }),
+        });
+        log(`[oks] kq · model=${entry.modelHash.slice(0, 12)} domain=${entry.settings.domain}`
+          + ` · program=${code.file ?? '.[.index]'} → ${result.values.length} 个值 · ${Date.now() - started} ms`);
+        const hint = '用 kq 的 byFile 程序缩小筛选、投影、聚合或分段读取；知识结构从默认入口 .[.index] 发现。';
+        if (result.truncated) return truncatedError('kq', hint);
+        return payloadGuard('kq', {
+          ok: true as const, outputs: result.values.length,
+          data: result.values.length === 1 ? result.values[0] : result.values,
+        }, hint);
+      },
+    },
     {
       name: 'oks_info',
       description: 'Read one knowledge node of this workspace\'s knowledge service by its opaque string key. Start with key "index" — the one key you may supply from memory; it tells you where to go next. From there, follow the keys the service returns, whatever shape it declares, and copy each key verbatim: never construct, split or decode one. Use only the canonical IDs the service declares when writing Intents; display names and physical column names are not substitutes.',

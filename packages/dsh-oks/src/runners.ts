@@ -1,7 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { hasSnapshot } from './config.ts';
 import type { Settings } from './config.ts';
 import { errorText, isRecord } from './host.ts';
 import type { LogFn, ServiceResponse } from './host.ts';
@@ -63,7 +62,6 @@ interface Pending<T> {
 // record 是 12 字节 (out_ptr,out_len,out_cap)。
 export const WORKER_SOURCE = [
   "const { parentPort, workerData } = require('node:worker_threads');",
-  "const { readFileSync } = require('node:fs');",
   'function decodeSnapshot(buf) {',
   '  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);',
   "  if (String.fromCharCode.apply(null, Array.from(buf.subarray(0, 8))) !== 'TLSART01') throw new Error('bad snapshot magic');",
@@ -87,7 +85,7 @@ export const WORKER_SOURCE = [
   '  if (at !== buf.byteLength) throw new Error(\'trailing snapshot bytes\');',
   '  return { guest: guest, globals: globals };',
   '}',
-  'const module = new WebAssembly.Module(readFileSync(workerData.model));',
+  'const module = workerData.module;',
   'const imports = WebAssembly.Module.imports(module);',
   'if (imports.length !== 0) throw new Error(\'expected a zero-import guest, got \' + imports.length);',
   'const encoder = new TextEncoder(); const textDecoder = new TextDecoder();',
@@ -149,9 +147,10 @@ export const WORKER_SOURCE = [
   '});',
 ].join('\n');
 
-/** 宿主：wasm 在进程内 worker 里，超时 terminate 并复活。
+/** 宿主：编译模块固定同一份快照，worker 及超时后的新实例都从它装载。
  *  接口只有 { send(method, input, signal), dispose() }。 */
-export function createWorkerRunner(config: Settings, log: LogFn): Runner {
+export function createWorkerRunner(config: Settings, log: LogFn,
+  module = new WebAssembly.Module(readFileSync(config.model))): Runner {
   const pending = new Map<number, Pending<ServiceResponse>>();
   let worker: Worker | null = null;
   let nextId = 1;
@@ -167,7 +166,7 @@ export function createWorkerRunner(config: Settings, log: LogFn): Runner {
   const spawn = (): Worker => {
     const created = new Worker(WORKER_SOURCE, {
       eval: true,
-      workerData: { model: config.model },
+      workerData: { module },
     });
     // 初始化失败（或之后崩溃）都当作这一代的死亡；下一次 send 会重新拉起。
     created.on('message', (message: RunnerReply) => {
@@ -228,15 +227,16 @@ export function createWorkerRunner(config: Settings, log: LogFn): Runner {
 }
 
 /** 当前只支持快照产物：产物必须带 `telora.snapshot` 段，Node 内置引擎直接导入它。 */
-export function createRunner(config: Settings, log: LogFn): Runner {
-  if (!hasSnapshot(config.model)) {
+export function createRunner(config: Settings, log: LogFn, bytes = readFileSync(config.model)): Runner {
+  const module = new WebAssembly.Module(bytes);
+  if (WebAssembly.Module.customSections(module, 'telora.snapshot').length === 0) {
     throw new Error(
       `dsh-oks: 模型 ${config.model} 里没有 telora.snapshot 段。`
       + '当前只支持快照产物，请按 README 的「快照怎么来」用 `--snapshot` 重新构建。',
     );
   }
   log(`[oks] in-process wasm worker (model ${config.model})`);
-  return createWorkerRunner(config, log);
+  return createWorkerRunner(config, log, module);
 }
 
 // 只读执行器的 worker 源码。放在 worker 里有两个理由：

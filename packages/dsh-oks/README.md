@@ -48,6 +48,7 @@ Node 按 URL 缓存 ESM 模块，所以：
 | --- | --- | --- |
 | `oks_search` | `{query?, kind?, dataset?, skip?}` | 按**名词/说法**在词汇表里找：回 `kind`、`name`、归属（字段名用词汇表声明的 `owner`）、命中位置（`name`/`alias`/`doc`）与分数，**不回 key**。没有 `limit`——页大小由插件按字节定，`more` 报出还剩多少条。0 命中时给出可用的 kind 与 dataset |
 | `oks_references` | `{key, link?, kind?, skip?}` | 按 key **反向**找引用它的节点：回引用种类与引用方的 key。用来回答"哪个维度用了这套值域""哪个数据集声明了这个度量" |
+| `kq` | `{byFile?}` | 内置知识图上的专用 jq 读取。`kq({})` 从 `.[.index]` 返回自述入口；按入口发现结构，将程序写进 `.work/` 的 `.jq`，再以 `byFile` 执行读取、筛选和关联。完整知识在独立 WTI 实例中常驻，按模型内容哈希 + domain 共享初始化；程序里的 `.` 就是知识图。结果是 `{ok, outputs, data}`，值流语义与 `jq_transform` 一致，回执超限时要求缩小程序。知识实例与数据计算器隔离，实例重建后按需重新装载。 |
 | `oks_info` | `{key:"<不透明字符串>"}` | 按 key 读一个知识节点（每次都向服务要，插件不缓存节点）。**入口是 `key:"index"`**（唯一可以凭记忆给出的 key）；之后按返回内容给出的 key 逐级继续——怎么继续、到哪一层，节点自己的说明会回答。key 一律原样传递，**不要构造、切分或解码** |
 | `oks_check_query_intent` | `{intents:{<名>:Intent}}` | **只校验**：按名字回结论，通过的项给出 `key`（该项 Intent 的标识，提交查询时原样带回）。每个 Intent 必须带顶层 `limit`（1..100）：它是 Intent 的一部分、也参与哈希。不回查询语句，也不碰数据——迭代 Intent 形状时用它 |
 | `oks_exec_query_intent` | `{intents:{<名>:{intent,key}}}` | 核 key 后**只读执行**：每个成功项写进 `<工作区>/.oks/data/<时间>-<名>-<内容哈希>.qres.json`，回执只给 `asset`、列信息与行数——**数据行与语句都不进这段对话**（数据按需读回，语句在执行记录与呈现记录里）；失败项按 `key_mismatch` / `rejected` / `query_error` / `save_error` 分别报告 |
@@ -310,6 +311,12 @@ pnpm run check        # typecheck + build + 冒烟
 只写仓库里的 `target/`；**只有新增或升级依赖那一次**要写缓存（`cargo fetch`，脚本会先
 `cargo fetch --locked --offline` 预检并说清这一点）。求值器那边另有一份逐条验收：
 `node crates/oks-wti/check.mjs`（越界能力与跨环境确定性）。
+
+`node jaq-test.ts lib/oks-wti.wasm` 验证常驻知识的单次装载、并发、不可变输入及超时、trap、取消后的恢复与实例隔离；`pnpm run test` 同时执行这组检查和插件冒烟。
+
+运行时使用两份 Wasm 模块：工作区领域模型与 WTI。领域模型实例处理知识服务和查询编译；
+WTI 分别实例化为知识求值器与数据计算器。知识求值器按模型内容哈希和 domain 隔离，在插件作用域内跨会话复用；
+其已解析知识与 handle 随实例常驻，实例销毁时一并回收。
 
 `lib/` 里**只该有两件东西**：`index.mjs` 与 `oks-wti.wasm`。tsdown 的 `clean: false` 是有意的——
 它一清理就会把刚拷进去的旁资产一起删掉（`pnpm run dev` 的 watch 更是每重建一次删一次），

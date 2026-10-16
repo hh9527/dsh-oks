@@ -59,6 +59,7 @@ export interface IncomingReference {
 /** 内存里的检索层：词汇表 + 反向引用索引 + 已知 key 集合。 */
 export interface RetrievalIndex {
   revision: string;
+  knowledge: Record<string, unknown>;
   terms: Term[];
   keys: Set<string>;
   vocabKinds: string[];
@@ -146,11 +147,12 @@ function deriveTerm(node: KnowledgeNode, declaration: VocabularyItem): Term {
 }
 
 /** 派生：词条 + 反向引用索引 + 已知 key 集合。断言保留自发现契约，走样时直接报错。
- *  这里只留下检索需要的东西；节点本身不保留——读节点始终由 oks_info 透传给服务。 */
+ *  保留节点全文并装配自述入口，知识访问与词汇派生共享同一次收集。 */
 function deriveIndex(nodes: KnowledgeNode[], contract: {
   revision: string;
   vocabulary: VocabularyItem[];
   keyPatterns: KeyPattern[];
+  discovery: unknown;
 }): RetrievalIndex {
   const byKey = new Map<string, KnowledgeNode>(nodes.map((node) => [node.key, node]));
   const byKind = new Map<string, VocabularyItem>(contract.vocabulary.map((item) => [item.kind, item]));
@@ -182,6 +184,18 @@ function deriveIndex(nodes: KnowledgeNode[], contract: {
     .filter((term) => term.owner === 'dataset')
     .map((term) => String(term.ownerValue)))].sort();
   return {
+    knowledge: {
+      index: 'guide',
+      guide: {
+        说明: 'discovery 是服务声明的发现契约；documents 是原始知识 key 到节点全文的映射。',
+        起点: '读取 .documents.index 获得领域入口；读取 .discovery 了解服务声明的发现方式。',
+        寻址: '将知识返回的 key 原样作为 documents 的对象键读取词条。',
+        关联: '节点 links 中的 key 指向 documents 中的词条，关系含义以知识声明为准。',
+        范围: '包含发现入口沿 links 与 Index.detail.schemas 可达的全部节点。',
+      },
+      discovery: contract.discovery,
+      documents: Object.fromEntries(nodes.map((node) => [node.key, node])),
+    },
     revision: contract.revision,
     terms,
     keys: new Set(byKey.keys()),
@@ -288,7 +302,7 @@ export async function buildRetrievalIndex(entry: IndexWorkspace, sha: string, lo
       }
     }
   }
-  const index = deriveIndex(nodes, { revision, vocabulary, keyPatterns });
+  const index = deriveIndex(nodes, { revision, vocabulary, keyPatterns, discovery: ok });
   log(`[oks] discovery index · ${index.revision} · ${sha.slice(0, 12)} · `
     + `${nodes.length} 节点 · ${index.terms.length} 词条 · ${index.links.length} 引用 · ${Date.now() - started} ms`);
   return index;

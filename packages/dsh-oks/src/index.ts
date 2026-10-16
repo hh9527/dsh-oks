@@ -117,7 +117,9 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
     // 把门的是"进模型上下文的这一份"。工具自己更精确的提示（如 jq_transform）在它内部先生效。
     const render = definition.output.render.bind(definition.output);
     // 超限时交出去的那句话按工具来：知识节点与工作区产物是两种东西，把"怎么取小一点"指错路比不说更糟。
-    const oversizeHint = definition.name === 'oks_info'
+    const oversizeHint = definition.name === 'kq'
+      ? '用 kq 的 byFile 程序缩小筛选、投影、聚合或分段读取；省略 byFile 可读自述入口。'
+      : definition.name === 'oks_info'
       ? '回执太大，没有交给你。这是服务声明里的一个大节点：先用 oks_search 按 dataset / kind 把它下面的'
         + '成员列出来，再按 key 逐个读小节点。知识节点不在工作区里，jq_transform 读不到它。'
       : '回执太大，没有交给你。用更精确的取法再来一次：jq_transform 里用 pick 取一个字段，'

@@ -5,12 +5,11 @@
 // `oks-wti.wasm` —— 没有环境、没有时钟、没有文件系统（见 rfc/0009）。
 //
 // 为什么放 worker：死循环只能靠超时 `terminate()` 兜住；worker 是唯一能被强杀的边界。
-// trap（栈溢出之类）则不需要杀：worker 自己「丢弃重建」实例，宿主这一侧照常收发。
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+// trap（栈溢出之类）同样使整代实例失效，下一次调用重新装载。
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import { errorText } from './host.ts';
 import { JAQ_WORKER_SOURCE } from './jaq-worker.ts';
 
 export interface JaqOutcome {
@@ -28,10 +27,8 @@ export interface JaqOptions {
   /** 输出字符上限：**引擎自己**到点就停并标记截断（不会先造出一个巨大的串再截）。 */
   maxChars: number;
   signal?: AbortSignal;
-  /** 程序来自哪个文件（`byFile` 给出的那一份）：读出来交给引擎，报错里写**这个名字**。 */
+  /** 程序来自哪个文件（`byFile` 给出的那一份）：用于报错定位，正文由调用方通过 query 提供。 */
   programFile?: string;
-  /** 配 `programFile` 用：相对路径按它解析（工作区根）。 */
-  cwd?: string;
 }
 
 /** 引擎的位置：与 `index.mjs` 同目录（profile 里是 `link:` 装的，运行时就是这个 `lib/`）。 */
@@ -56,123 +53,108 @@ interface WorkerMessage {
   trap?: string;
 }
 
-let worker: Worker | null = null;
-const pending = new Map<number, Pending>();
-let nextId = 1;
+/** 一个执行器独占 worker / Wasm 实例；知识执行器与计算器复用代码、隔离状态。 */
+export function createJaqEngine(wasmPath = enginePath()) {
+  let worker: Worker | null = null;
+  const pending = new Map<number, Pending>();
+  let nextId = 1;
+  let loaded: { worker: Worker; promise: Promise<number> } | undefined;
 
-const failAll = (error: unknown): void => {
-  for (const [, entry] of pending) {
-    clearTimeout(entry.timer);
-    entry.reject(error);
-  }
-  pending.clear();
-};
-
-const spawn = (): Worker => {
-  const wasm = enginePath();
-  if (!existsSync(wasm)) {
-    throw new Error(`找不到求值器 ${wasm}：它是与 index.mjs 同目录的旁资产，用 \`pnpm run wasm\` 构建它。`);
-  }
-  const created = new Worker(JAQ_WORKER_SOURCE, { eval: true, workerData: { wasm } });
-  created.on('message', (message: WorkerMessage) => {
-    if (message.kind === 'ready') return;
-    const entry = message.id === undefined ? undefined : pending.get(message.id);
-    if (entry === undefined) return;
-    pending.delete(message.id as number);
-    clearTimeout(entry.timer);
-    if (message.error !== undefined) entry.reject(new Error(message.error));
-    else if (message.trap !== undefined) entry.reject(new Error(`jaq 求值失败（引擎 trap：${message.trap}）`));
-    else entry.resolve(message.response as EngineReply);
-  });
-  // 只有**当前这一代**的死亡才能影响排队请求：被超时 terminate 的旧代，退出事件会晚到。
-  created.on('error', (cause: Error) => {
-    if (worker !== created) return;
-    worker = null;
-    failAll(cause);
-  });
-  created.on('exit', (code) => {
-    if (worker !== created) return;
-    worker = null;
-    failAll(new Error(`jaq 求值器 worker 退出（退出码 ${code}）`));
-  });
-  worker = created;
-  return created;
-};
-
-/** 程序从哪来：给了 `programFile` 就自己读（报错里写字**相对**的那个名字，不是绝对路径）。 */
-const readProgram = (query: string, options: JaqOptions): { program: string; path: string } => {
-  if (options.programFile === undefined) return { program: query, path: '' };
-  const root = options.cwd ?? process.cwd();
-  const file = isAbsolute(options.programFile) ? options.programFile : resolve(root, options.programFile);
-  let program: string;
-  try {
-    program = readFileSync(file, 'utf8');
-  } catch (cause) {
-    throw new Error(`读不到程序文件 ${options.programFile}：${errorText(cause)}`);
-  }
-  return { program, path: options.programFile };
-};
-
-/** 跑一次：表达式（或它所在的文件）与输入交给引擎，取回值流。 */
-export const runJaq = (query: string, options: JaqOptions): Promise<JaqOutcome> => {
-  let prepared: { program: string; path: string };
-  try {
-    prepared = readProgram(query, options);
-  } catch (cause) {
-    return Promise.reject(cause);
-  }
-  const input = JSON.stringify(options.input ?? null);
-  return new Promise<JaqOutcome>((resolve, reject) => {
-    if (options.signal?.aborted === true) {
-      reject(new Error('aborted'));
-      return;
+  const failAll = (error: unknown): void => {
+    for (const entry of pending.values()) {
+      clearTimeout(entry.timer);
+      entry.reject(error);
     }
-    let target: Worker;
-    try {
-      target = worker ?? spawn();
-    } catch (cause) {
-      reject(cause);
-      return;
-    }
-    const id = nextId;
-    nextId += 1;
-    const kill = (): void => {
-      const dead = worker;
-      worker = null;
-      if (dead !== null) void dead.terminate();
-    };
-    const onAbort = (): void => {
-      pending.delete(id);
-      kill();
-      reject(new Error('aborted'));
-    };
-    const timer = setTimeout(() => {
-      options.signal?.removeEventListener('abort', onAbort);
-      pending.delete(id);
-      kill();
-      reject(new Error(`jaq 求值超过 ${options.timeoutMs} ms（已终止）`));
-    }, options.timeoutMs);
-    options.signal?.addEventListener('abort', onAbort, { once: true });
-    pending.set(id, {
-      resolve: (response) => {
-        options.signal?.removeEventListener('abort', onAbort);
-        // 状态 1 是编译期或运行时错误（连排版都是引擎自己的，和 jaq CLI 同一套）。
-        if (response.status === 1) reject(new Error(`jaq 表达式执行失败：\n${response.message}`));
-        else resolve({ values: response.values, truncated: response.status === 2 });
-      },
-      reject,
-      timer,
+    pending.clear();
+  };
+  const discard = (target: Worker, error: unknown): void => {
+    if (worker !== target) return;
+    worker = null;
+    loaded = undefined;
+    void target.terminate();
+    failAll(error);
+  };
+  const spawn = (): Worker => {
+    const wasm = wasmPath;
+    if (!existsSync(wasm)) throw new Error(`找不到求值器 ${wasm}：请先构建 oks-wti.wasm。`);
+    const created = new Worker(JAQ_WORKER_SOURCE, { eval: true, workerData: { wasm } });
+    created.on('message', (message: WorkerMessage) => {
+      if (worker !== created || message.kind === 'ready') return;
+      // trap 使实例失效：整代排队请求失败，下次调用重新装载，旧 handle 不会进入新实例。
+      if (message.trap !== undefined) {
+        discard(created, new Error(`jaq 求值失败（引擎 trap：${message.trap}）`));
+        return;
+      }
+      const entry = message.id === undefined ? undefined : pending.get(message.id);
+      if (entry === undefined) return;
+      pending.delete(message.id as number);
+      clearTimeout(entry.timer);
+      if (message.error !== undefined) entry.reject(new Error(message.error));
+      else entry.resolve(message.response as EngineReply);
     });
-    target.postMessage({
-      id, program: prepared.program, path: prepared.path, input, maxChars: options.maxChars,
+    created.on('error', (cause: Error) => discard(created, cause));
+    created.on('exit', (code) => discard(created, new Error(`jaq 求值器 worker 退出（退出码 ${code}）`)));
+    worker = created;
+    return created;
+  };
+  const send = (target: Worker, message: Record<string, unknown>, options: JaqOptions): Promise<EngineReply> =>
+    new Promise((resolve, reject) => {
+      if (options.signal?.aborted === true) { reject(new Error('aborted')); return; }
+      if (worker !== target) { reject(new Error('jaq 实例已失效，请重新调用')); return; }
+      const id = nextId++;
+      const onAbort = (): void => discard(target, new Error('aborted'));
+      const timer = setTimeout(() => discard(target,
+        new Error(`jaq 求值超过 ${options.timeoutMs} ms（已终止）`)), options.timeoutMs);
+      const finish = (): void => options.signal?.removeEventListener('abort', onAbort);
+      pending.set(id, {
+        timer,
+        resolve: (reply) => { finish(); resolve(reply); },
+        reject: (error) => { finish(); reject(error); },
+      });
+      options.signal?.addEventListener('abort', onAbort, { once: true });
+      target.postMessage({ ...message, id });
     });
+  const outcome = (reply: EngineReply): JaqOutcome => {
+    if (reply.status === 1) throw new Error(`jaq 表达式执行失败：\n${reply.message}`);
+    return { values: reply.values, truncated: reply.status === 2 };
+  };
+  const program = (query: string, options: JaqOptions) => ({
+    program: query, path: options.programFile ?? '', maxChars: options.maxChars,
   });
-};
+  const run = async (query: string, options: JaqOptions): Promise<JaqOutcome> => {
+    if (options.signal?.aborted === true) throw new Error('aborted');
+    const target = worker ?? spawn();
+    return outcome(await send(target, {
+      ...program(query, options), input: JSON.stringify(options.input ?? null),
+    }, options));
+  };
+  // 每个知识执行器只绑定一份文档。Promise 成功后保留，失败移除，随实例失效。
+  const runDocument = async (query: string, document: unknown, options: JaqOptions): Promise<JaqOutcome> => {
+    if (options.signal?.aborted === true) throw new Error('aborted');
+    const target = worker ?? spawn();
+    if (loaded?.worker !== target) {
+      const promise = send(target, { kind: 'load', input: JSON.stringify(document) }, options)
+        .then((reply) => {
+          const handle = outcome(reply).values[0];
+          if (typeof handle !== 'number' || !Number.isInteger(handle) || handle < 1) {
+            throw new Error('jaq 文档装载没有返回有效 handle');
+          }
+          return handle;
+        });
+      const record = { worker: target, promise };
+      loaded = record;
+      void promise.catch(() => { if (loaded === record) loaded = undefined; });
+    }
+    const handle = await loaded.promise;
+    return outcome(await send(target, { ...program(query, options), handle }, options));
+  };
+  const dispose = (): void => {
+    if (worker !== null) discard(worker, new Error('jaq 引擎已释放'));
+  };
+  return { run, runDocument, dispose };
+}
 
-/** 插件卸载时收掉 worker：它是常驻的，不收会拖着事件循环。 */
-export const disposeJaqEngine = (): void => {
-  failAll(new Error('jaq 引擎已释放'));
-  const dead = worker;
-  worker = null;
-  if (dead !== null) void dead.terminate();
-};
+const calculator = createJaqEngine();
+/** 程序正文由调用方读取一次，programFile 仅用于诊断定位。 */
+export const runJaq = calculator.run;
+export const disposeJaqEngine = calculator.dispose;
