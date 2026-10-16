@@ -2122,11 +2122,11 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'work_read',
-      description: `Read a UTF-8 text file under ${WORK_DIR}/ and return line-numbered content — the same shape as the usual read tool (file_path / offset / limit), except that only ${WORK_DIR}/ is reachable: that is enforced, not requested. ${WORK_DIR}/ is your own work area in this workspace: the jq programs a transform runs by 'jq.src', the report body you hand to 'oks_render_report' as 'articleFile', and any other file you write. Pass ".work/" as file_path to list what is in ${WORK_DIR}/ instead, so a fresh session can see what it left behind.`,
+      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. Read a UTF-8 text file under ${WORK_DIR}/ and return line-numbered content — the same shape as the usual read tool (file_path / offset / limit), except that only ${WORK_DIR}/ is reachable: that is enforced, not requested. ${WORK_DIR}/ is your own work area in this workspace: the jq programs a transform runs by 'jq.src', the report body you hand to 'oks_render_report' as 'articleFile', and any other file you write. Pass ".work/" as file_path to list what is in ${WORK_DIR}/ instead, so a fresh session can see what it left behind.`,
       parameters: {
         type: 'object',
         properties: {
-          file_path: { type: 'string', description: `Full workspace-relative path, e.g. "${WORK_DIR}/analysis.jq". Use "${WORK_DIR}/" to list the directory.` },
+          file_path: { type: 'string', description: `Full workspace-relative path under ${WORK_DIR}/, e.g. "${WORK_DIR}/analysis.jq". Use "${WORK_DIR}/" to list the directory.` },
           offset: { type: 'number', description: 'First line to return, 1-based. Default 1.' },
           limit: { type: 'number', description: 'How many lines to return, 1..2000. Default 400.' },
         },
@@ -2149,7 +2149,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'work_write',
-      description: `Write a UTF-8 text file under ${WORK_DIR}/, creating or overwriting it — the same shape as the usual write tool (file_path / content), except that only ${WORK_DIR}/ is reachable. It is how a file gets somewhere a tool can name it: write "${WORK_DIR}/peek.jq" here and hand 'jq: {src: ".work/peek.jq"}'; write "${WORK_DIR}/article.xhtml" here and hand 'articleFile: ".work/article.xhtml"'. Edit it later without resending the whole thing. Parent directories are created. Keep data out of here: rows and tables belong in .oks/data/ via create_data or oks_jaq with save.`,
+      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. Write a UTF-8 text file under ${WORK_DIR}/, creating or overwriting it — the same shape as the usual write tool (file_path / content), except that only ${WORK_DIR}/ is reachable. It is how a file gets somewhere a tool can name it: write "${WORK_DIR}/peek.jq" here and hand 'jq: {src: ".work/peek.jq"}'; write "${WORK_DIR}/article.xhtml" here and hand 'articleFile: ".work/article.xhtml"'. Edit it later without resending the whole thing. Parent directories are created. Keep data out of here: rows and tables belong in .oks/data/ via create_data or oks_jaq with save.`,
       parameters: {
         type: 'object',
         properties: {
@@ -2169,7 +2169,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'work_edit',
-      description: `Replace a literal passage in a text file under ${WORK_DIR}/ — the same shape as the usual edit tool (file_path / old_string / new_string / replace_all), except that only ${WORK_DIR}/ is reachable. It is how a file gets iterated: write it once, then fix one passage at a time instead of resending the whole file. old_string must appear in the file exactly as given (whitespace included); it must be unique unless replace_all is true.`,
+      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. Replace a literal passage in a text file under ${WORK_DIR}/ — the same shape as the usual edit tool (file_path / old_string / new_string / replace_all), except that only ${WORK_DIR}/ is reachable. It is how a file gets iterated: write it once, then fix one passage at a time instead of resending the whole file. old_string must appear in the file exactly as given (whitespace included); it must be unique unless replace_all is true.`,
       parameters: {
         type: 'object',
         properties: {
@@ -2192,7 +2192,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'work_list',
-      description: `List the files in ${WORK_DIR}/ — name, size and when each was last written. Everything the work area holds lives here: the jq programs jq.src runs, the report body you hand to oks_render_report as articleFile, and any other scratch file. Use it when a name is in doubt, or before deleting something.`,
+      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. List the files in ${WORK_DIR}/ — name, size and when each was last written. Everything the work area holds lives here: the jq programs jq.src runs, the report body you hand to oks_render_report as articleFile, and any other scratch file. Use it when a name is in doubt, or before deleting something.`,
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       output: { schema: OBJECT_OUTPUT, render: renderValue },
       async execute(_args: unknown, exec: ToolExec) {
@@ -2203,7 +2203,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'work_delete',
-      description: `Delete one file under ${WORK_DIR}/ — how a file you no longer need goes away (a jq program, a report body, any scratch file). It deletes files only: empty a directory first if you want it gone. The receipt says which file went and how many are left in ${WORK_DIR}/. Deleting a file does not cost provenance: a jq program's text is recorded in the source chain of whatever used it, so what is lost is only the ability to run it again.`,
+      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. Delete one file under ${WORK_DIR}/ — how a file you no longer need goes away (a jq program, a report body, any scratch file). It deletes files only: empty a directory first if you want it gone. The receipt says which file went and how many are left in ${WORK_DIR}/. Deleting a file does not cost provenance: a jq program's text is recorded in the source chain of whatever used it, so what is lost is only the ability to run it again.`,
       parameters: {
         type: 'object',
         properties: {
