@@ -46,11 +46,11 @@ import type { ColumnInfo, DataOrigin, Envelope, OriginNode, SaveArtifactOptions 
 
 /** 递归规则由公共投影函数完整校验；参数 schema 描述四种合法外形。 */
 const PROJECT_PARAMETER = {
-  description: 'A recursive projection rule applied to the current input value. Grammar: Rule = "*" | "$shape" | {field: Rule, ...} | [Rule]. Start at the input root; each child rule runs on the child value selected by its parent. "*" keeps the current value. "$shape" replaces the current value with its type/size summary (objects include up to 20 sorted keys; string size counts Unicode code points). {field: rule} keeps that literal field name and applies rule to its value, preserving the object layer. [rule] applies its ONE child rule to every member of the current array or dictionary, preserving array length or dictionary keys. Nest these forms to follow the data structure. Example: input value {"rows":[{"id":1,"detail":{"label":"A","count":7}}]}, project {"rows":[{"detail":{"label":"*"}}]} gives {"rows":[{"detail":{"label":"A"}}]}. For a dictionary, input value {"items":{"a":{"type":"Dataset","detail":{}}}}, project {"items":[{"type":"*"}]} gives {"items":{"a":{"type":"Dataset"}}}. Missing fields stay absent. Object rules pass non-objects through; array rules pass scalars/null through. Projection preserves the input.',
+  description: 'A recursive projection rule applied to the current input value. Grammar: Rule = "Value" | "Shape" | {field: Rule, ...} | ["Map", Rule]. Start at the input root; each child rule runs on the child value selected by its parent. "Value" keeps the current value. "Shape" replaces the current value with its type/size summary (objects include up to 20 sorted keys; string size counts Unicode code points). {field: rule} keeps that literal field name and applies rule to its value, preserving the object layer. ["Map", rule] applies its child rule to every member of the current array or dictionary, preserving array length or dictionary keys. Nest these forms to follow the data structure. Example: input value {"rows":[{"id":1,"detail":{"label":"A","count":7}}]}, project {"rows":["Map",{"detail":{"label":"Value"}}]} gives {"rows":[{"detail":{"label":"A"}}]}. For a dictionary, input value {"items":{"a":{"type":"Dataset","detail":{}}}}, project {"items":["Map",{"type":"Value"}]} gives {"items":{"a":{"type":"Dataset"}}}. Missing fields stay absent. Object rules pass non-objects through; array rules pass scalars/null through. Projection preserves the input.',
   oneOf: [
-    { type: 'string', enum: ['*', '$shape'], description: 'Operation on the current value: "*" keeps it; "$shape" summarizes it.' },
-    { type: 'object', additionalProperties: true, description: 'Select fields at the current object level; each field value is another Rule. {"detail":{"label":"*"}} keeps detail.label within the detail object. {"rows":[{"name":"*"}]} keeps name in each row.' },
-    { type: 'array', items: {}, description: 'Exactly one child Rule, applied to every member of the current array or dictionary. [{"detail":{"label":"*"}}] selects detail.label in each member. ["$shape"] summarizes each member; "$shape" summarizes the container itself.' },
+    { type: 'string', enum: ['Value', 'Shape'], description: 'Operation on the current value: "Value" keeps it; "Shape" summarizes it.' },
+    { type: 'object', additionalProperties: true, description: 'Select fields at the current object level; each field value is another Rule. {"detail":{"label":"Value"}} keeps detail.label within the detail object. {"rows":["Map",{"name":"Value"}]} keeps name in each row.' },
+    { type: 'array', items: {}, description: 'A two-element ["Map", Rule] tuple, with its child Rule applied to every member of the current array or dictionary. ["Map", {"detail":{"label":"Value"}}] selects detail.label in each member. ["Map", "Shape"] summarizes each member; "Shape" summarizes the container itself.' },
   ],
 };
 
@@ -365,7 +365,7 @@ export interface PayloadError {
   shape?: JsonValue;
 }
 
-const payloadShape = createProjector("$shape");
+const payloadShape = createProjector("Shape");
 
 /** 数据接口返回前的守门：完整就放行，超限就把数据换成错误（不返回半份数据）。 */
 function payloadGuard<T extends { ok: true; data: JsonValue }>(tool: string, value: T): T | PayloadError {
@@ -915,8 +915,7 @@ interface NamedInput {
 /** 点路径的两种写法共用一句提示：它是选择器、不是程序。 */
 const PATH_HINT = '（"." 整份 / ".data" 那份数据本身 / ".origin" 来源链 / ".data.items" 更深的键）';
 
-/** 解析一段**点路径**：jq 的选择器语法。它出现在两处——每个输入条目自带的 `root`（把这份文件的
- *  哪一段交给程序）与 `pick`（从结果里取回哪一段）——两处都只认点路径，别的一律报错并给出正确写法。 */
+/** 解析报告的点路径：spec.inputs.root 选择材料内容，data-oks-pick 摘取正文引用值。 */
 function parsePath(raw: unknown, where: string): { path: string[]; text: string } | { error: string } {
   if (typeof raw !== 'string') {
     return { error: `${where} 要写成点路径${PATH_HINT}` };
@@ -1721,7 +1720,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_data',
-      description: 'Read knowledge or saved data, project JSON or execute a jq file, and optionally save with full provenance. Start knowledge discovery with {"input":"knowledge://","project":{"guide":"*"}}. A string input is the value itself; a named map is an object of values; omitted input is {}. File resources expose data only; append #meta for {meta, origin}. Choose project or jq:{src:".work/analysis.jq"}; omit both for identity. Use full workspace-relative paths verbatim. Query data is {rows, columns}; figures are {rows, spec}; reports are {assets, items, structure}. jq is deterministic: time comes from create_current_ctx_data; explicit-zone functions gmtime_tz(zone), strftime_tz(fmt; zone), tzadd(unit; amount; zone), tzfloor(unit; zone), tzceil(unit; zone) receive epoch seconds. Units: year/quarter/month/week/day/hour/minute/second. One output is returned as itself, several as an array, none as []. Narrow project or jq when the output budget is exceeded. save:{name,motivation} materialises a .tr.json envelope and returns asset and bytes.',
+      description: 'Read knowledge or saved data, project JSON or execute a jq file, and optionally save with full provenance. Start knowledge discovery with {"input":"knowledge://","project":{"guide":"Value"}}. A string input is the value itself; a named map is an object of values; omitted input is {}. File resources expose data only; append #meta for {meta, origin}. Choose project or jq:{src:".work/analysis.jq"}; omit both for identity. Use full workspace-relative paths verbatim. Query data is {rows, columns}; figures are {rows, spec}; reports are {assets, items, structure}. jq is deterministic: time comes from create_current_ctx_data; explicit-zone functions gmtime_tz(zone), strftime_tz(fmt; zone), tzadd(unit; amount; zone), tzfloor(unit; zone), tzceil(unit; zone) receive epoch seconds. Units: year/quarter/month/week/day/hour/minute/second. One output is returned as itself, several as an array, none as []. Narrow project or jq when the output budget is exceeded. save:{name,motivation} materialises a .tr.json envelope and returns asset and bytes.',
       parameters: {
         type: 'object',
         properties: {

@@ -5,10 +5,10 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 export type ProjectRule =
-  | '*'
-  | '$shape'
+  | 'Value'
+  | 'Shape'
   | { [key: string]: ProjectRule }
-  | [ProjectRule];
+  | ['Map', ProjectRule];
 
 export type Projector = (value: JsonValue) => JsonValue;
 
@@ -37,13 +37,13 @@ const shape: Projector = (value): JsonValue => {
 export function createProjector(project: ProjectRule): Projector {
   const ancestors = new Set<object>();
   const compile = (rule: unknown, path: string): Projector => {
-    if (rule === '*') return (value) => value;
-    if (rule === '$shape') return shape;
+    if (rule === 'Value') return (value) => value;
+    if (rule === 'Shape') return shape;
     const invalid = (): never => {
       const received = rule === null ? 'null' : Array.isArray(rule) ? '数组' : typeof rule;
       const hint = typeof rule === 'string'
-        ? '字符串规则只接受 "*" 或 "$shape"；对象规则直接嵌套传入，例如 {"project":{"index":"$shape"}}，不要将对象序列化为字符串。'
-        : '使用 "*"、"$shape"、对象或恰含一条子规则的数组。';
+        ? '字符串规则只接受 "Value" 或 "Shape"；对象规则直接嵌套传入，例如 {"project":{"index":"Shape"}}。'
+        : '使用 "Value"、"Shape"、对象或 ["Map", 子规则]。';
       throw new Error(`project 规则 ${path} 非法（收到 ${received}）：${hint}`);
     };
     if (rule === null || typeof rule !== 'object') return invalid();
@@ -51,8 +51,8 @@ export function createProjector(project: ProjectRule): Projector {
     ancestors.add(rule);
     try {
       if (Array.isArray(rule)) {
-        if (rule.length !== 1) return invalid();
-        const child = compile(rule[0], `${path}[0]`);
+        if (rule.length !== 2 || rule[0] !== 'Map') return invalid();
+        const child = compile(rule[1], `${path}[1]`);
         return (value) => {
           if (Array.isArray(value)) return value.map(child);
           if (objectValue(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, child(item)]));

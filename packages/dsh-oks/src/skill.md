@@ -16,8 +16,8 @@
 
 ### 知识检索和发现
 
-- 从 `oks_data({"input":"knowledge://","project":{"guide":"*"}})` 读取知识入口，再按入口声明发现词条和关系。知识图顶层是 key → 带 type 的条目
-- 简单选择和形状探索使用 `project`：`"*"` 保留值，`"$shape"` 探测形状，对象选择字面键，`[规则]` 处理容器成员。规则直接传嵌套 JSON
+- 从 `oks_data({"input":"knowledge://","project":{"guide":"Value"}})` 读取知识入口，再按入口声明发现词条和关系。知识图顶层是 key → 带 type 的条目
+- 简单选择和形状探索使用 `project`：`"Value"` 保留值，`"Shape"` 探测形状，对象选择字面键，`["Map", 规则]` 处理容器成员。规则直接传嵌套 JSON
 - 复杂筛选、关联、聚合先写 `.work/knowledge_query.jq`，再调用 `oks_data({"input":"knowledge://","jq":{"src":".work/knowledge_query.jq"}})`；程序的 `.` 就是知识图，跨调用复用已装载的知识
 - 用户说法与领域词汇有差距时，先用 `va_ask` 获取线索或用 `oks_search` 模糊检索，再通过知识资源阅读原始声明
 - 有时候用户表达中的词汇并不在领域常用词汇表中，`oks_search` 检索不到，这时 `va_ask` 工具就能让领域词汇助手告诉你相近的领域词汇有哪些，便于你进一步检索
@@ -32,9 +32,9 @@
 
 `project` 从输入根开始，按数据层级递归；每一层规则作用于这一层的值：
 
-- `"*"`：保留当前值；`"$shape"`：将当前值换为形状摘要。
+- `"Value"`：保留当前值；`"Shape"`：将当前值换为形状摘要。
 - `{"字段": 子规则}`：保留这个字段，在字段值上继续应用子规则；对象层级保留。
-- `[子规则]`：对当前数组的每一项或字典的每一个值应用同一条子规则；数组长度、字典键保留。
+- `["Map", 子规则]`：对当前数组的每一项或字典的每一个值应用同一条子规则；数组长度、字典键保留。
 
 例如输入值为：
 
@@ -42,11 +42,11 @@
 {"rows":[{"id":1,"detail":{"label":"A","count":7}}]}
 ```
 
-使用 `project: {"rows":[{"detail":{"label":"*"}}]}`，得到 `{"rows":[{"detail":{"label":"A"}}]}`。
+使用 `project: {"rows":["Map",{"detail":{"label":"Value"}}]}`，得到 `{"rows":[{"detail":{"label":"A"}}]}`。
 逐层读这条规则：选 `rows` → 逐行处理 → 选 `detail` → 保留 `label`。
-`{"rows":"$shape"}` 看整个 rows 的形状，`{"rows":["$shape"]}` 看每一行的形状。
+`{"rows":"Shape"}` 看整个 rows 的形状，`{"rows":["Map","Shape"]}` 看每一行的形状。
 字典同样逐项处理：输入 `{"items":{"a":{"type":"Dataset","detail":{}}}}`，
-规则 `{"items":[{"type":"*"}]}` 得到 `{"items":{"a":{"type":"Dataset"}}}`。
+规则 `{"items":["Map",{"type":"Value"}]}` 得到 `{"items":{"a":{"type":"Dataset"}}}`。
 
 - `input` 为单个资源路径时，程序直接看到 `.data` 的值；查询材料从 `.rows` 开始。`input` 为命名映射时才通过 `.fact.rows` 等名称访问；省略输入得到 `{}`
 - 路径后加 `#meta` 读取 `{meta, origin}`，普通路径只读取数据。`project` 与 `jq` 二选一，省略两者为恒等处理

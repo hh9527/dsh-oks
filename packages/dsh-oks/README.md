@@ -341,13 +341,13 @@ WTI 分别实例化为知识求值器与数据计算器。知识求值器按模�
 创建时完整校验规则，返回的函数可重复使用并保持输入数据和规则不变。
 `oks_data` 对解析后的输入值投影；知识资源使用 `input: "knowledge://"`。
 
-- `"*"` 保留当前值，`"$shape"` 返回类型摘要；对象、数组和字符串另含总大小，对象最多列出 20 个按 JS 默认顺序排序的键，字符串按 Unicode 码点计数。
+- `"Value"` 保留当前值，`"Shape"` 返回类型摘要；对象、数组和字符串另含总大小，对象最多列出 20 个按 JS 默认顺序排序的键，字符串按 Unicode 码点计数。
 - `{"key": rule}` 选择实际存在的字面键并递归投影；`{}` 清空对象。对象模式遇到其他类型时原值通过。
-- `[rule]` 对数组元素或对象值逐一投影，键与元素数量保留；标量和 null 原值通过。
+- `["Map", rule]` 对数组元素或对象值逐一投影，键与元素数量保留；标量和 null 原值通过。
 
-例如 `oks_data({"input":"knowledge://","project":{"index":"$shape"}})` 先看节点集合的形状；
-再用 `oks_data({"input":"knowledge://","project":{"index":{"description":"*","detail":"$shape"}}})` 选择字段。
-`project` 的对象和数组规则直接嵌套在调用 JSON 中，字符串规则只有 `"*"`、`"$shape"`。
+例如 `oks_data({"input":"knowledge://","project":{"index":"Shape"}})` 先看节点集合的形状；
+再用 `oks_data({"input":"knowledge://","project":{"index":{"description":"Value","detail":"Shape"}}})` 选择字段。
+`project` 的对象和数组规则直接嵌套在调用 JSON 中，字符串规则只有 `"Value"`、`"Shape"`。
 `project` 与 `jq` 二选一。缺失键保持缺失，显式 `project: null` 是非法规则，
 结果超出 16 KiB 时返回错误并引导缩小范围；摘要也受该预算约束。
 
