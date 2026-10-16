@@ -1723,10 +1723,10 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         type: 'object',
         properties: {
           input: {
-            description: 'A string addresses one resource and supplies its visible value directly. An object maps input names to resource addresses and supplies an object with those names as keys. knowledge:// addresses the knowledge graph; a complete asset path supplies its data; appending #meta supplies {meta, origin}.',
+            description: 'Semantic type: input: ResourceRef | { [Key: string]: ResourceRef }. ResourceRef is a resource address string: FileName, FileName#meta, or knowledge://. FileName is the complete workspace-relative asset path returned by a tool, e.g. .oks/data/example.tr.json. A single ResourceRef supplies that resource value directly as the input. An object assigns a Key to each ResourceRef and supplies an object with those keys and resolved values. Example: {"input":{"fact":".oks/data/example.tr.json","knowledge":"knowledge://"}}. A file supplies its data; FileName#meta supplies {meta, origin}; knowledge:// supplies the knowledge graph.',
             oneOf: [
-              { type: 'string', description: 'One resource address, e.g. "knowledge://" or ".oks/data/example.tr.json#meta".' },
-              { type: 'object', additionalProperties: true, description: 'Input names mapped to resource address strings, e.g. {"fact":".oks/data/example.tr.json","knowledge":"knowledge://"}.' },
+              { type: 'string', description: 'ResourceRef: one FileName, FileName#meta, or knowledge://.' },
+              { type: 'object', additionalProperties: true, description: '{ [Key: string]: ResourceRef }: each Key names an input and each value addresses its resource, e.g. {"fact":".oks/data/example.tr.json"}.' },
             ],
           },
           project: PROJECT_PARAMETER,
