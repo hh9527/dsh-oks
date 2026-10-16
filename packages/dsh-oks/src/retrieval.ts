@@ -225,7 +225,7 @@ function kindError(index: RetrievalIndex, kind: string, where: string): Error {
       + `词汇表收录的 kind：${available}。`);
   }
   return new Error(`dsh-oks: ${where} 的 kind ${kind} 不可检索：它有声明的 key 模式 ${pattern}，`
-    + `但不属这个产物的词汇表；这类 key 从节点自身的引用里得到（oks_jaq / oks_references）。`
+    + `但不属这个产物的词汇表；这类 key 从节点自身的引用里得到（oks_data / oks_references）。`
     + `词汇表收录的 kind：${available}。`);
 }
 
@@ -436,7 +436,7 @@ export function renderSearch(_args: unknown, value: SearchResult): RenderBlock[]
       '换个说法，或用 kind= / dataset= 收窄。');
   } else {
     for (const row of value.matched) lines.push(termLine(row));
-    lines.push('', '用 index 里声明的 key 模式把 kind/name[/owner] 拼成 key，再用 oks_jaq 以 input="knowledge://" 按顶层 key 读节点。');
+    lines.push('', '用 index 里声明的 key 模式把 kind/name[/owner] 拼成 key，再用 oks_data 以 input="knowledge://" 按顶层 key 读节点。');
   }
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }

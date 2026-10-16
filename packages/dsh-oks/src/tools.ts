@@ -992,7 +992,7 @@ function columnsOf(data: unknown, rows: readonly Record<string, unknown>[]): str
 /** 输入形状与加工方式在资源读取前完成校验。返回可复用的 JS 投影器。 */
 function validateTransform(args: TransformArgs): ReturnType<typeof createProjector> | undefined {
   if (!isRecord(args) || Object.keys(args).some((key) => !['input', 'project', 'jq', 'save'].includes(key))) {
-    throw new Error('oks_jaq 接受 input、project、jq、save。');
+    throw new Error('oks_data 接受 input、project、jq、save。');
   }
   if (Object.hasOwn(args, 'project') && Object.hasOwn(args, 'jq')) {
     throw new Error('project 与 jq 二选一。');
@@ -1409,7 +1409,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
   const definitions: ToolDefinition[] = [
     {
       name: 'oks_search',
-      description: 'Find this workspace\'s knowledge vocabulary by name, alias or description and get what you need to address a node: its kind, its name, its owner, where the term matched and how well. Keys are not returned — compose the key with the pattern the service declares for that kind in index.detail.key_patterns, then read the node with oks_jaq using input="knowledge://". That is how a knowledge key is addressed; an Intent key is a different thing, handed to you by oks_check_query_intent and never composed. Use it when you know what a thing is called but not its key; narrow with kind= or dataset=, and page with skip=.',
+      description: 'Find this workspace\'s knowledge vocabulary by name, alias or description and get what you need to address a node: its kind, its name, its owner, where the term matched and how well. Keys are not returned — compose the key with the pattern the service declares for that kind in index.detail.key_patterns, then read the node with oks_data using input="knowledge://". That is how a knowledge key is addressed; an Intent key is a different thing, handed to you by oks_check_query_intent and never composed. Use it when you know what a thing is called but not its key; narrow with kind= or dataset=, and page with skip=.',
       parameters: {
         type: 'object',
         properties: {
@@ -1436,7 +1436,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_references',
-      description: 'List what references a knowledge key, from the reference graph the plugin derives when the vocabulary is built. Each row names the reference kind and the referencing node\'s key, so you can read that node with oks_jaq using input="knowledge://" or follow it further. Use it to see what depends on a term before you change how you address it.',
+      description: 'List what references a knowledge key, from the reference graph the plugin derives when the vocabulary is built. Each row names the reference kind and the referencing node\'s key, so you can read that node with oks_data using input="knowledge://" or follow it further. Use it to see what depends on a term before you change how you address it.',
       parameters: {
         type: 'object',
         properties: {
@@ -1508,7 +1508,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_exec_query_intent',
-      description: 'Answer a business question from this workspace\'s data: validate one to five named graph Intents, then run the accepted ones as read-only queries against the data file the workspace declares. Each success is saved as a result file in the workspace (.oks/data/) and the reply reports only its asset, columns and rowCount — the rows stay out of this conversation until you take them with oks_jaq. A rejected Intent returns diagnostics instead of a result file, and a name whose key does not match its Intent is refused before execution. Use oks_check_query_intent first to get the keys.',
+      description: 'Answer a business question from this workspace\'s data: validate one to five named graph Intents, then run the accepted ones as read-only queries against the data file the workspace declares. Each success is saved as a result file in the workspace (.oks/data/) and the reply reports only its asset, columns and rowCount — the rows stay out of this conversation until you take them with oks_data. A rejected Intent returns diagnostics instead of a result file, and a name whose key does not match its Intent is refused before execution. Use oks_check_query_intent first to get the keys.',
       parameters: {
         type: 'object',
         properties: {
@@ -1676,7 +1676,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'create_data',
-      description: 'Turn data you supply yourself into an envelope in the workspace, so that it can be referenced like any other data: give it a name, say why it exists, and pass the JSON. The tool writes {origin, data} into .oks/data/ as <time>-<name>-<content hash>.def.json, where origin is one node saying this data was given — it carries your motivation and the payload itself, because the source chain is the recipe: whatever is built from this file can be replayed after this file is gone. The receipt gives you the asset — that is where this file is; hand that value to a figure as its src, to a transform as one of its named inputs, and a later step can read it like anything else. Row objects (an array of objects) are what a figure needs; nested objects, arrays and scalars are fine too. Use this only for data that exists nowhere in the workspace: a handful of values from the user, a threshold table, rows you were handed. Anything already in the workspace — queried rows, a computed result, the rows a figure drew — is reshaped or relabelled with oks_jaq with save, never retyped here: retyping cuts the chain to where the numbers came from, and the envelope records only that you supplied them.',
+      description: 'Turn data you supply yourself into an envelope in the workspace, so that it can be referenced like any other data: give it a name, say why it exists, and pass the JSON. The tool writes {origin, data} into .oks/data/ as <time>-<name>-<content hash>.def.json, where origin is one node saying this data was given — it carries your motivation and the payload itself, because the source chain is the recipe: whatever is built from this file can be replayed after this file is gone. The receipt gives you the asset — that is where this file is; hand that value to a figure as its src, to a transform as one of its named inputs, and a later step can read it like anything else. Row objects (an array of objects) are what a figure needs; nested objects, arrays and scalars are fine too. Use this only for data that exists nowhere in the workspace: a handful of values from the user, a threshold table, rows you were handed. Anything already in the workspace — queried rows, a computed result, the rows a figure drew — is reshaped or relabelled with oks_data with save, never retyped here: retyping cuts the chain to where the numbers came from, and the envelope records only that you supplied them.',
       parameters: {
         type: 'object',
         properties: {
@@ -1720,7 +1720,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       },
     },
     {
-      name: 'oks_jaq',
+      name: 'oks_data',
       description: 'Read knowledge or saved data, project JSON or execute a jq file, and optionally save with full provenance. Start knowledge discovery with {"input":"knowledge://","project":{"guide":"*"}}. A string input is the value itself; a named map is an object of values; omitted input is {}. File resources expose data only; append #meta for {meta, origin}. Choose project or jq:{src:".work/analysis.jq"}; omit both for identity. Use full workspace-relative paths verbatim. Query data is {rows, columns}; figures are {rows, spec}; reports are {assets, items, structure}. jq is deterministic: time comes from create_current_ctx_data; explicit-zone functions gmtime_tz(zone), strftime_tz(fmt; zone), tzadd(unit; amount; zone), tzfloor(unit; zone), tzceil(unit; zone) receive epoch seconds. Units: year/quarter/month/week/day/hour/minute/second. One output is returned as itself, several as an array, none as []. Narrow project or jq when the output budget is exceeded. save:{name,motivation} materialises a .tr.json envelope and returns asset and bytes.',
       parameters: {
         type: 'object',
@@ -1756,7 +1756,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         const saveName = typeof save?.name === 'string' ? save.name.trim() : '';
         const motivation = typeof save?.motivation === 'string' ? save.motivation.trim() : '';
         if (save !== undefined && (saveName === '' || motivation === '')) {
-          throw new Error('oks_jaq 的 save 需要 name 与 motivation：落点名（0-9、_ 与 a-z，'
+          throw new Error('oks_data 的 save 需要 name 与 motivation：落点名（0-9、_ 与 a-z，'
             + '例如 events_by_level）与这次加工为什么做（一句自然语言，记在这次操作的节点上）。');
         }
         if (save !== undefined) {
@@ -1789,15 +1789,15 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           }
         }
         const data = outcome.data;
-        log(`[oks] oks_jaq · ${inputs.length} 份输入 → ${outcome.outputs} 个值 · ${Date.now() - started} ms`);
+        log(`[oks] oks_data · ${inputs.length} 份输入 → ${outcome.outputs} 个值 · ${Date.now() - started} ms`);
         // 求值到上限＝数据不完整：报错，不返回半份（调用方让程序少取一点）。
         if (outcome.truncated) {
           // 看一眼：返回错误值（回执里说清）；物化：直接抛错 —— 残缺数据不该进来源链。
           if (save === undefined) {
-            return truncatedError('oks_jaq');
+            return truncatedError('oks_data');
           }
           throw new Error(`表达式产出超过求值上限（${JAQ_MAX_CHARS} 字符），这份结果不完整，没有物化：`
-            + '先用 oks_jaq 把范围收窄（聚合或投影），再 save。');
+            + '先用 oks_data 把范围收窄（聚合或投影），再 save。');
         }
         if (save !== undefined) {
           // 物化：来源链由这一层组装 —— 本次操作 + 各输入的**根节点**（产出那份 data 的记录）。
@@ -1826,19 +1826,19 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             data,
           });
           const intoMs = Date.now() - started;
-          log(`[oks] oks_jaq → ${saveName} · ${inputs.length} 份输入 → ${outcome.outputs} 个值`
+          log(`[oks] oks_data → ${saveName} · ${inputs.length} 份输入 → ${outcome.outputs} 个值`
             + ` · ${(stored.bytes / 1024).toFixed(1)} KB · ${intoMs} ms · ${stored.asset}`
             + ` · snip=${capLine(snip ?? 'identity/project', 200)}`);
           // 回执只有两件东西：落点与大小。值、形状与来源链都在文件里——
-          // 要看得再读一次（`oks_jaq` 读 `.data`），于是"留下来"这件事不把数据带回上下文。
+          // 要看得再读一次（`oks_data` 读 `.data`），于是"留下来"这件事不把数据带回上下文。
           return { asset: stored.asset, bytes: stored.bytes };
         }
-        return payloadGuard('oks_jaq', { ok: true as const, data: data as JsonValue });
+        return payloadGuard('oks_data', { ok: true as const, data: data as JsonValue });
       },
     },
     {
       name: 'oks_render_figure',
-      description: 'Render saved data as a figure or a table and write it into the workspace. spec.kind picks the form: "table" writes a markdown table, every other kind draws a figure as an SVG. Data comes in one way only: src, a path copied verbatim from an earlier receipt (oks_exec_query_intent for queried rows, oks_jaq with save for a computed result, create_data for rows you supplied yourself) — rows are never written inline here, so every piece has a recorded origin. For a table, columns picks and orders what to show (omit for every column the data has), title is the caption, numeric columns are right-aligned, and the receipt gives you the table itself as ready-to-paste markdown for your reply. For a figure, the receipt gives you a markdown line: put it verbatim into your answer and the figure shows up there. The figure carries the rows it drew, its specification and its whole source chain inside the SVG, so it still explains itself once the workspace is cleaned up. Each switch applies to a fixed set of kinds (' + expressionMatrix() + '); filling one on a kind outside its set is rejected, so a switch is never silently ignored.',
+      description: 'Render saved data as a figure or a table and write it into the workspace. spec.kind picks the form: "table" writes a markdown table, every other kind draws a figure as an SVG. Data comes in one way only: src, a path copied verbatim from an earlier receipt (oks_exec_query_intent for queried rows, oks_data with save for a computed result, create_data for rows you supplied yourself) — rows are never written inline here, so every piece has a recorded origin. For a table, columns picks and orders what to show (omit for every column the data has), title is the caption, numeric columns are right-aligned, and the receipt gives you the table itself as ready-to-paste markdown for your reply. For a figure, the receipt gives you a markdown line: put it verbatim into your answer and the figure shows up there. The figure carries the rows it drew, its specification and its whole source chain inside the SVG, so it still explains itself once the workspace is cleaned up. Each switch applies to a fixed set of kinds (' + expressionMatrix() + '); filling one on a kind outside its set is rejected, so a switch is never silently ignored.',
       parameters: {
         type: 'object',
         properties: {
@@ -1930,7 +1930,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             required: ['kind'],
             additionalProperties: false,
           },
-          src: { type: 'string', description: 'A path copied verbatim from an earlier receipt — any product whose data are the rows to draw or show: oks_exec_query_intent returns queried rows ({rows, columns}), oks_jaq with save a computed result, create_data the rows you supplied yourself, and a figure or a table can be drawn again (their data form is {rows, spec}; a relation graph also keeps its node table as data.nodeRows, so it can be drawn again without nodesSrc). A report cannot: its data is its display items, so read those with oks_jaq instead. Rows cannot be written inline.' },
+          src: { type: 'string', description: 'A path copied verbatim from an earlier receipt — any product whose data are the rows to draw or show: oks_exec_query_intent returns queried rows ({rows, columns}), oks_data with save a computed result, create_data the rows you supplied yourself, and a figure or a table can be drawn again (their data form is {rows, spec}; a relation graph also keeps its node table as data.nodeRows, so it can be drawn again without nodesSrc). A report cannot: its data is its display items, so read those with oks_data instead. Rows cannot be written inline.' },
           name: { type: 'string', description: 'Optional name for the saved file; defaults to "table" for a table and "chart" for a figure. A name is an identifier, not a title: 0-9, _ and a-z only, at most 60 characters (longer ones are cut and tagged with a ~ plus a short hash). The file is named <time>-<name>-<content hash>.table.md, or .<figure kind>.svg (e.g. .bar.svg), under .oks/figures/.' },
           note: { type: 'string', description: 'Optional short note carried in the receipt — your own narration.' },
         },
@@ -2149,7 +2149,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'work_write',
-      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. Write a UTF-8 text file under ${WORK_DIR}/, creating or overwriting it — the same shape as the usual write tool (file_path / content), except that only ${WORK_DIR}/ is reachable. It is how a file gets somewhere a tool can name it: write "${WORK_DIR}/peek.jq" here and hand 'jq: {src: ".work/peek.jq"}'; write "${WORK_DIR}/article.xhtml" here and hand 'articleFile: ".work/article.xhtml"'. Edit it later without resending the whole thing. Parent directories are created. Keep data out of here: rows and tables belong in .oks/data/ via create_data or oks_jaq with save.`,
+      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. Write a UTF-8 text file under ${WORK_DIR}/, creating or overwriting it — the same shape as the usual write tool (file_path / content), except that only ${WORK_DIR}/ is reachable. It is how a file gets somewhere a tool can name it: write "${WORK_DIR}/peek.jq" here and hand 'jq: {src: ".work/peek.jq"}'; write "${WORK_DIR}/article.xhtml" here and hand 'articleFile: ".work/article.xhtml"'. Edit it later without resending the whole thing. Parent directories are created. Keep data out of here: rows and tables belong in .oks/data/ via create_data or oks_data with save.`,
       parameters: {
         type: 'object',
         properties: {
@@ -2263,7 +2263,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'va_ask',
-      description: 'Consult this session\'s vocabulary helper and get its answer back: send one paraphrase — a word, a phrase or a sentence, any language — and you receive the vocabulary\'s own equivalent or near expressions, one per line and verbatim. The helper holds the whole vocabulary in its system prompt, so the first call sets it up and takes longer; each later call is one question. Treat what it returns as leads: look the strings up with oks_search and read the declarations with oks_jaq using input="knowledge://".',
+      description: 'Consult this session\'s vocabulary helper and get its answer back: send one paraphrase — a word, a phrase or a sentence, any language — and you receive the vocabulary\'s own equivalent or near expressions, one per line and verbatim. The helper holds the whole vocabulary in its system prompt, so the first call sets it up and takes longer; each later call is one question. Treat what it returns as leads: look the strings up with oks_search and read the declarations with oks_data using input="knowledge://".',
       parameters: {
         type: 'object',
         properties: {

@@ -3,7 +3,7 @@
 // （{"domain":"...","model":"...wasm","dataFile":"...sqlite"}）。
 // 工作区是会话属性，所以一份插件能服务任意多工作区。
 //
-// 知识与材料统一由 oks_jaq 访问：input 指定资源，project 或 jq.src 指定加工；
+// 知识与材料统一由 oks_data 访问：input 指定资源，project 或 jq.src 指定加工；
 // save 物化结果并保留完整来源链。knowledge:// 是常驻知识图，文件默认数据视图、#meta 为描述和来源。
 // 查询经 oks_check_query_intent 校验后由 oks_exec_query_intent 只读执行；
 // create_data 与 create_current_ctx_data 创建给定材料和上下文材料。
@@ -40,12 +40,12 @@ export { renderMarkdown } from './chart/markdown.ts';
 // （`<domain>/discovery` 声明 revision、入口 roots、每类 key 的 key 模式，以及哪些 kind 进
 // 词汇表、每类词条的归属字段与必须非空的字段；沿 `info` 的引用图走完，再在本地派生）在内存里
 // 建好词汇表与反向引用索引，之后整个进程按模型内容的 sha256 复用。知识图保留完整节点，
-// 由 oks_jaq 按需读取；词汇表与引用索引用于检索。完整知识不进模型上下文。
+// 由 oks_data 按需读取；词汇表与引用索引用于检索。完整知识不进模型上下文。
 //
 // **查询与加工的结果都落在内部材料目录**：查询写 `<时间>-<名字>-<内容哈希>.qres.json`，
 // 加工写 `<时间>-<名字>-<内容哈希>.tr.json`，agent 自填的输入数据写 `.def.json`——
 // 数据只在这里，默认不进模型上下文，
-// 要看形状或取数由 oks_jaq 用表达式选，要留作下一步的输入就给它一个 save（物化成新的封装数据）。
+// 要看形状或取数由 oks_data 用表达式选，要留作下一步的输入就给它一个 save（物化成新的封装数据）。
 // 每份封装自带 `{ origin, data }`：origin 是产生它的操作及完整上游来源链（节点表）。除此之外没有计划文件、没有缓存产物；
 // 每次执行的 SQL、bindings、行数与耗时写进宿主日志（ctx.logger）。
 //
@@ -102,10 +102,10 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
   for (const definition of definitions) {
     // **回执的大小闸门在所有工具上**：交回给模型的那一份超过上限时，数据留在文件里，
     // 交出去的是与数据接口同形状的合法 JSON 错误——数据本身不设上限（每份材料有自己的上限），
-    // 把门的是"进模型上下文的这一份"。工具自己更精确的提示（如 oks_jaq）在它内部先生效。
+    // 把门的是"进模型上下文的这一份"。工具自己更精确的提示（如 oks_data）在它内部先生效。
     const render = definition.output.render.bind(definition.output);
     // 超限时交出去的那句话按工具来：知识节点与工作区产物是两种东西，把"怎么取小一点"指错路比不说更糟。
-    const oversizeHint = '回执太大。用 oks_jaq 的 project 选择字段或探测形状，或在 jq.src 程序中筛选、聚合；来源链用资源 #meta 视图读取。';
+    const oversizeHint = '回执太大。用 oks_data 的 project 选择字段或探测形状，或在 jq.src 程序中筛选、聚合；来源链用资源 #meta 视图读取。';
     const dispose = ctx.tools.register({
       ...definition,
       output: {

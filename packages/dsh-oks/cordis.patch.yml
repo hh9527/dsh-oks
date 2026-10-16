@@ -1,5 +1,5 @@
 # 将工作区声明的知识服务与数据文件接成原生工具。
-# oks_jaq 统一访问知识和数据，知识入口为：
+# oks_data 统一访问知识和数据，知识入口为：
 # {"input":"knowledge://","project":{"guide":"*"}}。
 # 查询通过 oks_check_query_intent 校验后，由 oks_exec_query_intent 只读执行。
 # 图表与报告分别通过 oks_render_figure、oks_render_report 生成。
