@@ -204,7 +204,6 @@ export function renderWorkEdit(_args: unknown, value: WorkWriteValue | null | un
 /** 加工读取回执。 */
 export interface TransformValue {
   ok?: boolean;
-  outputs: number;
   data: unknown;
 }
 

@@ -1830,7 +1830,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           // 要看得再读一次（`oks_jaq` 读 `.data`），于是"留下来"这件事不把数据带回上下文。
           return { asset: stored.asset, bytes: stored.bytes };
         }
-        return payloadGuard('oks_jaq', { ok: true as const, outputs: outcome.outputs, data },
+        return payloadGuard('oks_jaq', { ok: true as const, data },
           '用更精确的 project 或 jq 选择需要的字段和数据。');
       },
     },

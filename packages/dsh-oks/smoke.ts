@@ -453,7 +453,7 @@ console.log('=== project：JS 读取投影与形状探测 ===');
   };
   try {
     const discovered = await call('oks_jaq', { input: 'knowledge://', project: '$shape' });
-    ok('无 WTI 时可直接投影整个知识图', discovered.value.ok && discovered.value.outputs === 1
+    ok('无 WTI 时可直接投影整个知识图', discovered.value.ok
       && discovered.value.data.type === 'object' && discovered.value.data.size > 0);
     ok('知识摘要键名列表有界', discovered.value.data.keys.length <= 20);
     const projected = await call('oks_jaq', { input: 'knowledge://', project: { index: { key: '*', detail: '$shape' } } });
@@ -463,7 +463,7 @@ console.log('=== project：JS 读取投影与形状探测 ===');
     ok('整图超限报告实际字节数且无半份数据', whole.value.error?.code === 'payload_too_large'
       && whole.value.error.actualBytes > 256 * 1024 && whole.value.data === undefined);
     const tiny = await call('oks_jaq', { input: 'knowledge://', project: {} });
-    ok('空对象投影仍是一个输出值', tiny.value.outputs === 1 && JSON.stringify(tiny.value.data) === '{}');
+    ok('空对象投影仍是一个输出值', JSON.stringify(tiny.value.data) === '{}' && !('outputs' in tiny.value));
     for (const tool of ['oks_jaq']) {
       const args = { project: JSON.stringify({ datasets: '$shape', index: '$shape' }) };
       const quoted = await refusalOf(() => call(tool, args));
@@ -519,8 +519,8 @@ console.log('=== kq：知识发现、值流与独立求值 ===');
   const stream = await call('oks_jaq', { input: 'knowledge://', jq: { src: prog('range(3)') }});
   const array = await call('oks_jaq', { input: 'knowledge://', jq: { src: prog('[range(3)]') }});
   const empty = await call('oks_jaq', { input: 'knowledge://', jq: { src: prog('empty') }});
-  ok('kq 值流：多个输出、数组值与零输出', stream.value.outputs === 3 && array.value.outputs === 1
-    && empty.value.outputs === 0 && JSON.stringify(empty.value.data) === '[]');
+  ok('kq 值流：多个输出、数组值与零输出', JSON.stringify(stream.value.data) === '[0,1,2]' && JSON.stringify(array.value.data) === '[0,1,2]'
+    && JSON.stringify(empty.value.data) === '[]');
   await call('oks_jaq', { input: 'knowledge://', jq: { src: prog('.index = null') }});
   const unchanged = await call('oks_jaq', { input: 'knowledge://', jq: { src: prog('.index') }});
   ok('jq 更新不修改常驻知识', JSON.stringify(unchanged.value.data) === JSON.stringify(original));
@@ -1545,31 +1545,31 @@ console.log('=== oks_jaq（具名输入 + save 时自动来源链）===');
 
   // 具名输入：程序读到的是一个对象，键就是 inputs 里的名字
   const one = await call('oks_jaq', { input: { q: asset }, jq: { src: prog(`.q.rows[0].${column}`) }});
-  console.log(`  .q.rows[0].${column} → ${JSON.stringify(one.value.data)} · outputs=${one.value.outputs}`);
+  console.log(`  .q.rows[0].${column} → ${JSON.stringify(one.value.data)}`);
   ok('探索：恰好一个输出时 data 就是那个值',
-    one.value.outputs === 1 && !Array.isArray(one.value.data));
+    !('outputs' in one.value) && !Array.isArray(one.value.data));
   // 查询结果的 data 是 { rows, columns }：行在 .q.rows，列信息也在同一份数据里。
 
 
-  // 一个数组值 vs 多个输出：data 形状一样，靠 outputs 分开（这就是约定要消掉的那个歧义）
+  // 一个数组值与多个输出均返回数组。
   const arrayValue = await call('oks_jaq', { jq: { src: prog('[range(3)]') }});
   const stream = await call('oks_jaq', { jq: { src: prog('range(3)') }});
-  console.log(`  [range(3)] → outputs=${arrayValue.value.outputs} · range(3) → outputs=${stream.value.outputs}`);
-  ok('探索：一个数组值与多个输出靠 outputs 分开',
-    arrayValue.value.outputs === 1 && JSON.stringify(arrayValue.value.data) === '[0,1,2]'
-    && stream.value.outputs === 3 && JSON.stringify(stream.value.data) === '[0,1,2]');
+  console.log(`  [range(3)] → ${JSON.stringify(arrayValue.value.data)} · range(3) → ${JSON.stringify(stream.value.data)}`);
+  ok('探索：一个数组值与多个输出均返回数组',
+    JSON.stringify(arrayValue.value.data) === '[0,1,2]'
+    && JSON.stringify(stream.value.data) === '[0,1,2]');
 
-  // 零输出：data 是空数组，回执明说没有产出值
+  // 零输出：data 是空数组。
   const none = await call('oks_jaq', { input: { q: asset }, jq: { src: prog('empty') }});
-  console.log(`  empty → outputs=${none.value.outputs} · data=${JSON.stringify(none.value.data)}`);
-  ok('探索：零输出是 outputs=0 且 data 为空数组',
-    none.value.outputs === 0 && Array.isArray(none.value.data) && none.value.data.length === 0);
+  console.log(`  empty → data=${JSON.stringify(none.value.data)}`);
+  ok('探索：零输出时 data 为空数组',
+    Array.isArray(none.value.data) && none.value.data.length === 0);
 
   // 无输入的程序看到 {}：常量也这么算
   const constant = await call('oks_jaq', { jq: { src: prog('{threshold: 100, unit: "ms"}') }});
   console.log(`  无输入常量 → ${JSON.stringify(constant.value.data)}`);
   ok('探索：无输入的程序看到 {}（常量）',
-    constant.value.outputs === 1 && constant.value.data?.threshold === 100);
+    constant.value.data?.threshold === 100);
 
   // 代码区的三个工具：写、读、改都只在 .work/ 内（宿主那三个通用工具不在这个 profile 里，
   // 而它们的沙箱根是整个工作区——"只能 .work/" 这条约束只能由插件自己在执行层给出）。
@@ -1668,7 +1668,7 @@ console.log('=== oks_jaq（具名输入 + save 时自动来源链）===');
   const expectedKeys = [...new Set([column, numeric])];
   console.log(`  嵌套 → ${JSON.stringify(projected.value.data)}`);
   ok('探索：嵌套对象与投影都按 snip 的形状产出',
-    projected.value.outputs === 1 && projected.value.data?.n === rowTotal
+    projected.value.data?.n === rowTotal
     && expectedKeys.every((name) => keys.includes(name)) && keys.length === expectedKeys.length);
 
   // 明确回执：语法错误带求值器自己的话；读不到的输入报出是哪一个；越界引用被拒
@@ -4352,7 +4352,7 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
     jq: { src: prog('.r |= .structure | ' + '(.r | contains("一、级别与清除"))') },
   });
   ok('root 只取一段：来源链与章节骨架各自单独可读，回执写明每份输入用了哪个 root',
-    onlyOrigin.value.ok !== false && Object.keys(onlyOrigin.value).sort().join(',') === 'data,ok,outputs'
+    onlyOrigin.value.ok !== false && Object.keys(onlyOrigin.value).sort().join(',') === 'data,ok'
     && onlyOrigin.value.data?.nodes >= 2 && typeof onlyOrigin.value.data?.root === 'string'
     && onlyChapters.value.data === true);
   for (const input of [`${reportSrc}#unknown`, `${reportSrc}#meta#meta`, 'knowledge://#meta']) {
