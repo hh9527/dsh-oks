@@ -6,11 +6,12 @@
 //!   - 其余能力一律**不组装**——于是它们在语义上不存在，而不是"被拦住"。
 //!
 //! C ABI：`alloc` / `dealloc` / `run` / `load_document` / `run_document`。
-//! `run` 的返回缓冲：`[status u8][len u32 LE][payload]`，status 0 = 结果，1 = 错误。
+//! `run` 的返回缓冲：`[status u8][len u32 LE][payload]`，status 0 = 单值 JSON，1 = 错误文本，2 = 超限值的形状 JSON。
 
 mod diagnostic;
 mod format;
 mod maths;
+mod output;
 mod regexp;
 mod time;
 mod valx;
@@ -38,15 +39,14 @@ fn render(reports: Vec<FileReports<String>>) -> String {
 
 /// 跑一次：解析输入 → 组装 std → 装载（`include` / `import` 在这里被拒）→ 编译 → 求值。
 ///
-/// 返回值是**一份 JSON 数组**（值流），宿主解析一次就拿到值——引擎不吐"每行一个值"的文本让宿主
-/// 去切。`max_chars` 是字符上限（0 = 不限）：到点就停、把数组闭合，绝不留下半个 JSON 值；
-/// 第二个返回值表示截断。
-fn evaluate(program: &str, path: &str, input: &str, max_chars: usize) -> Result<(String, bool), String> {
+/// 程序必须恰好输出一个 JSON 值；返回完整 JSON 或超限值的形状摘要。
+/// `max_bytes` 为序列化字节预算（0 = 不限），第二个返回值标记超限。
+fn evaluate(program: &str, path: &str, input: &str, max_bytes: usize) -> Result<(String, bool), String> {
     let input = read::parse_single(input.as_bytes()).map_err(|e| format!("输入不是合法的 JSON：{e}"))?;
-    evaluate_value(program, path, input, max_chars)
+    evaluate_value(program, path, input, max_bytes)
 }
 
-fn evaluate_value(program: &str, path: &str, input: Val, max_chars: usize) -> Result<(String, bool), String> {
+fn evaluate_value(program: &str, path: &str, input: Val, max_bytes: usize) -> Result<(String, bool), String> {
     let defs = jaq_core::defs()
         .chain(jaq_std::defs())
         .chain(jaq_json::defs());
@@ -81,24 +81,14 @@ fn evaluate_value(program: &str, path: &str, input: Val, max_chars: usize) -> Re
         .compile(modules)
         .map_err(|errs| render(compile_errors(errs)))?;
     let ctx = Ctx::<jaq_core::data::JustLut<Val>>::new(&filter.lut, Vars::new([]));
-    let mut out = String::from("[");
-    let mut truncated = false;
-    for value in filter.id.run((ctx, input)) {
-        let value = jaq_core::unwrap_valr(value).map_err(diagnostic::runtime_error)?;
-        let text = value.to_string();
-        let separator = usize::from(out.len() > 1);
-        // 放不下就停在这里（`+1` 是闭合的 `]`），已经收下的值一个都不丢。
-        if max_chars > 0 && out.len() + separator + text.len() + 1 > max_chars {
-            truncated = true;
-            break;
-        }
-        if separator == 1 {
-            out.push(',');
-        }
-        out.push_str(&text);
+    let mut values = filter.id.run((ctx, input));
+    let first = values.next().ok_or("jq 程序必须恰好输出一个值：当前无输出；空结果请输出 [] 或 null。")?;
+    let value = jaq_core::unwrap_valr(first).map_err(diagnostic::runtime_error)?;
+    if let Some(second) = values.next() {
+        jaq_core::unwrap_valr(second).map_err(diagnostic::runtime_error)?;
+        return Err("jq 程序必须恰好输出一个值：当前有多个输出；收集结果请使用 [表达式]。".into());
     }
-    out.push(']');
-    Ok((out, truncated))
+    Ok(output::encode(&value, max_bytes))
 }
 
 fn boxed(bytes: Vec<u8>) -> *mut u8 {
@@ -122,8 +112,8 @@ pub extern "C" fn dealloc(ptr: *mut u8, len: usize) {
 /// `run(程序, 程序名, 输入, 上限) -> [status][len][payload]`。
 ///
 /// `程序名`只用于报错排版（`.work/kpi.jq` → 报错里就写这个名字）；空串按 `<inline>` 处理。
-/// `上限`是输出字符上限（0 = 不限）。
-/// 状态：`0` = 结果、`1` = 错误、`2` = 到上限被截断。前两种之外，`payload` 都是一份 JSON 数组。
+/// `上限`是输出 UTF-8 字节预算（0 = 不限）。
+/// 状态：`0` = 单值 JSON、`1` = 错误文本、`2` = 超限值的形状 JSON。
 #[no_mangle]
 pub extern "C" fn run(
     program_ptr: *const u8,
@@ -132,7 +122,7 @@ pub extern "C" fn run(
     path_len: usize,
     input_ptr: *const u8,
     input_len: usize,
-    max_chars: usize,
+    max_bytes: usize,
 ) -> *mut u8 {
     let program = unsafe { core::slice::from_raw_parts(program_ptr, program_len) };
     let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len) };
@@ -141,7 +131,7 @@ pub extern "C" fn run(
         &String::from_utf8_lossy(program),
         &String::from_utf8_lossy(path),
         &String::from_utf8_lossy(input),
-        max_chars,
+        max_bytes,
     ) {
         Ok((text, false)) => (0u8, text),
         Ok((text, true)) => (2u8, text),
@@ -159,7 +149,7 @@ fn reply(status: u8, payload: String) -> *mut u8 {
     boxed(out)
 }
 
-/// 解析并常驻一份 JSON，成功时返回值流 `[handle]`，文档与实例同生命周期。
+/// 解析并常驻一份 JSON，成功时返回 JSON 数字 `handle`，文档与实例同生命周期。
 #[no_mangle]
 pub extern "C" fn load_document(ptr: *const u8, len: usize) -> *mut u8 {
     let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
@@ -170,13 +160,13 @@ pub extern "C" fn load_document(ptr: *const u8, len: usize) -> *mut u8 {
                 docs.push(value);
                 docs.len()
             });
-            reply(0, format!("[{handle}]"))
+            reply(0, handle.to_string())
         }
         Err(error) => reply(1, format!("输入不是合法的 JSON：{error}")),
     }
 }
 
-/// 在已解析文档上求值；程序与返回缓冲遵循 `run` 的约定。
+/// 在已解析文档上求值；非空 name 将文档包装为该键下的值，返回缓冲遵循 `run`。
 #[no_mangle]
 pub extern "C" fn run_document(
     handle: usize,
@@ -184,11 +174,19 @@ pub extern "C" fn run_document(
     program_len: usize,
     path_ptr: *const u8,
     path_len: usize,
-    max_chars: usize,
+    name_ptr: *const u8,
+    name_len: usize,
+    max_bytes: usize,
 ) -> *mut u8 {
     let value = DOCUMENTS.with(|docs| docs.borrow().get(handle.wrapping_sub(1)).cloned());
     let Some(input) = value else {
         return reply(1, format!("知识文档 handle 无效：{handle}"));
+    };
+    let name = unsafe { core::slice::from_raw_parts(name_ptr, name_len) };
+    let input = if name.is_empty() {
+        input
+    } else {
+        Val::obj([(Val::utf8_str(name.to_vec()), input)].into_iter().collect())
     };
     let program = unsafe { core::slice::from_raw_parts(program_ptr, program_len) };
     let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len) };
@@ -196,7 +194,7 @@ pub extern "C" fn run_document(
         &String::from_utf8_lossy(program),
         &String::from_utf8_lossy(path),
         input,
-        max_chars,
+        max_bytes,
     ) {
         Ok((text, false)) => reply(0, text),
         Ok((text, true)) => reply(2, text),

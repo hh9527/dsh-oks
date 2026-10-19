@@ -1,4 +1,4 @@
-// 加工求值层：把一份 JSON 输入交给求值器，取回它输出的值流。
+// 加工求值层：把一份 JSON 输入交给求值器，取回它输出的单个值。
 //
 // **求值器从哪来**是实现细节，不泄进工具契约：这一版是我们自己编的 wasm 引擎
 // （`crates/oks-wti`：jaq 的库 + 白名单 builtin），就是与 `index.mjs` **同目录**的
@@ -10,34 +10,35 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
+import type { JsonValue } from './project.ts';
 import { JAQ_WORKER_SOURCE } from './jaq-worker.ts';
 
-export interface JaqOutcome {
-  /** 程序产出的值流（引擎回的是一份 JSON 数组，宿主只解析一次）。 */
-  values: unknown[];
-  /** 输出是否到达上限而被截断。 */
-  truncated: boolean;
-}
+export type JaqOutcome =
+  | { ok: true; data: unknown }
+  | { ok: false; shape: JsonValue };
 
 export interface JaqOptions {
-  /** 表达式作用的输入值（工具那一层把具名输入绑成一个对象）。 */
+  /** 表达式作用的输入值（按资源名组装成对象）。 */
   input: unknown;
   /** 墙钟上限，到点终止这一代 worker。 */
   timeoutMs: number;
-  /** 输出字符上限：**引擎自己**到点就停并标记截断（不会先造出一个巨大的串再截）。 */
-  maxChars: number;
+  /** 输出 UTF-8 字节预算：引擎有界序列化，超限时返回该值的形状。 */
+  maxBytes: number;
   signal?: AbortSignal;
-  /** 程序来自哪个文件（`byFile` 给出的那一份）：用于报错定位，正文由调用方通过 query 提供。 */
+  /** 程序来自哪个文件（`jq.src` 指向的那一份）：用于报错定位，正文由调用方通过 query 提供。 */
   programFile?: string;
+  /** 常驻文档在程序输入对象中的键名；省略时直接在文档上求值。 */
+  inputName?: string;
 }
 
 /** 引擎的位置：与 `index.mjs` 同目录（profile 里是 `link:` 装的，运行时就是这个 `lib/`）。 */
 const enginePath = (): string => join(dirname(fileURLToPath(import.meta.url)), 'oks-wti.wasm');
 
-/** 引擎回的两种东西：报错文本，或者值流（`2` = 到上限被截断）。 */
+/** 引擎回的两种东西：报错文本、完整单值，或超限值的形状。 */
 type EngineReply =
   | { status: 1; message: string }
-  | { status: 0 | 2; values: unknown[] };
+  | { status: 0; data: unknown }
+  | { status: 2; data: JsonValue };
 
 interface Pending {
   resolve: (value: EngineReply) => void;
@@ -116,10 +117,10 @@ export function createJaqEngine(wasmPath = enginePath()) {
     });
   const outcome = (reply: EngineReply): JaqOutcome => {
     if (reply.status === 1) throw new Error(`jaq 表达式执行失败：\n${reply.message}`);
-    return { values: reply.values, truncated: reply.status === 2 };
+    return reply.status === 2 ? { ok: false, shape: reply.data } : { ok: true, data: reply.data };
   };
   const program = (query: string, options: JaqOptions) => ({
-    program: query, path: options.programFile ?? '', maxChars: options.maxChars,
+    program: query, path: options.programFile ?? '', maxBytes: options.maxBytes,
   });
   const run = async (query: string, options: JaqOptions): Promise<JaqOutcome> => {
     if (options.signal?.aborted === true) throw new Error('aborted');
@@ -135,7 +136,9 @@ export function createJaqEngine(wasmPath = enginePath()) {
     if (loaded?.worker !== target) {
       const promise = send(target, { kind: 'load', input: JSON.stringify(document) }, options)
         .then((reply) => {
-          const handle = outcome(reply).values[0];
+          const result = outcome(reply);
+          if (!result.ok) throw new Error('jaq 文档装载返回了超限状态');
+          const handle = result.data;
           if (typeof handle !== 'number' || !Number.isInteger(handle) || handle < 1) {
             throw new Error('jaq 文档装载没有返回有效 handle');
           }
@@ -146,7 +149,7 @@ export function createJaqEngine(wasmPath = enginePath()) {
       void promise.catch(() => { if (loaded === record) loaded = undefined; });
     }
     const handle = await loaded.promise;
-    return outcome(await send(target, { ...program(query, options), handle }, options));
+    return outcome(await send(target, { ...program(query, options), handle, inputName: options.inputName }, options));
   };
   const dispose = (): void => {
     if (worker !== null) discard(worker, new Error('jaq 引擎已释放'));

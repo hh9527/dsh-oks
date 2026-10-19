@@ -24,7 +24,7 @@
     "typecheck": "tsc --noEmit",
     "prepare": "pnpm run build",
     "pretest": "pnpm run build",
-    "test": "node project-test.ts && node jaq-test.ts lib/oks-wti.wasm && node smoke.ts",
+    "test": "node project-test.ts && node feedback-test.ts && node jaq-test.ts lib/oks-wti.wasm && node smoke.ts",
     "check": "pnpm run typecheck && pnpm run test"
   },
   "dsh": {

@@ -407,7 +407,9 @@ export function checkAuthorXhtml(xhtml: string): {
         } else if (value !== '.') {
           for (const segment of value.slice(1).split('.')) {
             if (!PICK_SEGMENT.test(segment)) {
-              fail('author-pick', `data-oks-pick 的路径段 "${segment}" 不合法：只支持对象字段名与数组下标。`, name);
+              const suggestion = value.replace(/\[(\d+)\]/g, '.$1');
+              fail('author-pick', `data-oks-pick 的路径段 "${segment}" 不合法：对象字段与数组下标均用点分段，例如 .rows.0.label。${suggestion !== value ? `建议路径：${suggestion}。` : ''}`, name);
+              break;
             }
           }
         }

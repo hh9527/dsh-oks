@@ -1,3 +1,4 @@
+import { limitProblem } from './intent-limit.ts';
 import { encode, resolveZone } from './time.ts';
 import type { ContextTimeZone } from './time.ts';
 import { statSync, unlinkSync } from 'node:fs';
@@ -6,7 +7,6 @@ import { capLine } from './text.ts';
 import { runJaq } from './jaq.ts';
 import { createProjector } from './project.ts';
 import type { JsonValue, ProjectRule } from './project.ts';
-import type { JaqOutcome } from './jaq.ts';
 import { buildOption, CHART_WIDTH } from './chart/option.ts';
 import { renderEchartsSvg } from './chart/echarts.ts';
 import { tableMarkdown } from './view/table.ts';
@@ -19,8 +19,8 @@ import { checkAuthorXhtml } from './report/xhtml.ts';
 import type { DisplaySource } from './chart/report.ts';
 import { CHART_KINDS, expressionMatrix, inferXType, supportedKinds, supports, toNumber } from './chart/shared.ts';
 import type { ChartKind, ExpressionSwitch, LayoutOverrides, MarkLine, SecondMetric, StyleOverrides } from './chart/shared.ts';
-import { OBJECT_OUTPUT, renderArtifacts, renderCheck, renderCreateData, renderCurrentCtx, renderFigure, renderJqResult, renderJqTransform,
-  renderJson, renderQuery, renderValue, renderWorkDelete, renderWorkEdit,
+import { OBJECT_OUTPUT, renderArtifacts, renderCheck, renderCreateData, renderCurrentCtx, renderFigure, renderJqResult,
+  renderJson, renderQuery, renderReportCheck, renderValue, renderWorkDelete, renderWorkEdit,
   renderWorkRead, renderWorkWrite,
   shapeOf, withoutQueries } from './response.ts';
 import { adoptArtifacts, collectMaterials, collectWork, listArtifacts, markCleanup, materialCount,
@@ -41,17 +41,17 @@ import { intentKey } from './key.ts';
 import { appendNode, ARTIFACT_DIR, chainLines, DEFAULT_ROOT, embedChartInput, FIGURE_DIR, nameProblem,
   deleteWorkFile, editWorkFile, listWorkFiles, readArtifact, readCodeFile, readWorkFile, WORK_DIR, writeWorkFile,
   readChartInput, readTableView, resultStamp, rowsOf, saveArtifact, saveInputData,
-  saveResult, saveTableView, saveTransform } from './results.ts';
+  originOf, saveResult, saveTableView, saveTransform } from './results.ts';
 import type { ColumnInfo, DataOrigin, Envelope, OriginNode, SaveArtifactOptions } from './results.ts';
 
 
 /** 递归规则由公共投影函数完整校验；参数 schema 描述四种合法外形。 */
 const PROJECT_PARAMETER = {
-  description: 'Pure JSON projection rule: "*" keeps a value, "$shape" returns its type and size (objects also list up to 20 sorted keys), an object selects literal own keys and recursively projects their values, and [rule] applies one rule to every array element or object value. Missing keys stay absent; object rules pass non-objects through and [rule] passes scalars/null through. Pass object and array rules as nested JSON values. Full call example: kq({"project":{"guide":"*","index":"$shape"}}). String rules are exactly "*" or "$shape". String size counts Unicode code points. Projection preserves the input and creates no files.',
+  description: 'Use project to inspect types/keys/sizes and select fields. Use jq for filtering, sorting, computation, aggregation or joins. Build the rule from the loaded input root: load names are the first rule keys. For load {"fact":"<asset path>"}, start with project {"fact":"Shape"}; after discovering rows, use {"fact":{"rows":"Shape"}}; to select fields in each row, use {"fact":{"rows":["Map",{"name":"Value","detail":{"label":"Value"}}]}}. Read this as fact -> rows -> each member -> name and detail.label. Output retains these object layers. Rule = "Value" | "Shape" | {field: Rule, ...} | ["Map", Rule] | ["Map1", Rule]. "Value" keeps the current value. "Shape" returns its type/size summary (objects include up to 20 sorted keys; string size counts Unicode code points). Object rules select literal keys and apply child rules. ["Map", Rule] applies the child rule to every array or dictionary member, preserving array length or dictionary keys. ["Map1", Rule] selects only the first member in JS own enumerable key order, preserving its array/object container and original object key; empty containers stay empty. Use {"fact":{"rows":["Map1","Value"]}} to preview one row. "Shape" describes the container; ["Map","Shape"] describes its members. A key containing dots or slashes is one literal key; nested fields use nested objects. Missing fields stay absent. Object rules require objects; Map and Map1 require arrays or objects. Type mismatches report the rule location and actual type. Pass the rule as a JSON value. Projection preserves the input.',
   oneOf: [
-    { type: 'string', enum: ['*', '$shape'] },
-    { type: 'object', additionalProperties: true },
-    { type: 'array', items: {} },
+    { type: 'string', enum: ['Value', 'Shape'], description: 'Operation on the current value: "Value" keeps it; "Shape" summarizes it.' },
+    { type: 'object', additionalProperties: true, description: 'Select fields at the current object level; each field value is another Rule. {"detail":{"label":"Value"}} keeps detail.label within the detail object. {"rows":["Map",{"name":"Value"}]} keeps name in each row.' },
+    { type: 'array', items: {}, description: 'A two-element ["Map", Rule] or ["Map1", Rule] tuple. Map applies its child Rule to every member; Map1 applies it only to the first member. Both preserve the array/object container, and object keys are preserved. ["Map", {"detail":{"label":"Value"}}] selects detail.label in each member. ["Map", "Shape"] summarizes each member; "Shape" summarizes the container itself.' },
   ],
 };
 
@@ -72,25 +72,6 @@ interface NamedIntent {
 
 /** 命名批次的解析结果：要么拿到有序的项，要么拿到一句可读的原因。 */
 type ParsedIntents = { items: NamedIntent[] } | { error: string };
-
-/** Intent 顶层 limit 的产品范围：必填，1..100。上限由插件来管，服务只负责执行。 */
-const INTENT_LIMIT_MIN = 1;
-const INTENT_LIMIT_MAX = 100;
-
-/** 校验一个 Intent 的顶层 limit；返回 null 表示合格。 */
-const limitProblem = (intent: unknown): string | null => {
-  if (intent === null || typeof intent !== 'object' || Array.isArray(intent)) {
-    return 'Intent 必须是一个对象，并在顶层声明 limit';
-  }
-  const limit = (intent as Record<string, unknown>).limit;
-  if (limit === undefined || limit === null) {
-    return `Intent 必须在顶层显式声明 limit（${INTENT_LIMIT_MIN} 到 ${INTENT_LIMIT_MAX} 的整数），它决定这次查询取多少行`;
-  }
-  if (typeof limit !== 'number' || !Number.isInteger(limit) || limit < INTENT_LIMIT_MIN || limit > INTENT_LIMIT_MAX) {
-    return `limit 必须是 ${INTENT_LIMIT_MIN} 到 ${INTENT_LIMIT_MAX} 的整数，收到 ${JSON.stringify(limit)}`;
-  }
-  return null;
-};
 
 /** 取一个已通过校验的 Intent 的 limit。 */
 const limitOf = (intent: unknown): number | null => {
@@ -147,7 +128,7 @@ const parseReportSpec = (raw: unknown): { spec: ReportSpec } | { error: string }
   if (typeof articleFile !== 'string' || articleFile.trim() === '') {
     return {
       error: 'spec.articleFile 必填：先用 work_write 把 <article> … </article> 写成 .work/ 下的文件，'
-        + '再把它的名字给过来（习惯用 "article.xhtml"）。',
+        + '再把完整路径给过来（例如 ".work/article.xhtml"）。',
     };
   }
   const rawInputs = record.inputs === undefined || record.inputs === null ? {} : record.inputs;
@@ -205,15 +186,14 @@ const resolveReportDisplay = (root: string, href: string): { source: DisplaySour
   const directory = FIGURE_DIR;
   const extension = isTable ? '.md' : '.svg';
   const label = isTable ? '表' : '图';
-  // 两种写法都认：带材料目录前缀，或只给文件名（材料就在那个目录里）。
-  const asset = href.startsWith(`${directory}/`) ? href : `${directory}/${href}`;
+  const asset = href;
   let content: string;
   try {
     content = readArtifact(root, asset, extension);
   } catch (cause) {
     return {
       error: `报告里引用的${label}取不到：${href}（${errorText(cause)}）。`
-        + `写法可以是 ${directory}/<文件>${extension} 或 <文件>${extension}，文件要在工作区 ${directory}/ 里`,
+        + `请原样使用工具回执中的完整相对路径，文件要在工作区 ${directory}/ 里`,
     };
   }
   if (isTable) {
@@ -363,24 +343,33 @@ export interface PayloadError {
     tool: string;
     limitBytes: number;
     actualBytes: number | null;
-    hint: string;
   };
+  shape?: JsonValue;
 }
+
+const payloadShape = createProjector("Shape");
 
 /** 数据接口返回前的守门：完整就放行，超限就把数据换成错误（不返回半份数据）。 */
-function payloadGuard<T extends { ok: true }>(tool: string, value: T, hint: string): T | PayloadError {
+function payloadGuard<T extends { ok: true; data: JsonValue }>(tool: string, value: T): T | PayloadError {
   const actualBytes = Buffer.byteLength(JSON.stringify(value) ?? '');
   if (actualBytes <= PAYLOAD_MAX_BYTES) return value;
+  return payloadTooLarge(tool, value.data, actualBytes);
+}
+
+/** 返回容量错误及被拦截值的形状；actualBytes 由对应的数据或渲染层测量。 */
+export function payloadTooLarge(tool: string, value: JsonValue, actualBytes: number): PayloadError {
   return {
     ok: false,
-    error: { code: 'payload_too_large', tool, limitBytes: PAYLOAD_MAX_BYTES, actualBytes, hint },
+    error: { code: 'payload_too_large', tool, limitBytes: PAYLOAD_MAX_BYTES, actualBytes },
+    shape: payloadShape(value),
   };
 }
 
-/** 求值本身被截断（求值器到上限）时同样不返回半份数据，而是报错——调用方收窄程序。 */
-const truncatedError = (tool: string, hint: string): PayloadError => ({
+/** 引擎输出超限时只返回完整值的形状，省略数据并拒绝物化。 */
+const truncatedError = (tool: string, shape: JsonValue): PayloadError => ({
   ok: false,
-  error: { code: 'evaluation_truncated', tool, limitBytes: PAYLOAD_MAX_BYTES, actualBytes: null, hint },
+  error: { code: 'evaluation_truncated', tool, limitBytes: JAQ_MAX_BYTES, actualBytes: null },
+  shape,
 });
 
 /** 一份图的实际图元（column / pie / heatmap…）：从绘图规格里取；取不到就给 `?`。 */
@@ -396,6 +385,9 @@ function readProduct(root: string, asset: string): Envelope {
       : asset.endsWith('.table.md') ? '.md' : '.json';
   let content: string;
   try {
+    if (extension === '.json' && !/\.(qres|tr|def|ctx)\.json$/.test(asset)) {
+      throw new Error(`资源不是已声明的数据资产类型：${asset}`);
+    }
     content = readArtifact(root, asset, extension);
   } catch (cause) {
     throw new Error(`读不到这份产物：${asset}（${errorText(cause)}）`);
@@ -856,15 +848,11 @@ const parseNamedIntents = (raw: unknown, withKey: boolean, toolName: string): Pa
 
 /** 两个时间工具的入参。 */
 
-/** 两个 jq 工具的入参：具名输入 + 两种取法（`pick` 取路径 / `byFile` 跑程序）；物化那一个另有落点与动机。 */
+/** 资源输入、纯 JSON 投影或文件程序，以及可选物化。 */
 interface TransformArgs {
-  /** 名字 → 数据来源：`"<asset>"` 或 `{"src": "<asset>", "root": "<点路径>"}`（默认 `.data`）。 */
-  inputs?: unknown;
-  /** 从结果里取一段：jq 点路径，与 `byFile` 二选一。 */
-  pick?: unknown;
-  /** 程序写在 `.work/` 下的哪份文件里。 */
-  byFile?: unknown;
-  /** 物化（不给就只看结果）：落点名 + 为什么做。 */
+  load?: unknown;
+  project?: unknown;
+  jq?: { src?: unknown };
   save?: { name?: unknown; motivation?: unknown };
 }
 
@@ -900,9 +888,9 @@ interface CreateDataArgs {
 }
 
 /** jq 输出的字符上限：到点终止求值并标记截断（模型可见文本另有预算）。 */
-const JAQ_MAX_CHARS = 256 * 1024;
+const JAQ_MAX_BYTES = 256 * 1024;
 
-/** 一份具名输入：名字是程序里引用它的变量名，`value` 是交给程序的那一段，`root` 是取那一段的点路径，
+/** 一份解析后的资源：`name` 是来源绑定键（单输入使用内部键 `$`），`value` 是可见值，`root` 是数据或元数据视图，
  *  `origin` 是这份产物的来源链。 */
 interface NamedInput {
   name: string;
@@ -915,8 +903,7 @@ interface NamedInput {
 /** 点路径的两种写法共用一句提示：它是选择器、不是程序。 */
 const PATH_HINT = '（"." 整份 / ".data" 那份数据本身 / ".origin" 来源链 / ".data.items" 更深的键）';
 
-/** 解析一段**点路径**：jq 的选择器语法。它出现在两处——每个输入条目自带的 `root`（把这份文件的
- *  哪一段交给程序）与 `pick`（从结果里取回哪一段）——两处都只认点路径，别的一律报错并给出正确写法。 */
+/** 解析报告的点路径：spec.inputs.root 选择材料内容，data-oks-pick 摘取正文引用值。 */
 function parsePath(raw: unknown, where: string): { path: string[]; text: string } | { error: string } {
   if (typeof raw !== 'string') {
     return { error: `${where} 要写成点路径${PATH_HINT}` };
@@ -989,162 +976,76 @@ function columnsOf(data: unknown, rows: readonly Record<string, unknown>[]): str
   return Object.keys(rows[0] ?? {});
 }
 
-/** 解析具名输入：`{ 名字: 来源 }`，来源是 `"<asset>"` 或 `{"src": "<asset>", "root": "<点路径>"}`。
- *  每个输入都要真读到——读不到就报出是哪一个，而不是让程序去面对一个缺失的键
- *  （那会变成一句看不懂的求值错误）。 */
-function readInputs(root: string, inputs: unknown, tool: string): NamedInput[] {
-  if (inputs === undefined || inputs === null) return [];
-  if (!isRecord(inputs)) {
-    throw new Error(`${tool} 的 inputs 要写成"名字 → 数据来源"的对象，例如 {"events": ".oks/data/xxx.qres.json"}；`
-      + '每个条目可以是 asset 字符串，也可以是 {"src": "<asset>", "root": ".data.rows"}；没有输入就省略这一项。');
+/** 输入形状与加工方式在资源读取前完成校验。返回可复用的 JS 投影器。 */
+function validateTransform(args: TransformArgs): ReturnType<typeof createProjector> | undefined {
+  if (!isRecord(args) || Object.keys(args).some((key) => !['load', 'project', 'jq', 'save'].includes(key))) {
+    throw new Error('oks_data 接受 load、project、jq、save。');
   }
-  const entries: NamedInput[] = [];
-  for (const [name, entry] of Object.entries(inputs)) {
-    if (name.trim() === '') throw new Error('inputs 里的名字不能是空串：它同时是程序里引用这份数据的变量名。');
-    let src: string;
-    let path: string[] = DEFAULT_ROOT.slice(1).split('.');
-    let rootText = DEFAULT_ROOT;
-    if (typeof entry === 'string') {
-      src = entry;
-    } else if (isRecord(entry)) {
-      if (entry.src === undefined) throw new Error(`输入 ${name} 少了 src：它要写成 {"src": "<asset>", "root": ".data.rows"}。`);
-      if (typeof entry.src !== 'string' || entry.src === '') {
-        throw new Error(`输入 ${name} 的 src 必须是字符串（前面回执里给的那个相对路径）。`);
-      }
-      src = entry.src;
-      const extra = Object.keys(entry).filter((key) => key !== 'src' && key !== 'root');
-      if (extra.length > 0) {
-        throw new Error(`输入 ${name} 只认 src 与 root，多了 ${extra.map((key) => JSON.stringify(key)).join(' / ')}。`);
-      }
-      if (entry.root !== undefined && entry.root !== null) {
-        const parsed = parsePath(entry.root, `输入 ${name} 的 root`);
-        if ('error' in parsed) throw new Error(parsed.error);
-        path = parsed.path;
-        rootText = parsed.text;
-      }
-    } else {
-      throw new Error(`输入 ${name} 要写成 asset 字符串，或 {"src": "<asset>", "root": ".data.rows"}。`);
-    }
-    if (src === '') throw new Error(`输入 ${name} 的 src 不能是空串。`);
-    let read: { document: Record<string, unknown>; origin: DataOrigin };
-    try {
-      read = readDocument(root, src);
-    } catch (cause) {
-      throw new Error(`读不到输入 ${name}（${src}）：${errorText(cause)}`);
-    }
-    // 取那一段失败与"读不到这份文件"是两回事：这里报的是这份文件里没有那个键。
-    const picked = selectPath(read.document, path, `输入 ${name}（${src}）里`);
-    if ('error' in picked) throw new Error(picked.error);
-    entries.push({ name, src, root: rootText, value: picked.value, origin: read.origin });
+  if (Object.hasOwn(args, 'project') && Object.hasOwn(args, 'jq')) {
+    throw new Error('project 与 jq 二选一。');
   }
-  return entries;
+  if (Object.hasOwn(args, 'jq') && (!isRecord(args.jq)
+    || Object.keys(args.jq).some((key) => key !== 'src') || typeof args.jq.src !== 'string')) {
+    throw new Error('jq 要写成 {src: ".work/analysis.jq"}。');
+  }
+  if (Object.hasOwn(args, 'load') && !isRecord(args.load)) {
+    throw new Error('load 是名字到资源地址的对象，例如 {fact: ".oks/data/example.tr.json"}。');
+  }
+  if (isRecord(args.load) && Object.entries(args.load).some(([key, value]) => key === '' || typeof value !== 'string')) {
+    throw new Error('load 名字不能为空，值必须是资源字符串。');
+  }
+  if (Object.hasOwn(args, 'save') && (!isRecord(args.save)
+    || Object.keys(args.save).some((key) => !['name', 'motivation'].includes(key)))) {
+    throw new Error('save 要写成 {name, motivation}。');
+  }
+  return Object.hasOwn(args, 'project') ? createProjector(args.project as ProjectRule) : undefined;
 }
 
-/** `byFile`：程序写在 `.work/` 下的哪份文件里（见 `readCodeFile`）。省略（或 null）时程序是恒等投影 `.`——
- *  于是结果就是「名字 → 各输入那一段」这个对象本身，`pick` 再从它里面取回一段。两条路都不把代码写进参数，
- *  于是 jq 的语法永远不会和外层 JSON 相邻。 */
-function programFor(raw: unknown, root: string): { snip: string; generated?: boolean; file?: string } {
-  if (raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '')) {
-    return { snip: '.', generated: true };
-  }
-  const code = readCodeFile(root, raw);
-  return { snip: code.text.trim(), file: code.file };
-}
-
-/** 一次读的参数都解析好之后的样子：具名输入、要跑的程序、以及从结果里取哪一段。 */
-interface TransformPlan {
+/** 可见值和来源链分开解析：程序只读声明的视图，上游来源始终完整继承。 */
+async function resolveTransformInputs(knowledge: Knowledge, entry: WorkspaceEntry, input: unknown): Promise<{
   inputs: NamedInput[];
-  /** 实际交给求值器的程序：给了 byFile 是那份文件里的程序，否则是恒等投影 `.`。 */
-  snip: string;
-  /** 程序来自 `.work/` 下的哪份文件。 */
-  file?: string;
-  /** 程序是省略 byFile 时的恒等投影。 */
-  generated?: boolean;
-  /** `pick` 的点路径（原样写进回执的那一份）与它拆出来的键。 */
-  pick?: string;
-  pickPath?: readonly string[];
-}
-
-/** 两个 jq 工具共用的入参解析：具名输入（各带 `root`）+ 两种取法（`pick` 取路径 / `byFile` 跑程序）。
- *  取法二选一——要在程序的结果上再取一段，就把那一步写进程序。 */
-function planTransform(args: TransformArgs | undefined, tool: string, root: string): TransformPlan {
-  const stray = args as Record<string, unknown> | undefined;
-  if (stray?.by !== undefined) {
-    throw new Error(`${tool} 的程序文件名给 byFile，例如 "byFile": "analysis.jq"。`);
-  }
-  if (stray?.root !== undefined) {
-    throw new Error(`${tool} 的每一份输入各带自己的 root：写进条目里`
-      + '（{"inputs": {"d": {"src": "…", "root": ".data.rows"}}}）；要从结果里取一段用 pick（"pick": ".d"）。');
-  }
-  const inputs = readInputs(root, args?.inputs, tool);
-  const code = programFor(args?.byFile, root);
-  let pick: { path: string[]; text: string } | undefined;
-  if (args?.pick !== undefined && args?.pick !== null) {
-    if (code.file !== undefined) {
-      throw new Error(`${tool} 的 pick 与 byFile 二选一：pick 从结果里取一段（不跑程序），byFile 跑程序文件；`
-        + '要在程序的结果上再取一段，就把那一步写进程序（"| .key"）。');
+  document: unknown;
+  shape: 'named' | 'empty';
+}> {
+  const bindings = Object.entries(input ?? {}) as [string, string][];
+  const inputs: NamedInput[] = [];
+  for (const [name, src] of bindings) {
+    try {
+      if (src === 'knowledge://') {
+        const index = await knowledge.ensureIndex(entry);
+        const source = {
+          resource: src, modelHash: entry.modelHash, domain: entry.settings.domain, revision: index.revision,
+        };
+        inputs.push({ name, src, root: '.', value: index.knowledge, origin: originOf({ kind: 'knowledge', source }, null) });
+      } else {
+        const parts = src.split('#');
+        if (parts.length > 2 || (parts.length === 2 && parts[1] !== 'meta')) {
+          throw new Error(`资源选择符错误：${src}`);
+        }
+        const read = readDocument(entry.settings.workspaceRoot, parts[0]);
+        const meta = parts.length === 2;
+        inputs.push({
+          name, src, root: meta ? '#meta' : '.data', origin: read.origin,
+          value: meta ? { meta: read.document.meta, origin: read.document.origin } : read.document.data,
+        });
+      }
+    } catch (cause) {
+      throw new Error(`输入 ${JSON.stringify(name)} ← ${src}：${errorText(cause)}`);
     }
-    const parsed = parsePath(args.pick, `${tool} 的 pick`);
-    if ('error' in parsed) throw new Error(parsed.error);
-    pick = parsed;
   }
   return {
     inputs,
-    snip: code.snip,
-    ...(code.file === undefined ? {} : { file: code.file }),
-    ...(code.generated === true ? { generated: true } : {}),
-    ...(pick === undefined ? {} : { pick: pick.text, pickPath: pick.path }),
+    document: Object.fromEntries(inputs.map((item) => [item.name, item.value])),
+    shape: inputs.length > 0 ? 'named' : 'empty',
   };
-}
-
-/** 按 `pick` 从求值结果里取一段；没给 pick 就是整个结果。取不到键时报出这一层有的键。 */
-function applyPick(plan: TransformPlan, data: unknown): unknown {
-  if (plan.pickPath === undefined) return data;
-  const picked = selectPath(data, plan.pickPath, '这次求值的结果里');
-  if ('error' in picked) throw new Error(picked.error);
-  return picked.value;
 }
 
 /** 失败回执里那几行输入形状：名字、来源、取的那一段、形状。 */
 function inputLines(inputs: readonly NamedInput[]): string {
   if (inputs.length === 0) return '  （没有输入：程序看到的是 {}）';
   return inputs
-    .map((input) => `  输入 ${input.name} ← ${input.src}（${input.root} · ${shapeOf(input.value)}）`)
+    .map((input) => `  输入 ${input.name} ← ${input.src}（${input.root} · ${capLine(shapeOf(input.value), 240)}）`)
     .join('\n');
-}
-
-/** 求值一次 snip：把各输入的 `data` 按键绑成一个对象交给求值器。
- *  jq 的输出是一个**值流**：恰好一个输出时 data 就是那个值，多个输出时 data 是这些值的数组，
- *  零输出时 data 是空数组；`outputs` 记下个数，于是"一个空数组"与"没有输出"分得开。
- *  失败时把**求值器原话 + 这次各输入交出的形状**一起交出去：语法错照着文件名与行号改，
- *  "取错了键"这类错照着形状改，都不必再写一个探针程序去问。 */
-async function runSnip(
-  entry: WorkspaceEntry,
-  inputs: readonly NamedInput[],
-  snip: string,
-  signal?: AbortSignal,
-  programFile?: string,
-): Promise<{ data: unknown; outputs: number; truncated: boolean }> {
-  const document: Record<string, unknown> = {};
-  for (const input of inputs) document[input.name] = input.value;
-  let outcome: JaqOutcome;
-  try {
-    outcome = await runJaq(snip, {
-      input: document,
-      // 求值沿用查询的超时约束：jaq 是纯函数，但表达式可以写得很 explosive。
-      timeoutMs: entry.settings.queryTimeoutMs,
-      maxChars: JAQ_MAX_CHARS,
-      signal,
-      ...(programFile === undefined
-        ? {}
-        : { programFile }),
-    });
-  } catch (cause) {
-    throw new Error(`${errorText(cause)}\n这次程序看到的输入：\n${inputLines(inputs)}`);
-  }
-  // 引擎回的是一份 JSON 数组（值流），`values` 就是程序产出的那些值。
-  const values = outcome.values;
-  return { data: values.length === 1 ? values[0] : values, outputs: values.length, truncated: outcome.truncated };
 }
 
 /** va_ask 的入参。 */
@@ -1493,54 +1394,8 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
   // 一律由服务自己的声明回答——模型换了形状，这里一行都不用改。
   const definitions: ToolDefinition[] = [
     {
-      name: 'kq',
-      description: 'Explore this workspace’s knowledge graph. Call with {} first to read the self-description at .guide; discover field names, knowledge keys and relationships there. Choose project for a pure JSON projection of the entire graph in one call, or byFile for a jq program written with work_write into a .work/ .jq file. Projection runs in JS on the loaded graph and returns one value; use "$shape" to inspect a part before expanding it. A jq program receives the graph as its input (.); filter, join and aggregate there, with one output returned as that value, several as an array, none as []. The graph stays loaded between calls. Use canonical IDs declared by the knowledge when constructing query Intents. Only complete results are returned; narrow the fields or query when output exceeds the context budget. Data queries and materialisation use their own tools.',
-      parameters: {
-        type: 'object',
-        properties: {
-          project: PROJECT_PARAMETER,
-          byFile: { type: 'string', description: 'Optional .work/ .jq program file, e.g. knowledge_query.jq. Choose byFile or project. Omit both to read the self-description with .guide. The program receives the knowledge graph directly as its input.' },
-        },
-        additionalProperties: false,
-      },
-      output: { schema: OBJECT_OUTPUT, render: renderValue },
-      async execute(args: { byFile?: unknown; project?: unknown }, exec: ToolExec) {
-        if (!isRecord(args) || Object.keys(args).some((key) => key !== 'byFile' && key !== 'project')) {
-          throw new Error('kq 接受 project 或 byFile；省略两者时读取自述入口。');
-        }
-        const hasProject = Object.hasOwn(args, 'project');
-        if (hasProject && Object.hasOwn(args, 'byFile')) throw new Error('kq 的 project 与 byFile 二选一。');
-        const projector = hasProject ? createProjector(args.project as ProjectRule) : undefined;
-        const entry = knowledge.ensureWorkspace(exec);
-        const hint = '用 project 选择字段或以 "$shape" 探测形状；复杂筛选、聚合或分段读取用 byFile 的 jq 程序。';
-        if (projector !== undefined) {
-          const started = Date.now();
-          const index = await knowledge.ensureIndex(entry);
-          const data = projector(index.knowledge as JsonValue);
-          log(`[oks] kq · model=${entry.modelHash.slice(0, 12)} domain=${entry.settings.domain}`
-            + ` · project → 1 个值 · ${Date.now() - started} ms`);
-          return payloadGuard('kq', { ok: true as const, outputs: 1, data }, hint);
-        }
-        const code = args.byFile === undefined
-          ? { text: '.guide', file: undefined }
-          : readCodeFile(entry.settings.workspaceRoot, args.byFile);
-        const started = Date.now();
-        const result = await knowledge.queryKnowledge(entry, code.text, {
-          input: null, timeoutMs: entry.settings.queryTimeoutMs, maxChars: JAQ_MAX_CHARS,
-          signal: exec?.signal, ...(code.file === undefined ? {} : { programFile: code.file }),
-        });
-        log(`[oks] kq · model=${entry.modelHash.slice(0, 12)} domain=${entry.settings.domain}`
-          + ` · program=${code.file ?? '.guide'} → ${result.values.length} 个值 · ${Date.now() - started} ms`);
-        if (result.truncated) return truncatedError('kq', hint);
-        return payloadGuard('kq', {
-          ok: true as const, outputs: result.values.length,
-          data: result.values.length === 1 ? result.values[0] : result.values,
-        }, hint);
-      },
-    },
-    {
       name: 'oks_search',
-      description: 'Find this workspace\'s knowledge vocabulary by name, alias or description and get what you need to address a node: its kind, its name, its owner, where the term matched and how well. Keys are not returned — compose the key with the pattern the service declares for that kind in index.detail.key_patterns, then read the node with kq. That is how a knowledge key is addressed; an Intent key is a different thing, handed to you by oks_check_query_intent and never composed. Use it when you know what a thing is called but not its key; narrow with kind= or dataset=, and page with skip=.',
+      description: 'Find this workspace\'s knowledge vocabulary by name, alias or description and get what you need to address a node: its kind, its name, its owner, where the term matched and how well. Keys are not returned — compose the key with the pattern the service declares for that kind in index.detail.key_patterns, then read the node with oks_data using load={knowledge:"knowledge://"} and accessing .knowledge. That is how a knowledge key is addressed; an Intent key is a different thing, handed to you by oks_check_query_intent and never composed. Use it when you know what a thing is called but not its key; narrow with kind= or dataset=, and page with skip=.',
       parameters: {
         type: 'object',
         properties: {
@@ -1567,7 +1422,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_references',
-      description: 'List what references a knowledge key, from the reference graph the plugin derives when the vocabulary is built. Each row names the reference kind and the referencing node\'s key, so you can read that node with kq or follow it further. Use it to see what depends on a term before you change how you address it.',
+      description: 'List what references a knowledge key, from the reference graph the plugin derives when the vocabulary is built. Each row names the reference kind and the referencing node\'s key, so you can read that node with oks_data using load={knowledge:"knowledge://"} and accessing .knowledge or follow it further. Use it to see what depends on a term before you change how you address it.',
       parameters: {
         type: 'object',
         properties: {
@@ -1600,7 +1455,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         properties: {
           intents: {
             type: 'object',
-            description: 'One to five named graph Intents: an object mapping a batch name to one Intent, e.g. {"ports":{"op":"Graph","root":"d","nodes":[{"id":"d","entity":"<dataset id>"}],"edges":[],"select":[],"limit":100}}. The name labels the batch and becomes part of the result file name, so it is an identifier rather than a title: 0-9, _ and a-z only, at most 60 characters. Every top-level Intent must declare limit, the integer 1..100 that decides how many rows this query returns — that requirement is this plugin\'s, on top of the declared syntax: the declared syntax leaves limit optional and caps nothing, while this plugin uses it as the row cap and hashes it with the Intent. Read the declared syntax (the Schema/syntax/intent node the index points to) for everything else: closed choices use the declared enum spelling in PascalCase (e.g. op "Graph", filter op "Eq", direction "Desc", row_grain "Root"), and the entity is the declared dataset id, not the knowledge key.',
+            description: 'One to five named graph Intents: an object mapping a batch name to one Intent, e.g. {"ports":{"op":"Graph","root":"d","nodes":[{"id":"d","entity":"<dataset id>"}],"edges":[],"select":[],"limit":100}}. The name labels the batch and becomes part of the result file name, so it is an identifier rather than a title: 0-9, _ and a-z only, at most 60 characters. Every top-level Intent must declare limit, the integer 1..500 that decides how many rows this query returns — that requirement is this plugin\'s, on top of the declared syntax: the declared syntax leaves limit optional and caps nothing, while this plugin uses it as the row cap and hashes it with the Intent. Read the declared syntax (the Schema/syntax/intent node the index points to) for everything else: closed choices use the declared enum spelling in PascalCase (e.g. op "Graph", filter op "Eq", direction "Desc", row_grain "Root"), and the entity is the declared dataset id, not the knowledge key.',
             additionalProperties: { type: 'object', additionalProperties: true },
           },
         },
@@ -1639,7 +1494,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_exec_query_intent',
-      description: 'Answer a business question from this workspace\'s data: validate one to five named graph Intents, then run the accepted ones as read-only queries against the data file the workspace declares. Each success is saved as a result file in the workspace (.oks/data/) and the reply reports only its asset, columns and rowCount — the rows stay out of this conversation until you take them with jq_transform. A rejected Intent returns diagnostics instead of a result file, and a name whose key does not match its Intent is refused before execution. Use oks_check_query_intent first to get the keys.',
+      description: 'Answer a business question from this workspace\'s data: validate one to five named graph Intents, then run the accepted ones as read-only queries against the data file the workspace declares. Each success is saved as a result file in the workspace (.oks/data/) and the reply reports only its asset, columns and rowCount — the rows stay out of this conversation until you take them with oks_data. A rejected Intent returns diagnostics instead of a result file, and a name whose key does not match its Intent is refused before execution. Use oks_check_query_intent first to get the keys.',
       parameters: {
         type: 'object',
         properties: {
@@ -1807,7 +1662,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'create_data',
-      description: 'Turn data you supply yourself into an envelope in the workspace, so that it can be referenced like any other data: give it a name, say why it exists, and pass the JSON. The tool writes {origin, data} into .oks/data/ as <time>-<name>-<content hash>.def.json, where origin is one node saying this data was given — it carries your motivation and the payload itself, because the source chain is the recipe: whatever is built from this file can be replayed after this file is gone. The receipt gives you the asset — that is where this file is; hand that value to a figure as its src, to a transform as one of its named inputs, and a later step can read it like anything else. Row objects (an array of objects) are what a figure needs; nested objects, arrays and scalars are fine too. Use this only for data that exists nowhere in the workspace: a handful of values from the user, a threshold table, rows you were handed. Anything already in the workspace — queried rows, a computed result, the rows a figure drew — is reshaped or relabelled with jq_transform with save, never retyped here: retyping cuts the chain to where the numbers came from, and the envelope records only that you supplied them.',
+      description: 'Turn data you supply yourself into an envelope in the workspace, so that it can be referenced like any other data: give it a name, say why it exists, and pass the JSON. The tool writes {origin, data} into .oks/data/ as <time>-<name>-<content hash>.def.json, where origin is one node saying this data was given — it carries your motivation and the payload itself, because the source chain is the recipe: whatever is built from this file can be replayed after this file is gone. The receipt gives you the asset — that is where this file is; hand that value to a figure as its src, to a transform as one of its named inputs, and a later step can read it like anything else. Row objects (an array of objects) are what a figure needs; nested objects, arrays and scalars are fine too. Use this only for data that exists nowhere in the workspace: a handful of values from the user, a threshold table, rows you were handed. Anything already in the workspace — queried rows, a computed result, the rows a figure drew — is reshaped or relabelled with oks_data with save, never retyped here: retyping cuts the chain to where the numbers came from, and the envelope records only that you supplied them.',
       parameters: {
         type: 'object',
         properties: {
@@ -1851,14 +1706,18 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       },
     },
     {
-      name: 'jq_transform',
-      description: 'Run a jaq program over saved data — the same engine throughout: jaq plus gmtime_tz(zone), strftime_tz(fmt; zone), tzadd(unit; amount; zone), tzfloor(unit; zone), tzceil(unit; zone), each taking epoch seconds from the pipe and the zone explicitly; the clock and the environment stay outside it (no now, env, localtime, strflocaltime, input or inputs), so the current instant reaches the program only as a value you pass in, from create_current_ctx_data. Time is in the same dialect: the native jq functions are all here unchanged (gmtime, strftime(fmt), strptime(fmt), mktime, fromdateiso8601 / fromdate, todateiso8601 / todate); a `_tz` suffix is that function plus one explicit zone (gmtime_tz(zone), strftime_tz(fmt; zone)); a `tz` prefix is this engine\'s own addition (native floor / ceil / add are numeric or array operations): tzadd(unit; amount; zone), tzfloor(unit; zone), tzceil(unit; zone). Epoch seconds come from the pipe, and no zone is ever read from the environment. Units are year / quarter / month / week / day / hour / minute / second, weeks starting Monday; calendar units follow that zone\'s wall clock, so a day across a DST change is not 24 hours and a month, quarter or year end clamps — boundary arithmetic wants [tzfloor(unit; tz), tzceil(unit; tz)). A call is resolved by name plus argument count, so write it exactly as shown. utc.rfc3339 in a context material is what todateiso8601 produces, and fromdateiso8601 parses it back, taking Z or an offset, optional seconds and fractions, and the basic form 19700101T000000Z. inputs maps a name of your choosing to an asset a previous receipt gave you; each entry is either that asset or {"src": "<asset>", "root": "<jq dot path>"}, where root is which slice of the file the program gets — the default ".data" is that record\'s own data (a query result is {rows, columns}; a transform is the value it produced; a figure or table is {rows, spec} (a relation graph\'s figure also carries its node table as nodeRows); a report is {assets, items, structure}, the structure region being the cleared one), ".origin" is the source chain {root, nodes}, ".meta" its description and "." the whole {meta, origin, data}; omit inputs and the program sees {}. The program goes into a .work/ file named by byFile (write it there first with work_write) and reads one object whose keys are the input names, e.g. ".events.rows[] | {level, count}"; leave byFile out and the result is that object itself, with pick taking one part of it back as a jq dot path ("pick": ".events") — pick and byFile are alternatives, so with a program write that step into the program instead ("| .events"). The value stream is collected uniformly: one value is that value, several are an array, none is []. Without save the result is only looked at and nothing is written. With save {name, motivation} it is materialised instead: the tool writes {meta, origin, data} into .oks/data/ (<date>-<name>-<content hash>.tr.json), the origin carrying this operation (snip, motivation, output count, which name used which input and which slice of it) plus the complete source chain of every input while the inputs\' own data stays out; the receipt then gives you exactly two things — the asset (where the file is) and its size in bytes — and nothing else: the values, the shape and the source chain all live in the file, so read it with jq_transform when you need them (`.data` for the values, `.origin` for where they came from). Data you supply yourself does not come in here: create_data makes it an envelope first, so the numbers carry a recorded reason.',
+      name: 'oks_data',
+      description: 'Read knowledge or saved data and optionally save with full provenance. Use project first for inspecting types/keys/sizes or selecting fields; use a jq file for filtering, sorting, computation, aggregation or joins. Start knowledge discovery with {"load":{"knowledge":"knowledge://"},"project":{"knowledge":{"guide":"Value"}}}. load is an object mapping names to resource addresses; access loaded values as .fact or .knowledge. Omitted load gives {}. File resources expose data only; append #meta for {meta, origin}. Project rules start with the load names: load:{fact:"<asset path>"}, project:{fact:"Shape"}. Choose project or jq:{src:".work/analysis.jq"}; omit both for identity. Use full workspace-relative paths verbatim. Tables and charts both accept row-object arrays or {rows, columns?}. Optional columns entries are {name:"count",types:["number"],nullable:false}. Query data is {rows, columns}; figures are {rows, spec}; reports are {assets, items, structure}. jq is deterministic: time comes from create_current_ctx_data; explicit-zone functions gmtime_tz(zone), strftime_tz(fmt; zone), tzadd(unit; amount; zone), tzfloor(unit; zone), tzceil(unit; zone) receive epoch seconds as their pipeline input. Example with load:{ctx:"<context asset>"}: .ctx as $ctx | ($ctx.utc.epochMillis / 1000 | floor) | strftime_tz("%F %T"; $ctx.tz.client.id). strftime_tz takes two arguments (format; zone). Units: year/quarter/month/week/day/hour/minute/second. The jq program must produce exactly one JSON value. Collect multiple results with [expression]; represent an empty result as [] or null. Narrow project or jq when the output budget is exceeded. save:{name,motivation} materialises a .tr.json envelope and returns asset and bytes.',
       parameters: {
         type: 'object',
         properties: {
-          inputs: { type: 'object', description: 'Named inputs, {"events": "<asset>"} or {"events": {"src": "<asset>", "root": ".data.rows"}}: each name becomes a key the program reads, each asset is copied verbatim from an earlier receipt (a workspace-relative path under .oks/data/, .oks/figures/ or artifacts/), and root picks the slice of that file. Omit it when the program needs no input.', additionalProperties: { oneOf: [{ type: 'string' }, { type: 'object', properties: { src: { type: 'string' }, root: { type: 'string' } }, required: ['src'], additionalProperties: false }] } },
-          byFile: { type: 'string', description: 'Which .work/ file holds the program: "analysis.jq" (write it there first with work_write). Its input is one object whose keys are the input names, e.g. a program ".events.rows[] | select(.count > 100)". Leave it out to read the inputs unchanged, and use pick to take one part of that result.' },
-          pick: { type: 'string', description: 'A jq dot path into the result, without quotes: ".events" gives one input back under its bare name, ".events.rows" goes deeper. It is for taking a part of the result back, so it stands alone — with byFile given, write that step into the program instead ("| .events").' },
+          load: {
+            description: 'Semantic type: load: { [Key: string]: ResourceRef }. ResourceRef is a resource address string: FileName, FileName#meta, or knowledge://. FileName is the complete workspace-relative asset path returned by a tool, e.g. .oks/data/example.tr.json. An object assigns a Key to each ResourceRef and supplies an object with those keys and resolved values, accessed as .fact or .knowledge. Example: {"load":{"fact":".oks/data/example.tr.json","knowledge":"knowledge://"}}. A file supplies its data; FileName#meta supplies {meta, origin}; knowledge:// supplies the knowledge graph.',
+            type: 'object',
+            additionalProperties: true,
+          },
+          project: PROJECT_PARAMETER,
+          jq: { type: 'object', properties: { src: { type: 'string', description: 'Full workspace-relative path to the jq program file. The file extension must be .jq, e.g. .work/analysis.jq.' } }, required: ['src'], additionalProperties: false },
           save: {
             type: 'object',
             description: 'Keep the result instead of only looking at it: give it a name and say why, and the tool writes {meta, origin, data} into .oks/data/ — the origin records this operation and the complete source chain of every input, so the numbers can be explained later. Leave save out to only look at the result.',
@@ -1875,34 +1734,42 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       },
       output: { schema: OBJECT_OUTPUT, render: renderJqResult },
       async execute(args: TransformArgs, exec: ToolExec) {
+        const projector = validateTransform(args);
         const entry = knowledge.ensureWorkspace(exec);
         const save = args?.save;
         const saveName = typeof save?.name === 'string' ? save.name.trim() : '';
         const motivation = typeof save?.motivation === 'string' ? save.motivation.trim() : '';
         if (save !== undefined && (saveName === '' || motivation === '')) {
-          throw new Error('jq_transform 的 save 需要 name 与 motivation：落点名（0-9、_ 与 a-z，'
+          throw new Error('oks_data 的 save 需要 name 与 motivation：落点名（0-9、_ 与 a-z，'
             + '例如 events_by_level）与这次加工为什么做（一句自然语言，记在这次操作的节点上）。');
         }
-        const plan = planTransform(args, 'jq_transform', entry.settings.workspaceRoot);
-        const snip = plan.snip;
-        const started = Date.now();
-        const outcome = await runSnip(entry, plan.inputs, snip, exec?.signal, plan.file);
-        const data = applyPick(plan, outcome.data);
-        const ms = Date.now() - started;
-        // 探索留痕：读过什么、算了什么、产出几个值——探索不进来源链，日志是唯一的记录。
-        log(`[oks] jq_transform · ${plan.inputs.length} 份输入 → ${outcome.outputs} 个值`
-          + `${plan.pick === undefined ? '' : ` · pick ${plan.pick}`}`
-          + `${outcome.truncated ? '（求值到上限）' : ''} · ${ms} ms`
-          + ` · ${plan.file === undefined ? '' : `${plan.file} `}snip=${capLine(snip, 200)}`);
-        // 求值到上限＝数据不完整：报错，不返回半份（调用方让程序少取一点）。
-        if (outcome.truncated) {
-          // 看一眼：返回错误值（回执里说清）；物化：直接抛错 —— 残缺数据不该进来源链。
-          if (save === undefined) {
-            return truncatedError('jq_transform', '让程序少取一点（只取你真正要的那部分：聚合、投影或前 N 项）。');
-          }
-          throw new Error(`表达式产出超过求值上限（${JAQ_MAX_CHARS} 字符），这份结果不完整，没有物化：`
-            + '先用 jq_transform 把范围收窄（聚合或投影），再 save。');
+        if (save !== undefined) {
+          const problem = nameProblem(saveName);
+          if (problem) throw new Error(problem);
         }
+        const { inputs, document, shape } = await resolveTransformInputs(knowledge, entry, args.load);
+        const code = args.jq === undefined ? undefined : readCodeFile(entry.settings.workspaceRoot, args.jq.src);
+        const snip = code?.text;
+        const started = Date.now();
+        let data: unknown;
+        if (code === undefined) {
+          data = projector === undefined ? document : projector(document as JsonValue);
+        } else {
+          try {
+            const options = {
+              input: document, timeoutMs: entry.settings.queryTimeoutMs, maxBytes: JAQ_MAX_BYTES,
+              signal: exec?.signal, programFile: code.file,
+            };
+            const result = inputs.length === 1 && inputs[0].src === 'knowledge://'
+              ? await knowledge.queryKnowledge(entry, code.text, { ...options, inputName: inputs[0].name })
+              : await runJaq(code.text, options);
+            if (!result.ok) return truncatedError('oks_data', result.shape);
+            data = result.data;
+          } catch (cause) {
+            throw new Error(`${errorText(cause)}\n这次程序看到的输入：\n${inputLines(inputs)}`);
+          }
+        }
+        log(`[oks] oks_data · ${inputs.length} 份输入 → 1 个值 · ${Date.now() - started} ms`);
         if (save !== undefined) {
           // 物化：来源链由这一层组装 —— 本次操作 + 各输入的**根节点**（产出那份 data 的记录）。
           pruneBeforeWrite(entry);
@@ -1912,51 +1779,37 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             node: {
               kind: 'transform',
               motivation,
-              snip,
-              ...(plan.file === undefined ? {} : { snipFile: plan.file }),
-              ...(plan.pick === undefined ? {} : { pick: plan.pick }),
-              // 输出个数记在**这个操作的节点**上：它是"这次执行产出了什么"的一部分。
-              outputs: outcome.outputs,
-              ...(plan.inputs.length === 0 ? {} : {
-                inputs: Object.fromEntries(plan.inputs.map((input) => [input.name, input.origin.root])),
+              method: code ? 'jq' : Object.hasOwn(args, 'project') ? 'project' : 'identity',
+              ...(snip === undefined ? {} : { snip }),
+              ...(Object.hasOwn(args, 'project') ? { project: args.project } : {}),
+              inputShape: shape,
+              inputResources: Object.fromEntries(inputs.map((input) => [input.name, input.src])),
+              ...(code?.file === undefined ? {} : { snipFile: code.file }),
+              // 每次加工恰好产出一个值。
+              outputs: 1,
+              ...(inputs.length === 0 ? {} : {
+                inputs: Object.fromEntries(inputs.map((input) => [input.name, input.origin.root])),
                 // 与 `inputs` 配套：这次从每份产物里**切了哪一段**（RFC 0008 §4）。
-                inputPaths: Object.fromEntries(plan.inputs.map((input) => [input.name, input.root])),
+                inputPaths: Object.fromEntries(inputs.map((input) => [input.name, input.root])),
               }),
             },
-            inputs: plan.inputs.map((input) => input.origin),
+            inputs: inputs.map((input) => input.origin),
             data,
           });
           const intoMs = Date.now() - started;
-          log(`[oks] jq_transform → ${saveName} · ${plan.inputs.length} 份输入 → ${outcome.outputs} 个值`
-            + `${plan.pick === undefined ? '' : ` · pick ${plan.pick}`}`
+          log(`[oks] oks_data → ${saveName} · ${inputs.length} 份输入 → 1 个值`
             + ` · ${(stored.bytes / 1024).toFixed(1)} KB · ${intoMs} ms · ${stored.asset}`
-            + ` · snip=${capLine(snip, 200)}`);
+            + ` · snip=${capLine(snip ?? 'identity/project', 200)}`);
           // 回执只有两件东西：落点与大小。值、形状与来源链都在文件里——
-          // 要看得再读一次（`jq_transform` 读 `.data`），于是"留下来"这件事不把数据带回上下文。
+          // 要看得再读一次（`oks_data` 读 `.data`），于是"留下来"这件事不把数据带回上下文。
           return { asset: stored.asset, bytes: stored.bytes };
         }
-        return payloadGuard('jq_transform', {
-          ok: true as const,
-          snip,
-          ...(plan.file === undefined ? {} : { snipFile: plan.file }),
-          ...(plan.generated === true ? { generated: true } : {}),
-          ...(plan.pick === undefined ? {} : { pick: plan.pick }),
-          inputs: plan.inputs.map((input) => ({
-            name: input.name,
-            src: input.src,
-            root: input.root,
-            shape: shapeOf(input.value),
-          })),
-          outputs: outcome.outputs,
-          data,
-          ms,
-        }, '让程序少取一点（聚合、投影或前 N 项），不要一次取整份数据；'
-        + '读报告（*.report.html）按项取：root 用 ".data.items.<项名>"、".data.structure"、".origin"。');
+        return payloadGuard('oks_data', { ok: true as const, data: data as JsonValue });
       },
     },
     {
       name: 'oks_render_figure',
-      description: 'Render saved data as a figure or a table and write it into the workspace. spec.kind picks the form: "table" writes a markdown table, every other kind draws a figure as an SVG. Data comes in one way only: src, a path copied verbatim from an earlier receipt (oks_exec_query_intent for queried rows, jq_transform with save for a computed result, create_data for rows you supplied yourself) — rows are never written inline here, so every piece has a recorded origin. For a table, columns picks and orders what to show (omit for every column the data has), title is the caption, numeric columns are right-aligned, and the receipt gives you the table itself as ready-to-paste markdown for your reply. For a figure, the receipt gives you a markdown line: put it verbatim into your answer and the figure shows up there. The figure carries the rows it drew, its specification and its whole source chain inside the SVG, so it still explains itself once the workspace is cleaned up. Each switch applies to a fixed set of kinds (' + expressionMatrix() + '); filling one on a kind outside its set is rejected, so a switch is never silently ignored.',
+      description: 'Render saved data as a figure or a table and write it into the workspace. spec.kind picks the form: "table" writes a markdown table, every other kind draws a figure as an SVG. Data comes in one way only: src, a path copied verbatim from an earlier receipt (oks_exec_query_intent for queried rows, oks_data with save for a computed result, create_data for rows you supplied yourself) — rows are never written inline here, so every piece has a recorded origin. For a table, columns picks and orders what to show (omit for every column the data has), title is the caption, numeric columns are right-aligned, and the receipt gives you the table itself as ready-to-paste markdown for your reply. For a figure, the receipt gives you a markdown line: put it verbatim into your answer and the figure shows up there. The figure carries the rows it drew, its specification and its whole source chain inside the SVG, so it still explains itself once the workspace is cleaned up. Each switch applies to a fixed set of kinds (' + expressionMatrix() + '); filling one on a kind outside its set is rejected, so a switch is never silently ignored.',
       parameters: {
         type: 'object',
         properties: {
@@ -2048,7 +1901,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             required: ['kind'],
             additionalProperties: false,
           },
-          src: { type: 'string', description: 'A path copied verbatim from an earlier receipt — any product whose data are the rows to draw or show: oks_exec_query_intent returns queried rows ({rows, columns}), jq_transform with save a computed result, create_data the rows you supplied yourself, and a figure or a table can be drawn again (their data form is {rows, spec}; a relation graph also keeps its node table as data.nodeRows, so it can be drawn again without nodesSrc). A report cannot: its data is its display items, so read those with jq_transform instead. Rows cannot be written inline.' },
+          src: { type: 'string', description: 'A path copied verbatim from an earlier receipt — any product whose data are the rows to draw or show: oks_exec_query_intent returns queried rows ({rows, columns}), oks_data with save a computed result, create_data the rows you supplied yourself, and a figure or a table can be drawn again (their data form is {rows, spec}; a relation graph also keeps its node table as data.nodeRows, so it can be drawn again without nodesSrc). A report cannot: its data is its display items, so read those with oks_data instead. Rows cannot be written inline.' },
           name: { type: 'string', description: 'Optional name for the saved file; defaults to "table" for a table and "chart" for a figure. A name is an identifier, not a title: 0-9, _ and a-z only, at most 60 characters (longer ones are cut and tagged with a ~ plus a short hash). The file is named <time>-<name>-<content hash>.table.md, or .<figure kind>.svg (e.g. .bar.svg), under .oks/figures/.' },
           note: { type: 'string', description: 'Optional short note carried in the receipt — your own narration.' },
         },
@@ -2064,7 +1917,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_check_report',
-      description: 'Check the report body you are about to hand to oks_render_report, and get every problem back with a line and a column. The body is a strict XML subset: a single <article> root, only the elements and attributes the report tool lists, empty elements written self-closed (<br />), XML comments for the intent of a section (no "--" inside), and data references as <figure data-oks-ref="…"> / <span data-oks-ref="…" data-oks-pick=".path">, with data-oks-shrink marking your own commentary. Two advisories come back without affecting validity: NumWithoutSource lists the numbers that carry neither a reference nor a data-oks-lit declaration (line, column and the text around each), and LitNotOnSpan lists data-oks-lit written outside a span, where it has no effect. Nothing is written to the workspace: use it to fix the body before rendering.',
+      description: 'Check the report body you are about to hand to oks_render_report, and get every problem back with a line and a column. The body is a strict XML subset: a single <article> root, only the elements and attributes the report tool lists, empty elements written self-closed (<br />), XML comments for the intent of a section (no "--" inside), and data references as <figure data-oks-ref="…"> / <span data-oks-ref="…" data-oks-pick=".rows.0.label">, with data-oks-shrink marking your own commentary. Two advisories come back without affecting validity: NumWithoutSource lists the numbers that carry neither a reference nor a data-oks-lit declaration (line, column and the text around each), and LitNotOnSpan lists data-oks-lit written outside a span, where it has no effect. Nothing is written to the workspace: use it to fix the body before rendering.',
       parameters: {
         type: 'object',
         properties: {
@@ -2073,7 +1926,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         required: ['articleFile'],
         additionalProperties: false,
       },
-      output: { schema: OBJECT_OUTPUT, render: renderValue },
+      output: { schema: OBJECT_OUTPUT, render: renderReportCheck },
       async execute(args: unknown, exec: ToolExec) {
         const entry = knowledge.ensureWorkspace(exec);
         const articleFile = (args as { articleFile?: unknown } | undefined)?.articleFile;
@@ -2096,7 +1949,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_render_report',
-      description: 'Assemble a self-contained HTML report from an XHTML body. The body is a strict XML subset: one <article> root; the elements are article, section, h1-h3, p, div, span, figure, figcaption, table, caption, thead, tbody, tfoot, tr, th, td, ul, ol, li, blockquote, pre, code, strong, em, a, br, hr; the attributes are id, class, title, lang, data-oks-ref, data-oks-pick, data-oks-shrink, data-oks-lit, href, colspan, rowspan, scope; empty elements are written self-closed (<br />); and XML comments carry what a section is meant to answer (no "--" inside them). Data comes in by reference only: <figure data-oks-ref="key"> places a figure or table you already produced, <span data-oks-ref="key" data-oks-pick=".path"> fills in one scalar, and every key must be declared in spec.inputs as {"src": "<asset from a receipt>", "root": ".data"}. A number that is prose rather than data — an ordinal, a date, a framing like 近 7 天, a term like P95 — is declared where it stands as <span data-oks-lit="">…</span>: on a span (anywhere else it has no effect and comes back as LitNotOnSpan) and, this being strict XML, carrying an empty value. Tokens containing a letter, numbers written after #, and anything inside pre, code or a reference span are not treated as numbers at all. Everything else is prose you write; mark your own commentary with data-oks-shrink so a later reader gets the reasoning without the conclusions. The tool builds the metadata region itself (source chains, display values, jq sources), numbers figures and tables in body order, inlines each display file, and writes one self-contained HTML. The report carries the whole recipe of what it shows — every query Intent, the payload of every supplied or context material, and every jq program — so what it displays can be replayed from the report alone once the intermediate materials have been reclaimed. Check the body with oks_check_report first; hand the result to the user with the present tool — an HTML report does not render in the reply body itself.',
+      description: 'Assemble a self-contained HTML report from an XHTML body. The body is a strict XML subset: one <article> root; the elements are article, section, h1-h3, p, div, span, figure, figcaption, table, caption, thead, tbody, tfoot, tr, th, td, ul, ol, li, blockquote, pre, code, strong, em, a, br, hr; the attributes are id, class, title, lang, data-oks-ref, data-oks-pick, data-oks-shrink, data-oks-lit, href, colspan, rowspan, scope; empty elements are written self-closed (<br />); and XML comments carry what a section is meant to answer (no "--" inside them). Data comes in by reference only: <figure data-oks-ref="key"> places a figure or table you already produced, <span data-oks-ref="key" data-oks-pick=".rows.0.label"> fills in one scalar, and every key must be declared in spec.inputs as {"src": "<asset from a receipt>", "root": ".data"}. A number that is prose rather than data — an ordinal, a date, a framing like 近 7 天, a term like P95 — is declared where it stands as <span data-oks-lit="">…</span>: on a span (anywhere else it has no effect and comes back as LitNotOnSpan) and, this being strict XML, carrying an empty value. Tokens containing a letter, numbers written after #, and anything inside pre, code or a reference span are not treated as numbers at all. Everything else is prose you write; mark your own commentary with data-oks-shrink so a later reader gets the reasoning without the conclusions. The tool builds the metadata region itself (source chains, display values, jq sources), numbers figures and tables in body order, inlines each display file, and writes one self-contained HTML. The report carries the whole recipe of what it shows — every query Intent, the payload of every supplied or context material, and every jq program — so its displayed values remain explainable after intermediate materials are reclaimed. Check the body with oks_check_report first; hand the result to the user with the present tool — an HTML report does not render in the reply body itself.',
       parameters: {
         type: 'object',
         properties: {
@@ -2108,7 +1961,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
               subtitle: { type: 'string', description: 'Optional subtitle — usually the time window the report covers.' },
               articleFile: {
                 type: 'string',
-                description: 'The .work/ file holding the <article> … </article> body — write it with work_write first, edit it with work_edit, check it with oks_check_report, then hand its name here. Prose is yours; data enters by reference — <figure data-oks-ref="key"> for a figure or table you already drew, <span data-oks-ref="key" data-oks-pick=".path"> for one scalar. Write XML comments for what each section is meant to answer, and mark your own commentary with data-oks-shrink.',
+                description: 'The .work/ file holding the <article> … </article> body — write it with work_write first, edit it with work_edit, check it with oks_check_report, then hand its name here. Prose is yours; data enters by reference — <figure data-oks-ref="key"> for a figure or table you already drew, <span data-oks-ref="key" data-oks-pick=".rows.0.label"> for one scalar. Write XML comments for what each section is meant to answer, and mark your own commentary with data-oks-shrink.',
               },
               inputs: {
                 type: 'object',
@@ -2240,11 +2093,11 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'work_read',
-      description: `Read a UTF-8 text file under ${WORK_DIR}/ and return line-numbered content — the same shape as the usual read tool (file_path / offset / limit), except that only ${WORK_DIR}/ is reachable: that is enforced, not requested. ${WORK_DIR}/ is your own work area in this workspace: the jq programs a transform runs by 'byFile', the report body you hand to 'oks_render_report' as 'articleFile', and any other file you write. Pass "." as file_path to list what is in ${WORK_DIR}/ instead, so a fresh session can see what it left behind.`,
+      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. Read a UTF-8 text file under ${WORK_DIR}/ and return line-numbered content — the same shape as the usual read tool (file_path / offset / limit), except that only ${WORK_DIR}/ is reachable: that is enforced, not requested. ${WORK_DIR}/ is your own work area in this workspace: the jq programs a transform runs by 'jq.src', the report body you hand to 'oks_render_report' as 'articleFile', and any other file you write. Pass ".work/" as file_path to list what is in ${WORK_DIR}/ instead, so a fresh session can see what it left behind.`,
       parameters: {
         type: 'object',
         properties: {
-          file_path: { type: 'string', description: `Path under ${WORK_DIR}/, either "analysis.jq" or "${WORK_DIR}/analysis.jq". Use "." to list the directory.` },
+          file_path: { type: 'string', description: `Full workspace-relative path under ${WORK_DIR}/, e.g. "${WORK_DIR}/analysis.jq". Use "${WORK_DIR}/" to list the directory.` },
           offset: { type: 'number', description: 'First line to return, 1-based. Default 1.' },
           limit: { type: 'number', description: 'How many lines to return, 1..2000. Default 400.' },
         },
@@ -2255,8 +2108,8 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
       async execute(args: WorkReadArgs, exec: ToolExec) {
         const entry = knowledge.ensureWorkspace(exec);
         const root = entry.settings.workspaceRoot;
-        const given = typeof args?.file_path === 'string' ? args.file_path.trim() : '';
-        if (given === '.' || given === `${WORK_DIR}/` || given === WORK_DIR) {
+        const given = args?.file_path;
+        if (given === `${WORK_DIR}/`) {
           return { ok: true as const, file: WORK_DIR, entries: listWorkFiles(root), lines: [], from: 1, total: 0, bytes: 0 };
         }
         const read = readWorkFile(root, args?.file_path, args?.offset, args?.limit, 'work_read');
@@ -2267,11 +2120,11 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'work_write',
-      description: `Write a UTF-8 text file under ${WORK_DIR}/, creating or overwriting it — the same shape as the usual write tool (file_path / content), except that only ${WORK_DIR}/ is reachable. It is how a file gets somewhere a tool can name it: write "${WORK_DIR}/peek.jq" here and hand 'byFile: "peek.jq"'; write "${WORK_DIR}/article.xhtml" here and hand 'articleFile: "article.xhtml"'. Edit it later without resending the whole thing. Parent directories are created. Keep data out of here: rows and tables belong in .oks/data/ via create_data or jq_transform with save.`,
+      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. Write a UTF-8 text file under ${WORK_DIR}/, creating or overwriting it — the same shape as the usual write tool (file_path / content), except that only ${WORK_DIR}/ is reachable. It is how a file gets somewhere a tool can name it: write "${WORK_DIR}/peek.jq" here and hand 'jq: {src: ".work/peek.jq"}'; write "${WORK_DIR}/article.xhtml" here and hand 'articleFile: ".work/article.xhtml"'. Edit it later without resending the whole thing. Parent directories are created. Keep data out of here: rows and tables belong in .oks/data/ via create_data or oks_data with save.`,
       parameters: {
         type: 'object',
         properties: {
-          file_path: { type: 'string', description: `Path under ${WORK_DIR}/, e.g. "analysis.jq" (or "${WORK_DIR}/analysis.jq").` },
+          file_path: { type: 'string', description: `Full workspace-relative path under ${WORK_DIR}/, e.g. "${WORK_DIR}/analysis.jq".` },
           content: { type: 'string', description: 'The text to write — the jq program itself, verbatim.' },
         },
         required: ['file_path', 'content'],
@@ -2287,11 +2140,11 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'work_edit',
-      description: `Replace a literal passage in a text file under ${WORK_DIR}/ — the same shape as the usual edit tool (file_path / old_string / new_string / replace_all), except that only ${WORK_DIR}/ is reachable. It is how a file gets iterated: write it once, then fix one passage at a time instead of resending the whole file. old_string must appear in the file exactly as given (whitespace included); it must be unique unless replace_all is true.`,
+      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. Replace a literal passage in a text file under ${WORK_DIR}/ — the same shape as the usual edit tool (file_path / old_string / new_string / replace_all), except that only ${WORK_DIR}/ is reachable. It is how a file gets iterated: write it once, then fix one passage at a time instead of resending the whole file. old_string must appear in the file exactly as given (whitespace included); it must be unique unless replace_all is true.`,
       parameters: {
         type: 'object',
         properties: {
-          file_path: { type: 'string', description: `Path under ${WORK_DIR}/, e.g. "analysis.jq".` },
+          file_path: { type: 'string', description: `Full workspace-relative path under ${WORK_DIR}/, e.g. "${WORK_DIR}/analysis.jq".` },
           old_string: { type: 'string', description: 'The exact text to replace (must occur verbatim).' },
           new_string: { type: 'string', description: 'What to put in its place.' },
           replace_all: { type: 'boolean', description: 'Replace every occurrence instead of requiring uniqueness. Default false.' },
@@ -2310,7 +2163,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'work_list',
-      description: `List the files in ${WORK_DIR}/ — name, size and when each was last written. Everything the work area holds lives here: the jq programs byFile runs, the report body you hand to oks_render_report as articleFile, and any other scratch file. Use it when a name is in doubt, or before deleting something.`,
+      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. List the files in ${WORK_DIR}/ — name, size and when each was last written. Everything the work area holds lives here: the jq programs jq.src runs, the report body you hand to oks_render_report as articleFile, and any other scratch file. Use it when a name is in doubt, or before deleting something.`,
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       output: { schema: OBJECT_OUTPUT, render: renderValue },
       async execute(_args: unknown, exec: ToolExec) {
@@ -2321,11 +2174,11 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'work_delete',
-      description: `Delete one file under ${WORK_DIR}/ — how a file you no longer need goes away (a jq program, a report body, any scratch file). It deletes files only: empty a directory first if you want it gone. The receipt says which file went and how many are left in ${WORK_DIR}/. Deleting a file does not cost provenance: a jq program's text is recorded in the source chain of whatever used it, so what is lost is only the ability to run it again.`,
+      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. Delete one file under ${WORK_DIR}/ — how a file you no longer need goes away (a jq program, a report body, any scratch file). It deletes files only: empty a directory first if you want it gone. The receipt says which file went and how many are left in ${WORK_DIR}/. Deleting a file does not cost provenance: a jq program's text is recorded in the source chain of whatever used it, so what is lost is only the ability to run it again.`,
       parameters: {
         type: 'object',
         properties: {
-          file_path: { type: 'string', description: `Path under ${WORK_DIR}/, e.g. "analysis.jq" (or "${WORK_DIR}/analysis.jq").` },
+          file_path: { type: 'string', description: `Full workspace-relative path under ${WORK_DIR}/, e.g. "${WORK_DIR}/analysis.jq".` },
         },
         required: ['file_path'],
         additionalProperties: false,
@@ -2381,7 +2234,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'va_ask',
-      description: 'Consult this session\'s vocabulary helper and get its answer back: send one paraphrase — a word, a phrase or a sentence, any language — and you receive the vocabulary\'s own equivalent or near expressions, one per line and verbatim. The helper holds the whole vocabulary in its system prompt, so the first call sets it up and takes longer; each later call is one question. Treat what it returns as leads: look the strings up with oks_search and read the declarations with kq.',
+      description: 'Consult this session\'s vocabulary helper and get its answer back: send one paraphrase — a word, a phrase or a sentence, any language — and you receive the vocabulary\'s own equivalent or near expressions, one per line and verbatim. The helper holds the whole vocabulary in its system prompt, so the first call sets it up and takes longer; each later call is one question. Treat what it returns as leads: look the strings up with oks_search and read the declarations with oks_data using load={knowledge:"knowledge://"} and accessing .knowledge.',
       parameters: {
         type: 'object',
         properties: {
