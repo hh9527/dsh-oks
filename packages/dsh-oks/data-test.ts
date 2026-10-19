@@ -193,7 +193,7 @@ try {
     (error: Error) => {
       assert.match(error.message, /cannot index/);
       assert.match(error.message, /输入根 \. 是具名对象/);
-      assert.match(error.message, /输入 knowledge ← knowledge:\/\/（知识图/);
+      assert.match(error.message, /输入 knowledge ← knowledge:\/\/（已读取封装的 \.data 负荷/);
       return true;
     });
   const preview = await call({ load: { fact: arraySource.asset },

@@ -92,7 +92,7 @@ export function renderCurrentCtx(_args: unknown, value: CurrentCtxValue | null |
   const lines = [
     `asset:  ${value?.asset ?? ''}`,
     `这份时间上下文：${((value?.bytes ?? 0) / 1024).toFixed(1)} KB · ${value?.ms ?? 0} ms`,
-    '把它当具名输入交给 oks_data，边界就在程序里算（tzadd / tzfloor / tzceil，时区显式传）。',
+    '把它以 ctx 加载到 oks_data，用 builtin://time/windows.jq 计算带毫秒值与 RFC3339 的窗口；参数与示例见 oks://help/time。',
     '',
     JSON.stringify(value?.data ?? null, null, 2),
   ];
@@ -392,7 +392,7 @@ export function renderCheck(_args: unknown, value: CheckValue | null | undefined
   const runnable = value?.queryCount ?? 0;
   lines.push('', results.length > 0 && accepted.length === results.length
     ? `校验结论：${results.length} 个 Intent 全部可用（${runnable} 个查询可执行）。用 oks_exec_query_intent 带同一批名字与各自的 key 提交就能拿到结果。`
-    : `校验结论：${accepted.length}/${results.length} 可用（${runnable} 个查询可执行）。用 oks_data 以 load={knowledge:"knowledge://"} 加载，在 .knowledge 下按服务给出的 key 读它声明的词汇再修，保持业务含义不变。`);
+    : `校验结论：${accepted.length}/${results.length} 可用（${runnable} 个查询可执行）。用 oks_data 以 load={knowledge:"knowledge://"} 加载，在 .knowledge 下按返回的 key 读声明再修；查询语法通过 oks://help/query 读取，保持业务含义不变。`);
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 

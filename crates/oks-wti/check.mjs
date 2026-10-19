@@ -27,8 +27,8 @@ const put = (exports, text) => {
   return { ptr, len: buf.length };
 };
 
-/** 跑一次：`call(程序, 输入?, 程序名?)` → { status, values, text, payload }。
- *  成功（0）与截断（2）时 `payload` 是一份 JSON 数组（值流），解析一次就拿全 `values`。 */
+/** 跑一次：`call(程序, 输入?, 程序名?)` → { status, text, payload }。
+ *  成功（0）返回单值 JSON，超限（2）返回形状 JSON。 */
 
 const call = (program, input = 'null', path = '') => {
   const exports = instance;
@@ -46,12 +46,11 @@ const call = (program, input = 'null', path = '') => {
   exports.dealloc(pathBuf.ptr, pathBuf.len);
   exports.dealloc(inputBuf.ptr, inputBuf.len);
   const payload = text.trim();
-  const values = status === 1 ? undefined : JSON.parse(payload);
+  const value = status === 1 ? undefined : JSON.parse(payload);
   return {
     status,
     payload,
-    values,
-    text: values !== undefined && values.length === 1 ? JSON.stringify(values[0]) : payload,
+    text: status === 1 ? payload : JSON.stringify(value),
   };
 };
 
@@ -107,7 +106,7 @@ for (const [label, program, want] of [
 // 数字排版照 jaq（payload 原文里就是 `1024.0`；宿主解析成数值后是同一个数）。
 {
   const { status, payload } = call('pow(2;10)');
-  check('数字排版照 jaq（1024.0）', status === 0 && payload === '[1024.0]', `status=${status} ${payload}`);
+  check('数字排版照 jaq（1024.0）', status === 0 && payload === '1024.0', `status=${status} ${payload}`);
 }
 
 // ④ 坏输入要明确报错（错误路径是正面行为：说清哪里不对，而不是静默算错）。
@@ -165,6 +164,33 @@ for (const [label, program, want] of [
   ['floor 周（周一起）',
     '("2026-10-15T13:45:00+08:00" | fromdateiso8601) | tzfloor("week"; "Asia/Shanghai") | gmtime_tz("Asia/Shanghai") | .[0:6]',
     '[2026,9,12,0,0,0]'],
+  ['floor 月保留日期但清空时分秒（真机回归）',
+    '1790854863 | tzfloor("month"; "Asia/Shanghai") | strftime_tz("%Y-%m-%dT%H:%M:%S%:z"; "Asia/Shanghai")',
+    '"2026-10-01T00:00:00+08:00"'],
+  ['ceil 月清空时分秒',
+    '("2026-10-19T11:41:03.456+08:00" | fromdateiso8601) | tzceil("month"; "Asia/Shanghai") | todateiso8601',
+    '"2026-10-31T16:00:00Z"'],
+  ['floor 月末非午夜',
+    '("2024-02-29T23:59:59.999+08:00" | fromdateiso8601) | tzfloor("month"; "Asia/Shanghai") | todateiso8601',
+    '"2024-01-31T16:00:00Z"'],
+  ['floor 年跨年与小数秒',
+    '("2026-12-31T23:59:59.999+08:00" | fromdateiso8601) | tzfloor("year"; "Asia/Shanghai") | todateiso8601',
+    '"2025-12-31T16:00:00Z"'],
+  ['ceil 季跨年',
+    '("2026-12-31T23:59:59.999+08:00" | fromdateiso8601) | tzceil("quarter"; "Asia/Shanghai") | todateiso8601',
+    '"2026-12-31T16:00:00Z"'],
+  ['完整周期 ceil 在边界也返回下一边界',
+    '("2026-10-01T00:00:00+08:00" | fromdateiso8601) | tzceil("month"; "Asia/Shanghai") | todateiso8601',
+    '"2026-10-31T16:00:00Z"'],
+  ['DST 春季一天 23 小时',
+    '("2026-03-08T12:00:00-04:00" | fromdateiso8601) as $t | ($t | tzceil("day"; "America/New_York")) - ($t | tzfloor("day"; "America/New_York"))',
+    '82800'],
+  ['DST 秋季一天 25 小时',
+    '("2026-11-01T12:00:00-05:00" | fromdateiso8601) as $t | ($t | tzceil("day"; "America/New_York")) - ($t | tzfloor("day"; "America/New_York"))',
+    '90000'],
+  ['DST 月边界使用各自偏移',
+    '("2026-03-19T11:41:03-04:00" | fromdateiso8601) as $t | [($t | tzfloor("month"; "America/New_York")), ($t | tzceil("month"; "America/New_York"))] | map(strftime_tz("%Y-%m-%dT%H:%M:%S%:z"; "America/New_York"))',
+    '["2026-03-01T00:00:00-05:00","2026-04-01T00:00:00-04:00"]'],
   ['floor 季',
     '("2026-10-15T13:45:00+08:00" | fromdateiso8601) | tzfloor("quarter"; "Asia/Shanghai") | gmtime_tz("Asia/Shanghai") | .[0:6]',
     '[2026,9,1,0,0,0]'],
@@ -193,10 +219,10 @@ for (const [label, program, want] of [
   check(label, status === 0 && text === want, `status=${status} ${text}`);
 }
 
-// ⑧ 上限：引擎自己到点就停（状态 2），数组闭合、只保留放得下的完整值。
+// ⑧ 上限：引擎自己到点就停（状态 2），返回完整结果的形状摘要。
 const cut = (() => {
   const exports = instance;
-  const program = put(exports, '[range(1;100)] | .[]');
+  const program = put(exports, '[range(1;100)]');
   const path = put(exports, '');
   const input = put(exports, 'null');
   const out = exports.run(program.ptr, program.len, path.ptr, path.len, input.ptr, input.len, 12);
@@ -210,9 +236,8 @@ const cut = (() => {
   exports.dealloc(input.ptr, input.len);
   return { status, text };
 })();
-check('到上限：状态 2，payload 仍是闭合数组、只保留放得下的值',
-  cut.status === 2 && cut.text.startsWith('[') && cut.text.endsWith(']')
-    && JSON.parse(cut.text).length >= 1 && JSON.parse(cut.text).length < 99,
+check('到上限：状态 2，返回整个结果的形状',
+  cut.status === 2 && cut.text === '{"type":"array","size":99}',
   `status=${cut.status} ${cut.text}`);
 
 // 常驻文档 ABI 与逐次输入共用求值语义。
@@ -233,17 +258,17 @@ const loadDocument = (text) => {
 const documentRun = (handle, code) => {
   const program = put(instance, code);
   const path = put(instance, '.work/knowledge.jq');
-  const result = takeReply(instance.run_document(handle, program.ptr, program.len, path.ptr, path.len, 0));
+  const result = takeReply(instance.run_document(handle, program.ptr, program.len, path.ptr, path.len, 0, 0, 0));
   instance.dealloc(program.ptr, program.len);
   instance.dealloc(path.ptr, path.len);
   return result;
 };
 const loaded = loadDocument('{"n":1}');
-const handle = JSON.parse(loaded.text)[0];
+const handle = JSON.parse(loaded.text);
 check('文档装载返回 handle', loaded.status === 0 && handle === 1, loaded.text);
 check('文档求值与普通输入一致', documentRun(handle, '.n + 1').text === call('.n + 1', '{"n":1}').payload, '一致');
 documentRun(handle, '.n = 9');
-check('文档更新保留原始值', documentRun(handle, '.n').text === '[1]', documentRun(handle, '.n').text);
+check('文档更新保留原始值', documentRun(handle, '.n').text === '1', documentRun(handle, '.n').text);
 check('无效 handle 明确失败', documentRun(9999, '.').status === 1, documentRun(9999, '.').text);
 check('文档装载拒绝非法 JSON', loadDocument('{').status === 1, '非法 JSON');
 

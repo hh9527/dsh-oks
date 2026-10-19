@@ -299,11 +299,13 @@ export interface NodeDetail {
 }
 
 export interface NodeLink {
+  role?: string;
   key: string;
   type: string;
 }
 
 export interface KnowledgeNode {
+  address?: {node:string;member:string|null};
   key: string;
   type?: string;
   detail?: NodeDetail | null;

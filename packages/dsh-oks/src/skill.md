@@ -16,11 +16,15 @@
 
 ### 知识检索和发现
 
-- 从 `oks_data({"load":{"knowledge":"knowledge://"},"project":{"knowledge":{"guide":"Value"}}})` 读取知识入口，再按入口声明发现词条和关系。知识图顶层是 key → 带 type 的条目
-- 简单选择和形状探索使用 `project`：`"Value"` 保留值，`"Shape"` 探测形状，对象选择字面键，`["Map", 规则]` 处理容器成员。规则直接传嵌套 JSON
-- 复杂筛选、关联、聚合先写 `.work/knowledge_query.jq`，再调用 `oks_data({"load":{"knowledge":"knowledge://"},"jq":{"src":".work/knowledge_query.jq"}})`；程序通过 `.knowledge` 访问知识图，跨调用复用已装载的知识
-- 用户说法与领域词汇有差距时，先用 `va_ask` 获取线索或用 `oks_search` 模糊检索，再通过知识资源阅读原始声明
-- 有时候用户表达中的词汇并不在领域常用词汇表中，`oks_search` 检索不到，这时 `va_ask` 工具就能让领域词汇助手告诉你相近的领域词汇有哪些，便于你进一步检索
+- 知识核心能力是 va_ask 词汇规整与 oks_data 的 project/jq。先读工具用法：`oks_data({"load":{"help":"oks://help/knowledge"}})`；该资源含可执行 examples 和内置 jq 参数。
+- 知识采用 `{meta,origin,data}` 封装。`load:{knowledge:"knowledge://"}` 后 `.knowledge` 为 `{datasets,types,relations,items}`。datasets 内有 fields/dimensions/measures/time_roles/business_links，types 内有 values 与 fields/dimensions 等分类引用；items 是 `{key,names,doc}` 数组。`knowledge://#meta` 给简短版本与计数；完整工程发现契约在 `knowledge://#contract`。
+- 用户说法与领域词汇有差距时先用 va_ask，随后用 `builtin://knowledge/search.jq` 查返回的候选词，读取事实核实。
+- 搜索示例：`oks_data({"load":{"knowledge":"knowledge://"},"jq":{"src":"builtin://knowledge/search.jq","args":{"query":"候选词","take":10}}})`。结果 key 为 `datasets/<encoded-id>#dimensions/<encoded-id>` 等二元地址，原样使用。
+- 精确读取事实与说明：`oks_data({"load":{"knowledge":"knowledge://"},"jq":{"src":"builtin://knowledge/read.jq","args":{"key":"<返回地址>"}}})`。返回 `{key,facts,items}`。可读分类地址如 `datasets/<id>#dimensions`，较大目录先用 members 分页。
+- 成员枚举用 members.jq 的 `key` 与 `link:"dimensions"` / `"fields"` / `"values"` 等分类；反向引用用 references.jq。默认十项，用 next 作为 skip 继续。类型筛选继续使用 Dataset/Dimension/Measure/Ty 等。
+- 精确投影跟随实际语义分支：`project:{knowledge:{types:{"<原始类型ID>":{values:"Value"}}}}` 只读值域，不携带 fields 等旁支。地址中的 ID 是 URI 编码，字典键为原始 ID；使用 read.jq 解析返回地址，无需手动拆 key。
+- 自定义 jq 输入仍是具名对象；例如 `.knowledge.datasets | to_entries | map({id:.key,dimensions:(.value.dimensions|keys)})`。完整来源自动保留；用法不在业务知识里。
+- 查询语法由工具提供：`oks_data({"load":{"help":"oks://help/query"},"project":{"help":"Shape"}})`，再选择 intent、graph、graph/filter、graph/aggregate、graph/existence、graph/order、graph_pair、graph_union 等主题读取。知识图只提供事实与能力约束。
 
 ### 查询设计和执行
 
@@ -66,7 +70,7 @@
 - 例如 `{"fact":{"rows":["TruncateThen",3,"Value"]}}` 查看前三行；`{"fact":{"rows":["TruncateThen",3,["Map",{"name":"Value"}]]}}` 取前三行中的 name。子规则为 `"Shape"` 时描述截断后的容器，为 `["Map","Shape"]` 时逐项描述样本。
 - 对象规则作用于对象，`Map` / `TruncateThen` 作用于数组或对象；类型错配时报出规则位置与实际类型。
 - `["Map", "Shape"]` 查看容器每个成员的形状；`"Shape"` 查看容器本身的形状。
-- 对象键按字面选择。例如知识节点键 `"Schema/syntax/intent"` 整体写成一个键；嵌套字段则逐层写对象。
+- 对象键按字面选择。例如知识节点键 `"Dimension/site/site_name"` 整体写成一个键；嵌套字段则逐层写对象。
 - 字典也通过 `Map` 处理成员。例如 `{"fact":{"items":["Map",{"type":"Value"}]}}` 保留 `items` 的各字典键，只取每个条目的 `type`。
 - 规则直接作为 JSON 值传入 `project`。需要取多个资源的字段时，在最外层并列写资源名。
 
@@ -81,7 +85,7 @@
 程序的 `.` 始终是以 `load` 名称为键的对象，即使只加载一份材料也如此：`load:{fact:"…"}` 对应 `{fact:负荷}`。`.fact.rows` 是查询行，`.knowledge` 是知识图。跨迭代引用输入时，先绑定完整输入：
 
 ```jq
-. as $in | {rowCount: ($in.fact.rows | length), guide: $in.knowledge.guide}
+. as $in | {rowCount: ($in.fact.rows | length), knowledgeCount: ($in.knowledge | length)}
 ```
 
 进入 `map` 或 `.[]` 后，`.` 指当前成员；`$in` 保留具名输入，可继续使用 `$in.fact`、`$in.knowledge`。

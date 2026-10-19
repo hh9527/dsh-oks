@@ -9,7 +9,7 @@
 // create_data 与 create_current_ctx_data 创建给定材料和上下文材料。
 // 图表与报告由 oks_render_figure / oks_render_report 生成，oks_check_report 校验 XHTML 正文。
 // work_* 工具只操作 .work/，所有文件参数使用完整工作区相对路径；.work/ 是目录列表入口。
-// oks_search、oks_references、va_ask 辅助词汇发现；oks_artifacts 列出交付物。
+// va_ask 规整词汇，oks_data 投影知识和执行内置检索 jq；oks_artifacts 列出交付物。
 // 内部材料的回收由写路径自己保活，要立刻腾地方则用右侧栏「产出」页签的清理按钮（走插件自己的端点）；
 // 窗口分 auto/manual 两套，配置在工作区 oks.json 的 retention 里。
 //

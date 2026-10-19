@@ -172,7 +172,8 @@ fn start_of_unit<V: ValT>(ts: Timestamp, unit: &str, zone: &TimeZone) -> Result<
                 .map_err(Error::str)?
                 .start_of_day()
         }
-        "month" => zoned.first_of_month(),
+        // first_of_month 保留墙钟时分秒；必须再取当日的实际起点。
+        "month" => zoned.first_of_month().and_then(|first| first.start_of_day()),
         "quarter" => {
             let month = ((i32::from(zoned.month()) - 1) / 3) * 3 + 1;
             zoned

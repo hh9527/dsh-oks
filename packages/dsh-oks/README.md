@@ -46,11 +46,9 @@ Node 按 URL 缓存 ESM 模块，所以：
 
 | 工具 | 输入 | 作用 |
 | --- | --- | --- |
-| `oks_search` | `{query?, kind?, dataset?, skip?}` | 按**名词/说法**在词汇表里找：回 `kind`、`name`、归属（字段名用词汇表声明的 `owner`）、命中位置（`name`/`alias`/`doc`）与分数，**不回 key**。没有 `limit`——页大小由插件按字节定，`more` 报出还剩多少条。0 命中时给出可用的 kind 与 dataset |
-| `oks_references` | `{key, link?, kind?, skip?}` | 按 key **反向**找引用它的节点：回引用种类与引用方的 key。用来回答"哪个维度用了这套值域""哪个数据集声明了这个度量" |
 | `oks_check_query_intent` | `{intents:{<名>:Intent}}` | **只校验**：按名字回结论，通过的项给出 `key`（该项 Intent 的标识，提交查询时原样带回）。每个 Intent 必须带顶层 `limit`（1..500）：它是 Intent 的一部分、也参与哈希。不回查询语句，也不碰数据——迭代 Intent 形状时用它 |
 | `oks_exec_query_intent` | `{intents:{<名>:{intent,key}}}` | 核 key 后**只读执行**：每个成功项写进 `<工作区>/.oks/data/<时间>-<名>-<内容哈希>.qres.json`，回执只给 `asset`、列信息与行数——**数据行与语句都不进这段对话**（数据按需读回，语句在执行记录与呈现记录里）；失败项按 `key_mismatch` / `rejected` / `query_error` / `save_error` 分别报告 |
-| `oks_data` | `{load?, project?, jq?:{src}, save?}` | 统一访问知识与数据。`load` 是名字到资源地址的对象，加载后通过 `.fact` 等键访问；省略时为 `{}`。`knowledge://` 是完整知识图；资产路径默认只读 `.data`，`#meta` 只读 `{meta, origin}`。`project` 是纯 JSON 投影，`jq.src` 指定 `.work/analysis.jq` 等完整程序路径，两者二选一；均省略为恒等处理。查看返回 `{ok, execution, data}`，给 `save:{name,motivation}` 则保存封装并返回 `{asset, bytes, execution}`；`execution.method` 表明 `jq / project / identity`，执行 jq 时 `execution.src` 为实际程序路径。输出超限时保留错误与 shape。来源链记录实际输入、视图、规则或源码和完整上游。单知识资源执行 jq 复用独立知识实例的已解析 handle，并按 load 的键名包装输入；其他输入由宿主组装后交给计算器。查看受 16 KiB 预算约束，求值不完整时保存失败。 |
+| `oks_data` | `{load?, project?, jq?:{src,args?}, save?}` | 统一访问知识与数据。`load` 是名字到资源地址的对象，加载后通过 `.fact` 等键访问；省略时为 `{}`。`knowledge://` 是完整知识图；资产路径默认只读 `.data`，`#meta` 只读 `{meta, origin}`。`project` 是纯 JSON 投影，`jq.src` 指定 `.work/analysis.jq` 等完整程序路径，两者二选一；均省略为恒等处理。查看返回 `{ok, execution, data}`，给 `save:{name,motivation}` 则保存封装并返回 `{asset, bytes, execution}`；`execution.method` 表明 `jq / project / identity`，执行 jq 时 `execution.src` 为实际程序路径。输出超限时保留错误与 shape。来源链记录实际输入、视图、规则或源码和完整上游。单知识资源执行 jq 复用独立知识实例的已解析 handle，并按 load 的键名包装输入；其他输入由宿主组装后交给计算器。查看受 16 KiB 预算约束，求值不完整时保存失败。 |
 | `oks_render_figure` | `{spec, src, nodesSrc?, name?, note?}` | 按 `spec.kind` 把数据变成**图**或**表**，两者都落成工作区里的文件。数据**只从 `src` 来**——那是前面回执里给的一份封装（`oks_exec_query_intent` 的查询结果、`oks_data`（`save`） 的加工结果、`create_data` 的输入数据），行不内联进调用。图不再画"来源标识"这类标签（标签说不清：同一份数据经过几层加工就归不到一个入口了），要说来源就看随图带走的来源链。图把**自己用的那份材料**（画出来的行、实际绘图规格、完整来源链）嵌在 SVG 里，所以工作区被回收之后它仍旧说得清这些数字从哪来。关系图还会把**节点表**一起带上（`data.nodeRows`）：它用了两份材料，于是自己在链上记一个"合成展示件"节点，两路输入都挂在它下面，图形也能从自己再画一次（不带 `nodesSrc`）。十三种图元都用 `x`（类别/横轴列）与 `value`（数值列）作底（`histogram` 只给 `value`；`sankey` 给 `x` 与 `series`，`value` 可选）：**关系图** `graph`（两张表：`src` 边表 `x`/`series`/`value?`/`label?`，`nodesSrc` 节点表 `id`/`label?`/`category?`/`status?`/`depth?`/`x?,y?`；**按 `depth` 分层**、节点按 `category` 着色、`status: 'focus'` 强调其余退灰）；**桑基图** `sankey`（行是边：`x` 起点、`series` 终点、`value` 权重；分层由数据自己算，同一对起终点累加合并）；**仪表盘** `gauge`（每行一张小仪表，值按 0–100 的比率读，越界报错，`marks` 画阈值刻度）；**分组柱** `column`，可选 `series`（组内分组）；**横条** `bar`（可选 `series`：横向的分组条）；**饼图** `pie`（只取正数；`donut` 可画成环形）；**多序列折线** `line`、**面积图** `area`（可选 `series`，`xType` 不填按数据推断；缺失的那个点**默认断开**，`connectNulls` 才连过去）；**散点** `scatter`（可选 `size` 当第三维）；**直方图** `histogram`（可选 `bins`）；**箱线图** `box`；**矩阵** `heatmap` 与**雷达** `radar`（两者都要 `series`：矩阵的纵轴类别 / 雷达的被比较对象）；`entityColor` 让颜色跟名字走（同一个实体跨图同色）。 `spec.kind` 给 `"table"` 时出的是表：`columns` 选列与顺序、`title` 写表注，数字列右对齐；表落成 markdown 文件，回执同时给可直接粘进回答的 markdown 表本体（表太大时不给本体，只给引用），来源链、最终数据与展示规格藏在文件头的一行 HTML 注释里，报表内联时读它。两种回执都带一对平行的属性：**`asset` 是产出位置**（可当输入被引用、也可被 `present`），**`embedded` 是可直接粘进回答的那一段**——图是 `![标题](路径)`，粘进回答就显示在那里；表是 markdown 表本体。要让图或表进报告，是把它绑进 `inputs` 的一项并在正文里写 `<figure data-oks-ref>`，与 `embedded` 无关。 |
 | `oks_render_report` | `{spec, name?, note?}` | 把叙述与图组织成一份**自足的 HTML 报告**存进工作区：`spec` 给 `title`、可选 `subtitle`、一段 **XHTML 正文文件** `articleFile`（使用 `.work/article.xhtml` 等完整相对路径）与 `inputs`。正文是**严格 XML 的子集**——单个 `<article>` 根，元素限定在 `section`/`h1`–`h3`/`p`/`div`/`span`/`figure`/`figcaption`/`table` 系列/`ul`/`ol`/`li`/`blockquote`/`pre`/`code`/`strong`/`em`/`a`/`br`/`hr`，属性限定在 `id`/`class`/`title`/`lang` 与 `data-oks-ref`/`data-oks-pick`/`data-oks-shrink`（外加 `href`、`colspan`/`rowspan`/`scope`），空元素写自闭合（`<br />`）；章节的**意图**写成 XML 注释（不进版面，留给复用）。**数据只靠引用进来**：图与表写 `<figure data-oks-ref="key"><figcaption>图注</figcaption></figure>`，数值写 `<span data-oks-ref="key" data-oks-pick=".rowCount"></span>`；`inputs` 把每个 key 指到回执给的材料路径（`{"key": {"src": "…", "root": "."}}`，普通路径自动读取 `.data` 负荷，`root` 相对于负荷且默认 `"."`；例如 `".rows"` 选取负荷里的行。显式 `src#meta` 读取 `{meta, origin}`，`root` 相对于该视图）——引用了没声明、声明了没引用都明确失败。**报告里出现的所有数字都必须从投影与计算中得到**（用 jq 现算成标量 → `inputs` 绑定 → `span` 的 `ref` + `pick` 引用；正文里不写手算数字，它没有来源链、读的人无法核对）；文字里的数字用 `<span data-oks-lit="">…</span>` 声明为文字（只能写在 `span` 上、要带空值，报告正文是严格 XML；标识符与引用编号里的数字不算，如 `P95`、`A.1.2.3`、`#123`），自己的解读用 `data-oks-shrink` 标记：最终页面完整展示；把报告当输入读时，它变成最多 30 个 Unicode 字符的纯文本注释，截断时加 `...`，留下组织方式、意图与全部底层材料，成为可复用的样本。图注编号（图 1/表 1…）按正文出现顺序由系统给。每个引用项的**最终数据、完整来源链与实际执行的 jq 源码**都并进页面里的元数据区（`<script type="application/json" id="oks-metadata">` = `{ origin, assets, items }`：`origin` 是共享祖先只存一份的节点表 + 一个"组装这份报告"的根节点，节点用 `src://<key>` 引用 `assets` 里的源码，`items` 是 key → 该项选出的数据），于是读报告用 `oks_data` 就够（拿到 `{ assets, items, structure }`；**读回是缩水视角**：`structure` 里引用 span 以注释保留完整值，`shrink` 段落以注释保留最多 30 个 Unicode 字符的纯文本摘要（截断时加 `...`），图表容器使用省略标记 `<!-- omitted -->`；完整数据见 `items`，其中 `structure` 是**阅读摘要**结构区）。**取不到材料时整份失败**并说清是哪一项。图以**内联 SVG** 嵌在页面里，单文件可以发给任何人打开。报告把**整条配方**带在身上（每个查询的 Intent、每份给定数据与上下文的 payload、每段 jq 源码在 `assets` 里），所以中间材料被回收之后，报告里展示的数据仍能沿来源链解释。报告**不出现在回答正文**：回执只给 `asset`（这一对里报告只有"位置"那一半，没有 `embedded`——它不进回答），agent 用 `present` 交付，用户点开在右侧栏阅读 |
 | `oks_check_report` | `{articleFile}` | 落盘前**校一遍正文**：返回 `{valid, errors, refs, commentCount}`，每条错误带 `code`、行列与元素名（良构、元素与属性白名单、空元素必须自闭合、`id` 报告内唯一、`data-oks-ref`/`data-oks-pick` 规则、链接与表格属性取值）。不落盘、不记账 |
@@ -59,35 +57,28 @@ Node 按 URL 缓存 ESM 模块，所以：
 | `work_edit` | `{file_path, old_string, new_string, replace_all?}` | 字面替换改一份 `.work/` 下的文件：`old` 必须原样出现且唯一（否则要 `replaceAll: true`），报错时说清是没找到还是出现了几次 |
 | `work_delete` | `{file_path}` | 删掉 `.work/` 下的**一份文件**（目录要先清空里面的文件）：不用的程序就这么退场。删程序不损溯源——来源链记的是程序正文，丢的只是"能不能再跑一遍"。回执给删了哪个、代码区还剩几个文件 |
 | `oks_artifacts` | `{}` | 列出本工作区的**图与报告**（最新在前）：标题、类别、时间、是否保留。查询结果是内部制品、不出现。用它回答"产出过什么"，或在保留别的东西之前先找到它的路径 |
-| `va_ask` | `{query}` | 咨询本会话的**词汇助手**：给一个说法（词/短语/一句话，中英不限），拿回词表里等价或相近的说法——回答是**一行一个字符串**，每个字符串都是词表原文。助手是插件自己建、自己收的**顶层 agent**（preset `oks`、与调用方同一工作区、共用同一份进程内索引），平时归档，被咨询时临时恢复。它给的是线索，检索口径仍由 `oks_search` / `oks_data` 决定。**整份词表由插件渲染成助手系统提示词里的一个 section**（模板 + 全部词条），助手一个工具都没有。装配**不发任何消息**；每个说法才是一次回合，拿到回答后插件把表面上的节点全部收进一个固定文本的标记，所以助手每次只看到「系统提示词里的词表 + 一个标记 + 当前这个说法」（会话日志保持 append-only，标记节点用 `sourceEventSeqs` 记下遮蔽范围）|
+| `va_ask` | `{query}` | 咨询本会话的**词汇助手**：给一个说法（词/短语/一句话，中英不限），拿回词表里等价或相近的说法——回答是**一行一个字符串**，每个字符串都是词表原文。助手是插件自己建、自己收的**顶层 agent**（preset `oks`、与调用方同一工作区、共用同一份进程内索引），平时归档，被咨询时临时恢复。它给的是线索，候选知识由 `oks_data` 进一步核验。**整份词表由插件渲染成助手系统提示词里的一个 section**（模板 + 全部词条），助手一个工具都没有。装配**不发任何消息**；每个说法才是一次回合，拿到回答后插件把表面上的节点全部收进一个固定文本的标记，所以助手每次只看到「系统提示词里的词表 + 一个标记 + 当前这个说法」（会话日志保持 append-only，标记节点用 `sourceEventSeqs` 记下遮蔽范围）|
 | `create_current_ctx_data` | 无参数 | 把**当轮会话上下文**——时刻与时区——**读一次**并落成 `.oks/data/<date>-current-<hash>.ctx.json`，回执同时给出 `asset` 与这份 `data`（`{utc: {epochMillis, rfc3339}, tz: {client: {id, offset, offsetMinutes}}}`（绝对值 + 按层放的时区；墙钟与边界都由程序当场算：`gmtime_tz(zone)` / `tzfloor` / `tzceil`）（时区**按层**放：现在只有当轮会话这一层，将来加服务端就是再添一个 `server` 槽位））。服务不读时钟、求值器里也没有时钟：**相对时间的绝对边界由这份材料在 jq 里算**（`tzadd` / `tzfloor` / `tzceil`，时区显式传）——一组问题共用这一份锚点 |
 
 `create_current_ctx_data` **与模型无关、也不解释任何领域格式**：它只把上下文读一次、落成材料，具体要哪一种
 形式由知识节点自己声明；`va_ask` 只管怎么问词汇助手，也不碰词汇。这三个工具都**不需要工作区**
 （没有 `oks.json` 也能用）。
 
-### 词汇表与引用图是怎么来的
+### 知识访问
 
-`oks_search` 与 `oks_references` 用的是插件内存里的一份词汇表与反向引用索引，
-它按服务声明的**发现契约**建立：`<domain>/discovery` 声明 revision、入口 roots、每类 key 的
-key 模式，以及 `vocabulary`（哪些 kind 进词汇表、每类词条的归属字段与必须非空的字段）；
-再沿服务 `info` 返回的引用图走完整个图，然后在本地派生。派生结果与服务的发布物一致
-（同一份产物：节点数、词条数、引用数逐项相同）。
+知识交互的核心是 `va_ask` 和 `oks_data`。前者提供词汇规整线索；后者在完整知识图上
+投影、检索和计算。模型提供知识事实与业务约束，工具提供用法、程序与示例。
 
-- **只在第一次用到检索时同步建立**（一次全图遍历，实测 2,769 节点约 20 秒），之后按产物的
-  模型内容的 sha256 复用——同一个模型被多个工作区、多个会话声明时只派生一次；
-- **占用的是插件内存，不是模型上下文**：词汇表与引用图都不进对话；
-- **知识图保留完整条目**：顶层是 key 到带 `type` 条目的映射，以 `load:{knowledge:"knowledge://"}` 加载后，`.knowledge.guide` 提供读取指引与发现契约；`oks_data` 按需投影或执行 jq，完整知识不进模型上下文；
-- **进不进词汇表由服务声明**：`vocabulary` 列出哪些 kind 是词条，每条还声明 `owner`
-  （词条的归属字段，既是 detail 字段名也是 key 模式里的占位符名，输出行里就用这个名字）
-  与 `require`（该 detail 字段必须存在且非空，例如排除没有存储布局的基础类型）；
-  有声明的 key 模式但不在 `vocabulary` 里的 kind 不是词条，它的 key 从节点自身的引用里得到；
-- 契约对不上时**直接报错**（`ok` 不是发现契约、缺少 roots 或 vocabulary、引用无法解析、
-  未知的引用种类），不静默降级。
+知识资源采用 `{meta,origin,data}` 封装，`knowledge://` 自动解包为 `{datasets,types,relations,items}`。
+数据集拥有 fields/dimensions/measures/time_roles/business_links 字典；类型拥有 values 字典及 fields/dimensions 等分类反向引用。反向引用由工具层派生，模型只发布归属和正向事实。items 统一记录 `{key,names,doc}`。
+引用使用 `datasets/<encoded-id>#fields/<encoded-id>` 等二元地址，字典键保留原始 ID，地址中的 ID 独立 URI 编码一次。
+`knowledge://#meta` 返回简短版本与计数，`knowledge://#contract` 显式读取完整工程发现契约。
 
-`oks_search` 只负责给出"往哪走"：key 由 agent 按 `index` 里声明的 key 模式自己拼，节点说明仍由
-`oks_data` 加载后在 `.knowledge` 下按 key 读——所以地址是单一来源，内容不重复。同一份索引还负责把整份词汇**一次性
-渲染**成词汇助手系统提示词里的那个 section（不筛不排，按 key 升序、一行一条 `<key> <name> <aliases> <doc>`，字段 json 风格）。
+检索、分类成员、反向引用与配套说明读取分别采用 `builtin://knowledge/search.jq`、`members.jq`、`references.jq`、`read.jq`。
+例如先用 va_ask 获得领域词汇，再 search，最后把返回 key 原样传给 read。members 的 link 参数为 fields/dimensions/values 等语义分类。
+read 返回 `{key,facts,items}`，也支持目录地址如 `datasets/<id>#dimensions`。project 精确读取 `types.<id>.values` 时不会携带 fields。
+完整知识留在插件内存，最终回执保持 16 KiB UTF-8 上限。宿主校验 `ontology-knowledge-v3` / `ontology-intent-v1` 契约并绑定模型哈希缓存。
+完整参数和可执行示例见工具自有 `oks://help/knowledge`，程序源码可按 builtin URI 加载；内建与自定义程序共用真实 Wasm jq 引擎。
 
 ### 校验与查询为什么分开
 
@@ -353,8 +344,7 @@ WTI 分别实例化为知识求值器与数据计算器。知识求值器按模�
 
 - `["TruncateThen", N, rule]` 先取数组前 N 项或对象前 N 个键，再对截断后的整个容器应用 rule。N 为非负安全整数，0 得到空容器；对象按 JS 自身可枚举键顺序取样并保留键名。例如 `["TruncateThen", 3, "Value"]` 查看三个样本，`["TruncateThen", 3, ["Map", {"name":"Value"}]]` 选择样本中的 name。
 
-例如 `oks_data({"load":{"knowledge":"knowledge://"},"project":{"knowledge":{"index":"Shape"}}})` 先看领域入口条目的形状；
-再用 `oks_data({"load":{"knowledge":"knowledge://"},"project":{"knowledge":{"index":{"description":"Value","detail":"Shape"}}}})` 选择字段。
+例如 `project:{knowledge:{datasets:"Shape"}}` 查看数据集目录，再按实际 ID 投影 fields/dimensions/measures 等语义分支。
 `project` 的对象和数组规则直接嵌套在调用 JSON 中，字符串规则只有 `"Value"`、`"Shape"`。
 `project` 与 `jq` 二选一。缺失键保持缺失，显式 `project: null` 是非法规则，
 结果超出 16 KiB 时返回错误并引导缩小范围；摘要也受该预算约束。
@@ -370,9 +360,8 @@ cd packages/dsh-oks && OKS_WORKSPACE=/path/to/ws node smoke.ts          # 或者
 
 它用一个假的 cordis `ctx` 加载插件（插件行**什么都不配**，正是要验证"模型与数据只来自工作区"），
 并真实调用各工具：验证工具的名字与分工、**检索层派生出的节点数 / 词条数 / 引用数与服务发布物逐项相同**、
-`oks_search` 的过滤与 `skip` 翻页（不重不漏）、0 命中时的 facet、超容量时的整条截断与 `more`、
-整份词汇的渲染（条数与检索出口一致、一行一条 `<key> <name> <aliases> <doc>`、doc 截到 200 字符、
-任何词条都不截半条）、`oks_references` 的反向查询与未知 key 报错、
+内置知识 jq 的过滤、翻页、canonical key、引用往返、工具帮助与事实图闭包、
+整份词汇的稳定渲染、16 KiB 回执预算与知识来源记录、
 **校验路径的渲染与结构化值里都不出现任何语句**、通过项带 32 位 key 而坏项不给 key、
 **查询路径真的执行并把结果落盘**（意图由服务声明的实体走出来，不是写死的；回执里没有数据行、
 结果文件里有，且带原始 Intent 与列信息）、**改了 Intent 复用别的 key 会被 `key_mismatch` 拒掉**、
@@ -382,7 +371,7 @@ cd packages/dsh-oks && OKS_WORKSPACE=/path/to/ws node smoke.ts          # 或者
 正文不含任何具体领域名）、第二个工作区按 `oks.json` 解析相对路径、无 `oks.json` 与**无 `telora.snapshot` 段**
 两种情况下都明确报错，以及模型请求与查询两侧 1 ms 上限下的超时强杀与复活。
 
-测试夹具**不含任何领域知识**：实体 id 是运行时从服务里走出来的（读 `index`，按返回的 key
+测试夹具**不含任何领域知识**：实体 id 是运行时从服务里走出来的（搜索数据集，按返回的地址
 逐级跟随，直到拿到一个带 `detail.id` 的成员），所以模型换形状不会让测试失效——
 这也正是"代码里不写形状假设"这条原则的自我验证。
 
@@ -488,3 +477,27 @@ cd packages/dsh-oks && OKS_WORKSPACE=/path/to/ws node smoke.ts          # 或者
 ### 求值错误诊断
 
 加载和编译错误保留程序文件名、行列与代码定位。运行时错误在 Rust 格式化过程中限制为最多 4 KiB UTF-8 文本，超限附截断标记；该预算包含标记，宿主可追加输入名称、来源与形状摘要。
+
+知识发布的跨领域验收（产物先在模型仓库构建）可运行：
+
+```sh
+node knowledge-snapshot-test.ts /path/to/example_models.snapshot.wasm dog spider world
+node knowledge-snapshot-test.ts /path/to/icloud_model.snapshot.wasm ic
+```
+
+该验收核对图与同哈希发布清单的全量 key、引用闭包、无操作 Schema、真实内置 jq 和诊断边界。
+
+### 可复核的时间窗口
+
+相对时间先调用 `create_current_ctx_data`，将返回的材料以 `ctx` 加载：
+
+```json
+{"load":{"ctx":"<context asset>"},"jq":{"src":"builtin://time/windows.jq","args":{"unit":"month","count":3,"mode":"complete"}}}
+```
+
+结果按时间升序排列，每项为 `{label,zone,start:{epochMillis,rfc3339},end:{epochMillis,rfc3339}}`，区间为 `[start,end)`。
+Helper 直接接收上下文的毫秒值，按 IANA 时区规则计算每个边界。`unit` 支持 year/quarter/month/week/day，周从周一开始；`count` 为 1..50。
+`mode` 必须显式提供：`complete` 取最近 N 个已完成自然周期；`current` 包含当前自然周期，末尾到下一周期起点；`rolling` 取截至上下文时刻的 N 个连续日历长度窗口，保留毫秒，月末按日历钳制。
+详细语义、可执行示例及原语说明见 `oks://help/time`；加载 `builtin://time/windows.jq` 可读取源码。
+
+`tzfloor` / `tzceil` 保持返回 epoch 秒，支持 day/week/month/quarter/year；`tzceil` 即使输入已在边界也返回下一周期起点。`tzadd` 还支持 hour/minute/second。

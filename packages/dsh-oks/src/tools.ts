@@ -1,3 +1,4 @@
+import { builtinCode, toolResource } from './knowledge-programs.ts';
 import { limitProblem } from './intent-limit.ts';
 import { encode, resolveZone } from './time.ts';
 import type { ContextTimeZone } from './time.ts';
@@ -28,8 +29,6 @@ import { adoptArtifacts, collectMaterials, collectWork, listArtifacts, markClean
   openState, pruneArtifacts, reconcileArtifacts, recordArtifact, VISIBLE } from './state.ts';
 import { windowText } from './config.ts';
 import type { Row } from './response.ts';
-import { REFERENCE_KINDS, referencesOf, renderReferences, renderSearch, searchIndex } from './retrieval.ts';
-import type { ReferencesArgs, SearchArgs } from './retrieval.ts';
 import { renderAsk, VA_HELPER_PREFIX } from './va.ts';
 import type { VaRuntime } from './va.ts';
 import type { Knowledge, WorkspaceEntry } from './knowledge.ts';
@@ -819,7 +818,7 @@ const parseNamedIntents = (raw: unknown, withKey: boolean, toolName: string): Pa
 interface TransformArgs {
   load?: unknown;
   project?: unknown;
-  jq?: { src?: unknown };
+  jq?: { src?: unknown; args?: unknown };
   save?: { name?: unknown; motivation?: unknown };
 }
 
@@ -956,7 +955,7 @@ function validateTransform(args: TransformArgs): ReturnType<typeof createProject
     throw new Error('project 与 jq 二选一。');
   }
   if (Object.hasOwn(args, 'jq') && (!isRecord(args.jq)
-    || Object.keys(args.jq).some((key) => key !== 'src') || typeof args.jq.src !== 'string')) {
+    || Object.keys(args.jq).some((key) => !['src', 'args'].includes(key)) || typeof args.jq.src !== 'string')) {
     throw new Error('jq 要写成 {src: ".work/analysis.jq"}。');
   }
   if (Object.hasOwn(args, 'load') && !isRecord(args.load)) {
@@ -982,12 +981,15 @@ async function resolveTransformInputs(knowledge: Knowledge, entry: WorkspaceEntr
   const inputs: NamedInput[] = [];
   for (const [name, src] of bindings) {
     try {
-      if (src === 'knowledge://') {
+      if (src === 'knowledge://' || src === 'knowledge://#meta' || src === 'knowledge://#contract') {
         const index = await knowledge.ensureIndex(entry);
         const source = {
           resource: src, modelHash: entry.modelHash, domain: entry.settings.domain, revision: index.revision,
         };
-        inputs.push({ name, src, root: '.', value: index.knowledge, origin: originOf({ kind: 'knowledge', source }, null) });
+        const origin = originOf({ kind: 'knowledge', source }, null);
+        inputs.push({ name, src, root: src.endsWith('#meta') ? '#meta' : '.data', value: src.endsWith('#contract') ? index.contract : src.endsWith('#meta') ? {meta:index.meta, origin} : index.knowledge, origin });
+      } else if (src.startsWith('oks://') || src.startsWith('builtin://')) {
+        inputs.push({name,src,root:'.data',value:toolResource(src),origin:originOf({kind:'input',motivation:'Tool usage resource',source:{resource:src},data:toolResource(src)},null)});
       } else {
         inputs.push({ name, src, ...readDataResource(entry.settings.workspaceRoot, src) });
       }
@@ -1358,60 +1360,6 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
   // 一律由服务自己的声明回答——模型换了形状，这里一行都不用改。
   const definitions: ToolDefinition[] = [
     {
-      name: 'oks_search',
-      description: 'Find this workspace\'s knowledge vocabulary by name, alias or description and get what you need to address a node: its kind, its name, its owner, where the term matched and how well. Keys are not returned — compose the key with the pattern the service declares for that kind in index.detail.key_patterns, then read the node with oks_data using load={knowledge:"knowledge://"} and accessing .knowledge. That is how a knowledge key is addressed; an Intent key is a different thing, handed to you by oks_check_query_intent and never composed. Use it when you know what a thing is called but not its key; narrow with kind= or dataset=, and page with skip=.',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: {
-            type: 'string',
-            description: 'Words to look for in a term\'s name, aliases or description. Matching is case-insensitive and splits camelCase and separators; every word must appear somewhere in the term. Omit it to list everything the filters allow.',
-          },
-          kind: { type: 'string', description: 'Restrict to one kind of term. The kinds that are discoverable are declared by the knowledge service of this workspace; a kind outside that declaration is rejected with the declared list.' },
-          dataset: { type: 'string', description: 'Restrict to terms whose declared owner "dataset" is this one.' },
-          skip: { type: 'number', description: 'Start at this match (default 0). The response reports how many matches remain, so page with skip = start + matched.length.' },
-        },
-        additionalProperties: false,
-      },
-      output: { schema: OBJECT_OUTPUT, render: renderSearch },
-      async execute(args: SearchArgs, exec: ToolExec) {
-        const entry = knowledge.ensureWorkspace(exec);
-        const index = await knowledge.ensureIndex(entry);
-        const result = searchIndex(index, args);
-        log(`[oks] search query=${JSON.stringify(args?.query ?? '')} kind=${args?.kind ?? '-'}`
-          + ` dataset=${args?.dataset ?? '-'} skip=${result.start} → ${result.total} 命中 · 返回 ${result.matched.length}`
-          + `${result.more === null ? '' : ` · 还有 ${result.more}`}`);
-        return result;
-      },
-    },
-    {
-      name: 'oks_references',
-      description: 'List what references a knowledge key, from the reference graph the plugin derives when the vocabulary is built. Each row names the reference kind and the referencing node\'s key, so you can read that node with oks_data using load={knowledge:"knowledge://"} and accessing .knowledge or follow it further. Use it to see what depends on a term before you change how you address it.',
-      parameters: {
-        type: 'object',
-        properties: {
-          key: {
-            type: 'string',
-            description: 'A knowledge key that exists in this model — composed from the declared key patterns, or taken verbatim from what a node returned.',
-          },
-          link: { type: 'string', enum: REFERENCE_KINDS, description: 'Restrict to one reference kind.' },
-          kind: { type: 'string', description: 'Restrict to referencing nodes of one kind. The kinds that are discoverable are declared by the knowledge service of this workspace.' },
-          skip: { type: 'number', description: 'Start at this reference (default 0).' },
-        },
-        required: ['key'],
-        additionalProperties: false,
-      },
-      output: { schema: OBJECT_OUTPUT, render: renderReferences },
-      async execute(args: ReferencesArgs, exec: ToolExec) {
-        const entry = knowledge.ensureWorkspace(exec);
-        const index = await knowledge.ensureIndex(entry);
-        const result = referencesOf(index, args);
-        log(`[oks] references key=${result.key} link=${args?.link ?? '-'} kind=${args?.kind ?? '-'}`
-          + ` skip=${result.start} → ${result.total} 条 · 返回 ${result.references.length}`);
-        return result;
-      },
-    },
-    {
       name: 'oks_check_query_intent',
       description: 'Validate one to five named graph Intents against this workspace\'s knowledge model and report the result per name. Nothing is executed and no query text comes back — this is the cheap way to find out whether a batch is acceptable, and the names that pass come back with a `key` that oks_exec_query_intent then requires verbatim. All Intents are checked even if one fails, and the subset without Error diagnostics is checked again so a partially bad batch still tells you which members are good. On rejection, read the diagnostics and repair the Intent with its business meaning intact.',
       parameters: {
@@ -1419,7 +1367,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
         properties: {
           intents: {
             type: 'object',
-            description: 'One to five named graph Intents: an object mapping a batch name to one Intent, e.g. {"ports":{"op":"Graph","root":"d","nodes":[{"id":"d","entity":"<dataset id>"}],"edges":[],"select":[],"limit":100}}. The name labels the batch and becomes part of the result file name, so it is an identifier rather than a title: 0-9, _ and a-z only, at most 60 characters. Every top-level Intent must declare limit, the integer 1..500 that decides how many rows this query returns — that requirement is this plugin\'s, on top of the declared syntax: the declared syntax leaves limit optional and caps nothing, while this plugin uses it as the row cap and hashes it with the Intent. Read the declared syntax (the Schema/syntax/intent node the index points to) for everything else: closed choices use the declared enum spelling in PascalCase (e.g. op "Graph", filter op "Eq", direction "Desc", row_grain "Root"), and the entity is the declared dataset id, not the knowledge key.',
+            description: 'One to five named graph Intents: an object mapping a batch name to one Intent, e.g. {"ports":{"op":"Graph","root":"d","nodes":[{"id":"d","entity":"<dataset id>"}],"edges":[],"select":[],"limit":100}}. The name labels the batch and becomes part of the result file name, so it is an identifier rather than a title: 0-9, _ and a-z only, at most 60 characters. Every top-level Intent must declare limit, the integer 1..500 that decides how many rows this query returns — that requirement is this plugin\'s, on top of the declared syntax: the declared syntax leaves limit optional and caps nothing, while this plugin uses it as the row cap and hashes it with the Intent. Read oks://help/query through oks_data (project Shape, then needed topics) for syntax: closed choices use the declared enum spelling in PascalCase (e.g. op "Graph", filter op "Eq", direction "Desc", row_grain "Root"), and the entity is the declared dataset id, not the knowledge key.',
             additionalProperties: { type: 'object', additionalProperties: true },
           },
         },
@@ -1671,17 +1619,17 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_data',
-      description: 'Read knowledge or saved data and optionally save with full provenance. Use project first for inspecting types/keys/sizes or selecting fields; use a jq file for filtering, sorting, computation, aggregation or joins. Start knowledge discovery with {"load":{"knowledge":"knowledge://"},"project":{"knowledge":{"guide":"Value"}}}. load maps names to resource addresses. The program root . is always the named object, e.g. load:{a:...,b:...} gives {a:<visible value>,b:<visible value>}, including a single load name. Access each value as .a or .b. Bind . as $in before iteration to retain access through $in.a while . becomes the current member. Omitted load gives {}. File resources automatically unwrap to their .data payload: .fact is the payload itself (an array when data is an array). Append #meta to explicitly read {meta, origin}. Provenance is carried automatically alongside business data. Project rules start with the load names: load:{fact:"<asset path>"}, project:{fact:"Shape"}. Choose project or jq:{src:".work/analysis.jq"}; omit both for identity. Use full workspace-relative paths verbatim. Tables and charts both accept row-object arrays or {rows, columns?}. Optional columns entries are {name:"count",types:["number"],nullable:false}. At each load name, query payloads are {rows, columns}, figure payloads are {rows, spec}, and report payloads are {assets, items, structure}. jq is deterministic: time comes from create_current_ctx_data; explicit-zone functions gmtime_tz(zone), strftime_tz(fmt; zone), tzadd(unit; amount; zone), tzfloor(unit; zone), tzceil(unit; zone) receive epoch seconds as their pipeline input. Example with load:{ctx:"<context asset>"}: .ctx as $ctx | ($ctx.utc.epochMillis / 1000 | floor) | strftime_tz("%F %T"; $ctx.tz.client.id). strftime_tz takes two arguments (format; zone). Units: year/quarter/month/week/day/hour/minute/second. The jq program must produce exactly one JSON value. Collect multiple results with [expression]; represent an empty result as [] or null. Viewing is limited to 16 KiB of final rendered UTF-8 text. When exceeded, payload_too_large reports the business result shape and, for object results, up to eight fields with their shapes and compact JSON byte sizes, largest first. Narrow project or jq to select fields or use TruncateThen to preview members. save returns a small receipt while preserving the result in a file. Successful receipts include execution.method (jq, project or identity) and execution.src for a jq file. save:{name,motivation} materialises a .tr.json envelope and returns asset, bytes and execution.',
+      description: 'Read knowledge or saved data and optionally save with full provenance. Use project first for inspecting types/keys/sizes or selecting fields; use a jq file for filtering, sorting, computation, aggregation or joins. Start with {"load":{"help":"oks://help/knowledge"}} for knowledge shape and executable examples. knowledge:// unwraps {datasets,types,relations,items}: classified facts and navigation, with prose in items [{key,names,doc}]. Select semantic branches with project; builtin read.jq pairs facts with descriptions by returned node#member address. knowledge://#meta returns compact metadata and provenance; #contract explicitly reads engineering discovery. Read oks://help/query by topic for query grammar. load maps names to resource addresses. The program root . is always the named object, e.g. load:{a:...,b:...} gives {a:<visible value>,b:<visible value>}, including a single load name. Access each value as .a or .b. Bind . as $in before iteration to retain access through $in.a while . becomes the current member. Omitted load gives {}. File resources automatically unwrap to their .data payload: .fact is the payload itself (an array when data is an array). Append #meta to explicitly read {meta, origin}. Provenance is carried automatically alongside business data. Project rules start with the load names: load:{fact:"<asset path>"}, project:{fact:"Shape"}. Choose project or jq:{src:".work/analysis.jq"}; omit both for identity. Use full workspace-relative paths verbatim. Tables and charts both accept row-object arrays or {rows, columns?}. Optional columns entries are {name:"count",types:["number"],nullable:false}. At each load name, query payloads are {rows, columns}, figure payloads are {rows, spec}, and report payloads are {assets, items, structure}. jq is deterministic: time comes from create_current_ctx_data; explicit-zone functions gmtime_tz(zone), strftime_tz(fmt; zone), tzadd(unit; amount; zone), tzfloor(unit; zone), tzceil(unit; zone) receive epoch seconds as their pipeline input. Example with load:{ctx:"<context asset>"}: .ctx as $ctx | ($ctx.utc.epochMillis / 1000 | floor) | strftime_tz("%F %T"; $ctx.tz.client.id). strftime_tz takes two arguments (format; zone). For ready time windows, read oks://help/time and run builtin://time/windows.jq with a context load; it handles milliseconds and returns labeled epochMillis/RFC3339 boundaries. tzfloor/tzceil units: year/quarter/month/week/day. tzceil always selects the next period boundary. tzadd also accepts hour/minute/second. The jq program must produce exactly one JSON value. Collect multiple results with [expression]; represent an empty result as [] or null. Viewing is limited to 16 KiB of final rendered UTF-8 text. When exceeded, payload_too_large reports the business result shape and, for object results, up to eight fields with their shapes and compact JSON byte sizes, largest first. Narrow project or jq to select fields or use TruncateThen to preview members. save returns a small receipt while preserving the result in a file. Successful receipts include execution.method (jq, project or identity) and execution.src for a jq file. save:{name,motivation} materialises a .tr.json envelope and returns asset, bytes and execution.',
       parameters: {
         type: 'object',
         properties: {
           load: {
-            description: 'Semantic type: load: { [Key: string]: ResourceRef }. ResourceRef is a resource address string: FileName, FileName#meta, or knowledge://. FileName is the complete workspace-relative asset path returned by a tool, e.g. .oks/data/example.tr.json. The jq/project root is always an object whose keys are the load names, even with one resource. Each Key contains that resource\'s visible value, accessed as .fact or .knowledge. In jq, bind . as $in before iteration to keep named inputs available as $in.fact while . refers to the current member. Example: {"load":{"fact":".oks/data/example.tr.json","knowledge":"knowledge://"}}. FileName supplies the unwrapped .data payload directly under its Key: .fact is that payload, and .fact.rows accesses its rows field. FileName#meta explicitly supplies {meta, origin}. Provenance is carried automatically alongside the visible value. knowledge:// supplies the knowledge graph.',
+            description: 'Semantic type: load: { [Key: string]: ResourceRef }. ResourceRef is a resource address string: FileName, FileName#meta, knowledge://, knowledge://#meta, oks://help/knowledge, oks://help/query, oks://help/time, knowledge://#contract, or builtin://knowledge/<name>.jq / builtin://time/windows.jq. FileName is the complete workspace-relative asset path returned by a tool, e.g. .oks/data/example.tr.json. The jq/project root is always an object whose keys are the load names, even with one resource. Each Key contains that resource\'s visible value, accessed as .fact or .knowledge. In jq, bind . as $in before iteration to keep named inputs available as $in.fact while . refers to the current member. Example: {"load":{"fact":".oks/data/example.tr.json","knowledge":"knowledge://"}}. FileName supplies the unwrapped .data payload directly under its Key: .fact is that payload, and .fact.rows accesses its rows field. FileName#meta explicitly supplies {meta, origin}. Provenance is carried automatically alongside the visible value. knowledge:// supplies the knowledge graph.',
             type: 'object',
             additionalProperties: true,
           },
           project: PROJECT_PARAMETER,
-          jq: { type: 'object', description: 'Run a jq file with the named load object as its initial input: .fact is the visible value loaded as fact, even with one resource. Bind . as $in before iteration to keep access to named inputs through $in.fact.', properties: { src: { type: 'string', description: 'Full workspace-relative path to the jq program file. The file extension must be .jq, e.g. .work/analysis.jq.' } }, required: ['src'], additionalProperties: false },
+          jq: { type: 'object', description: 'Run a jq file with the named load object as its initial input: .fact is the visible value loaded as fact, even with one resource. Bind . as $in before iteration to keep access to named inputs through $in.fact.', properties: { src: { type: 'string', description: 'Full .work/ program path, builtin://knowledge/search.jq, references.jq, members.jq, read.jq, or builtin://time/windows.jq. Read oks://help/knowledge or oks://help/time for args and examples; load a builtin URI as a resource to inspect its source.' }, args: {type:'object',additionalProperties:true,description:'Builtin knowledge args: input (default knowledge), query/type/dataset or key/link/type (link is a navigation category such as dimensions); read uses key only; skip (default 0), take (default 10, max 50). Time windows args: input (default ctx), unit (year/quarter/month/week/day), count (1..50), mode (complete/current/rolling, required).'} }, required: ['src'], additionalProperties: false },
           save: {
             type: 'object',
             description: 'Keep the result instead of only looking at it: give it a name and say why, and the tool writes {meta, origin, data} into .oks/data/ — the origin records this operation and the complete source chain of every input, so the numbers can be explained later. Leave save out to only look at the result.',
@@ -1712,7 +1660,10 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           if (problem) throw new Error(problem);
         }
         // 先固定本次程序，再加载数据：文件检查和执行使用同一份源码。
-        const code = args.jq === undefined ? undefined : readCodeFile(entry.settings.workspaceRoot, args.jq.src);
+        const code = args.jq === undefined ? undefined
+          : String(args.jq.src).startsWith('builtin://') ? builtinCode(String(args.jq.src), args.jq.args)
+          : args.jq.args === undefined ? readCodeFile(entry.settings.workspaceRoot, args.jq.src)
+          : (() => { throw new Error('jq.args is available for builtin programs; custom files bind their own parameters.'); })();
         const execution = code === undefined
           ? { method: projector === undefined ? 'identity' as const : 'project' as const }
           : { method: 'jq' as const, src: code.file };
@@ -2162,7 +2113,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'create_current_ctx_data',
-      description: 'Read the current session context — the instant and the time zone in force — ONCE, and land it as an envelope in .oks/data/ (<date>-current-<hash>.ctx.json), returning both the asset and that data. Takes no arguments. Use it at the start of any question whose answer depends on "now", then read it inside jq (as a named input) and compute the absolute boundaries in the program with tzadd / tzfloor / tzceil / gmtime_tz / strftime_tz (the zone is passed explicitly): the engine has no clock, so every boundary comes from this material. The instant it carries is epoch milliseconds while those functions take epoch seconds, so divide and floor first; the data also carries the zone id and a ready RFC 3339 form of the instant, and the payload travels in the source chain, so boundaries computed from it stay reproducible after this file is gone. The zone is the one attached to the current turn (the browser zone); when the context carries none, or carries two that disagree, the call fails and asks you to have the user confirm it — nothing is guessed.',
+      description: 'Read the current session context — the instant and the time zone in force — ONCE, and land it as an envelope in .oks/data/ (<date>-current-<hash>.ctx.json), returning both the asset and that data. Takes no arguments. Use it at the start of any question whose answer depends on "now", then load the saved context as ctx in oks_data. For labeled windows use jq:{src:"builtin://time/windows.jq",args:{unit:"month",count:3,mode:"complete"}}; read oks://help/time for complete/current/rolling semantics. For custom boundaries compute with tzadd / tzfloor / tzceil / gmtime_tz / strftime_tz (the zone is passed explicitly): the engine has no clock, so every boundary comes from this material. The instant it carries is epoch milliseconds while those functions take epoch seconds, so divide and floor first; the data also carries the zone id and a ready RFC 3339 form of the instant, and the payload travels in the source chain, so boundaries computed from it stay reproducible after this file is gone. The zone is the one attached to the current turn (the browser zone); when the context carries none, or carries two that disagree, the call fails and asks you to have the user confirm it — nothing is guessed.',
       parameters: {
         type: 'object',
         properties: {},
@@ -2203,7 +2154,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'va_ask',
-      description: 'Consult this session\'s vocabulary helper and get its answer back: send one paraphrase — a word, a phrase or a sentence, any language — and you receive the vocabulary\'s own equivalent or near expressions, one per line and verbatim. The helper holds the whole vocabulary in its system prompt, so the first call sets it up and takes longer; each later call is one question. Treat what it returns as leads: look the strings up with oks_search and read the declarations with oks_data using load={knowledge:"knowledge://"} and accessing .knowledge.',
+      description: 'Consult this session\'s vocabulary helper and get its answer back: send one paraphrase — a word, a phrase or a sentence, any language — and you receive the vocabulary\'s own equivalent or near expressions, one per line and verbatim. The helper holds the whole vocabulary in its system prompt, so the first call sets it up and takes longer; each later call is one question. Treat what it returns as leads: look the strings up with oks_data builtin://knowledge/search.jq and read the declarations with oks_data using load={knowledge:"knowledge://"} and accessing .knowledge.datasets/types/relations/items; read.jq resolves the exact returned address and pairs facts with descriptions.',
       parameters: {
         type: 'object',
         properties: {

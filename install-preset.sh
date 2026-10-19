@@ -243,15 +243,8 @@ else
           - id: persona
             name: "@deepseek-ai/dsh-persona"
             config:
-              complete: true
               includeRuntimeContext: false
-              prefix: |-
-                You answer business questions from the data this workspace declares in oks.json.
-                Find what a thing is called with oks_search and what references it with oks_references,
-                read the declared knowledge with oks_info, express the question as structured Intents and
-                check them with oks_check_query_intent, then get the actual rows with oks_exec_query_intent. Answer with
-                those results and state the framing you used — time window, grouping, measures, filters.
-                When the request is ambiguous, ask the user.
+              prefix: ''
           - id: tool-ask-user
             name: "@deepseek-ai/dsh-tool-ask-user"
           - id: tool-skill

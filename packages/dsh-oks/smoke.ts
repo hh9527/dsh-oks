@@ -106,7 +106,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['work_read', 'work_write', 'work_edit', 'work_list', 'work_delete', 'oks_search', 'oks_references', 'oks_check_query_intent', 'oks_exec_query_intent', 'create_data', 'oks_data', 'oks_render_figure', 'oks_check_report', 'oks_render_report', 'oks_artifacts', 'create_current_ctx_data', 'va_ask'];
+const EXPECTED_TOOLS = ['work_read', 'work_write', 'work_edit', 'work_list', 'work_delete', 'oks_check_query_intent', 'oks_exec_query_intent', 'create_data', 'oks_data', 'oks_render_figure', 'oks_check_report', 'oks_render_report', 'oks_artifacts', 'create_current_ctx_data', 'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -146,6 +146,10 @@ const call = async (name, args, cwd = DEV_ROOT) => {
     : undefined;
   return { value, text, meta };
 };
+
+const builtin = (name, args = {}) => call('oks_data', {
+  load: { knowledge: 'knowledge://' }, jq: { src: `builtin://knowledge/${name}.jq`, args },
+});
 
 // 程序夹具：工具现在**只认文件**（参数是 `jq.src`），所以测试也把 jq 程序写进 `.work/` 再引用。
 const progDir = resolve(DEV_ROOT, '.work');
@@ -223,7 +227,7 @@ const reportSpec = (markdown) => {
   return { articleFile: `.work/${file}`, inputs };
 };
 
-const foundOf = (value) => Object.values(value?.data?.knowledge ?? value?.data ?? {})[0];
+const readKnowledge = async (key) => (await builtin('read',{key})).value.data;
 // 每个实例一套独立的假 ctx：工具表、事件表（按名字收全部监听器）、日志。disposer 统一在最后收尾。
 const makeHarness = (config = {}) => {
   const tools = new Map();
@@ -297,7 +301,7 @@ console.log('=== 会话上下文材料 ===');
     || JSON.stringify(utcKeys) !== '["epochMillis","rfc3339"]') {
     throw new Error(`材料形状不对：${JSON.stringify(made.value.data)}`);
   }
-  if (!made.text.includes(made.value.asset) || !made.text.includes('tzadd')) {
+  if (!made.text.includes(made.value.asset) || !made.text.includes('builtin://time/windows.jq')) {
     throw new Error('回执要给出 asset，并说清边界在 jq 里算');
   }
   const body = readMaterial(made.value.asset);
@@ -319,6 +323,29 @@ console.log('=== 会话上下文材料 ===');
   if (span.length !== 2 || span[1] - span[0] !== 7 * 86400) {
     throw new Error('由上下文材料算出的周区间不对（tzfloor / tzceil）');
   }
+  // 内建窗口使用真实上下文输入，读取帮助/源码，并验证保存后的来源链。
+  const timeArgs = {load:{ctx:made.value.asset},jq:{src:'builtin://time/windows.jq',args:{unit:'month',count:3,mode:'complete'}}};
+  const windows = await call('oks_data',timeArgs);
+  if (windows.value.data?.length !== 3) throw new Error('内建月份窗口数量错误');
+  for (const [i,w] of windows.value.data.entries()) {
+    for (const b of [w.start,w.end]) {
+      if (Date.parse(b.rfc3339) !== b.epochMillis || !b.rfc3339.endsWith('01T00:00:00+08:00')) throw new Error('月窗口时间与可读复核值不一致');
+    }
+    if (i > 0 && windows.value.data[i-1].end.epochMillis !== w.start.epochMillis) throw new Error('月份窗口不连续');
+  }
+  const savedWindows = await call('oks_data',{...timeArgs,save:{name:'smoke_time_windows',motivation:'验证可复核的时间边界及来源链'}});
+  const windowEnvelope = readMaterial(savedWindows.value.asset);
+  const windowNode = windowEnvelope.origin.nodes[windowEnvelope.origin.root];
+  if (canonicalJson(windowEnvelope.data) !== canonicalJson(windows.value.data)
+    || !windowNode.snip.includes('"mode":"complete"') || windowNode.snipFile !== timeArgs.jq.src
+    || !Object.values(windowEnvelope.origin.nodes).some(n=>n.kind === 'context' && canonicalJson(n.data) === canonicalJson(body.data))) {
+    throw new Error('窗口保存未保留结果、程序参数或上下文来源');
+  }
+  const timeHelp = await call('oks_data',{load:{help:'oks://help/time'}});
+  const timeSource = await call('oks_data',{load:{source:'builtin://time/windows.jq'}});
+  if (!timeHelp.value.data.help.examples.completeMonths || !timeSource.value.data.source.source.includes('tzfloor')) throw new Error('缺少可发现的时间帮助或源码');
+  rmSync(resolve(DEV_ROOT,savedWindows.value.asset),{force:true});
+  console.log('  ✓ 时间窗口：完整月份、RFC3339/毫秒复核、帮助/源码及上下文来源链');
   rmSync(resolve(DEV_ROOT, made.value.asset), { force: true });
 
   // 再调一次：它没有参数，同一毫秒内内容相同就落到同一个文件（"同名即同内容"），不报错
@@ -386,7 +413,7 @@ console.log('=== 会话上下文材料 ===');
 
   // 会话头里没有 cwd 时明确报错，而不是回落到别的目录
   try {
-    await registered.get('oks_data').execute({load:{ knowledge: 'knowledge://' }, project:{ knowledge: {guide:'Value'} }}, { signal: new AbortController().signal, agent: { session: { meta: {} } } });
+    await registered.get('oks_data').execute({load:{ knowledge: 'knowledge://' }, project:{ knowledge: {index:'Value'} }}, { signal: new AbortController().signal, agent: { session: { meta: {} } } });
     console.log('  ✗ 会话头没有 cwd 却成功了');
     throw new Error('没有 cwd 时不应成功');
   } catch (cause) {
@@ -459,9 +486,9 @@ console.log('=== project：JS 读取投影与形状探测 ===');
     ok('无 WTI 时可直接投影整个知识图', discovered.value.ok
       && discovered.value.data.knowledge.type === 'object' && discovered.value.data.knowledge.size > 0);
     ok('知识摘要键名列表有界', discovered.value.data.knowledge.keys.length <= 20);
-    const projected = await call('oks_data', { load: { knowledge: 'knowledge://' }, project: { knowledge: { index: { key: 'Value', detail: 'Shape' } } } });
-    ok('多层对象投影保持完整外壳', projected.value.data.knowledge.index.key === 'index'
-      && projected.value.data.knowledge.index.detail.type === 'object');
+    const projected = await call('oks_data', { load: { knowledge: 'knowledge://' }, project: { knowledge: { datasets: 'Shape', types: 'Shape' } } });
+    ok('多层对象投影保持完整外壳', projected.value.data.knowledge.datasets.type === 'object'
+      && projected.value.data.knowledge.types.type === 'object');
     const whole = await call('oks_data', { load: { knowledge: 'knowledge://' }, project: { knowledge: 'Value' } });
     ok('整图超限报告实际字节数且无半份数据', JSON.parse(whole.text).error?.code === 'payload_too_large'
       && JSON.parse(whole.text).error.actualBytes > 256 * 1024 && JSON.parse(whole.text).data === undefined);
@@ -486,63 +513,44 @@ console.log('=== project：JS 读取投影与形状探测 ===');
   }
 }
 
-console.log('=== kq：知识发现、单值与独立求值 ===');
+console.log('=== 语义知识图：投影、单值与独立求值 ===');
 {
-  const [a, b] = await Promise.all([call('oks_data', { load: { knowledge: 'knowledge://' }, project: { knowledge: {guide:'Value'} }}), call('oks_data', {load:{ knowledge: 'knowledge://' },project:{ knowledge: {guide:'Value'} }})]);
-  ok('默认入口可发现结构，并发调用结果一致',
-    a.value.ok && a.value.data.knowledge.guide.key === 'guide' && a.value.data.knowledge.guide.type === 'Index' && JSON.stringify(a.value) === JSON.stringify(b.value));
-  const looked = await call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(".knowledge | (.index)") }});
-  const original = foundOf((await call('oks_data', { load: { knowledge: 'knowledge://' }, project: { knowledge: { ['index']: 'Value' } } })).value);
-  ok('kq 保留原始 index 节点全文', JSON.stringify(looked.value.data) === JSON.stringify(original));
-  const largest = await call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(".knowledge | (to_entries | max_by(.value | tojson | length) | .key)") }});
-  const big = await call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(`.knowledge | (.[${JSON.stringify(largest.value.data)}] as $node | [range(10) | $node])`) }});
-  ok('大节点批量读取被回执预算拒绝', JSON.parse(big.text).error?.code === 'payload_too_large');
-  const trimmed = await call('oks_data', { load: { knowledge: 'knowledge://' }, project: { knowledge: { [largest.value.data]: { key: 'Value', detail: 'Shape' } } } });
-  ok('大节点可先投影再检查预算', trimmed.value.data.knowledge[largest.value.data].key === largest.value.data
-    && trimmed.value.data.knowledge[largest.value.data].detail.type === 'object' && Buffer.byteLength(trimmed.text) < 16384);
-  ok('知识结果超限返回形状摘要且无 hint', big.value.shape?.type === 'array'
-    && big.value.shape.size === 10 && !('hint' in big.value.error));
-  const direct = await call('oks_data', { load: { knowledge: 'knowledge://' }, project: { knowledge: { index: 'Value' } } });
-  ok('JS 读取与 jq 读取为同一知识原文', JSON.stringify(direct.value.data.knowledge.index) === JSON.stringify(original));
-  ok('oks_info 不暴露为工具', !registered.has('oks_info'));
-  const typed = await call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(".knowledge | (all(.[]; (.type | type) == \"string\"))") }});
-  ok('知识图顶层每项均为带类型的条目', typed.value.data === true);
-  const joined = await call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(".knowledge | (. as $docs | [$docs.index.links[] | $docs[.key].key])") }});
-  ok('jq 按链接关联原始节点', JSON.stringify(joined.value.data) === JSON.stringify(original.links.map((link) => link.key)));
-  const edge = await call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(".knowledge | ([.[] | select(.links | length > 0) | {source: .key, target: .links[0].key}][0])") }});
-  const target = edge.value.data?.target;
-  ok('发现一条实际知识链接', typeof target === 'string');
-  {
-    const targetJson = JSON.stringify(target);
-    const related = await call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(`.knowledge | (to_entries | map(select(any(.value.links[]?; .key == ${targetJson}))) | map(.key))`) }});
-    ok('jq 可自主反查引用来源', related.value.data.includes(edge.value.data.source));
-    const node = await call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(`.knowledge | (.[${targetJson}])`) }});
-    const serviceNode = foundOf((await call('oks_data', { load: { knowledge: 'knowledge://' }, project: { knowledge: { [target]: 'Value' } } })).value);
-    ok('关联节点与 JS 投影全文一致', JSON.stringify(node.value.data) === JSON.stringify(serviceNode));
-  }
-  const stream = await refusalOf(() => call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(".knowledge | (range(3))") }}));
-  const array = await call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(".knowledge | ([range(3)])") }});
-  const empty = await refusalOf(() => call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(".knowledge | (empty)") }}));
-  ok('知识查询恰好输出一个值，拒绝多输出和无输出', /必须恰好输出一个值/.test(stream ?? '')
-    && JSON.stringify(array.value.data) === '[0,1,2]' && /必须恰好输出一个值/.test(empty ?? ''));
-  await call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(".knowledge | (.index = null)") }});
-  const unchanged = await call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(".knowledge | (.index)") }});
-  ok('jq 更新不修改常驻知识', JSON.stringify(unchanged.value.data) === JSON.stringify(original));
-  const syntax = await refusalOf(() => call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(".knowledge | (. |)") }}));
-  ok('kq 语法错误定位到程序文件', /smoke_p[0-9]+.jq/.test(syntax ?? ''));
-  const large = await call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(".knowledge | ([range(8000)])") }});
-  const truncated = await call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(".knowledge | ([range(200000)])") }});
-  ok('kq 超限只返回错误，不泄漏半份数据', JSON.parse(large.text).error?.code === 'payload_too_large'
-    && truncated.value.error?.code === 'evaluation_truncated' && JSON.parse(large.text).data === undefined);
-  const calculator = await call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(".knowledge | (1 + 2)") }});
-  ok('知识查询失败后计算器继续可用', calculator.value.data === 3);
+  const args={load:{knowledge:'knowledge://'},project:{knowledge:{types:'Shape',datasets:'Shape',relations:'Shape',items:'Shape'}}};
+  const [a,b]=await Promise.all([call('oks_data',args),call('oks_data',args)]);
+  ok('语义目录并发读取一致',a.value.ok && a.value.data.knowledge.types.type==='object' && JSON.stringify(a.value)===JSON.stringify(b.value));
+  const chosen=await call('oks_data',{load:{knowledge:'knowledge://'},jq:{src:prog('.knowledge.types | keys[0]')}});
+  const id=chosen.value.data;
+  const exact={load:{knowledge:'knowledge://'},project:{knowledge:{types:{[id]:'Value'}}}};
+  const direct=await call('oks_data',exact);
+  const original=direct.value.data.knowledge.types[id];
+  const looked=await call('oks_data',{load:{knowledge:'knowledge://'},jq:{src:prog(`.knowledge.types[${JSON.stringify(id)}]`)}});
+  ok('JS 精确投影与 jq 读取为同一事实',JSON.stringify(original)===JSON.stringify(looked.value.data));
+  const values=await call('oks_data',{load:{knowledge:'knowledge://'},project:{knowledge:{types:{[id]:{values:'Value'}}}}});
+  ok('类型值域投影不会附带字段等旁支',Object.keys(values.value.data.knowledge.types[id]).join(',')==='values');
+  const big=await call('oks_data',{load:{knowledge:'knowledge://'},jq:{src:prog('.knowledge as $g | [range(10) | $g]')}});
+  ok('完整图重复展开受最终回执预算保护',big.value.ok===false || JSON.parse(big.text).error?.code==='payload_too_large');
+  const typed=await call('oks_data',{load:{knowledge:'knowledge://'},jq:{src:prog('.knowledge | keys | sort')}});
+  ok('完整图仅包含明确语义分支',JSON.stringify(typed.value.data)==='["datasets","items","relations","types"]');
+  const stream=await refusalOf(()=>call('oks_data',{load:{knowledge:'knowledge://'},jq:{src:prog('range(3)')}}));
+  const empty=await refusalOf(()=>call('oks_data',{load:{knowledge:'knowledge://'},jq:{src:prog('empty')}}));
+  const array=await call('oks_data',{load:{knowledge:'knowledge://'},jq:{src:prog('[range(3)]')}});
+  ok('知识查询恰好输出一个值',/必须恰好输出一个值/.test(stream??'')&&/必须恰好输出一个值/.test(empty??'')&&JSON.stringify(array.value.data)==='[0,1,2]');
+  await call('oks_data',{load:{knowledge:'knowledge://'},jq:{src:prog('.knowledge.types = null')}});
+  const unchanged=await call('oks_data',exact);
+  ok('jq 更新不修改常驻语义图',JSON.stringify(unchanged.value)===JSON.stringify(direct.value));
+  const syntax=await refusalOf(()=>call('oks_data',{load:{knowledge:'knowledge://'},jq:{src:prog('. |')}}));
+  ok('知识 jq 语法错误定位到文件',/smoke_p[0-9]+.jq/.test(syntax??''));
+  const large=await call('oks_data',{load:{knowledge:'knowledge://'},jq:{src:prog('[range(8000)]')}});
+  const truncated=await call('oks_data',{load:{knowledge:'knowledge://'},jq:{src:prog('[range(200000)]')}});
+  ok('知识结果超限不泄漏半份数据',JSON.parse(large.text).error?.code==='payload_too_large'&&truncated.value.error?.code==='evaluation_truncated'&&JSON.parse(large.text).data===undefined);
+  ok('oks_info 不暴露为工具',!registered.has('oks_info'));
 }
 
 console.log('=== 检索层：并发的首次检索只派生一次索引 ===');
 {
   const [left, right] = await Promise.all([
-    call('oks_search', { query: 'packet' }),
-    call('oks_search', { query: 'loss' }),
+    builtin('search', { query: 'packet' }),
+    builtin('search', { query: 'loss' }),
   ]);
   ok('并发两次首次检索只派生一次索引',
     logs.filter((line) => line.includes('discovery index')).length === 1);
@@ -1168,178 +1176,43 @@ console.log('=== 惰性初始化：single flight 的机制 ===');
   ok('下一次调用会重新触发', attempts === 2 && second === 'boom');
 }
 
-console.log('=== 发现协议（不假设形状，只跟随服务给出的 key）===');
-const seenKeys = new Set();
-const trail = [];
-let reached = null;
-const walk = async (key, depth) => {
-  if (depth > 6 || seenKeys.size >= 24 || seenKeys.has(key)) return;
-  seenKeys.add(key);
-  const found = foundOf((await call('oks_data', { load: { knowledge: 'knowledge://' }, project: { knowledge: { [key]: 'Value' } } })).value);
-  trail.push(`${'· '.repeat(depth)}${found?.type ?? '?'}  ${key}`);
-  const detail = found?.detail;
-  if (reached === null && typeof detail?.id === 'string' && detail.id !== '') {
-    reached = { key, id: detail.id, type: found?.type, links: found?.links ?? [] };
-  }
-  const children = [];
-  if (Array.isArray(detail?.entries)) {
-    for (const entry of detail.entries) if (typeof entry?.key === 'string') children.push(entry.key);
-  }
-  if (Array.isArray(detail?.schemas)) {
-    for (const schema of detail.schemas) if (typeof schema === 'string') children.push(schema);
-  }
-  for (const link of found?.links ?? []) if (typeof link?.key === 'string') children.push(link.key);
-  for (const child of children) await walk(child, depth + 1);
-};
-await walk('index', 0);
-for (const line of trail) console.log(`  ${line}`);
-console.log(`  跟随 ${seenKeys.size} 个 key${reached === null ? '（入口没直接落到成员）' : ` · 落到声明了 id 的节点: ${reached.type}`}`);
+console.log('=== 语义目录与分类导航发现 ===');
+const catalog=await call('oks_data',{load:{catalog:'knowledge://#meta'}});
+const datasets=await builtin('search',{type:'Dataset'});
+const member=datasets.value.data.items[0];
+if(!member)throw new Error('没有发现任何数据集');
+const dimension=(await builtin('members',{key:member.key,link:'dimensions',take:1})).value.data.items[0]??null;
+console.log(`  实体 id=${member.id} · 维度 id=${dimension?.id??'无'}`);
 
-// Intent 的实体是服务声明的数据集 id：用 oks_search 拿到词条，再按 index 声明的 key 模式
-// 拼出 key 去读节点——这就是 agent 的拼法（填声明的模式，名字各编码一次）。
-let member = reached !== null && reached.type === 'Dataset' ? reached : null;
-if (member === null) {
-  const indexNode = foundOf((await call('oks_data', { load: { knowledge: 'knowledge://' }, project: { knowledge: { ['index']: 'Value' } } })).value);
-  const pattern = (indexNode?.detail?.key_patterns ?? []).find((item) => item.kind === 'Dataset'
-    || String(item.pattern).startsWith('Dataset/'));
-  const datasets = await call('oks_search', { kind: 'Dataset' });
-  for (const row of datasets.value.matched) {
-    if (pattern === undefined) break;
-    const key = String(pattern.pattern).replace(/\{(\w+)\}/g, () => encodeURIComponent(row.name));
-    const found = foundOf((await call('oks_data', { load: { knowledge: 'knowledge://' }, project: { knowledge: { [key]: 'Value' } } })).value);
-    if (found?.type === 'Dataset' && typeof found.detail?.id === 'string') {
-      member = { key, id: found.detail.id, type: found.type, links: found.links ?? [] };
-      console.log(`  按声明的模式拼出实体 key: ${key} → id=${found.detail.id}`);
-      break;
-    }
-  }
-}
-if (member === null) throw new Error('没有找到任何声明了 id 的数据集实体');
-console.log(`  实体：${member.type} · id=${member.id}`);
-// 再从那个成员往下找**第一个声明了 id 的 Dimension**（用来问"多行结果"）。
-// 找不到就跳过那一段——测试不写形状假设，模型的形状由服务回答。
-let dimension = null;
+console.log('=== 内置语义知识 jq、帮助与来源 ===');
 {
-  const seen = new Set();
-  let budget = 60;
-  const seek = async (key, depth) => {
-    if (dimension !== null || budget <= 0 || depth > 6 || seen.has(key)) return;
-    seen.add(key); budget -= 1;
-    const found = foundOf((await call('oks_data', { load: { knowledge: 'knowledge://' }, project: { knowledge: { [key]: 'Value' } } })).value);
-    const detail = found?.detail;
-    if (found?.type === 'Dimension' && typeof detail?.id === 'string') { dimension = { key, id: detail.id }; return; }
-    const children = [];
-    if (Array.isArray(detail?.entries)) for (const entry of detail.entries) if (typeof entry?.key === 'string') children.push(entry.key);
-    for (const link of found?.links ?? []) if (typeof link?.key === 'string') children.push(link.key);
-    for (const child of children) await seek(child, depth + 1);
-  };
-  await seek(member.key, 0);
-}
-console.log(`  维度（多行用例）：${dimension === null ? '未找到，跳过' : `id=${dimension.id}`}`);
-
-// ── 检索层：词汇表与引用图（按服务声明的发现契约派生）───────────────────────
-console.log('=== oks_search（按名词/说法找 key）===');
-let seed = null;
-{
-  const started = Date.now();
-  const all = await call('oks_search', {});
-  console.log(`  首次检索（含按发现契约建索引）${Date.now() - started} ms · 命中 ${all.value.total} 条`);
-  // 没有 limit：页大小按字节定，装不下就整条截断并报出剩余
-  const capped = all.value.more !== null && all.value.matched.length < all.value.total;
-  console.log(`  超容量时整条截断并报出 more: ${capped ? '✓' : '✗'}`);
-  if (!capped) throw new Error('空查询应当匹配全部词条并按容量截断');
-  const bytes = Buffer.byteLength(all.text, 'utf8');
-  console.log(`  渲染 ${bytes} 字节 ≤ 8192: ${bytes <= 8192 ? '✓' : '✗'}`);
-  if (bytes > 8192) throw new Error('检索渲染超过了宿主裁剪阈值');
-  // 翻页：第二页与第一页不重叠，start 回显请求的 skip
-  const skip = all.value.matched.length;
-  const page2 = await call('oks_search', { skip });
-  const firstPage = new Set(all.value.matched.map((row) => JSON.stringify(row)));
-  const overlap = page2.value.matched.filter((row) => firstPage.has(JSON.stringify(row))).length;
-  console.log(`  skip=${skip} 翻页不重复: ${overlap === 0 ? '✓' : '✗'} · start 回显: ${page2.value.start === skip ? '✓' : '✗'}`);
-  if (overlap !== 0) throw new Error('翻页出现重复条目');
-  // 数据驱动：拿一条真实词条去搜它自己的名字
-  seed = all.value.matched.find((row) => row.name.length >= 4 && row.kind !== 'Value') ?? all.value.matched[0];
-  const hit = await call('oks_search', { query: seed.name });
-  const self = hit.value.matched.find((row) => row.kind === seed.kind && row.name === seed.name
-    && (seed.dataset === undefined || row.dataset === seed.dataset));
-  console.log(`  按名字 ${seed.kind}/${seed.name} 检索命中它本身: ${self === undefined ? '✗' : '✓'}`
-    + ` · 首位 field=${hit.value.matched[0]?.field} score=${hit.value.matched[0]?.score}`);
-  if (self === undefined) throw new Error('按名字检索没有命中该词条本身');
-  const byKind = await call('oks_search', { kind: 'Dataset' });
-  console.log(`  kind=Dataset 过滤生效: ${byKind.value.matched.every((row) => row.kind === 'Dataset') ? '✓' : '✗'} · 命中 ${byKind.value.total}`);
-  if (seed.dataset !== undefined) {
-    const byDataset = await call('oks_search', { kind: seed.kind, dataset: seed.dataset });
-    console.log(`  dataset=${seed.dataset} 过滤生效: ${byDataset.value.matched.every((row) => row.dataset === seed.dataset) ? '✓' : '✗'} · 命中 ${byDataset.value.total}`);
+  const all=await builtin('search');const page=all.value.data;
+  ok('检索分页有界并返回二元地址',page.items.length===10&&page.total>10&&page.next===10&&page.items.every(row=>/^(datasets|types|relations)\//.test(row.key))&&Buffer.byteLength(all.text)<16384);
+  const page2=(await builtin('search',{skip:page.next})).value.data;
+  ok('分页不重复',page2.start===page.next&&!page2.items.some(row=>page.items.some(first=>row.key===first.key)));
+  const hit=await builtin('search',{query:member.id,type:'Dataset'});
+  ok('按业务 ID 搜索得到本身',hit.value.data.items.some(row=>row.key===member.key));
+  ok('类型过滤生效',hit.value.data.items.every(row=>row.type==='Dataset'));
+  ok('检索可复现',JSON.stringify(hit.value)===JSON.stringify((await builtin('search',{query:member.id,type:'Dataset'})).value));
+  ok('零命中是空页',(await builtin('search',{query:'zzz-no-such-term-zzz'})).value.data.total===0);
+  if(dimension){
+    const read=await readKnowledge(dimension.key);
+    ok('成员读取配套精确说明',read.items.length===1&&read.items[0].key===dimension.key&&typeof read.facts.field==='string');
+    const back=(await builtin('references',{key:dimension.key,type:'Dataset',link:'dimensions',take:50})).value.data;
+    ok('自有成员与反向导航一致',back.items.some(ref=>ref.key===member.key));
   }
-  const again = await call('oks_search', { query: seed.name });
-  const stable = JSON.stringify(again.value) === JSON.stringify(hit.value);
-  console.log(`  同参数逐字可复现: ${stable ? '✓' : '✗'}`);
-  if (!stable) throw new Error('同参数两次结果不同');
-  const zero = await call('oks_search', { query: 'zzz-no-such-term-zzz' });
-  console.log(`  0 命中给出 facet: ${zero.value.total === 0 && /可用的 kind/.test(zero.text) ? '✓' : '✗'}`);
-  if (zero.value.total !== 0) throw new Error('不存在的词不该有命中');
-}
-
-// 与服务发布物对比：派生结果必须与同一份产物的发布物逐项相同（存在发布物才比）
-console.log('=== 与发布物对比 ===');
-{
-  const workspace = JSON.parse(readFileSync(`${DEV_ROOT}/oks.json`, 'utf8'));
-  const model = resolve(DEV_ROOT, workspace.model);
-  const base = model.replace(/\.snapshot\.wasm$/, '').replace(/\.wasm$/, '');
-  const reportPath = [`${base}.report.json`, `${base}.derived.report.json`]
-    .find((candidate) => existsSync(candidate));
-  if (reportPath === undefined) {
-    console.log('  未找到同前缀的 report.json，跳过');
-  } else {
-    const report = JSON.parse(readFileSync(reportPath, 'utf8'));
-    const line = logs.find((message) => message.includes('discovery index')) ?? '';
-    const nodes = Number(/·\s*(\d+) 节点/.exec(line)?.[1] ?? -1);
-    const links = Number(/·\s*(\d+) 引用/.exec(line)?.[1] ?? -1);
-    console.log(`  ${relative(DEV_ROOT, reportPath)} · 节点 ${nodes} = ${report.nodes} ${nodes === report.nodes ? '✓' : '✗'}`);
-    if (nodes !== report.nodes) throw new Error('派生节点数与发布物不一致');
-    console.log(`  引用 ${links} = ${report.links} ${links === report.links ? '✓' : '✗'}`);
-    if (links !== report.links) throw new Error('派生引用数与发布物不一致');
-    // 发布物的 counts 以组名记账，工具面以声明的 kind 名回答；这层对应关系只能在测试里手工列出。
-    const groups = { Dataset: 'datasets', Dimension: 'dimensions', Measure: 'measures', Relation: 'rels', Ty: 'types', Value: 'values', BusinessLink: 'business_links' };
-    for (const [kind, group] of Object.entries(groups)) {
-      if (report.counts?.[group] === undefined) continue;
-      const total = (await call('oks_search', { kind })).value.total;
-      console.log(`  ${kind} ${total} = ${report.counts[group]} ${total === report.counts[group] ? '✓' : '✗'}`);
-      if (total !== report.counts[group]) throw new Error(`词条计数与发布物不一致：${kind}`);
-    }
-  }
-}
-
-console.log('=== oks_references（按 key 反向找引用）===');
-{
-  // 用正向图做往返验证：节点 A 指向 B，则 B 的反向引用里必须能看到 A
-  const node = foundOf((await call('oks_data', { load: { knowledge: 'knowledge://' }, project: { knowledge: { [member.key]: 'Value' } } })).value);
-  const forward = (node?.links ?? []).find((link) => typeof link?.key === 'string');
-  if (forward === undefined) {
-    console.log('  该成员没有正向引用，跳过往返验证');
-  } else {
-    const back = await call('oks_references', { key: forward.key });
-    const roundTrip = back.value.references.some((ref) => ref.source === node.key && ref.link === forward.type);
-    console.log(`  ${node.key} → ${forward.key} 的反向引用含它自己: ${roundTrip ? '✓' : '✗'} · 该 key 共 ${back.value.total} 条引用`);
-    if (!roundTrip) throw new Error('正向引用没有出现在反向结果里');
-    const filtered = await call('oks_references', { key: forward.key, link: forward.type });
-    console.log(`  link=${forward.type} 过滤生效: ${filtered.value.references.every((ref) => ref.link === forward.type) ? '✓' : '✗'}`);
-    if (back.value.total > back.value.references.length) {
-      const next = await call('oks_references', { key: forward.key, skip: back.value.references.length });
-      console.log(`  skip 翻页 start=${next.value.start} ${next.value.start === back.value.references.length ? '✓' : '✗'}`);
-    } else {
-      console.log(`  一页装得下（more=null ${back.value.more === null ? '✓' : '✗'}）`);
-    }
-  }
-  let rejected = false;
-  try {
-    await call('oks_references', { key: 'Dataset/zzz-no-such-key-zzz' });
-  } catch (cause) {
-    rejected = /不是这个产物里的知识 key/.test(String(cause?.message ?? cause));
-  }
-  console.log(`  未知 key 明确报错: ${rejected ? '✓' : '✗'}`);
-  if (!rejected) throw new Error('未知 key 应当报错，而不是回空');
+  const stored=await call('oks_data',{load:{facts:'knowledge://'},jq:{src:'builtin://knowledge/search.jq',args:{input:'facts',query:member.id,type:'Dataset',take:1}},save:{name:'knowledge_recipe',motivation:'保留内置语义知识检索配方'}});
+  const envelope=readEnvelope(DEV_ROOT,stored.value.asset);const recipe=envelope.origin.nodes[envelope.origin.root];
+  ok('保存完整参数源码和知识来源',stored.value.execution.src==='builtin://knowledge/search.jq'&&recipe.snip.includes('"query":'+JSON.stringify(member.id))&&recipe.inputPaths.facts==='.data'&&Object.values(envelope.origin.nodes).some(n=>n.kind==='knowledge'));
+  const invalid=await refusalOf(()=>builtin('references',{key:'datasets/zzz-no-such-key-zzz'}));
+  ok('未知地址明确失败',/Unknown knowledge key/.test(invalid??''));
+  const help=await call('oks_data',{load:{help:'oks://help/knowledge'},project:{help:{examples:'Value'}}});
+  ok('用法由工具帮助提供',help.value.data.help.examples.read.jq.src==='builtin://knowledge/read.jq');
+  const query=await call('oks_data',{load:{help:'oks://help/query'},project:{help:{intent:'Value'}}});
+  ok('查询协议由工具帮助提供',JSON.stringify(query.value.data).includes('Graph'));
+  const audit=await call('oks_data',{load:{knowledge:'knowledge://'},jq:{src:prog('.knowledge | {items:(.items|length),keys:(keys|sort)}')}});
+  ok('简短 metadata 与事实图一致',audit.value.data.items===catalog.value.data.catalog.meta.counts.items&&JSON.stringify(audit.value.data.keys)==='["datasets","items","relations","types"]');
+  ok('metadata 不携带全图目录和工程契约',Buffer.byteLength(catalog.text)<2048);
 }
 
 // 命名批次：名字用于回执对应、结果文件名与来源核对。
@@ -1819,10 +1692,10 @@ console.log('=== oks_data（具名输入 + save 时自动来源链）===');
   ok('物化：上游的 data 不进新来源链（链里只有操作）',
     Object.values(snapFile.origin.nodes).every((node) => !('data' in node))
     && JSON.stringify(snapFile.origin).includes('"intent"'));
-  // 回执只有落点与大小：值、形状、来源链都不回模型可见面，它们留在文件里（要读就再读一次）。
-  ok('物化：回执就是落点与大小两件东西',
-    Object.keys(snap.value).sort().join(',') === 'asset,bytes'
-    && snap.text.trim() === `asset:  ${snap.value.asset} · ${(snap.value.bytes / 1024).toFixed(1)} KB`);
+  // 回执保留落点、大小与执行方式；数据和来源链留在文件里。
+  ok('物化：回执保留落点、大小与执行方式',
+    Object.keys(snap.value).sort().join(',') === 'asset,bytes,execution'
+    && snap.value.execution.method === 'jq' && snap.text.includes(snap.value.asset));
 
   // 多输入 + 共享祖先：raw 直接引用查询，snapshot 引用上一级加工——查询节点只该留一份
   const both = await call('oks_data', {
@@ -4347,10 +4220,10 @@ console.log('=== 报告的清单 / 取数 / 来源跟踪 ===');
     jq: { src: prog('.r |= .structure | ' + '(.r | contains("一、级别与清除"))') },
   });
   ok('root 只取一段：来源链与章节骨架各自单独可读，回执写明每份输入用了哪个 root',
-    onlyOrigin.value.ok !== false && Object.keys(onlyOrigin.value).sort().join(',') === 'data,ok'
+    onlyOrigin.value.ok !== false && Object.keys(onlyOrigin.value).sort().join(',') === 'data,execution,ok'
     && onlyOrigin.value.data?.nodes >= 2 && typeof onlyOrigin.value.data?.root === 'string'
     && onlyChapters.value.data === true);
-  for (const input of [`${reportSrc}#unknown`, `${reportSrc}#meta#meta`, 'knowledge://#meta']) {
+  for (const input of [`${reportSrc}#unknown`, `${reportSrc}#meta#meta`, 'knowledge://#unknown']) {
     ok('未知与重复资源选择符明确拒绝', !!await refusalOf(() => call('oks_data', {load: {fact: input}})));
   }
 
@@ -4640,7 +4513,7 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
   const back = readReportPage(page);
   ok('读回：拿到 origin/assets/items 与缩水后的结构区',
     !('error' in back) && Object.keys(back.assets).length === 1
-    && back.structure.includes('<!-- 12% --></span>')
+    && back.structure.includes('<!-- summary.growth --></span>') && back.items.summary.growth === '12%'
     && back.structure.includes('<figure data-oks-ref="trend"><!-- omitted --></figure>'));
   ok('读回：外壳、目录与页脚都不进结构区',
     !('error' in back) && !back.structure.includes('<header>')
@@ -5135,7 +5008,7 @@ console.log('=== RFC 0012：资源、加工方式与报告来源链 ===');
   ok('#meta 加工完整继承原资产上游并记录资源与视图',
     Object.keys(explained.origin.nodes).length === 3 && explainNode.inputPaths?.fact === '#meta'
     && explainNode.inputResources?.fact === `${projected.value.asset}#meta`);
-  const mixedCode = prog('{count: .fact.fact.count, guideType: .knowledge.guide.type}');
+  const mixedCode = prog('{count: .fact.fact.count, typeCount: (.knowledge.types | length)}');
   const mixed = await call('oks_data', {
     load: { fact: projected.value.asset, knowledge: 'knowledge://', sameKnowledge: 'knowledge://' },
     jq: { src: mixedCode }, save: { name: 'unified_mixed', motivation: '关联知识声明与事实' },
@@ -5144,7 +5017,7 @@ console.log('=== RFC 0012：资源、加工方式与报告来源链 ===');
   const mixedNode = mixedEnvelope.origin.nodes[mixedEnvelope.origin.root];
   const knowledgeNodes = Object.values(mixedEnvelope.origin.nodes).filter(node => node.kind === 'knowledge');
   ok('混合加工继承知识身份与文件来源，共享知识节点只存一份',
-    mixedEnvelope.data.count === 7 && mixedEnvelope.data.guideType === 'Index'
+    mixedEnvelope.data.count === 7 && mixedEnvelope.data.typeCount > 0
     && knowledgeNodes.length === 1 && Object.keys(mixedEnvelope.origin.nodes).length === 4
     && mixedNode.inputs.knowledge === mixedNode.inputs.sameKnowledge
     && mixedNode.inputShape === 'named' && mixedNode.method === 'jq'
@@ -5181,7 +5054,7 @@ console.log('=== RFC 0012：资源、加工方式与报告来源链 ===');
     && readReport.value.data.fact.structure.includes('data-oks-ref="result"'));
   const named = await call('oks_data', { load: { ['__proto__']: seed.value.asset }, project: { ['__proto__']: { count: 'Value' } } });
   ok('具名输入按字面键处理特殊对象键', named.value.data['__proto__'].count === 7);
-  const invalidInputs = ['knowledge://', JSON.stringify({fact:'knowledge://'}), {fact:'knowledge://#meta'}, {fact:`${seed.value.asset}#data`}, {fact:`${seed.value.asset}#meta#meta`}, null, [], {x: 3}, {'': seed.value.asset}, 'knowledge://#meta', `${seed.value.asset}#data`, `${seed.value.asset}#meta#meta`];
+  const invalidInputs = ['knowledge://', JSON.stringify({fact:'knowledge://'}), {fact:'knowledge://#unknown'}, {fact:`${seed.value.asset}#data`}, {fact:`${seed.value.asset}#meta#meta`}, null, [], {x: 3}, {'': seed.value.asset}, 'knowledge://#meta', `${seed.value.asset}#data`, `${seed.value.asset}#meta#meta`];
   for (const input of invalidInputs) {
     ok('非法输入或选择符明确拒绝', !!await refusalOf(() => call('oks_data', { load: input })));
   }
