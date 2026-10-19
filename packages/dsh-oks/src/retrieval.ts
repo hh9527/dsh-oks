@@ -192,10 +192,10 @@ function deriveIndex(nodes: KnowledgeNode[], contract: {
         key: 'guide',
         description: '知识图的读取指引与发现契约。',
         detail: {
-          说明: '知识图是以原始知识 key 为键、以带 type 的完整条目为值的对象。',
-          起点: '读取 .index 获得领域入口；发现契约中的 roots 也是可读取的入口 key。',
-          寻址: '将知识返回的 key 原样作为顶层对象键读取条目，例如 .["index"]。',
-          关联: '条目 links 中的 key 指向同一对象中的条目，关系含义以知识声明为准。',
+          说明: '知识图是以原始知识 key 为键、以带 type 的完整条目为值的对象。以 load:{knowledge:"knowledge://"} 加载时，程序根是具名输入对象，知识图位于 .knowledge。',
+          起点: '读取 .knowledge.index 获得领域入口；发现契约中的 roots 也是知识图内可读取的入口 key。',
+          寻址: '将知识返回的 key 原样作为知识图对象键读取，例如 .knowledge["index"]。使用其他 load 名称时，改用对应的具名键；进入迭代前可用 . as $in 保留输入，之后通过 $in.knowledge 访问知识图。',
+          关联: '条目 links 中的 key 指向同一知识图中的条目，关系含义以知识声明为准。',
           范围: '包含发现入口沿 links 与 Index.detail.schemas 可达的全部节点。',
           discovery: contract.discovery,
         },
@@ -436,7 +436,7 @@ export function renderSearch(_args: unknown, value: SearchResult): RenderBlock[]
       '换个说法，或用 kind= / dataset= 收窄。');
   } else {
     for (const row of value.matched) lines.push(termLine(row));
-    lines.push('', '用 index 里声明的 key 模式把 kind/name[/owner] 拼成 key，再用 oks_data 以 load={knowledge:"knowledge://"} 按顶层 key 读节点。');
+    lines.push('', '用 index 里声明的 key 模式把 kind/name[/owner] 拼成 key，再用 oks_data 以 load={knowledge:"knowledge://"} 加载，在 .knowledge 下按该 key 读节点。');
   }
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }

@@ -61,7 +61,7 @@ import { createKnowledge } from './knowledge.ts';
 import { disposeJaqEngine } from './jaq.ts';
 import { createTimeContext } from './time-context.ts';
 import { createTools } from './tools.ts';
-import { PAYLOAD_MAX_BYTES, payloadTooLarge } from './tools.ts';
+import { withOutputLimit } from './payload.ts';
 import { createVaRuntime } from './va.ts';
 import { ARTIFACTS_ENDPOINT, createArtifactsEndpoint, createDeleteEndpoint, createDownloadEndpoint,
   createCollectEndpoint, createPinEndpoint, COLLECT_ENDPOINT, DELETE_ENDPOINT, DOWNLOAD_ENDPOINT,
@@ -100,25 +100,7 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
 
   const definitions = createTools({ knowledge, va, timeContext, log, config });
   for (const definition of definitions) {
-    // **回执的大小闸门在所有工具上**：交回给模型的那一份超过上限时，数据留在文件里，
-    // 交出去的是与数据接口同形状的合法 JSON 错误——数据本身不设上限（每份材料有自己的上限），
-    // 把门的是"进模型上下文的这一份"。工具自己更精确的提示（如 oks_data）在它内部先生效。
-    const render = definition.output.render.bind(definition.output);
-    const dispose = ctx.tools.register({
-      ...definition,
-      output: {
-        ...definition.output,
-        render: (args, value) => {
-          const blocks = render(args, value);
-          const actualBytes = Buffer.byteLength(blocks.map((block) => block.text ?? '').join(''), 'utf8');
-          if (actualBytes <= PAYLOAD_MAX_BYTES) return blocks;
-          return [{
-            type: 'text',
-            text: JSON.stringify(payloadTooLarge(definition.name, value, actualBytes)),
-          }];
-        },
-      },
-    });
+    const dispose = ctx.tools.register(withOutputLimit(definition));
     if (typeof dispose === 'function') ctx.effect(() => dispose);
   }
 

@@ -7,6 +7,7 @@ import { capLine } from './text.ts';
 import { runJaq } from './jaq.ts';
 import { createProjector } from './project.ts';
 import type { JsonValue, ProjectRule } from './project.ts';
+import type { PayloadError } from './payload.ts';
 import { buildOption, CHART_WIDTH } from './chart/option.ts';
 import { renderEchartsSvg } from './chart/echarts.ts';
 import { tableMarkdown } from './view/table.ts';
@@ -45,13 +46,13 @@ import { appendNode, ARTIFACT_DIR, chainLines, DEFAULT_ROOT, embedChartInput, FI
 import type { ColumnInfo, DataOrigin, Envelope, OriginNode, SaveArtifactOptions } from './results.ts';
 
 
-/** 递归规则由公共投影函数完整校验；参数 schema 描述四种合法外形。 */
+/** 递归规则由公共投影函数完整校验；参数 schema 描述合法规则及其组合。 */
 const PROJECT_PARAMETER = {
-  description: 'Use project to inspect types/keys/sizes and select fields. Use jq for filtering, sorting, computation, aggregation or joins. Build the rule from the loaded input root: load names are the first rule keys. For load {"fact":"<asset path>"}, start with project {"fact":"Shape"}; after discovering rows, use {"fact":{"rows":"Shape"}}; to select fields in each row, use {"fact":{"rows":["Map",{"name":"Value","detail":{"label":"Value"}}]}}. Read this as fact -> rows -> each member -> name and detail.label. Output retains these object layers. Rule = "Value" | "Shape" | {field: Rule, ...} | ["Map", Rule] | ["Map1", Rule]. "Value" keeps the current value. "Shape" returns its type/size summary (objects include up to 20 sorted keys; string size counts Unicode code points). Object rules select literal keys and apply child rules. ["Map", Rule] applies the child rule to every array or dictionary member, preserving array length or dictionary keys. ["Map1", Rule] selects only the first member in JS own enumerable key order, preserving its array/object container and original object key; empty containers stay empty. Use {"fact":{"rows":["Map1","Value"]}} to preview one row. "Shape" describes the container; ["Map","Shape"] describes its members. A key containing dots or slashes is one literal key; nested fields use nested objects. Missing fields stay absent. Object rules require objects; Map and Map1 require arrays or objects. Type mismatches report the rule location and actual type. Pass the rule as a JSON value. Projection preserves the input.',
+  description: 'Use project to inspect types/keys/sizes and select fields. Use jq for filtering, sorting, computation, aggregation or joins. Build the rule from the loaded input root: load names are the first rule keys. For load {"fact":"<asset path>"}, start with project {"fact":"Shape"}; after discovering rows, use {"fact":{"rows":"Shape"}}; to select fields in each row, use {"fact":{"rows":["Map",{"name":"Value","detail":{"label":"Value"}}]}}. Read this as fact -> rows -> each member -> name and detail.label. Output retains these object layers. Rule = "Value" | "Shape" | {field: Rule, ...} | ["Map", Rule] | ["TruncateThen", N, Rule]. "Value" keeps the current value. "Shape" returns its type/size summary (objects include up to 20 sorted keys; string size counts Unicode code points). Object rules select literal keys and apply child rules. ["Map", Rule] applies the child rule to every array or dictionary member, preserving array length or dictionary keys. ["TruncateThen", N, Rule] keeps the first N array elements or object keys in JS own enumerable key order, preserving the container and object keys, then applies Rule to that entire truncated container. N is a non-negative safe integer; 0 gives an empty container. Use {"fact":{"rows":["TruncateThen",3,"Value"]}} to preview three rows, or {"fact":{"rows":["TruncateThen",3,["Map",{"name":"Value"}]]}} to select name in those rows. "Shape" describes the container; ["Map","Shape"] describes its members. A key containing dots or slashes is one literal key; nested fields use nested objects. Missing fields stay absent. Object rules require objects; Map and TruncateThen require arrays or objects. Type mismatches report the rule location and actual type. Pass the rule as a JSON value. Projection preserves the input.',
   oneOf: [
     { type: 'string', enum: ['Value', 'Shape'], description: 'Operation on the current value: "Value" keeps it; "Shape" summarizes it.' },
     { type: 'object', additionalProperties: true, description: 'Select fields at the current object level; each field value is another Rule. {"detail":{"label":"Value"}} keeps detail.label within the detail object. {"rows":["Map",{"name":"Value"}]} keeps name in each row.' },
-    { type: 'array', items: {}, description: 'A two-element ["Map", Rule] or ["Map1", Rule] tuple. Map applies its child Rule to every member; Map1 applies it only to the first member. Both preserve the array/object container, and object keys are preserved. ["Map", {"detail":{"label":"Value"}}] selects detail.label in each member. ["Map", "Shape"] summarizes each member; "Shape" summarizes the container itself.' },
+    { type: 'array', items: {}, description: 'A two-element ["Map", Rule] or three-element ["TruncateThen", N, Rule] tuple. Map applies Rule to every member of an array or object. TruncateThen keeps the first N array elements or object keys and applies Rule to the entire truncated container. N is a non-negative safe integer. Map preserves the container and object keys; TruncateThen passes its truncated container to Rule. ["TruncateThen", 3, "Value"] previews three members; ["TruncateThen", 3, ["Map", {"name":"Value"}]] selects name in those members; ["TruncateThen", 3, "Shape"] describes the truncated container.' },
   ],
 };
 
@@ -98,7 +99,7 @@ interface ReportSpec {
   subtitle: string | null;
   /** 结构区所在的文件（`.work/` 下的相对路径）：正文写成文件，校验与渲染都按路径读它。 */
   articleFile: string;
-  /** item key → 取哪份材料的哪一段（`root` 是封装里的点路径）。 */
+  /** item key → 取哪份材料的哪一段（`root` 是相对于资源可见视图的点路径，默认整份负荷）。 */
   inputs: Record<string, { src: string; root: string }>;
 }
 
@@ -133,17 +134,17 @@ const parseReportSpec = (raw: unknown): { spec: ReportSpec } | { error: string }
   }
   const rawInputs = record.inputs === undefined || record.inputs === null ? {} : record.inputs;
   if (typeof rawInputs !== 'object' || Array.isArray(rawInputs)) {
-    return { error: 'spec.inputs 要写成对象：{ "<item key>": { "src": "…", "root": ".data" } }' };
+    return { error: 'spec.inputs 要写成对象：{ "<item key>": { "src": "…", "root": "." } }' };
   }
   const inputs: Record<string, { src: string; root: string }> = {};
   for (const [key, value] of Object.entries(rawInputs as Record<string, unknown>)) {
-    const entry = typeof value === 'string' ? { src: value, root: '.data' } : value;
+    const entry = typeof value === 'string' ? { src: value, root: '.' } : value;
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-      return { error: `spec.inputs.${key} 要写成 asset 字符串，或 {"src": "…", "root": ".data"}` };
+      return { error: `spec.inputs.${key} 要写成 asset 字符串，或 {"src": "…", "root": "."}` };
     }
     const { src, root } = entry as { src?: unknown; root?: unknown };
     if (typeof src !== 'string' || src === '') return { error: `spec.inputs.${key}.src 必填` };
-    inputs[key] = { src, root: root === undefined || root === null ? '.data' : String(root) };
+    inputs[key] = { src, root: root === undefined || root === null ? '.' : String(root) };
   }
   const unknown = Object.keys(record).filter((key) => !['title', 'subtitle', 'articleFile', 'inputs'].includes(key));
   if (unknown.length > 0) return { error: `spec 里不认识的项：${unknown.join(', ')}`
@@ -330,40 +331,6 @@ const parseTableSpec = (spec: Record<string, unknown>): { title: string | null; 
     ? spec.columns.filter((name): name is string => typeof name === 'string' && name !== '')
     : null,
 });
-
-/** 数据接口的单次返回上限（字节）。**不是分页机制，是安全阀**：
- *  数据接口要么返回**完整数据**，要么返回一个合法 JSON 的错误——绝不截断。 */
-export const PAYLOAD_MAX_BYTES = 16 * 1024;
-
-/** 超限时交出去的错误（合法 JSON，调用方可直接解析）。 */
-export interface PayloadError {
-  ok: false;
-  error: {
-    code: 'payload_too_large' | 'evaluation_truncated';
-    tool: string;
-    limitBytes: number;
-    actualBytes: number | null;
-  };
-  shape?: JsonValue;
-}
-
-const payloadShape = createProjector("Shape");
-
-/** 数据接口返回前的守门：完整就放行，超限就把数据换成错误（不返回半份数据）。 */
-function payloadGuard<T extends { ok: true; data: JsonValue }>(tool: string, value: T): T | PayloadError {
-  const actualBytes = Buffer.byteLength(JSON.stringify(value) ?? '');
-  if (actualBytes <= PAYLOAD_MAX_BYTES) return value;
-  return payloadTooLarge(tool, value.data, actualBytes);
-}
-
-/** 返回容量错误及被拦截值的形状；actualBytes 由对应的数据或渲染层测量。 */
-export function payloadTooLarge(tool: string, value: JsonValue, actualBytes: number): PayloadError {
-  return {
-    ok: false,
-    error: { code: 'payload_too_large', tool, limitBytes: PAYLOAD_MAX_BYTES, actualBytes },
-    shape: payloadShape(value),
-  };
-}
 
 /** 引擎输出超限时只返回完整值的形状，省略数据并拒绝物化。 */
 const truncatedError = (tool: string, shape: JsonValue): PayloadError => ({
@@ -890,7 +857,7 @@ interface CreateDataArgs {
 /** jq 输出的字符上限：到点终止求值并标记截断（模型可见文本另有预算）。 */
 const JAQ_MAX_BYTES = 256 * 1024;
 
-/** 一份解析后的资源：`name` 是来源绑定键（单输入使用内部键 `$`），`value` 是可见值，`root` 是数据或元数据视图，
+/** 一份解析后的资源：`name` 是 load 声明的具名键，`value` 是资源的可见值，`root` 是数据或元数据视图，
  *  `origin` 是这份产物的来源链。 */
 interface NamedInput {
   name: string;
@@ -901,7 +868,7 @@ interface NamedInput {
 }
 
 /** 点路径的两种写法共用一句提示：它是选择器、不是程序。 */
-const PATH_HINT = '（"." 整份 / ".data" 那份数据本身 / ".origin" 来源链 / ".data.items" 更深的键）';
+const PATH_HINT = '（"." 当前视图整体 / ".rows" 对象字段 / ".rows.0.label" 数组成员字段）';
 
 /** 解析报告的点路径：spec.inputs.root 选择材料内容，data-oks-pick 摘取正文引用值。 */
 function parsePath(raw: unknown, where: string): { path: string[]; text: string } | { error: string } {
@@ -948,10 +915,7 @@ function selectPath(value: unknown, path: readonly string[], what: string): { va
   return { value: current };
 }
 
-/** 读一份产物、摊成本来的三段（`{ meta, origin, data }`；图/表/报告的材料块就地解析）。
- *  于是"读任何产物"只有一条路——具名输入 + 点路径，既不需要派生封装，也不需要专门的读接口。 */
-/** 带着一份产物的来源继续加工时的形态：报告先把源码从 `assets` 还原成内嵌正文，别的产物原样。
- *  这样新产物自己闭合、不必背一张资源表；jq 读到的读模型不变（RFC 0008 §3）。 */
+/** 携带报告上游时，把 assets 中的源码还原进来源链；资源的可见值独立于追踪信息。 */
 function originForCarrying(asset: string, product: Envelope): DataOrigin {
   if (!asset.endsWith('.report.html')) return product.origin;
   const data = product.data;
@@ -959,12 +923,19 @@ function originForCarrying(asset: string, product: Envelope): DataOrigin {
   return restoreAssets(product.origin, data.assets as Record<string, string>);
 }
 
-function readDocument(root: string, asset: string): { document: Record<string, unknown>; origin: DataOrigin } {
+/** 普通资源只暴露负荷，#meta 显式暴露追踪信息；上游来源独立携带。 */
+function readDataResource(root: string, src: string): { value: unknown; origin: DataOrigin; root: '.data' | '#meta' } {
+  const parts = src.split('#');
+  if (parts.length > 2 || (parts.length === 2 && parts[1] !== 'meta')) {
+    throw new Error(`资源选择符错误：${src}`);
+  }
+  const asset = parts[0];
   const product = readProduct(root, asset);
-  // 交出去的形状与文件一致：把读回来时多出来的展示项视图留在这一层。
+  const meta = parts.length === 2;
   return {
-    document: { meta: product.meta, origin: product.origin, data: product.data },
+    value: meta ? { meta: product.meta, origin: product.origin } : product.data,
     origin: originForCarrying(asset, product),
+    root: meta ? '#meta' : '.data',
   };
 }
 
@@ -1018,16 +989,7 @@ async function resolveTransformInputs(knowledge: Knowledge, entry: WorkspaceEntr
         };
         inputs.push({ name, src, root: '.', value: index.knowledge, origin: originOf({ kind: 'knowledge', source }, null) });
       } else {
-        const parts = src.split('#');
-        if (parts.length > 2 || (parts.length === 2 && parts[1] !== 'meta')) {
-          throw new Error(`资源选择符错误：${src}`);
-        }
-        const read = readDocument(entry.settings.workspaceRoot, parts[0]);
-        const meta = parts.length === 2;
-        inputs.push({
-          name, src, root: meta ? '#meta' : '.data', origin: read.origin,
-          value: meta ? { meta: read.document.meta, origin: read.document.origin } : read.document.data,
-        });
+        inputs.push({ name, src, ...readDataResource(entry.settings.workspaceRoot, src) });
       }
     } catch (cause) {
       throw new Error(`输入 ${JSON.stringify(name)} ← ${src}：${errorText(cause)}`);
@@ -1043,9 +1005,11 @@ async function resolveTransformInputs(knowledge: Knowledge, entry: WorkspaceEntr
 /** 失败回执里那几行输入形状：名字、来源、取的那一段、形状。 */
 function inputLines(inputs: readonly NamedInput[]): string {
   if (inputs.length === 0) return '  （没有输入：程序看到的是 {}）';
-  return inputs
-    .map((input) => `  输入 ${input.name} ← ${input.src}（${input.root} · ${capLine(shapeOf(input.value), 240)}）`)
-    .join('\n');
+  return ['  输入根 . 是具名对象，每个键对应一份资源的可见值。', ...inputs.map((input) => {
+    const view = input.root === '.data' ? '已读取封装的 .data 负荷'
+      : input.root === '#meta' ? '#meta 追踪信息' : '知识图';
+    return `  输入 ${input.name} ← ${input.src}（${view} · ${capLine(shapeOf(input.value), 240)}）`;
+  })].join('\n');
 }
 
 /** va_ask 的入参。 */
@@ -1707,17 +1671,17 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_data',
-      description: 'Read knowledge or saved data and optionally save with full provenance. Use project first for inspecting types/keys/sizes or selecting fields; use a jq file for filtering, sorting, computation, aggregation or joins. Start knowledge discovery with {"load":{"knowledge":"knowledge://"},"project":{"knowledge":{"guide":"Value"}}}. load is an object mapping names to resource addresses; access loaded values as .fact or .knowledge. Omitted load gives {}. File resources expose data only; append #meta for {meta, origin}. Project rules start with the load names: load:{fact:"<asset path>"}, project:{fact:"Shape"}. Choose project or jq:{src:".work/analysis.jq"}; omit both for identity. Use full workspace-relative paths verbatim. Tables and charts both accept row-object arrays or {rows, columns?}. Optional columns entries are {name:"count",types:["number"],nullable:false}. Query data is {rows, columns}; figures are {rows, spec}; reports are {assets, items, structure}. jq is deterministic: time comes from create_current_ctx_data; explicit-zone functions gmtime_tz(zone), strftime_tz(fmt; zone), tzadd(unit; amount; zone), tzfloor(unit; zone), tzceil(unit; zone) receive epoch seconds as their pipeline input. Example with load:{ctx:"<context asset>"}: .ctx as $ctx | ($ctx.utc.epochMillis / 1000 | floor) | strftime_tz("%F %T"; $ctx.tz.client.id). strftime_tz takes two arguments (format; zone). Units: year/quarter/month/week/day/hour/minute/second. The jq program must produce exactly one JSON value. Collect multiple results with [expression]; represent an empty result as [] or null. Narrow project or jq when the output budget is exceeded. save:{name,motivation} materialises a .tr.json envelope and returns asset and bytes.',
+      description: 'Read knowledge or saved data and optionally save with full provenance. Use project first for inspecting types/keys/sizes or selecting fields; use a jq file for filtering, sorting, computation, aggregation or joins. Start knowledge discovery with {"load":{"knowledge":"knowledge://"},"project":{"knowledge":{"guide":"Value"}}}. load maps names to resource addresses. The program root . is always the named object, e.g. load:{a:...,b:...} gives {a:<visible value>,b:<visible value>}, including a single load name. Access each value as .a or .b. Bind . as $in before iteration to retain access through $in.a while . becomes the current member. Omitted load gives {}. File resources automatically unwrap to their .data payload: .fact is the payload itself (an array when data is an array). Append #meta to explicitly read {meta, origin}. Provenance is carried automatically alongside business data. Project rules start with the load names: load:{fact:"<asset path>"}, project:{fact:"Shape"}. Choose project or jq:{src:".work/analysis.jq"}; omit both for identity. Use full workspace-relative paths verbatim. Tables and charts both accept row-object arrays or {rows, columns?}. Optional columns entries are {name:"count",types:["number"],nullable:false}. At each load name, query payloads are {rows, columns}, figure payloads are {rows, spec}, and report payloads are {assets, items, structure}. jq is deterministic: time comes from create_current_ctx_data; explicit-zone functions gmtime_tz(zone), strftime_tz(fmt; zone), tzadd(unit; amount; zone), tzfloor(unit; zone), tzceil(unit; zone) receive epoch seconds as their pipeline input. Example with load:{ctx:"<context asset>"}: .ctx as $ctx | ($ctx.utc.epochMillis / 1000 | floor) | strftime_tz("%F %T"; $ctx.tz.client.id). strftime_tz takes two arguments (format; zone). Units: year/quarter/month/week/day/hour/minute/second. The jq program must produce exactly one JSON value. Collect multiple results with [expression]; represent an empty result as [] or null. Viewing is limited to 16 KiB of final rendered UTF-8 text. When exceeded, payload_too_large reports the business result shape and, for object results, up to eight fields with their shapes and compact JSON byte sizes, largest first. Narrow project or jq to select fields or use TruncateThen to preview members. save returns a small receipt while preserving the result in a file. Successful receipts include execution.method (jq, project or identity) and execution.src for a jq file. save:{name,motivation} materialises a .tr.json envelope and returns asset, bytes and execution.',
       parameters: {
         type: 'object',
         properties: {
           load: {
-            description: 'Semantic type: load: { [Key: string]: ResourceRef }. ResourceRef is a resource address string: FileName, FileName#meta, or knowledge://. FileName is the complete workspace-relative asset path returned by a tool, e.g. .oks/data/example.tr.json. An object assigns a Key to each ResourceRef and supplies an object with those keys and resolved values, accessed as .fact or .knowledge. Example: {"load":{"fact":".oks/data/example.tr.json","knowledge":"knowledge://"}}. A file supplies its data; FileName#meta supplies {meta, origin}; knowledge:// supplies the knowledge graph.',
+            description: 'Semantic type: load: { [Key: string]: ResourceRef }. ResourceRef is a resource address string: FileName, FileName#meta, or knowledge://. FileName is the complete workspace-relative asset path returned by a tool, e.g. .oks/data/example.tr.json. The jq/project root is always an object whose keys are the load names, even with one resource. Each Key contains that resource\'s visible value, accessed as .fact or .knowledge. In jq, bind . as $in before iteration to keep named inputs available as $in.fact while . refers to the current member. Example: {"load":{"fact":".oks/data/example.tr.json","knowledge":"knowledge://"}}. FileName supplies the unwrapped .data payload directly under its Key: .fact is that payload, and .fact.rows accesses its rows field. FileName#meta explicitly supplies {meta, origin}. Provenance is carried automatically alongside the visible value. knowledge:// supplies the knowledge graph.',
             type: 'object',
             additionalProperties: true,
           },
           project: PROJECT_PARAMETER,
-          jq: { type: 'object', properties: { src: { type: 'string', description: 'Full workspace-relative path to the jq program file. The file extension must be .jq, e.g. .work/analysis.jq.' } }, required: ['src'], additionalProperties: false },
+          jq: { type: 'object', description: 'Run a jq file with the named load object as its initial input: .fact is the visible value loaded as fact, even with one resource. Bind . as $in before iteration to keep access to named inputs through $in.fact.', properties: { src: { type: 'string', description: 'Full workspace-relative path to the jq program file. The file extension must be .jq, e.g. .work/analysis.jq.' } }, required: ['src'], additionalProperties: false },
           save: {
             type: 'object',
             description: 'Keep the result instead of only looking at it: give it a name and say why, and the tool writes {meta, origin, data} into .oks/data/ — the origin records this operation and the complete source chain of every input, so the numbers can be explained later. Leave save out to only look at the result.',
@@ -1747,15 +1711,19 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           const problem = nameProblem(saveName);
           if (problem) throw new Error(problem);
         }
-        const { inputs, document, shape } = await resolveTransformInputs(knowledge, entry, args.load);
+        // 先固定本次程序，再加载数据：文件检查和执行使用同一份源码。
         const code = args.jq === undefined ? undefined : readCodeFile(entry.settings.workspaceRoot, args.jq.src);
+        const execution = code === undefined
+          ? { method: projector === undefined ? 'identity' as const : 'project' as const }
+          : { method: 'jq' as const, src: code.file };
+        const { inputs, document, shape } = await resolveTransformInputs(knowledge, entry, args.load);
         const snip = code?.text;
         const started = Date.now();
         let data: unknown;
-        if (code === undefined) {
-          data = projector === undefined ? document : projector(document as JsonValue);
-        } else {
-          try {
+        try {
+          if (code === undefined) {
+            data = projector === undefined ? document : projector(document as JsonValue);
+          } else {
             const options = {
               input: document, timeoutMs: entry.settings.queryTimeoutMs, maxBytes: JAQ_MAX_BYTES,
               signal: exec?.signal, programFile: code.file,
@@ -1765,11 +1733,12 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
               : await runJaq(code.text, options);
             if (!result.ok) return truncatedError('oks_data', result.shape);
             data = result.data;
-          } catch (cause) {
-            throw new Error(`${errorText(cause)}\n这次程序看到的输入：\n${inputLines(inputs)}`);
           }
+        } catch (cause) {
+          throw new Error(`${errorText(cause)}\n这次处理看到的输入：\n${inputLines(inputs)}`);
         }
-        log(`[oks] oks_data · ${inputs.length} 份输入 → 1 个值 · ${Date.now() - started} ms`);
+        log(`[oks] oks_data · ${execution.method}${code ? ` ${code.file}` : ''}`
+          + ` · ${inputs.length} 份输入 → 1 个值 · ${Date.now() - started} ms`);
         if (save !== undefined) {
           // 物化：来源链由这一层组装 —— 本次操作 + 各输入的**根节点**（产出那份 data 的记录）。
           pruneBeforeWrite(entry);
@@ -1779,7 +1748,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
             node: {
               kind: 'transform',
               motivation,
-              method: code ? 'jq' : Object.hasOwn(args, 'project') ? 'project' : 'identity',
+              method: execution.method,
               ...(snip === undefined ? {} : { snip }),
               ...(Object.hasOwn(args, 'project') ? { project: args.project } : {}),
               inputShape: shape,
@@ -1800,11 +1769,10 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           log(`[oks] oks_data → ${saveName} · ${inputs.length} 份输入 → 1 个值`
             + ` · ${(stored.bytes / 1024).toFixed(1)} KB · ${intoMs} ms · ${stored.asset}`
             + ` · snip=${capLine(snip ?? 'identity/project', 200)}`);
-          // 回执只有两件东西：落点与大小。值、形状与来源链都在文件里——
-          // 要看得再读一次（`oks_data` 读 `.data`），于是"留下来"这件事不把数据带回上下文。
-          return { asset: stored.asset, bytes: stored.bytes };
+          // 回执包含落点、大小与执行方式；值和来源链保存在文件里。
+          return { asset: stored.asset, bytes: stored.bytes, execution };
         }
-        return payloadGuard('oks_data', { ok: true as const, data: data as JsonValue });
+        return { ok: true as const, execution, data: data as JsonValue };
       },
     },
     {
@@ -1949,7 +1917,7 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
     },
     {
       name: 'oks_render_report',
-      description: 'Assemble a self-contained HTML report from an XHTML body. The body is a strict XML subset: one <article> root; the elements are article, section, h1-h3, p, div, span, figure, figcaption, table, caption, thead, tbody, tfoot, tr, th, td, ul, ol, li, blockquote, pre, code, strong, em, a, br, hr; the attributes are id, class, title, lang, data-oks-ref, data-oks-pick, data-oks-shrink, data-oks-lit, href, colspan, rowspan, scope; empty elements are written self-closed (<br />); and XML comments carry what a section is meant to answer (no "--" inside them). Data comes in by reference only: <figure data-oks-ref="key"> places a figure or table you already produced, <span data-oks-ref="key" data-oks-pick=".rows.0.label"> fills in one scalar, and every key must be declared in spec.inputs as {"src": "<asset from a receipt>", "root": ".data"}. A number that is prose rather than data — an ordinal, a date, a framing like 近 7 天, a term like P95 — is declared where it stands as <span data-oks-lit="">…</span>: on a span (anywhere else it has no effect and comes back as LitNotOnSpan) and, this being strict XML, carrying an empty value. Tokens containing a letter, numbers written after #, and anything inside pre, code or a reference span are not treated as numbers at all. Everything else is prose you write; mark your own commentary with data-oks-shrink so a later reader gets the reasoning without the conclusions. The tool builds the metadata region itself (source chains, display values, jq sources), numbers figures and tables in body order, inlines each display file, and writes one self-contained HTML. The report carries the whole recipe of what it shows — every query Intent, the payload of every supplied or context material, and every jq program — so its displayed values remain explainable after intermediate materials are reclaimed. Check the body with oks_check_report first; hand the result to the user with the present tool — an HTML report does not render in the reply body itself.',
+      description: 'Assemble a self-contained HTML report from an XHTML body. The body is a strict XML subset: one <article> root; the elements are article, section, h1-h3, p, div, span, figure, figcaption, table, caption, thead, tbody, tfoot, tr, th, td, ul, ol, li, blockquote, pre, code, strong, em, a, br, hr; the attributes are id, class, title, lang, data-oks-ref, data-oks-pick, data-oks-shrink, data-oks-lit, href, colspan, rowspan, scope; empty elements are written self-closed (<br />); and XML comments carry what a section is meant to answer (no "--" inside them). Data comes in by reference only: <figure data-oks-ref="key"> places a figure or table you already produced, <span data-oks-ref="key" data-oks-pick=".rows.0.label"> fills in one scalar, and every key must be declared in spec.inputs as {"src": "<asset from a receipt>"}. Resource paths automatically expose their .data payload, just as oks_data load does. inputs.root selects within that payload and defaults to "."; data-oks-pick then selects within the bound value. Append #meta to src to explicitly read {meta, origin}. The implementation carries provenance automatically alongside the visible value. A number that is prose rather than data — an ordinal, a date, a framing like 近 7 天, a term like P95 — is declared where it stands as <span data-oks-lit="">…</span>: on a span (anywhere else it has no effect and comes back as LitNotOnSpan) and, this being strict XML, carrying an empty value. Tokens containing a letter, numbers written after #, and anything inside pre, code or a reference span are not treated as numbers at all. Everything else is prose you write; mark your own commentary with data-oks-shrink. The final HTML displays the full content. Reading the report with oks_data returns {assets, items, structure}: structure retains reference span values as XML comments, replaces data-oks-shrink content with a plain-text comment of up to 30 Unicode characters (plus ... when truncated), and replaces figure content with <!-- omitted -->. Data and provenance remain complete. The tool builds the metadata region itself (source chains, display values, jq sources), numbers figures and tables in body order, inlines each display file, and writes one self-contained HTML. The report carries the whole recipe of what it shows — every query Intent, the payload of every supplied or context material, and every jq program — so its displayed values remain explainable after intermediate materials are reclaimed. Check the body with oks_check_report first; hand the result to the user with the present tool — an HTML report does not render in the reply body itself.',
       parameters: {
         type: 'object',
         properties: {
@@ -1961,12 +1929,12 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
               subtitle: { type: 'string', description: 'Optional subtitle — usually the time window the report covers.' },
               articleFile: {
                 type: 'string',
-                description: 'The .work/ file holding the <article> … </article> body — write it with work_write first, edit it with work_edit, check it with oks_check_report, then hand its name here. Prose is yours; data enters by reference — <figure data-oks-ref="key"> for a figure or table you already drew, <span data-oks-ref="key" data-oks-pick=".rows.0.label"> for one scalar. Write XML comments for what each section is meant to answer, and mark your own commentary with data-oks-shrink.',
+                description: 'The .work/ file holding the <article> … </article> body — write it with work_write first, edit it with work_edit, check it with oks_check_report, then hand its name here. Prose is yours; data enters by reference — <figure data-oks-ref="key"> for a figure or table you already drew, <span data-oks-ref="key" data-oks-pick=".rows.0.label"> for one scalar. Write XML comments for what each section is meant to answer, and mark your own commentary with data-oks-shrink: the final HTML displays it fully; oks_data reads it back as a plain-text XML comment of up to 30 Unicode characters, followed by ... when truncated.',
               },
               inputs: {
                 type: 'object',
-                description: 'What each data-oks-ref key points at: {"key": {"src": "<asset from a receipt>", "root": ".data"}}. A key may be the bare asset string when root is the default .data. Every key the body references must be declared here, and every key declared here must be referenced by the body.',
-                additionalProperties: { oneOf: [{ type: 'string' }, { type: 'object', properties: { src: { type: 'string' }, root: { type: 'string' } }, required: ['src'], additionalProperties: false }] },
+                description: 'What each data-oks-ref key points at: {"key": {"src": "<asset from a receipt>", "root": "."}}. src automatically exposes the .data payload; root is relative to that payload and defaults to "." (the entire payload), e.g. ".rows" selects payload.rows. A key may be the bare asset string for the default root. Append #meta to src to explicitly expose {meta, origin}; root then selects within that view. Provenance is carried automatically for every input. Every key the body references must be declared here, and every key declared here must be referenced by the body.',
+                additionalProperties: { oneOf: [{ type: 'string' }, { type: 'object', properties: { src: { type: 'string' }, root: { type: 'string', description: 'Dot path relative to the visible resource value: the .data payload for an ordinary src, or {meta, origin} for src#meta. Defaults to "."; e.g. ".rows" selects payload.rows.' } }, required: ['src'], additionalProperties: false }] },
               },
             },
             required: ['title', 'articleFile'],
@@ -1996,8 +1964,8 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           const where = `spec.inputs.${key}（${asset}）`;
           const parsedPath = parsePath(binding.root, `${where} 的 root`);
           if ('error' in parsedPath) throw new Error(parsedPath.error);
-          const read = readDocument(entry.settings.workspaceRoot, asset);
-          const picked = selectPath(read.document, parsedPath.path, `${where} 里`);
+          const read = readDataResource(entry.settings.workspaceRoot, asset);
+          const picked = selectPath(read.value, parsedPath.path, `${where} 的可见视图里`);
           if ('error' in picked) throw new Error(picked.error);
           // 展示件：图给 SVG 正文、表给 markdown 正文（内联时图会剥掉它自己的材料块）；
           // 其余材料只作数据引用。
@@ -2011,7 +1979,8 @@ export function createTools({ knowledge, va, timeContext, log, config }: {
           }
           bindings[key] = {
             src: asset,
-            root: parsedPath.text,
+            // 业务路径相对于可见值；来源链记录它在原始资源中的实际位置。
+            root: read.root + (parsedPath.text === '.' ? '' : parsedPath.text),
             value: picked.value,
             origin: read.origin,
             ...(display === undefined ? {} : { display }),

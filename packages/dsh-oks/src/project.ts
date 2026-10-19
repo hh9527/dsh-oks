@@ -8,7 +8,8 @@ export type ProjectRule =
   | 'Value'
   | 'Shape'
   | { [key: string]: ProjectRule }
-  | ['Map' | 'Map1', ProjectRule];
+  | ['Map', ProjectRule]
+  | ['TruncateThen', number, ProjectRule];
 
 export type Projector = (value: JsonValue) => JsonValue;
 
@@ -42,8 +43,8 @@ export function createProjector(project: ProjectRule): Projector {
     const invalid = (): never => {
       const received = rule === null ? 'null' : Array.isArray(rule) ? '数组' : typeof rule;
       const hint = typeof rule === 'string'
-        ? '字符串规则只接受 "Value" 或 "Shape"；对象规则直接嵌套传入，例如 {"project":{"index":"Shape"}}。'
-        : '使用 "Value"、"Shape"、对象或 ["Map", 子规则]、["Map1", 子规则]。';
+        ? '字符串规则只接受 "Value" 或 "Shape"；对象规则直接嵌套传入，例如 {"project":{"fact":{"rows":"Shape"}}}。'
+        : '使用 "Value"、"Shape"、对象、["Map", 子规则] 或 ["TruncateThen", N, 子规则]。';
       throw new Error(`project 规则 ${path} 非法（收到 ${received}）：${hint}`);
     };
     if (rule === null || typeof rule !== 'object') return invalid();
@@ -51,17 +52,30 @@ export function createProjector(project: ProjectRule): Projector {
     ancestors.add(rule);
     try {
       if (Array.isArray(rule)) {
-        if (rule.length !== 2 || (rule[0] !== 'Map' && rule[0] !== 'Map1')) return invalid();
-        const child = compile(rule[1], `${path}[1]`);
-        const first = rule[0] === 'Map1';
-        return (value) => {
-          if (Array.isArray(value)) return (first ? value.slice(0, 1) : value).map(child);
-          if (objectValue(value)) {
-            const entries = Object.entries(value);
-            return Object.fromEntries((first ? entries.slice(0, 1) : entries).map(([key, item]) => [key, child(item)]));
+        if (rule[0] === 'Map' && rule.length === 2) {
+          const child = compile(rule[1], `${path}[1]`);
+          return (value) => {
+            if (Array.isArray(value)) return value.map(child);
+            if (objectValue(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, child(item)]));
+            throw new Error(`project 规则 ${path} 类型不匹配：Map 需要 array 或 object，实际为 ${value === null ? 'null' : typeof value}。`);
+          };
+        }
+        if (rule[0] === 'TruncateThen' && rule.length === 3) {
+          const size = rule[1];
+          if (typeof size !== 'number' || !Number.isSafeInteger(size) || size < 0) {
+            throw new Error(`project 规则 ${path}[1] 非法：TruncateThen 的 N 必须是非负安全整数。`);
           }
-          throw new Error(`project 规则 ${path} 类型不匹配：${rule[0]} 需要 array 或 object，实际为 ${value === null ? 'null' : typeof value}。`);
-        };
+          const child = compile(rule[2], `${path}[2]`);
+          return (value) => {
+            if (Array.isArray(value)) return child(value.slice(0, size));
+            if (objectValue(value)) {
+              const keys = Object.keys(value).slice(0, size);
+              return child(Object.fromEntries(keys.map(key => [key, value[key]])));
+            }
+            throw new Error(`project 规则 ${path} 类型不匹配：TruncateThen 需要 array 或 object，实际为 ${value === null ? 'null' : typeof value}。`);
+          };
+        }
+        return invalid();
       }
       const proto = Object.getPrototypeOf(rule);
       if (proto !== Object.prototype && proto !== null) return invalid();
@@ -69,7 +83,7 @@ export function createProjector(project: ProjectRule): Projector {
         key, project: compile(child, `${path}[${JSON.stringify(key)}]`),
       }));
       return (value) => {
-        if (!objectValue(value)) throw new Error(`project 规则 ${path} 类型不匹配：对象规则需要 object，实际为 ${value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value}；数组取样使用 ["Map1", 子规则]，逐项处理使用 ["Map", 子规则]。`);
+        if (!objectValue(value)) throw new Error(`project 规则 ${path} 类型不匹配：对象规则需要 object，实际为 ${value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value}；数组取样使用 ["TruncateThen", N, 子规则]，逐项处理使用 ["Map", 子规则]。`);
         return Object.fromEntries(fields
           .filter(({ key }) => Object.hasOwn(value, key))
           .map(({ key, project }) => [key, project(value[key])]));

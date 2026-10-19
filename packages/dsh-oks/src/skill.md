@@ -57,13 +57,14 @@
 {"load":{"fact":".oks/data/example.qr.json"},"project":{"fact":{"rows":["Map",{"name":"Value","detail":{"label":"Value"}}]}}}
 ```
 
-规则的写法跟着输入的层级走：**对象写要保留的键，遍历数组或字典用 `["Map", 子规则]`，只看第一个成员用 `["Map1", 子规则]`，到目标位置写 `"Value"` 或 `"Shape"`。**
+规则的写法跟着输入的层级走：**对象写要保留的键，遍历数组或字典用 `["Map", 子规则]`，先取前 N 项再处理用 `["TruncateThen", N, 子规则]`，到目标位置写 `"Value"` 或 `"Shape"`。**
 第三步依次是：`fact` → `rows` → 每一行 → `name` 和 `detail.label`。
 结果仍保留这些层级，例如 `{"fact":{"rows":[{"name":"A","detail":{"label":"甲"}}]}}`。
 
 - `"Value"` 取当前值；`"Shape"` 只取当前值的类型与大小摘要，对象还列出最多 20 个键。
-- `["Map1", "Value"]` 查看第一个成员的值，`["Map1", "Shape"]` 查看第一个成员的形状。例如 `{"fact":{"rows":["Map1","Value"]}}` 读取第一行。结果保留数组或对象容器；对象按 JS 自身可枚举键顺序取第一个键并保留键名，空容器保持为空。
-- 对象规则作用于对象，`Map` / `Map1` 作用于数组或对象；类型错配时报出规则位置与实际类型。
+- `["TruncateThen", N, 子规则]` 先取数组前 N 项或对象前 N 个键，再对**截断后的整个容器**应用子规则；N 为非负安全整数，0 得到空容器。对象按 JS 自身可枚举键顺序取样并保留键名。
+- 例如 `{"fact":{"rows":["TruncateThen",3,"Value"]}}` 查看前三行；`{"fact":{"rows":["TruncateThen",3,["Map",{"name":"Value"}]]}}` 取前三行中的 name。子规则为 `"Shape"` 时描述截断后的容器，为 `["Map","Shape"]` 时逐项描述样本。
+- 对象规则作用于对象，`Map` / `TruncateThen` 作用于数组或对象；类型错配时报出规则位置与实际类型。
 - `["Map", "Shape"]` 查看容器每个成员的形状；`"Shape"` 查看容器本身的形状。
 - 对象键按字面选择。例如知识节点键 `"Schema/syntax/intent"` 整体写成一个键；嵌套字段则逐层写对象。
 - 字典也通过 `Map` 处理成员。例如 `{"fact":{"items":["Map",{"type":"Value"}]}}` 保留 `items` 的各字典键，只取每个条目的 `type`。
@@ -77,21 +78,26 @@
 {"load":{"fact":".oks/data/example.qr.json","knowledge":"knowledge://"},"jq":{"src":".work/analysis.jq"}}
 ```
 
-程序的 `.` 是具名输入对象；`.fact.rows` 是查询行，`.knowledge` 是知识图。需要变量时由程序绑定：
+程序的 `.` 始终是以 `load` 名称为键的对象，即使只加载一份材料也如此：`load:{fact:"…"}` 对应 `{fact:负荷}`。`.fact.rows` 是查询行，`.knowledge` 是知识图。跨迭代引用输入时，先绑定完整输入：
 
 ```jq
 . as $in | {rowCount: ($in.fact.rows | length), guide: $in.knowledge.guide}
 ```
 
-- `load` 省略时输入为 `{}`；路径后加 `#meta` 读取 `{meta, origin}`，普通路径只读取数据。
+进入 `map` 或 `.[]` 后，`.` 指当前成员；`$in` 保留具名输入，可继续使用 `$in.fact`、`$in.knowledge`。
+保存分析结果前，用 `Shape` 核对结构、`TruncateThen` 查看样本；程序中已知必填的业务值可用 `error(...)` 显式检查。
+
+- 普通资源路径自动解包 `.data` 负荷：`load:{fact:"…"}` 后，`.fact` 就是负荷本身；数组负荷直接在 `.fact`，查询行在 `.fact.rows`。`load` 省略时输入为 `{}`。
+- 报告的 `inputs` 使用同一资源视图：`{"fact":{"src":"…"}}` 绑定整份负荷，`root` 默认 `"."`，`root:".rows"` 选取负荷里的 `rows`；正文的 `data-oks-pick` 再从绑定值内部选取。
+- 路径后加 `#meta` 显式读取 `{meta, origin}`，此时取值路径相对于这份追踪信息。来源链由实现自动携带并记录实际选取路径。
 - `project` 与 `jq` 二选一，省略两者为恒等处理；加上 `save` 可以把加工结果保存为后续资源。
 
-- jq 程序恰好输出一个 JSON 值：用 `[表达式]` 收集结果，空结果输出 `[]` 或 `null`；输出超限时根据返回的 `shape` 收窄范围
+- jq 程序恰好输出一个 JSON 值：用 `[表达式]` 收集结果，空结果输出 `[]` 或 `null`；查看回执按最终文本限制为 16 KiB；超限时 `shape` 描述结果数据，对象结果的 `fields` 列出主要输出字段的形状和紧凑 JSON 字节数。用 project 选字段、`TruncateThen` 取样或 jq 聚合来收窄范围；`save` 保存结果并只返回落点回执
 - 时间上下文的 `.utc.epochMillis` 是毫秒，日期函数以管道输入的 epoch 秒计算。例如加载为 `ctx` 后：`.ctx as $ctx | ($ctx.utc.epochMillis / 1000 | floor) | strftime_tz("%F %T"; $ctx.tz.client.id)`；`strftime_tz` 的两个参数是格式与时区。
 - 图表与表格都可使用同一份行对象数组或 `{rows, columns?}`。可选列声明是 `{"name":"count","types":["number"],"nullable":false}` 形式的对象。
 - 正文的 `data-oks-pick` 用点分字段与数组下标，例如 `.rows.0.label`。
 - 数字计算交给工具，`oks_data` 就是你的计算器
-- `oks_data` 不带 `save` 参数调用时，返回数据本身，这个就是阅读数据的方法；而带 `save` 参数时，则会落盘，并支持后续的复用
+- 查看返回 `{ok, execution, data}`，其中 `data` 是投影或 jq 的结果；`save` 保存的负荷就是这个结果值。project 保留选中的具名层级，jq 的结果结构由程序决定，例如 `.fact` 输出 fact 的负荷，`{stats:.fact}` 输出带 stats 键的对象。
 - `oks_data` 除了可以分析所有的数据文件外，也可以把渲染出来的图表文件、报表文件也当作 json 来进行分析：你可以“看到”它的内在
 - 有时候，你的分析过程需要辅助数据来提供支持，那么可以使用 `create_data`（创建静态数据文件）和 `create_current_ctx_data`（获得包括时间在内的上下文信息，并保存在文件内）
 
@@ -106,6 +112,7 @@
 
 - 报表中应避免手写数字，而应利用 `data-oks-ref`, `data-oks-pick` 属性来引用数据源
 - 基于数据的结论，能有效提升置信度，`oks_check_report` 工具在检查过程中会对手填的数字给出警告
+- 最终 HTML 完整展示引用值和正文。用 `data-oks-shrink` 标记自己的结论与评价；`oks_data` 读回 `{assets, items, structure}` 时，`structure` 里的引用 span 用注释保留完整值，shrink 段用注释保留最多 30 个 Unicode 字符的纯文本，截断时加 `...`；图表内容用 `<!-- omitted -->` 省略。注释是阅读摘要，完整数据仍在 `items`，来源链随报告携带。
 - 利用 `oks_data` 工具来分析已经输出的报表文件，其中的数据、加工链条和文档结构，不仅有助于理解，更可用于复用：一份已经存在的报表本身就是一个柔性的模板
 
 ### 意图对齐、问题澄清、渐进式逼近答案

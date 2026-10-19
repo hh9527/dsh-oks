@@ -217,10 +217,11 @@ export function renderWorkDelete(_args: unknown, value: { ok?: boolean; file?: s
 }
 
 /** oks_data（save 那条路）渲染读到的值：结果写进 .oks/data/。 */
-/** 物化回执的全部内容：落点与大小。其余（值、形状、来源链）都在文件里。 */
+/** 物化回执包含落点、大小与执行方式；值和来源链保存在文件里。 */
 export interface IntoValue {
   asset: string;
   bytes: number;
+  execution?: { method: 'jq' | 'project' | 'identity'; src?: string };
 }
 
 /** 将结构化值渲染成 JSON。 */
@@ -391,7 +392,7 @@ export function renderCheck(_args: unknown, value: CheckValue | null | undefined
   const runnable = value?.queryCount ?? 0;
   lines.push('', results.length > 0 && accepted.length === results.length
     ? `校验结论：${results.length} 个 Intent 全部可用（${runnable} 个查询可执行）。用 oks_exec_query_intent 带同一批名字与各自的 key 提交就能拿到结果。`
-    : `校验结论：${accepted.length}/${results.length} 可用（${runnable} 个查询可执行）。用 oks_data 以 load={knowledge:"knowledge://"} 按服务给出的顶层 key 读它声明的词汇再修，保持业务含义不变。`);
+    : `校验结论：${accepted.length}/${results.length} 可用（${runnable} 个查询可执行）。用 oks_data 以 load={knowledge:"knowledge://"} 加载，在 .knowledge 下按服务给出的 key 读它声明的词汇再修，保持业务含义不变。`);
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 
@@ -552,17 +553,24 @@ export function renderJqTransform(args: unknown, value: TransformValue | null | 
   return renderValue(args, value);
 }
 
-/** `oks_data` 的渲染：给了 `save` 就是物化回执（只有落点与大小），否则是"看一眼"的回执。 */
+/** oks_data：失败保留完整错误；成功时按查看或保存模式渲染。 */
 export function renderJqResult(args: unknown, value: unknown): RenderBlock[] {
+  if ((value as { ok?: unknown } | null | undefined)?.ok === false) return renderValue(args, value);
   const saved = (args as { save?: unknown } | null | undefined)?.save !== undefined;
   return saved
     ? renderJqInto(args, value as IntoValue | null | undefined)
     : renderJqTransform(args, value as TransformValue | null | undefined);
 }
 
-/** 物化（save）的模型可见回执：只报落点与大小。值、形状与来源链都在文件里——
- *  要看就再读一次（`oks_data` 普通资源读值、`#meta` 读来路）。 */
-export function renderJqInto(_args: unknown, value: IntoValue | null | undefined): RenderBlock[] {
-  const size = `${((value?.bytes ?? 0) / 1024).toFixed(1)} KB`;
-  return [{ type: 'text', text: `asset:  ${value?.asset ?? ''} · ${size}\n` }];
+/** 物化（save）的模型可见回执：落点、大小与执行方式。
+ *  值与来源链通过 oks_data 普通资源和 #meta 读取。 */
+export function renderJqInto(args: unknown, value: IntoValue | null | undefined): RenderBlock[] {
+  if (typeof value?.asset !== 'string' || value.asset === '' || typeof value.bytes !== 'number') {
+    return renderValue(args, value);
+  }
+  const size = `${(value.bytes / 1024).toFixed(1)} KB`;
+  const execution = value.execution;
+  const detail = execution === undefined ? ''
+    : `execution: ${execution.method}${execution.src === undefined ? '' : ` · ${execution.src}`}\n`;
+  return [{ type: 'text', text: `asset:  ${value.asset} · ${size}\n${detail}` }];
 }

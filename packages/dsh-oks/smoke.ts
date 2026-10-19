@@ -197,7 +197,7 @@ const reportSpec = (markdown) => {
     if (figure !== null) {
       closeList(); closeTable();
       const key = `item${items += 1}`;
-      inputs[key] = { src: figure[2], root: '.data' };
+      inputs[key] = { src: figure[2], root: '.' };
       out.push(`<figure data-oks-ref="${key}">`
         + (figure[1] === '' ? '' : `<figcaption>${escapeText(figure[1])}</figcaption>`) + '</figure>');
       continue;
@@ -463,8 +463,8 @@ console.log('=== project：JS 读取投影与形状探测 ===');
     ok('多层对象投影保持完整外壳', projected.value.data.knowledge.index.key === 'index'
       && projected.value.data.knowledge.index.detail.type === 'object');
     const whole = await call('oks_data', { load: { knowledge: 'knowledge://' }, project: { knowledge: 'Value' } });
-    ok('整图超限报告实际字节数且无半份数据', whole.value.error?.code === 'payload_too_large'
-      && whole.value.error.actualBytes > 256 * 1024 && whole.value.data === undefined);
+    ok('整图超限报告实际字节数且无半份数据', JSON.parse(whole.text).error?.code === 'payload_too_large'
+      && JSON.parse(whole.text).error.actualBytes > 256 * 1024 && JSON.parse(whole.text).data === undefined);
     const tiny = await call('oks_data', { load: { knowledge: 'knowledge://' }, project: { knowledge: {} } });
     ok('空对象投影仍是一个输出值', JSON.stringify(tiny.value.data) === '{"knowledge":{}}' && !('outputs' in tiny.value));
     for (const tool of ['oks_data']) {
@@ -496,7 +496,7 @@ console.log('=== kq：知识发现、单值与独立求值 ===');
   ok('kq 保留原始 index 节点全文', JSON.stringify(looked.value.data) === JSON.stringify(original));
   const largest = await call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(".knowledge | (to_entries | max_by(.value | tojson | length) | .key)") }});
   const big = await call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(`.knowledge | (.[${JSON.stringify(largest.value.data)}] as $node | [range(10) | $node])`) }});
-  ok('大节点批量读取被回执预算拒绝', big.value.error?.code === 'payload_too_large');
+  ok('大节点批量读取被回执预算拒绝', JSON.parse(big.text).error?.code === 'payload_too_large');
   const trimmed = await call('oks_data', { load: { knowledge: 'knowledge://' }, project: { knowledge: { [largest.value.data]: { key: 'Value', detail: 'Shape' } } } });
   ok('大节点可先投影再检查预算', trimmed.value.data.knowledge[largest.value.data].key === largest.value.data
     && trimmed.value.data.knowledge[largest.value.data].detail.type === 'object' && Buffer.byteLength(trimmed.text) < 16384);
@@ -532,8 +532,8 @@ console.log('=== kq：知识发现、单值与独立求值 ===');
   ok('kq 语法错误定位到程序文件', /smoke_p[0-9]+.jq/.test(syntax ?? ''));
   const large = await call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(".knowledge | ([range(8000)])") }});
   const truncated = await call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(".knowledge | ([range(200000)])") }});
-  ok('kq 超限只返回错误，不泄漏半份数据', large.value.error?.code === 'payload_too_large'
-    && truncated.value.error?.code === 'evaluation_truncated' && large.value.data === undefined);
+  ok('kq 超限只返回错误，不泄漏半份数据', JSON.parse(large.text).error?.code === 'payload_too_large'
+    && truncated.value.error?.code === 'evaluation_truncated' && JSON.parse(large.text).data === undefined);
   const calculator = await call('oks_data', { load: { knowledge: 'knowledge://' }, jq: { src: prog(".knowledge | (1 + 2)") }});
   ok('知识查询失败后计算器继续可用', calculator.value.data === 3);
 }
@@ -1793,9 +1793,9 @@ console.log('=== oks_data（具名输入 + save 时自动来源链）===');
   const big = await call('oks_data', { jq: { src: prog('[range(1; 8000)]') }});
   console.log(`  返回体超上限 → ${big.text.trim().slice(0, 150)}`);
   ok('探索：返回体超上限时报错（带上限与实测字节数，错误本身是合法 JSON）',
-    big.value.ok === false && big.value.error?.code === 'payload_too_large'
-    && big.value.error?.limitBytes === 16 * 1024
-    && BigInt(big.value.error?.actualBytes ?? 0) > 16n * 1024n
+    JSON.parse(big.text).ok === false && JSON.parse(big.text).error?.code === 'payload_too_large'
+    && JSON.parse(big.text).error?.limitBytes === 16 * 1024
+    && BigInt(JSON.parse(big.text).error?.actualBytes ?? 0) > 16n * 1024n
     && (() => { try { JSON.parse(big.text.trim()); return true; } catch { return false; } })());
 
   // 物化：来源链由工具组装——本次操作 + 各输入的根节点，上游的 data 不进新链
@@ -4549,16 +4549,16 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     + '<figure data-oks-ref="trend"><figcaption>趋势</figcaption><div>图</div></figure>'
     + '<p data-oks-shrink="">三月最高。</p></article>';
   const shrunk = shrinkStructure(before).xml;
-  ok('缩水：span 里留下省略标记，元素与属性保留',
-    shrunk.includes('<span data-oks-ref="summary" data-oks-pick=".growth"><!-- omitted --></span>'));
+  ok('缩水：span 里以注释保留实际值，元素与属性保留',
+    shrunk.includes('<span data-oks-ref="summary" data-oks-pick=".growth"><!-- 12% --></span>'));
   ok('缩水：figure 的子节点换成省略标记（图注也随范围清掉）',
     shrunk.includes('<figure data-oks-ref="trend"><!-- omitted --></figure>'));
-  ok('缩水：shrink 元素清空、属性保留', shrunk.includes('<p data-oks-shrink=""></p>'));
+  ok('缩水：shrink 元素为文本摘要注释、属性保留', shrunk.includes('<p data-oks-shrink=""><!-- 三月最高。 --></p>'));
   ok('缩水：范围外的注释原样保留', shrunk.includes('<!-- 意图 -->'));
   ok('缩水：重复缩水结果相同', shrinkStructure(shrunk).xml === shrunk);
   ok('缩水：嵌套按最外层决定',
     shrinkStructure('<article><div data-oks-shrink=""><span data-oks-ref="x">1</span></div></article>').xml
-    === '<article><div data-oks-shrink=""></div></article>');
+    === '<article><div data-oks-shrink=""><!-- 1 --></div></article>');
 
   const page = '<html><head><script type="application/json" id="oks-metadata">{}</script></head>'
     + '<body><header>外壳</header><article id="a"><p>正文</p></article><footer>页脚</footer></body></html>';
@@ -4640,7 +4640,7 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
   const back = readReportPage(page);
   ok('读回：拿到 origin/assets/items 与缩水后的结构区',
     !('error' in back) && Object.keys(back.assets).length === 1
-    && back.structure.includes('<!-- omitted --></span>')
+    && back.structure.includes('<!-- 12% --></span>')
     && back.structure.includes('<figure data-oks-ref="trend"><!-- omitted --></figure>'));
   ok('读回：外壳、目录与页脚都不进结构区',
     !('error' in back) && !back.structure.includes('<header>')
@@ -4767,7 +4767,7 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
         reportBodies.push(file);
         return `.work/${file}`;
       })(),
-      inputs: { nested: { src: nested.value.asset, root: '.data' } },
+      inputs: { nested: { src: nested.value.asset, root: '.' } },
     },
     name: 'probe_report_array_pick',
   });
@@ -4835,8 +4835,8 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
   const bigError = (() => { try { return JSON.parse(bigRead.text).error; } catch { return null; } })();
   ok('回执超过 16 KiB 时返回错误与结果形状摘要',
     bigError?.code === 'payload_too_large' && bigError?.limitBytes === 16384
-    && !('hint' in (bigError ?? {})) && bigRead.value.shape?.type === 'array'
-    && bigRead.value.shape.size === 3000 && !bigRead.text.includes('xxxx'));
+    && !('hint' in (bigError ?? {})) && JSON.parse(bigRead.text).shape?.type === 'array'
+    && JSON.parse(bigRead.text).shape.size === 3000 && !bigRead.text.includes('xxxx'));
 
   const oversizedWorkFile = '.work/smoke_oversized_receipt.txt';
   await call('work_write', { file_path: oversizedWorkFile, content: 'outer-payload-probe'.repeat(1200) });

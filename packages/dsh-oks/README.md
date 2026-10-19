@@ -50,9 +50,9 @@ Node 按 URL 缓存 ESM 模块，所以：
 | `oks_references` | `{key, link?, kind?, skip?}` | 按 key **反向**找引用它的节点：回引用种类与引用方的 key。用来回答"哪个维度用了这套值域""哪个数据集声明了这个度量" |
 | `oks_check_query_intent` | `{intents:{<名>:Intent}}` | **只校验**：按名字回结论，通过的项给出 `key`（该项 Intent 的标识，提交查询时原样带回）。每个 Intent 必须带顶层 `limit`（1..500）：它是 Intent 的一部分、也参与哈希。不回查询语句，也不碰数据——迭代 Intent 形状时用它 |
 | `oks_exec_query_intent` | `{intents:{<名>:{intent,key}}}` | 核 key 后**只读执行**：每个成功项写进 `<工作区>/.oks/data/<时间>-<名>-<内容哈希>.qres.json`，回执只给 `asset`、列信息与行数——**数据行与语句都不进这段对话**（数据按需读回，语句在执行记录与呈现记录里）；失败项按 `key_mismatch` / `rejected` / `query_error` / `save_error` 分别报告 |
-| `oks_data` | `{load?, project?, jq?:{src}, save?}` | 统一访问知识与数据。`load` 是名字到资源地址的对象，加载后通过 `.fact` 等键访问；省略时为 `{}`。`knowledge://` 是完整知识图；资产路径默认只读 `.data`，`#meta` 只读 `{meta, origin}`。`project` 是纯 JSON 投影，`jq.src` 指定 `.work/analysis.jq` 等完整程序路径，两者二选一；均省略为恒等处理。查看返回 `{ok, data}`，给 `save:{name,motivation}` 则保存封装并返回 `{asset, bytes}`，来源链记录实际输入、视图、规则或源码和完整上游。单知识资源执行 jq 复用独立知识实例的已解析 handle，并按 load 的键名包装输入；其他输入由宿主组装后交给计算器。查看受 16 KiB 预算约束，求值不完整时保存失败。 |
+| `oks_data` | `{load?, project?, jq?:{src}, save?}` | 统一访问知识与数据。`load` 是名字到资源地址的对象，加载后通过 `.fact` 等键访问；省略时为 `{}`。`knowledge://` 是完整知识图；资产路径默认只读 `.data`，`#meta` 只读 `{meta, origin}`。`project` 是纯 JSON 投影，`jq.src` 指定 `.work/analysis.jq` 等完整程序路径，两者二选一；均省略为恒等处理。查看返回 `{ok, execution, data}`，给 `save:{name,motivation}` 则保存封装并返回 `{asset, bytes, execution}`；`execution.method` 表明 `jq / project / identity`，执行 jq 时 `execution.src` 为实际程序路径。输出超限时保留错误与 shape。来源链记录实际输入、视图、规则或源码和完整上游。单知识资源执行 jq 复用独立知识实例的已解析 handle，并按 load 的键名包装输入；其他输入由宿主组装后交给计算器。查看受 16 KiB 预算约束，求值不完整时保存失败。 |
 | `oks_render_figure` | `{spec, src, nodesSrc?, name?, note?}` | 按 `spec.kind` 把数据变成**图**或**表**，两者都落成工作区里的文件。数据**只从 `src` 来**——那是前面回执里给的一份封装（`oks_exec_query_intent` 的查询结果、`oks_data`（`save`） 的加工结果、`create_data` 的输入数据），行不内联进调用。图不再画"来源标识"这类标签（标签说不清：同一份数据经过几层加工就归不到一个入口了），要说来源就看随图带走的来源链。图把**自己用的那份材料**（画出来的行、实际绘图规格、完整来源链）嵌在 SVG 里，所以工作区被回收之后它仍旧说得清这些数字从哪来。关系图还会把**节点表**一起带上（`data.nodeRows`）：它用了两份材料，于是自己在链上记一个"合成展示件"节点，两路输入都挂在它下面，图形也能从自己再画一次（不带 `nodesSrc`）。十三种图元都用 `x`（类别/横轴列）与 `value`（数值列）作底（`histogram` 只给 `value`；`sankey` 给 `x` 与 `series`，`value` 可选）：**关系图** `graph`（两张表：`src` 边表 `x`/`series`/`value?`/`label?`，`nodesSrc` 节点表 `id`/`label?`/`category?`/`status?`/`depth?`/`x?,y?`；**按 `depth` 分层**、节点按 `category` 着色、`status: 'focus'` 强调其余退灰）；**桑基图** `sankey`（行是边：`x` 起点、`series` 终点、`value` 权重；分层由数据自己算，同一对起终点累加合并）；**仪表盘** `gauge`（每行一张小仪表，值按 0–100 的比率读，越界报错，`marks` 画阈值刻度）；**分组柱** `column`，可选 `series`（组内分组）；**横条** `bar`（可选 `series`：横向的分组条）；**饼图** `pie`（只取正数；`donut` 可画成环形）；**多序列折线** `line`、**面积图** `area`（可选 `series`，`xType` 不填按数据推断；缺失的那个点**默认断开**，`connectNulls` 才连过去）；**散点** `scatter`（可选 `size` 当第三维）；**直方图** `histogram`（可选 `bins`）；**箱线图** `box`；**矩阵** `heatmap` 与**雷达** `radar`（两者都要 `series`：矩阵的纵轴类别 / 雷达的被比较对象）；`entityColor` 让颜色跟名字走（同一个实体跨图同色）。 `spec.kind` 给 `"table"` 时出的是表：`columns` 选列与顺序、`title` 写表注，数字列右对齐；表落成 markdown 文件，回执同时给可直接粘进回答的 markdown 表本体（表太大时不给本体，只给引用），来源链、最终数据与展示规格藏在文件头的一行 HTML 注释里，报表内联时读它。两种回执都带一对平行的属性：**`asset` 是产出位置**（可当输入被引用、也可被 `present`），**`embedded` 是可直接粘进回答的那一段**——图是 `![标题](路径)`，粘进回答就显示在那里；表是 markdown 表本体。要让图或表进报告，是把它绑进 `inputs` 的一项并在正文里写 `<figure data-oks-ref>`，与 `embedded` 无关。 |
-| `oks_render_report` | `{spec, name?, note?}` | 把叙述与图组织成一份**自足的 HTML 报告**存进工作区：`spec` 给 `title`、可选 `subtitle`、一段 **XHTML 正文文件** `articleFile`（使用 `.work/article.xhtml` 等完整相对路径）与 `inputs`。正文是**严格 XML 的子集**——单个 `<article>` 根，元素限定在 `section`/`h1`–`h3`/`p`/`div`/`span`/`figure`/`figcaption`/`table` 系列/`ul`/`ol`/`li`/`blockquote`/`pre`/`code`/`strong`/`em`/`a`/`br`/`hr`，属性限定在 `id`/`class`/`title`/`lang` 与 `data-oks-ref`/`data-oks-pick`/`data-oks-shrink`（外加 `href`、`colspan`/`rowspan`/`scope`），空元素写自闭合（`<br />`）；章节的**意图**写成 XML 注释（不进版面，留给复用）。**数据只靠引用进来**：图与表写 `<figure data-oks-ref="key"><figcaption>图注</figcaption></figure>`，数值写 `<span data-oks-ref="key" data-oks-pick=".rowCount"></span>`；`inputs` 把每个 key 指到回执给的材料路径（`{"key": {"src": "…", "root": ".data"}}`，`root` 省略即 `.data`）——引用了没声明、声明了没引用都明确失败。**报告里出现的所有数字都必须从投影与计算中得到**（用 jq 现算成标量 → `inputs` 绑定 → `span` 的 `ref` + `pick` 引用；正文里不写手算数字，它没有来源链、读的人无法核对）；文字里的数字用 `<span data-oks-lit="">…</span>` 声明为文字（只能写在 `span` 上、要带空值，报告正文是严格 XML；标识符与引用编号里的数字不算，如 `P95`、`A.1.2.3`、`#123`），自己的解读用 `data-oks-shrink` 标记：把报告当输入读时它被清空，留下组织方式、意图与全部底层材料，成为可复用的样本。图注编号（图 1/表 1…）按正文出现顺序由系统给。每个引用项的**最终数据、完整来源链与实际执行的 jq 源码**都并进页面里的元数据区（`<script type="application/json" id="oks-metadata">` = `{ origin, assets, items }`：`origin` 是共享祖先只存一份的节点表 + 一个"组装这份报告"的根节点，节点用 `src://<key>` 引用 `assets` 里的源码，`items` 是 key → 该项选出的数据），于是读报告用 `oks_data` 就够（拿到 `{ assets, items, structure }`；**读回是缩水视角**：`structure` 里 `data-oks-ref` 的容器只有省略标记 `<!-- omitted -->`、`shrink` 段落已清空，核对数值请读 `items`；其中 `structure` 是**缩水后**的结构区）。**取不到材料时整份失败**并说清是哪一项。图以**内联 SVG** 嵌在页面里，单文件可以发给任何人打开。报告把**整条配方**带在身上（每个查询的 Intent、每份给定数据与上下文的 payload、每段 jq 源码在 `assets` 里），所以中间材料被回收之后，报告里展示的数据仍能沿来源链解释。报告**不出现在回答正文**：回执只给 `asset`（这一对里报告只有"位置"那一半，没有 `embedded`——它不进回答），agent 用 `present` 交付，用户点开在右侧栏阅读 |
+| `oks_render_report` | `{spec, name?, note?}` | 把叙述与图组织成一份**自足的 HTML 报告**存进工作区：`spec` 给 `title`、可选 `subtitle`、一段 **XHTML 正文文件** `articleFile`（使用 `.work/article.xhtml` 等完整相对路径）与 `inputs`。正文是**严格 XML 的子集**——单个 `<article>` 根，元素限定在 `section`/`h1`–`h3`/`p`/`div`/`span`/`figure`/`figcaption`/`table` 系列/`ul`/`ol`/`li`/`blockquote`/`pre`/`code`/`strong`/`em`/`a`/`br`/`hr`，属性限定在 `id`/`class`/`title`/`lang` 与 `data-oks-ref`/`data-oks-pick`/`data-oks-shrink`（外加 `href`、`colspan`/`rowspan`/`scope`），空元素写自闭合（`<br />`）；章节的**意图**写成 XML 注释（不进版面，留给复用）。**数据只靠引用进来**：图与表写 `<figure data-oks-ref="key"><figcaption>图注</figcaption></figure>`，数值写 `<span data-oks-ref="key" data-oks-pick=".rowCount"></span>`；`inputs` 把每个 key 指到回执给的材料路径（`{"key": {"src": "…", "root": "."}}`，普通路径自动读取 `.data` 负荷，`root` 相对于负荷且默认 `"."`；例如 `".rows"` 选取负荷里的行。显式 `src#meta` 读取 `{meta, origin}`，`root` 相对于该视图）——引用了没声明、声明了没引用都明确失败。**报告里出现的所有数字都必须从投影与计算中得到**（用 jq 现算成标量 → `inputs` 绑定 → `span` 的 `ref` + `pick` 引用；正文里不写手算数字，它没有来源链、读的人无法核对）；文字里的数字用 `<span data-oks-lit="">…</span>` 声明为文字（只能写在 `span` 上、要带空值，报告正文是严格 XML；标识符与引用编号里的数字不算，如 `P95`、`A.1.2.3`、`#123`），自己的解读用 `data-oks-shrink` 标记：最终页面完整展示；把报告当输入读时，它变成最多 30 个 Unicode 字符的纯文本注释，截断时加 `...`，留下组织方式、意图与全部底层材料，成为可复用的样本。图注编号（图 1/表 1…）按正文出现顺序由系统给。每个引用项的**最终数据、完整来源链与实际执行的 jq 源码**都并进页面里的元数据区（`<script type="application/json" id="oks-metadata">` = `{ origin, assets, items }`：`origin` 是共享祖先只存一份的节点表 + 一个"组装这份报告"的根节点，节点用 `src://<key>` 引用 `assets` 里的源码，`items` 是 key → 该项选出的数据），于是读报告用 `oks_data` 就够（拿到 `{ assets, items, structure }`；**读回是缩水视角**：`structure` 里引用 span 以注释保留完整值，`shrink` 段落以注释保留最多 30 个 Unicode 字符的纯文本摘要（截断时加 `...`），图表容器使用省略标记 `<!-- omitted -->`；完整数据见 `items`，其中 `structure` 是**阅读摘要**结构区）。**取不到材料时整份失败**并说清是哪一项。图以**内联 SVG** 嵌在页面里，单文件可以发给任何人打开。报告把**整条配方**带在身上（每个查询的 Intent、每份给定数据与上下文的 payload、每段 jq 源码在 `assets` 里），所以中间材料被回收之后，报告里展示的数据仍能沿来源链解释。报告**不出现在回答正文**：回执只给 `asset`（这一对里报告只有"位置"那一半，没有 `embedded`——它不进回答），agent 用 `present` 交付，用户点开在右侧栏阅读 |
 | `oks_check_report` | `{articleFile}` | 落盘前**校一遍正文**：返回 `{valid, errors, refs, commentCount}`，每条错误带 `code`、行列与元素名（良构、元素与属性白名单、空元素必须自闭合、`id` 报告内唯一、`data-oks-ref`/`data-oks-pick` 规则、链接与表格属性取值）。不落盘、不记账 |
 | `work_write` | `{file_path, content}` | 在 `.work/` 下**创建或覆盖**一份文本文件（父目录按需建）：写 jq 程序的地方，之后由 `jq.src` 按完整路径引用、用 `work_edit` 增量改。越界与超限（256 KB）一律拒绝 |
 | `work_read` | `{file_path, offset?, limit?}` | 读 `.work/` 下的一份文本文件（带行号，可 `offset`/`limit` 翻页）；`file_path: ".work/"` 列出目录里有哪些文件与大小 |
@@ -77,7 +77,7 @@ key 模式，以及 `vocabulary`（哪些 kind 进词汇表、每类词条的归
 - **只在第一次用到检索时同步建立**（一次全图遍历，实测 2,769 节点约 20 秒），之后按产物的
   模型内容的 sha256 复用——同一个模型被多个工作区、多个会话声明时只派生一次；
 - **占用的是插件内存，不是模型上下文**：词汇表与引用图都不进对话；
-- **知识图保留完整条目**：顶层是 key 到带 `type` 条目的映射，内置 `.guide` 提供读取指引与发现契约；`oks_data` 按需投影或执行 jq，完整知识不进模型上下文；
+- **知识图保留完整条目**：顶层是 key 到带 `type` 条目的映射，以 `load:{knowledge:"knowledge://"}` 加载后，`.knowledge.guide` 提供读取指引与发现契约；`oks_data` 按需投影或执行 jq，完整知识不进模型上下文；
 - **进不进词汇表由服务声明**：`vocabulary` 列出哪些 kind 是词条，每条还声明 `owner`
   （词条的归属字段，既是 detail 字段名也是 key 模式里的占位符名，输出行里就用这个名字）
   与 `require`（该 detail 字段必须存在且非空，例如排除没有存储布局的基础类型）；
@@ -86,7 +86,7 @@ key 模式，以及 `vocabulary`（哪些 kind 进词汇表、每类词条的归
   未知的引用种类），不静默降级。
 
 `oks_search` 只负责给出"往哪走"：key 由 agent 按 `index` 里声明的 key 模式自己拼，节点说明仍由
-`oks_data` 按顶层 key 读——所以地址是单一来源，内容不重复。同一份索引还负责把整份词汇**一次性
+`oks_data` 加载后在 `.knowledge` 下按 key 读——所以地址是单一来源，内容不重复。同一份索引还负责把整份词汇**一次性
 渲染**成词汇助手系统提示词里的那个 section（不筛不排，按 key 升序、一行一条 `<key> <name> <aliases> <doc>`，字段 json 风格）。
 
 ### 校验与查询为什么分开
@@ -141,14 +141,16 @@ key 模式，以及 `vocabulary`（哪些 kind 进词汇表、每类词条的归
     `bash.execute`——**每次匹配到的事件起一个进程、还要同步等**，对每轮几十次文件操作不划算。
 - **读产物是就地的**：`oks_data` 接收数据封装、图、表和报告的完整路径，读取统一读模型的 `.data`。
   报告数据为 `{assets, items, structure}`，其中结构已经机械缩水；用 project 或 jq 选择所需区域。
-  路径加 `#meta` 得到 `{meta, origin}`。需要同时分析两部分时，在命名输入中分别声明两个资源。
+  报告的 `inputs` 使用同一视图，`root` 相对于负荷且默认 `"."`；正文 `data-oks-pick` 相对于绑定选出的值。
+  路径加 `#meta` 显式读取 `{meta, origin}`。需要同时分析两部分时，分别声明两个资源。
+  来源链由实现带外携带，记录的 `inputPaths` 是实际选取位置：普通资源为 `.data` 及其子路径，追踪视图为 `#meta` 及其子路径。
 - **硬规则：内层语言不与外层 JSON 相邻**。工具调用的参数是 JSON，而 jq 的 `{a: .b}` 与 JSON 的
   `{a: .b}` 几乎一样——实测里 13 次整轮失败（`MALFORMED_RESPONSE`）中有 3 次正是模型把 jq 的对象构造
   直接写成了 JSON 值。对照之下，`bash` / `write` / `edit` / 报告正文这些"内容在一个字符串值里"的调用
   （3200+ 次，含平均 517 个转义引号的报告正文）**一次都没坏**。所以：**凡是"内容"，一律走字符串值
   或文件引用**（`.work/*.jq`），绝不把内容的语法暴露成参数结构；给工具加参数时也照这条办。
 - **文件的三段**：每份文件都是 `{ meta, origin, data }`——`meta` 回答"这是什么"（类别、名字、时刻，
-  图与报告还带标题与分类），`origin` 回答"数据从哪来"，`data` 就是那份数据（jq 的默认输入）。
+  图与报告还带标题与分类），`origin` 回答"数据从哪来"，`data` 是业务负荷。`load:{fact:"…"}` 将它放在 `.fact`，jq/project 的输入根始终是具名对象 `{fact:负荷}`，单份资源也如此。
   形状靠结构认，**没有版本号**。各 `data` 的形态：查询结果是 `{ rows, columns }`（列名取自 SQL 元数据、
   类型按返回值观察，空结果记 unknown；行与列都是这份数据的一部分），加工结果与 `create_data` 就是产出的
   值本身（每次加工恰好输出一个值），图与表是 `{ rows, spec }`，报告是
@@ -174,7 +176,7 @@ key 模式，以及 `vocabulary`（哪些 kind 进词汇表、每类词条的归
   时钟、环境、文件访问和额外输入能力不进入求值器。程序按完整路径给出加载／编译定位；运行时诊断在 Rust 格式化阶段最多输出 4 KiB。
 - **单值与预算**：jq 程序必须恰好输出一个 JSON 值；数组用 `[表达式]` 收集，空结果显式输出 `[]` 或 `null`。无输出和多输出均报错。
   求值受 `queryTimeoutMs` 约束。Rust 取得完整值并确认只有一个输出后，按 256 KiB UTF-8 字节预算序列化，超限返回 `evaluation_truncated` 和直接从该值提取的准确 `shape`，省略数据且拒绝保存；不会先创建完整的大 JSON 字符串。
-  查看回执受 16 KiB 预算约束，`payload_too_large` 返回 `error:{code,tool,limitBytes,actualBytes}` 和 `shape`：数据接口摘要对应结果数据，通用渲染保护摘要对应工具的结构化返回值。两种超限均可通过收窄 project 或 jq 的范围处理。输出预算不限制值生成期间的内存。
+  进入模型上下文的回执统一按最终渲染文本的 UTF-8 字节数计量，上限为 16 KiB。超限时 `payload_too_large` 返回 `error:{code,tool,limitBytes,actualBytes}`，其中 `actualBytes` 是完整回执的实测字节数；`oks_data` 的 `shape` 描述业务结果 `data`，其他工具描述自身结构化返回值。对象结果还提供 `fields:[{key,bytes,shape}]`，按字段值的紧凑 JSON 字节数从大到小列出最多八项；`bytes` 用于比较字段体积，最终回执还包含字段名、信封和缩进。诊断最多 4 KiB，键列表与字段列表按预算保留。用 project 选字段、TruncateThen 取样或 jq 聚合来缩小查看结果；save 保存结果并只返回落点回执。输出预算不限制值生成期间的内存。
 - **来源链用于解释**：project 保存完整规则，jq 保存实际源码与完整文件路径，恒等处理单独标识；输入形状、资源原文和视图随操作记录。
   知识来源节点保存资源标识、模型内容哈希、domain 与发现契约 revision，避免复制整份知识。
   来源链保留加工依据，不承诺恢复知识版本或复现执行。
@@ -302,7 +304,9 @@ pnpm run check        # typecheck + build + 冒烟
 `cargo fetch --locked --offline` 预检并说清这一点）。求值器那边另有一份逐条验收：
 `node crates/oks-wti/check.mjs`（越界能力与跨环境确定性）。
 
-`node project-test.ts` 验证公共投影函数的递归、Map1 取样、严格类型处理、形状探测、字面键与规则校验。
+`node payload-test.ts` 验证最终回执的 UTF-8 预算、业务数据 shape、字段体积摘要和有界诊断。
+
+`node project-test.ts` 验证公共投影函数的递归、TruncateThen 截断与组合、严格类型处理、形状探测、字面键与规则校验。
 `node feedback-test.ts` 验证列声明入口校验、报表路径诊断与批次回执摘要。
 对接宿主时可设置 `OKS_TOOLS_MODULE=/path/to/dsh-tools/lib/index.js` 运行冒烟，
 额外验证真实宿主的参数 schema 校验与 SDK 类型生成。
@@ -347,9 +351,9 @@ WTI 分别实例化为知识求值器与数据计算器。知识求值器按模�
 - `{"key": rule}` 选择实际存在的字面键并递归投影；`{}` 清空对象。对象规则要求当前值为对象，类型错配时报出规则位置与实际类型。
 - `["Map", rule]` 对数组元素或对象值逐一投影，键与元素数量保留；要求当前值为数组或对象。
 
-- `["Map1", rule]` 只投影第一个成员，保留容器形状和对象键；对象按 JS 自身可枚举键顺序取样，空容器保持为空。
+- `["TruncateThen", N, rule]` 先取数组前 N 项或对象前 N 个键，再对截断后的整个容器应用 rule。N 为非负安全整数，0 得到空容器；对象按 JS 自身可枚举键顺序取样并保留键名。例如 `["TruncateThen", 3, "Value"]` 查看三个样本，`["TruncateThen", 3, ["Map", {"name":"Value"}]]` 选择样本中的 name。
 
-例如 `oks_data({"load":{"knowledge":"knowledge://"},"project":{"knowledge":{"index":"Shape"}}})` 先看节点集合的形状；
+例如 `oks_data({"load":{"knowledge":"knowledge://"},"project":{"knowledge":{"index":"Shape"}}})` 先看领域入口条目的形状；
 再用 `oks_data({"load":{"knowledge":"knowledge://"},"project":{"knowledge":{"index":{"description":"Value","detail":"Shape"}}}})` 选择字段。
 `project` 的对象和数组规则直接嵌套在调用 JSON 中，字符串规则只有 `"Value"`、`"Shape"`。
 `project` 与 `jq` 二选一。缺失键保持缺失，显式 `project: null` 是非法规则，

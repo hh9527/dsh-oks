@@ -14,7 +14,7 @@ import { checkAuthorXhtml, stripChartMetadata } from './xhtml.ts';
 /** 正文里一个绑定项：取哪份材料、切了哪一段、切出来的值，以及它在正文里的展示形态。 */
 export interface ReportBinding {
   src: string;
-  /** 从那份产物里选取数据的点路径（RFC 0008 §4 的 inputPaths）。 */
+  /** 内部追踪路径：相对于原封装的 .data…，或显式元数据视图的 #meta…。 */
   root: string;
   value: unknown;
   /** 继续加工时要带上的上游来源。 */
@@ -89,7 +89,7 @@ export function assembleReport(input: AssembleInput): AssembleResult {
     }
     if (binding.root !== '.data') {
       return {
-        error: `figure 引用的 ${ref} 只能整件展示：它的 root 保持默认 .data；要取切片就用 span 的 data-oks-pick。`,
+        error: `figure 引用的 ${ref} 只能整件展示：它的 root 保持默认 "."；要取切片就用 span 的 data-oks-pick。`,
       };
     }
   }

@@ -1,7 +1,7 @@
 /** 结构区的 XHTML：一个受控子集，三处输入共用这一个解析器。
  *
  *  三处输入各有各的严格度，但都只走这里：
- *  - **作者提交的 `spec.xhtml`**：唯一不可信输入，白名单、显式自闭合、注释与实体规则都在
+ *  - **作者提交的 `spec.articleFile` 正文**：唯一不可信输入，白名单、显式自闭合、注释与实体规则都在
  *    `checkAuthorXhtml` 里查，报错带行列；
  *  - **图表件的 `.svg`**：echarts 生成、我们写的 `<metadata>` 夹在里面，按标记整段剥掉；
  *  - **我们生成的报告页面**：读回时提取 `article` 并按规则缩水。
@@ -51,6 +51,11 @@ const CHART_METADATA_IDS = new Set(['dsh-oks-artifact', 'dsh-oks-chart-input']);
 /** 只能写成自闭合形式的空元素：正文里不许出现"靠标签名当闭合"的写法。 */
 const VOID_ELEMENTS = new Set(['br', 'hr']);
 
+/** 文本摘要里的块边界合并为空白，行内元素保持文字连接。 */
+const PREVIEW_BLOCKS = new Set(['section', 'h1', 'h2', 'h3', 'p', 'div', 'ul', 'ol', 'li',
+  'table', 'caption', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'blockquote', 'pre', 'br', 'hr']);
+const PREVIEW_SKIP = new Set(['figure', 'svg', 'script', 'style', 'metadata']);
+
 /** 表格 `scope` 的合法取值。 */
 const SCOPES = new Set(['col', 'row', 'colgroup', 'rowgroup']);
 
@@ -78,6 +83,8 @@ export type ElementPolicy =
   | { kind: 'replace'; text: string }
   /** 保留元素与属性，子节点换成我们自己的标记注释（例如省略标记）。 */
   | { kind: 'comment'; text: string }
+  /** 保留元素与属性，将后代正文文本限长后放入注释。 */
+  | { kind: 'preview'; limit: number }
   /** 子节点照旧，可在开始标签之后、结束标签之前各追加一段（可信的）标记。 */
   | { kind: 'keep'; append?: string; prepend?: string };
 
@@ -105,6 +112,10 @@ export const escapeText = (value: string): string =>
 export const escapeAttribute = (value: string): string =>
   escapeText(value).replace(/"/g, '&quot;');
 
+/** 注释中的连续连字符以空格分隔；两侧空格同时保护以连字符结尾的文本。 */
+const commentText = (value: string): string =>
+  `<!-- ${value.replace(/-(?=-)/g, '- ')} -->`;
+
 /** 属性按读出顺序重新写一遍；引号统一成双引号，值里的 `&`、`<`、`"` 转义。 */
 const attributeText = (attributes: Record<string, string>): string =>
   Object.entries(attributes).map(([name, value]) => ` ${name}="${escapeAttribute(value)}"`).join('');
@@ -130,6 +141,25 @@ export function rewriteXml(xml: string, hooks: RewriteHooks = {}): RewriteResult
   let captureFloor = 0;
   /** 处于抑制态的元素个数：大于 0 时子节点不输出。 */
   let muted = 0;
+  // 最外层摘要控制整个子树；只收集限长前缀，内联图表及其元数据独立跳过。
+  let preview: { depth: number; limit: number; chars: string[]; pendingSpace: boolean;
+    clipped: boolean; comment?: string; commentCount: number; ignoredDepth?: number } | undefined;
+  const previewText = (text: string): void => {
+    if (preview === undefined || preview.clipped || preview.ignoredDepth !== undefined) return;
+    for (const char of text) {
+      if (/\s/u.test(char)) {
+        preview.pendingSpace = preview.chars.length > 0;
+        continue;
+      }
+      if (preview.pendingSpace) {
+        if (preview.chars.length >= preview.limit) { preview.clipped = true; return; }
+        preview.chars.push(' ');
+        preview.pendingSpace = false;
+      }
+      if (preview.chars.length >= preview.limit) { preview.clipped = true; return; }
+      preview.chars.push(char);
+    }
+  };
   const parser = new SaxesParser({ xmlns: false });
   const at = (): { line: number; column: number } => ({ line: parser.line, column: parser.column + 1 });
   const view = (tag: { name: string; attributes: Record<string, string>; isSelfClosing: boolean }): TagView => ({
@@ -166,6 +196,10 @@ export function rewriteXml(xml: string, hooks: RewriteHooks = {}): RewriteResult
       }
     }
     if (muted > 0) {
+      if (preview !== undefined && preview.ignoredDepth === undefined) {
+        if (PREVIEW_BLOCKS.has(seen.name) || PREVIEW_SKIP.has(seen.name)) previewText(' ');
+        if (PREVIEW_SKIP.has(seen.name)) preview.ignoredDepth = frames.length + 1;
+      }
       push(seen.name, { muted: true, emitEnd: false });
       return;
     }
@@ -176,7 +210,7 @@ export function rewriteXml(xml: string, hooks: RewriteHooks = {}): RewriteResult
     }
     // 要往里放内容的策略一律写成配对形式：作者写 `<span … />` 或 `<figure … />` 时，
     // 值/内联的图也要落在容器里，而不是被吐到容器外面。
-    const addsContent = policy?.kind === 'replace' || policy?.kind === 'comment'
+    const addsContent = policy?.kind === 'replace' || policy?.kind === 'comment' || policy?.kind === 'preview'
       || (policy?.kind === 'keep' && ((policy.append ?? '') !== '' || (policy.prepend ?? '') !== ''));
     const selfClose = tag.isSelfClosing && !addsContent;
     const rewritten = hooks.attributes?.(seen);
@@ -187,8 +221,14 @@ export function rewriteXml(xml: string, hooks: RewriteHooks = {}): RewriteResult
       return;
     }
     if (policy?.kind === 'comment') {
-      out.push(`<!-- ${policy.text} -->`);
+      out.push(commentText(policy.text));
       push(seen.name, { muted: true, emitEnd: true });
+      return;
+    }
+    if (policy?.kind === 'preview') {
+      preview = { depth: frames.length + 1, limit: policy.limit, chars: [], pendingSpace: false,
+        clipped: false, commentCount: 0 };
+      push(seen.name, { muted: true, emitEnd: !selfClose });
       return;
     }
     if (policy?.kind === 'clear' && !selfClose) {
@@ -208,24 +248,54 @@ export function rewriteXml(xml: string, hooks: RewriteHooks = {}): RewriteResult
     if (frame === undefined) return;
     hooks.close?.(tag?.name ?? frame.name);
     if (frame.counted) muted -= 1;
+    if (preview?.ignoredDepth === frames.length + 1) preview.ignoredDepth = undefined;
+    if (preview?.depth === frames.length + 1) {
+      // 只有一个直接注释且没有正文时，它已是阅读摘要；再次读取保持原样。
+      if (preview.chars.length === 0 && preview.commentCount === 1 && preview.comment !== undefined) {
+        const prior = preview.comment.trim();
+        const max = preview.limit + (prior.endsWith('...') ? 3 : 0);
+        let length = 0;
+        // 注释安全处理插入的连字符间空格不计入原文长度。
+        for (const _ of prior.replace(/- (?=-)/g, '-')) { if (++length > max) break; }
+        if (length <= max) out.push(commentText(prior));
+        else {
+          previewText(prior);
+          out.push(commentText(preview.chars.join('').trimEnd() + (preview.clipped ? '...' : '')));
+        }
+      } else {
+        out.push(commentText(preview.chars.join('').trimEnd() + (preview.clipped ? '...' : '')));
+      }
+      preview = undefined;
+    } else if (PREVIEW_BLOCKS.has(frame.name)) {
+      previewText(' ');
+    }
     if (frame.append !== '') out.push(frame.append);
     if (frame.emitEnd) out.push(`</${tag?.name ?? frame.name}>`);
     if (capturing && capture !== undefined && frames.length === captureFloor) capturing = false;
   });
 
   parser.on('text', (text) => {
-    if (!capturing || muted > 0) return;
+    if (!capturing) return;
+    if (preview !== undefined) { previewText(text); return; }
+    if (muted > 0) return;
     out.push(escapeText(text));
   });
 
   parser.on('comment', (text) => {
     hooks.comment?.(text);
+    if (preview !== undefined && preview.ignoredDepth === undefined && frames.length === preview.depth) {
+      preview.commentCount += 1;
+      if (preview.commentCount === 1) preview.comment = text;
+      else preview.comment = undefined;
+    }
     if (!capturing || muted > 0) return;
     out.push(`<!--${text}-->`);
   });
 
   parser.on('cdata', (text) => {
-    if (!capturing || muted > 0) return;
+    if (!capturing) return;
+    if (preview !== undefined) { previewText(text); return; }
+    if (muted > 0) return;
     out.push(escapeText(text));
   });
 
@@ -236,11 +306,15 @@ export function rewriteXml(xml: string, hooks: RewriteHooks = {}): RewriteResult
 /** 省略标记。读回的那一份是给人（与 agent）读的**来源**，不是渲染件，所以标记写成注释：
  *  既不装作一个值（`??` 会被读成「槽位没填上」），也不会在渲染时冒出来。 */
 const OMITTED = 'omitted';
+/** 读回结构区时，结论段保留的 Unicode 码点数（空白归一化后计数）。 */
+export const SHRINK_PREVIEW_CHARS = 30;
 
-/** §5 的两条缩水规则：`shrink` 优先清空；否则 `ref` 的子节点换成省略标记，元素与属性保留。 */
+/** 读回结构：shrink 段落为限长文本注释，引用 span 为完整值注释，其余 ref 省略内联内容。 */
 const shrinkPolicy = (tag: TagView): ElementPolicy | undefined => {
-  if (tag.attributes['data-oks-shrink'] !== undefined) return { kind: 'clear' };
-  if (tag.attributes['data-oks-ref'] !== undefined) return { kind: 'comment', text: OMITTED };
+  if (tag.attributes['data-oks-shrink'] !== undefined) return { kind: 'preview', limit: SHRINK_PREVIEW_CHARS };
+  if (tag.attributes['data-oks-ref'] !== undefined) return tag.name === 'span'
+    ? { kind: 'preview', limit: Infinity }
+    : { kind: 'comment', text: OMITTED };
   return undefined;
 };
 

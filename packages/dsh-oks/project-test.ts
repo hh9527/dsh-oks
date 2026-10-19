@@ -24,7 +24,7 @@ for (const value of [null, true, 3, 'text', [1, 2]] satisfies JsonValue[]) {
 }
 for (const value of [null, true, 3, 'text'] satisfies JsonValue[]) {
   assert.throws(() => createProjector(['Map', 'Value'])(value), /类型不匹配/);
-  assert.throws(() => createProjector(['Map1', 'Value'])(value), /类型不匹配/);
+  assert.throws(() => createProjector(['TruncateThen', 1, 'Value'])(value), /类型不匹配/);
 }
 assert.deepEqual(createProjector({})(input), {});
 assert.deepEqual(createProjector(['Map', 'Value'])([]), []);
@@ -71,15 +71,46 @@ cyclic.child = cyclic;
 assert.throws(() => createProjector(cyclic as ProjectRule), /循环引用/);
 
 
-assert.deepEqual(createProjector({rows:['Map1',{a:'Value'}]})(input), {rows:[{a:1}]});
-assert.deepEqual(createProjector(['Map1','Value'])({b:2,a:1}), {b:2});
-assert.deepEqual(createProjector(['Map1','Value'])([]), []);
-assert.deepEqual(createProjector(['Map1','Value'])({}), {});
-assert.deepEqual(createProjector(['Map1','Value'])([null,1]), [null]);
-assert.deepEqual(createProjector(['Map1','Shape'])([{a:1}, 2]), [{type:'object',size:1,keys:['a']}]);
-assert.throws(() => createProjector({rows:{'0':'Value'}})(input), /\$\["rows"\].*实际为 array/);
-assert.throws(() => createProjector({rows:['Map',{a:'Value'}]})({rows:[null]}), /\$\["rows"\]\[1\].*实际为 null/);
+assert.deepEqual(createProjector({ rows: ['TruncateThen', 1, ['Map', { a: 'Value' }]] })(input), { rows: [{ a: 1 }] });
+assert.deepEqual(createProjector(['TruncateThen', 1, 'Value'])({ b: 2, a: 1 }), { b: 2 });
+assert.deepEqual(createProjector(['TruncateThen', 2, ['Map', { a: 'Value' }]])(
+  [{ a: 1, b: 2 }, { a: 2 }, null]), [{ a: 1 }, { a: 2 }]);
+assert.deepEqual(createProjector(['TruncateThen', 1, ['Map', { a: 'Value' }]])(
+  { first: { a: 1, b: 2 }, second: null }), { first: { a: 1 } });
+assert.deepEqual(createProjector(['TruncateThen', 1, 'Value'])([]), []);
+assert.deepEqual(createProjector(['TruncateThen', 1, 'Value'])({}), {});
+assert.deepEqual(createProjector(['TruncateThen', 0, ['Map', { a: 'Value' }]])([null]), []);
+assert.deepEqual(createProjector(['TruncateThen', 0, 'Value'])({ a: 1 }), {});
+assert.deepEqual(createProjector(['TruncateThen', 99, 'Value'])([null, 1]), [null, 1]);
+assert.deepEqual(createProjector(['TruncateThen', 99, 'Value'])({ a: 1 }), { a: 1 });
+assert.deepEqual(createProjector(['TruncateThen', 1, 'Shape'])([{ a: 1 }, 2]), { type: 'array', size: 1 });
+assert.deepEqual(createProjector(['TruncateThen', 1, ['Map', 'Shape']])([{ a: 1 }, 2]),
+  [{ type: 'object', size: 1, keys: ['a'] }]);
+assert.deepEqual(createProjector(['TruncateThen', 1, 'Shape'])({ b: 2, a: 1 }), { type: 'object', size: 1, keys: ['b'] });
+assert.deepEqual(createProjector(['TruncateThen', 1, 'Value'])({ '10': 'ten', '2': 'two', a: 'letter' }), { '2': 'two' });
+assert.deepEqual(createProjector(['TruncateThen', 2, 'Value'])(special), Object.fromEntries(Object.entries(special).slice(0, 2)));
+assert.equal(({} as Record<string, unknown>).polluted, undefined);
+assert.throws(() => createProjector({ rows: { '0': 'Value' } })(input), /\$\["rows"\].*实际为 array/);
+assert.throws(() => createProjector({ rows: ['Map', { a: 'Value' }] })({ rows: [null] }), /\$\["rows"\]\[1\].*实际为 null/);
+assert.throws(() => createProjector(['TruncateThen', 0, { a: 'Value' }])([]), /实际为 array/);
 
-assert.deepEqual(createProjector(['Map1',{a:'Value'}])([{a:1}, null]), [{a:1}]);
-assert.deepEqual(createProjector(['Map1','Value'])({'10':'ten','2':'two', a:'letter'}), {'2':'two'});
-console.log('✓ 公共投影：递归、Map1、严格类型、形状、字面键、规则校验与重复使用');
+for (const count of [-1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, '1', null]) {
+  assert.throws(() => createProjector(['TruncateThen', count, 'Value'] as ProjectRule), /\$\[1\].*非负安全整数/);
+}
+for (const invalid of [['TruncateThen'], ['TruncateThen', 1], ['TruncateThen', 1, 'Value', 'Shape'], ['TruncateThen', 1, '$bad']]) {
+  assert.throws(() => createProjector(invalid as ProjectRule), /project 规则 \$.*非法/);
+}
+assert.throws(() => createProjector({ rows: ['TruncateThen', 1, { a: '$bad' }] } as unknown as ProjectRule),
+  /\$\["rows"\]\[2\]\["a"\]/);
+const cyclicTruncate: unknown[] = ['TruncateThen', 1];
+cyclicTruncate.push(cyclicTruncate);
+assert.throws(() => createProjector(cyclicTruncate as ProjectRule), /循环引用/);
+const sampleRule = freeze({ rows: ['TruncateThen', 1, ['Map', { a: 'Value' }]] }) as ProjectRule;
+const sample = createProjector(sampleRule);
+assert.deepEqual(sample(input), { rows: [{ a: 1 }] });
+assert.deepEqual(sample({ rows: [{ a: 9 }, { a: 10 }] }), { rows: [{ a: 9 }] });
+const mutableSample: ProjectRule = ['TruncateThen', 1, 'Value'];
+const fixedSample = createProjector(mutableSample);
+mutableSample[1] = 2;
+assert.deepEqual(fixedSample([1, 2]), [1], '截断数量固定于创建时，重复使用不修改输入或规则');
+console.log('✓ 公共投影：递归、TruncateThen 组合与边界、严格类型、形状、字面键、规则校验与重复使用');

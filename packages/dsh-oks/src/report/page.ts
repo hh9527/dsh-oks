@@ -207,7 +207,7 @@ export interface ReportPageParts {
   origin: DataOrigin;
   assets: Record<string, string>;
   items: Record<string, unknown>;
-  /** 缩水后的结构区：读模型交给 jq 的那一段。 */
+  /** 阅读摘要结构区：引用值与限长正文摘要放在注释中，图表内容省略。 */
   structure: string;
 }
 
