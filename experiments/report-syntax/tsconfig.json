@@ -1,0 +1,5 @@
+{
+  "extends":"../../packages/dsh-oks/tsconfig.json",
+  "compilerOptions":{"typeRoots":["../../packages/dsh-oks/node_modules/@types"]},
+  "include":["compiler.ts","source.ts","test.ts","../../packages/dsh-oks/src/env.d.ts"]
+}

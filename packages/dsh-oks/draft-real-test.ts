@@ -1,3 +1,5 @@
+import { parseDraft } from './src/draft/document.ts';
+import { parseMarkdownFixture } from './test-markdown.ts';
 // Real snapshot + read-only SQLite integration; all generated files stay in a fresh /tmp workspace.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -9,6 +11,7 @@ import { resolveSettings } from './src/config.ts';
 import { createRunner, createExecutor } from './src/runners.ts';
 import { createDraftBackend } from './src/draft/backend.ts';
 import { DraftRuntime } from './src/draft/runtime.ts';
+class FixtureRuntime extends DraftRuntime { constructor(backend:ConstructorParameters<typeof DraftRuntime>[0], options:ConstructorParameters<typeof DraftRuntime>[1]={}) { super(backend,{...options,parse:(source,file)=>source.trimStart().startsWith('<Dari')?parseDraft(source,file):parseMarkdownFixture(source)}); } }
 import type { WorkspaceEntry } from './src/knowledge.ts';
 
 const [wasm, model, database] = process.argv.slice(2);
@@ -26,18 +29,23 @@ let checks = 0;
 const backend = createDraftBackend({ entry, file: '.work/real.md', contextZone: () => ({ kind: 'resolved', timeZone: 'Asia/Shanghai' }), jq,
   knowledge: { executorFor: () => ({ manifest: null, executor: { dispose() {}, async send(...args) { queries++; return executor.send(...args); } } }) },
 });
-const runtime = new DraftRuntime({ ...backend, preflight: async (...args) => { checks++; return backend.preflight(...args); } });
+const runtime = new FixtureRuntime({ ...backend, preflight: async (...args) => { checks++; return backend.preflight(...args); } });
 const source = [
   '# Current alarm count', '## pipeline', '```js',
   'let ctx = context();',
-  'let facts = query({op: "Graph", root: "a", nodes: [{id:"a", entity:"current_alarm"}], edges:[], select:[], count:"a", limit:5});',
+  'let facts = exec_query(query({op: "Graph", root: "a", nodes: [{id:"a", entity:"current_alarm"}], edges:[], select:[], count:"a", limit:5}));',
   'let total = jq("total.jq", {facts});', 'debug(total);',
   'let answer = render_html("answer.xhtml", {total});', '```',
   '## assets', '```jq name="total.jq"', '.facts.rows[0] | to_entries[0].value', '```',
   '```xhtml name="answer.xhtml"', '<article><p>当前告警数：<span data-oks-ref="total" /></p></article>', '```',
 ].join('\n');
 try {
-  let run = await runtime.run(source);
+  const planOnly='<Dari><Pipeline>let plan=query({op:"Graph",root:"a",nodes:[{id:"a",entity:"current_alarm"}],edges:[],select:[],count:"a",limit:5}); debug(plan.columns);</Pipeline></Dari>';
+  let run=await runtime.run(planOnly);
+  assert.equal(run.status,'complete',run.error);
+  assert.equal(queries,0,'real model plan validation must not access SQLite');
+  assert.deepEqual(runtime.read('plan',planOnly).value.data,{columns:[{name:'a_count',type:'Int',nullable:false}]});
+  run = await runtime.run(source);
   assert.equal(run.status, 'complete', run.error);
   for (const [name, output] of run.outputs) assert.ok(output.value, `${name}: ${output.error}`);
   const total = runtime.read('total', source).value.data;

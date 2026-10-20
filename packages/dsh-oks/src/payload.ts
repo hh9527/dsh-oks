@@ -69,6 +69,14 @@ export function withOutputLimit(definition: ToolDefinition): ToolDefinition {
         const actualBytes = blocks.reduce((sum, block) => sum + Buffer.byteLength(block.text ?? '', 'utf8'), 0);
         if (actualBytes <= PAYLOAD_MAX_BYTES) return blocks;
         const result: unknown = value;
+        // A failed run must remain actionable even when its failure directory exceeds
+        // the normal result budget. Messages are bounded by the producer.
+        if(definition.name==='oks_run_answer' && isRecord(result) && Array.isArray(result.failures) && result.failures.length) {
+          const {outputs,acquisitions,reply,...diagnostic}=result;
+          return [{type:'text',text:JSON.stringify({...diagnostic,
+            omittedOutputs:Number(result.omittedOutputs??0)+(Array.isArray(outputs)?outputs.length:0),
+            omittedAcquisitions:Number(result.omittedAcquisitions??0)+(Array.isArray(acquisitions)?acquisitions.length:0)})}];
+        }
         const data = definition.name === 'oks_data' && isRecord(result) && result.ok === true
           && Object.hasOwn(result, 'data') ? result.data : result;
         return [{ type: 'text', text: JSON.stringify(payloadTooLarge(definition.name, data, actualBytes)) }];

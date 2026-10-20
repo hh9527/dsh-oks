@@ -1,6 +1,9 @@
+import { parseDraft } from './src/draft/document.ts';
+import { parseMarkdownFixture } from './test-markdown.ts';
 import assert from 'node:assert/strict';
 import { createDraftBackend } from './src/draft/backend.ts';
 import { DraftRuntime } from './src/draft/runtime.ts';
+class FixtureRuntime extends DraftRuntime { constructor(backend:ConstructorParameters<typeof DraftRuntime>[0], options:ConstructorParameters<typeof DraftRuntime>[1]={}) { super(backend,{...options,parse:(source,file)=>source.trimStart().startsWith('<Dari')?parseDraft(source,file):parseMarkdownFixture(source)}); } }
 import { rowsOf } from './src/results.ts';
 import type { WorkspaceEntry } from './src/knowledge.ts';
 
@@ -14,9 +17,9 @@ let executions = 0;
 const entry={modelHash:'columns',settings:{domain:'test',queryMaxRows:100},runner:{async send(_method:string,{intents}: {intents:{limit:number}[]}){
   return {ok:{accepted:true,queries:[{sql:'select clock,value',bindings:[intents[0].limit],limit_slot:0,...(columns===undefined?{}:{columns})}]}};
 }}} as unknown as WorkspaceEntry;
-const runtime=new DraftRuntime(createDraftBackend({entry,file:'.work/columns.md',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),
+const runtime=new FixtureRuntime(createDraftBackend({entry,file:'.work/columns.md',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),
   knowledge:{executorFor:()=>({manifest:null,executor:{async send(){executions++;return {rows,columns:sqlColumns,truncated:false};},dispose(){}}})}}));
-const source='## pipeline\n```js\nlet facts=query({limit:5}); debug(facts.columns); let table=render_figure({kind:"table"},{data:facts});\n```';
+const source='## pipeline\n```js\nlet facts=exec_query(query({limit:5})); debug(facts.columns); let table=render_figure({kind:"table"},{data:facts});\n```';
 try {
   for(const population of [[{clock:1792454400000,value:3}],[],[{clock:null,value:null}]]) {
     rows=population;
@@ -48,9 +51,7 @@ try {
   assert.match(run.outputs.get('facts')!.error!,/column order/);
   columns=undefined;entry.modelHash='legacy-model';sqlColumns=['clock','value'];rows=[{clock:1,value:2}];
   run=await runtime.run(source,{refresh:true});
-  assert.ok(run.outputs.get('facts')?.value);
-  assert.deepEqual((runtime.read('facts',source).value.data as any).columns,[
-    {name:'clock',types:['number'],nullable:false},{name:'value',types:['number'],nullable:false},
-  ]);
-  console.log('draft columns: model types, empty/all-NULL/populated results, debug, cache, renderer, validation and legacy models passed');
+  assert.equal(run.status,'invalid');
+  assert.match(run.error!,/Invalid model result columns/);
+  console.log('draft columns: model types, empty/all-NULL/populated results, debug, cache, renderer, validation and missing-column rejection passed');
 } finally {runtime.dispose();}

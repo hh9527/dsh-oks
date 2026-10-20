@@ -1,7 +1,7 @@
 // 求值器 worker 的源码（`eval` 内联，插件因此保持单文件；worker 是唯一能被强杀的边界）。
 //
 // ABI：`check_program(程序, 程序名)` 只编译，`run(程序, 程序名, 输入, 上限)` → `[status u8][len u32 LE][payload]`；
-// 状态 0 = 结果、1 = 错误、2 = 超限值的形状。trap（栈溢出之类）会废掉这一代实例，
+// 状态 0 = 结果、1 = 错误、2 = 超限值的形状、3 = 结构化编译诊断。trap（栈溢出之类）会废掉这一代实例，
 // 宿主终止整个 worker，下一次调用重新装载。
 export const JAQ_WORKER_SOURCE = [
   "const { parentPort, workerData } = require('node:worker_threads');",

@@ -1,7 +1,10 @@
+import { parseDraft } from './src/draft/document.ts';
+import { parseMarkdownFixture } from './test-markdown.ts';
 import assert from 'node:assert/strict';
 import { createJaqEngine } from './src/jaq.ts';
 import { createDraftBackend } from './src/draft/backend.ts';
 import { DraftRuntime } from './src/draft/runtime.ts';
+class FixtureRuntime extends DraftRuntime { constructor(backend:ConstructorParameters<typeof DraftRuntime>[0], options:ConstructorParameters<typeof DraftRuntime>[1]={}) { super(backend,{...options,parse:(source,file)=>source.trimStart().startsWith('<Dari')?parseDraft(source,file):parseMarkdownFixture(source)}); } }
 import type { WorkspaceEntry } from './src/knowledge.ts';
 import type { ContextTimeZone } from './src/time.ts';
 import { checkWellFormed } from './src/report/xhtml.ts';
@@ -14,16 +17,16 @@ let validations = 0;
 let checks = 0;
 const entry = {
   modelHash: 'model-sha', settings: { domain: 'test', dataFile: '/tmp/fixture.sqlite', queryMaxRows: 200 },
-  runner: { async send(_method: string, { intents }: { intents: unknown[] }) { validations++; return { ok: { accepted: true, queries: intents.map((intent) => ({ sql: 'SELECT n FROM fixture LIMIT ?1', bindings: [(intent as {limit:number}).limit], limit_slot: 0 })) } }; } },
+  runner: { async send(_method: string, { intents }: { intents: unknown[] }) { validations++; return { ok: { accepted: true, queries: intents.map((intent) => ({ sql: 'SELECT n FROM fixture LIMIT ?1', bindings: [(intent as {limit:number}).limit], limit_slot: 0, columns:[{name:'n',type:'Int',nullable:false}] })) } }; } },
 } as unknown as WorkspaceEntry;
 const backend = createDraftBackend({ entry, file: '.work/draft.md', contextZone: () => ({ kind: 'resolved', timeZone: 'Asia/Shanghai' } satisfies ContextTimeZone),
   knowledge: { executorFor: () => ({ manifest: null, executor: { async send() { executions++; return { rows: [{ n: 42 }], columns: ['n'], truncated: false }; }, dispose() {} } }) },
   jq: { run: jq.run, check: async (...args) => { checks++; return jq.check(...args); } },
 });
-const runtime = new DraftRuntime(backend);
+const runtime = new FixtureRuntime(backend);
 const source = [
   '# Example', '## pipeline', '```js',
-  'let facts = query({op: "Graph", limit: 5});',
+  'let facts = exec_query(query({op: "Graph", limit: 5}));',
   'let summary = jq("summary.jq", { facts });',
   'let chart = render_figure({kind: "column", x: "label", value: "n"}, {data: summary.rows});',
   'let table = render_figure({kind: "table", columns: ["label", "n"]}, {data: summary.rows});',
@@ -37,7 +40,7 @@ try {
   assert.equal(run.status, 'complete', run.error);
   for (const [name, output] of run.outputs) assert.ok(output.value, `${name}: ${output.error}`);
   const firstCapture = run.acquisitions[0];
-  assert.equal(firstCapture.operator, 'query');
+  assert.equal(firstCapture.operator, 'exec_query');
   assert.equal(firstCapture.acquiredAt, (Object.values(runtime.read('facts', source).value.sources[0].origin.nodes).find(node => node.kind === 'query')!.source as {acquiredAt:string}).acquiredAt);
   assert.equal(executions, 1);
   assert.equal(validations, 1);

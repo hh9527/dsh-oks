@@ -78,3 +78,14 @@ for (const data of [{ [longKey]: 'private' }, { nested: { [longKey]: 'private' }
   assert.equal(JSON.parse(bounded).shape.type, 'object');
 }
 console.log('✓ 最终回执统一计量 16 KiB、业务 shape、字段体积摘要、UTF-8 边界及有界诊断');
+
+// 失败目录优先于普通结果预算：所有失败身份仍可见，成功数据不挤占回执。
+const failures=Array.from({length:180},(_,i)=>({name:`binding${i}`,status:'failed',asset:`asset${i}.jq`,at:{line:i+1,column:1},error:'bad input',messageTruncated:false}));
+const failedRun={ok:false,counts:{failed:180,blocked:0},failures,outputs:[{data:'x'.repeat(20000)}],reply:'x'.repeat(20000),omittedOutputs:0};
+const diagnosticText=withOutputLimit(definition('oks_run_answer',(_args,value)=>[{type:'text',text:JSON.stringify(value)}])).output.render({},failedRun)[0].text;
+const failedReceipt=JSON.parse(diagnosticText);
+assert.deepEqual(failedReceipt.failures,failures);
+assert.equal(failedReceipt.outputs,undefined);
+assert.equal(failedReceipt.reply,undefined);
+assert.equal(failedReceipt.omittedOutputs,1);
+assert.ok(Buffer.byteLength(diagnosticText)>PAYLOAD_MAX_BYTES,'错误目录允许超过普通结果预算');

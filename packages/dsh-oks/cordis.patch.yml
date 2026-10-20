@@ -1,8 +1,8 @@
 # 工作区知识与回答源码的宿主桥接。
 # va_ask 提供词汇线索，oks_knowledge 只读投影和检索知识图。
-# work_* 编辑 .work/ 下的 Markdown；oks_run_answer 执行完整 pipeline，
-# query/data/context/time_windows/jq/render_figure/render_html 在文档中表达。
-# oks_data 只读取已有 binding/debug 或产物；产出页签管理持久化报告。
+# work_* 编辑 .work/ 下的 DARI；oks_run_answer 执行完整 pipeline，
+# query/exec_query/data/context/time_windows/jq/render_figure/render_html 在文档中表达。
+# oks_data 只读取已有 binding/debug/failures 或产物；产出页签管理持久化报告。
 #
 # 这一行不需要知道任何模型：领域、model、dataFile 全部来自工作区根目录的 oks.json
 # （{"domain":"<领域名>","model":"<相对 oks.json 的 .wasm 路径>",

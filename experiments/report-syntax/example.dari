@@ -1,0 +1,23 @@
+<report title="告警呈现语法试验">
+  <script type="jq" name="summary.jq">
+    {total:(.facts.rows | map(.count) | add), note:(if 1 < 2 then "甲 & 乙" else "" end)}
+  </script>
+
+  <pipeline>
+    let facts = data({rows:[{level:"major",count:3},{level:"minor",count:2}]},{kind:"example"});
+    let summary = jq("summary.jq",{facts});
+    let chartSpec = {kind:"column",x:"level",value:"count"};
+    debug(summary);
+  </pipeline>
+
+  <template name="answer">
+    <article>
+      <h1>告警概览</h1>
+      <p>总数：<Value data={summary.total} /></p>
+      <p>首项：<Value data={facts.rows[0]["level"]} /></p>
+      <Figure spec={chartSpec} data={facts.rows}>
+        <figcaption>按级别比较</figcaption>
+      </Figure>
+    </article>
+  </template>
+</report>

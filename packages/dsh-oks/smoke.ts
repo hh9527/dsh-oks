@@ -96,7 +96,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['work_read', 'work_write', 'work_edit', 'work_list', 'work_delete', 'oks_run_answer', 'oks_data', 'oks_knowledge', 'oks_artifacts', 'va_ask'];
+const EXPECTED_TOOLS = ['work_read', 'work_write', 'work_edit', 'work_list', 'work_delete', 'oks_run_answer', 'renew_context', 'oks_data', 'oks_knowledge', 'oks_artifacts', 'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -832,15 +832,19 @@ console.log('=== 知识发现与文档运行 ===');
 const member=(await builtin('search',{type:'Dataset'})).value.data.items[0];
 if(!member)throw new Error('没有发现数据集');
 const countIntent={op:'Graph',root:'x',nodes:[{id:'x',entity:member.id}],edges:[],select:[],count:'x',limit:5};
-const draftFile='.work/smoke_answer.md';
-const draftSource=['# 集成冒烟','## pipeline','```js',
-  'let ctx=context();',
-  'let months=time_windows(ctx,{unit:"month",count:2,mode:"complete"});',
-  `let facts=query(${JSON.stringify(countIntent)});`,
-  'let total=jq("total.jq",{facts});', 'debug(total);',
-  'let answer=render_html("answer.xhtml",{total});','```','## assets',
-  '```jq name="total.jq"','.facts.rows[0] | to_entries[0].value','```',
-  '```xhtml name="answer.xhtml"','<article><p>总数 <span data-oks-ref="total" /></p></article>','```'].join('\n');
+const draftFile='.work/smoke_answer.dari';
+const draftSource=`<Dari title="集成冒烟">
+<Pipeline>
+let ctx=context();
+let months=time_windows(ctx,{unit:"month",count:2,mode:"complete"});
+let plan=query(${JSON.stringify(countIntent)});
+let facts=exec_query(plan);
+let total=jq("total.jq",{facts});
+debug(total);
+</Pipeline>
+<Asset language="jq" name="total.jq">.facts.rows[0] | to_entries[0].value</Asset>
+<Template name="answer"><article><p>总数 <Value data={total} /></p></article></Template>
+</Dari>`;
 await call('work_write',{file_path:draftFile,content:draftSource});
 const firstRun=await call('oks_run_answer',{src:draftFile});
 ok('真实查询与 jq 形成对话答案',firstRun.value.delivery.status==='ready' && firstRun.text.includes('总数'));
@@ -850,7 +854,7 @@ const secondRun=await call('oks_run_answer',{src:draftFile,delivery:'artifact'})
 ok('重复运行复用全部计算',secondRun.value.counts.executed===0);
 ok('报告落盘',secondRun.value.delivery.status==='ready' && existsSync(resolve(DEV_ROOT,secondRun.value.delivery.asset)));
 const reportView=(await call('oks_data',{input:secondRun.value.delivery.asset})).value.data;
-ok('报告携带实际数据和 jq 代码',reportView.items.total===total && Object.values(reportView.assets).some(code=>String(code).includes('to_entries')));
+ok('报告携带实际数据和 jq 代码',reportView.items.value_1===total && Object.values(reportView.assets).some(code=>String(code).includes('to_entries')));
 await call('work_edit',{file_path:draftFile,old_string:'总数 ',new_string:'查询总数 '});
 ok('改稿读取标记旧运行', (await call('oks_data',{input:draftFile+'#total'})).value.stale===true);
 const edited=await call('oks_run_answer',{src:draftFile});

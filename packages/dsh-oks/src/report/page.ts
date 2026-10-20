@@ -89,6 +89,7 @@ export const outlineOf = (
 
 export function renderStructure(input: {
   xhtml: string;
+  figurePlacement?: 'before-caption';
   /** 章节锚点，按 `outlineOf` 的顺序与之一一对应。 */
   outline: ReadonlyArray<{ level: number; text: string; id: string }>;
   /** 取一个引用项的值（`pick` 是作者写的点路径，可能未给）；返回值会被当纯文本转义。 */
@@ -112,7 +113,7 @@ export function renderStructure(input: {
       if (tag.name === 'figure') {
         const ref = tag.attributes['data-oks-ref'];
         const inline = ref === undefined ? undefined : input.inlineOf(ref);
-        return inline?.table === true ? { ...tag.attributes, class: 'table-block' } : undefined;
+        return inline?.table === true ? { ...tag.attributes, class: [tag.attributes.class,'table-block'].filter(Boolean).join(' ') } : undefined;
       }
       // 有来源的数字带一句悬停提示：引用键 + 取值路径。只放机器值，也只在作者没写 title 时补。
       if (tag.name === 'span') {
@@ -132,7 +133,7 @@ export function renderStructure(input: {
         const inline = owner === undefined ? undefined : input.inlineOf(owner);
         return inline === undefined
           ? undefined
-          : { kind: 'keep', prepend: `<span class="item-no">${escapeHtml(inline.label)}</span>` };
+          : { kind: 'keep', prepend: `<span class="item-no">${escapeHtml(inline.label)}${input.figurePlacement?'：':''}</span>` };
       }
       if (ref === undefined) return undefined;
       if (tag.name === 'span') {
@@ -140,7 +141,7 @@ export function renderStructure(input: {
       }
       if (tag.name === 'figure') {
         const inline = input.inlineOf(ref);
-        return { kind: 'keep', ...(inline === undefined ? {} : { append: inline.html }) };
+        return { kind: 'keep', ...(inline === undefined ? {} : (input.figurePlacement?{prepend:inline.html}:{append:inline.html})) };
       }
       return undefined;
     },

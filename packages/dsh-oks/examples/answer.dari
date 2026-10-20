@@ -1,0 +1,22 @@
+<Dari title="示例数据概览">
+<Notes>下面的数值是演示数据，用于体验稿件执行、图表和交付。</Notes>
+<Pipeline>
+// 为演示提供两行数据，并明确标记其性质。
+let sample = data([{label:"A",value:2},{label:"B",value:3}],{kind:"example"});
+let summary = jq("summary.jq",{sample});
+debug(summary);
+let chartSpec = {x:"label",value:"value",title:"示例数值"};
+let tableSpec = {columns:["label","value"]};
+</Pipeline>
+<Asset language="jq" name="summary.jq">
+{total:(.sample | map(.value) | add),rows:(.sample | length)}
+</Asset>
+<Template name="conclusion">
+<article>
+<p>示例共 <Value data={summary.rows} /> 行，合计 <Value data={summary.total} />。</p>
+<figure><ColumnChart spec={chartSpec} data={sample} /><figcaption>示例数值</figcaption></figure>
+<figure><Table spec={tableSpec} data={sample} /><figcaption>示例明细</figcaption></figure>
+<p data-oks-shrink="">这些数值仅用于展示处理流程。</p>
+</article>
+</Template>
+</Dari>

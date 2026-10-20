@@ -31,8 +31,10 @@ export interface JaqOptions {
   inputName?: string;
 }
 
+export type JaqDiagnostic = {path:string;stage:string;message:string;start:number;end:number;related:{start:number;end:number}[]};
 export class JaqCompileError extends Error {
-  constructor(message: string) { super(message); this.name = 'JaqCompileError'; }
+  readonly diagnostics:JaqDiagnostic[];
+  constructor(message:string,diagnostics:JaqDiagnostic[] = []) { super(message);this.name='JaqCompileError';this.diagnostics=diagnostics; }
 }
 
 export type JaqCheckOptions = Pick<JaqOptions, 'timeoutMs' | 'signal' | 'programFile'>;
@@ -43,6 +45,7 @@ const enginePath = (): string => join(dirname(fileURLToPath(import.meta.url)), '
 /** 引擎回的两种东西：报错文本、完整单值，或超限值的形状。 */
 type EngineReply =
   | { status: 1; message: string }
+  | { status: 3; data: {message:string;diagnostics:JaqDiagnostic[]} }
   | { status: 0; data: unknown }
   | { status: 2; data: JsonValue };
 
@@ -123,6 +126,7 @@ export function createJaqEngine(wasmPath = enginePath()) {
     });
   const outcome = (reply: EngineReply): JaqOutcome => {
     if (reply.status === 1) throw new Error(`jaq 表达式执行失败：\n${reply.message}`);
+    if (reply.status === 3) throw new JaqCompileError(reply.data.message,reply.data.diagnostics);
     return reply.status === 2 ? { ok: false, shape: reply.data } : { ok: true, data: reply.data };
   };
   const program = (query: string, options: JaqOptions) => ({
@@ -143,6 +147,7 @@ export function createJaqEngine(wasmPath = enginePath()) {
       kind: 'check', program: query, path: options.programFile ?? '',
     }, options);
     if (reply.status === 1) throw new JaqCompileError(reply.message);
+    if (reply.status === 3) throw new JaqCompileError(reply.data.message,reply.data.diagnostics);
     const result = outcome(reply);
     if (!result.ok || !result.data || typeof result.data !== 'object' ||
         typeof (result.data as { cached?: unknown }).cached !== 'boolean') {

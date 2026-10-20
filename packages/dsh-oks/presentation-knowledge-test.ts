@@ -1,6 +1,10 @@
+import { COMPONENT_KINDS } from './src/draft/components.ts';
+import { parseDraft } from './src/draft/document.ts';
+import { parseMarkdownFixture } from './test-markdown.ts';
 import assert from 'node:assert/strict';
 import { createJaqEngine } from './src/jaq.ts';
 import { DraftRuntime } from './src/draft/runtime.ts';
+class FixtureRuntime extends DraftRuntime { constructor(backend:ConstructorParameters<typeof DraftRuntime>[0], options:ConstructorParameters<typeof DraftRuntime>[1]={}) { super(backend,{...options,parse:(source,file)=>source.trimStart().startsWith('<Dari')?parseDraft(source,file):parseMarkdownFixture(source)}); } }
 import { createDraftBackend } from './src/draft/backend.ts';
 import { buildSemanticGraph, resolveFact } from './src/knowledge-graph.ts';
 import { mountPresentationKnowledge, presentationExample } from './src/presentation-knowledge.ts';
@@ -46,24 +50,28 @@ try {
   const example=fact.example;
   if(kind!=='table'){
    for(const [feature,value]of Object.entries(values)){
-    const spec={...example.spec};for(const key of Object.keys(values))delete spec[key];spec[feature]=value;
+    const spec={kind,...example.spec};for(const key of Object.keys(values))delete spec[key];spec[feature]=value;
     assert.equal('spec' in parseChartSpec(spec),(EXPRESSION_SUPPORT[feature as keyof typeof EXPRESSION_SUPPORT] as readonly string[]).includes(kind),`${kind}.${feature}`);
    }
-   for(const required of fact.required){const spec={...example.spec};delete spec[required];assert.ok('error' in parseChartSpec(spec),`${kind} requires ${required}`);}
+   for(const required of fact.required){const spec={kind,...example.spec};delete spec[required];assert.ok('error' in parseChartSpec(spec),`${kind} requires ${required}`);}
   }
-  const source=['# 呈现知识示例','## pipeline','```js',`let rows=data(${JSON.stringify(example.rows)},{kind:"example"});`,...(example.nodes?[`let nodes=data(${JSON.stringify(example.nodes)},{kind:"example"});`]:[]),`let chart=render_figure(${JSON.stringify(example.spec)},{data:rows${example.nodes?',nodes':''}});`,'let answer=render_html("answer.xhtml",{chart});','```','## assets','```xhtml name="answer.xhtml"','<article><figure data-oks-ref="chart" /></article>','```'].join('\n');
-  const runtime=new DraftRuntime(backend);const result=await runtime.run(source);
+  const source=`<Dari><Pipeline>
+let rows=data(${JSON.stringify(example.rows)},{kind:"example"});
+${example.nodes?`let nodes=data(${JSON.stringify(example.nodes)},{kind:"example"});`:''}
+let spec=${JSON.stringify(Object.fromEntries(Object.entries(example.spec).filter(([key])=>key!=="kind")))};
+</Pipeline><Template name="answer"><article><figure><${Object.entries(COMPONENT_KINDS).find(([,value])=>value===kind)![0]} spec={spec} data={rows}${example.nodes?' nodes={nodes}':''} /></figure></article></Template></Dari>`;
+  const runtime=new FixtureRuntime(backend);const result=await runtime.run(source);
   assert.equal(result.status,'complete',`${kind}: ${result.error}`);
   for(const [name,output]of result.outputs)assert.ok(output.value,`${kind}/${name}: ${output.error}`);
   assert.match(runtime.read('answer',source).value.sources[0].delivery!.html,kind==='table'?/<table>/ : /<svg/);
  }
- const runtime=new DraftRuntime(backend);const result=await runtime.run(presentationExample);
+ const runtime=new FixtureRuntime(backend);const result=await runtime.run(presentationExample);
  assert.equal(result.status,'complete',result.error);
  const html=runtime.read('answer',presentationExample).value.sources[0].delivery!.html;
  assert.match(html,/>3<\/span>/);assert.match(html,/>major<\/span>/);
  assert.match(html,/>告警级别<\/th>/);assert.match(html,/>数量<\/th>/);
  const invalid=presentationExample.replace('columns:["告警级别","数量"]','columns:[{key:"level",label:"告警级别"}]');
- const failed=await new DraftRuntime(backend).run(invalid);
+ const failed=await new FixtureRuntime(backend).run(invalid);
  assert.equal(failed.status,'invalid');assert.match(failed.error!,/rename data keys in jq/);
  for(const columns of [[{key:'level',label:'告警级别'}],[],['n','n'],[''],42])assert.throws(()=>parseTableSpec({kind:'table',columns}),/columns/);
  console.log('presentation knowledge: paged discovery/navigation, exact slices, 14 executable figure examples, renderer matrix, table headers and XHTML bindings passed');

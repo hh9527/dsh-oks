@@ -1,14 +1,15 @@
+import type { FigureKind } from './components.ts';
 /** The draft language is parsed as data. Source text is never evaluated as JavaScript. */
 export type Position = { offset: number; line: number; column: number };
 export type Span = { start: Position; end: Position };
-export type Operator = 'data' | 'query' | 'jq' | 'context' | 'render_figure' | 'render_html' | 'time_windows';
+export type Operator = 'data' | 'query' | 'exec_query' | 'jq' | 'context' | 'render_figure' | 'render_html' | 'time_windows';
 export type Expr = (
   | { kind: 'literal'; value: string | number | boolean | null }
   | { kind: 'array'; values: Expr[] }
   | { kind: 'object'; entries: { key: string; value: Expr }[] }
   | { kind: 'ref'; name: string }
   | { kind: 'project'; input: Expr; key: string | number }
-  | { kind: 'call'; operator: Operator; args: Expr[] }
+  | { kind: 'call'; operator: Operator; args: Expr[]; figureKind?: FigureKind }
 ) & { span: Span };
 export type Statement = (
   | { kind: 'binding'; name: string; value: Expr }
@@ -16,25 +17,30 @@ export type Statement = (
 ) & { span: Span; motivation: string };
 export type AssetDependency = { name: string; language: 'jq' | 'xhtml'; span: Span };
 export type PipelineNode = {
+  internal?: boolean;
+  display?: { label: string; template: string; figureId?: string; component: string };
   statement: Statement;
   bindings: string[];
   assets: AssetDependency[];
 };
+export type SourceDiagnostic = {file?:string;stage:string;message:string;span:Span;asset?:string;related?:{message:string;span:Span}[]};
 export class DraftSyntaxError extends Error {
   readonly span: Span;
-  constructor(message: string, span: Span) {
+  readonly diagnostics: SourceDiagnostic[];
+  constructor(message: string, span: Span, diagnostics:SourceDiagnostic[] = []) {
     super(message);
     this.name = 'DraftSyntaxError';
     this.span = span;
+    this.diagnostics = diagnostics;
   }
 }
 
 type Token = { text: string; value?: string | number; kind: 'id' | 'string' | 'number' | 'symbol' | 'eof'; span: Span; comments: string[] };
-const OPERATORS = new Set<string>(['data', 'query', 'jq', 'context', 'render_figure', 'render_html', 'time_windows']);
+const OPERATORS = new Set<string>(['data', 'query', 'exec_query', 'jq', 'context', 'render_figure', 'render_html', 'time_windows']);
 const RESERVED = new Set(['let', 'debug', 'true', 'false', 'null', ...OPERATORS]);
 const MAX_DEPTH = 128;
 
-/** base is the location of the first code character in the original Markdown. */
+/** base is the location of the first code character in the original source file. */
 export function parsePipeline(source: string, base: Position = { offset: 0, line: 1, column: 1 }): PipelineNode[] {
   let index = 0;
   let line = base.line;
@@ -241,7 +247,7 @@ export function parsePipeline(source: string, base: Position = { offset: 0, line
       else if (expr.kind === 'project') visit(expr.input);
       else if (expr.kind === 'call') {
         const count = expr.args.length;
-        const arity = expr.operator === 'context' ? [0, 0] : ['query'].includes(expr.operator) ? [1, 1] : ['data', 'jq'].includes(expr.operator) ? [1, 2] : [2, 2];
+        const arity = expr.operator === 'context' ? [0, 0] : ['query','exec_query'].includes(expr.operator) ? [1, 1] : ['data', 'jq'].includes(expr.operator) ? [1, 2] : [2, 2];
         if (count < arity[0] || count > arity[1]) throw new DraftSyntaxError(`Invalid argument count for ${expr.operator}`, expr.span);
         if (expr.operator === 'jq' || expr.operator === 'render_html') {
           const asset = expr.args[0];

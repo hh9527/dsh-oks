@@ -1,9 +1,10 @@
+import { componentSpec } from './components.ts';
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { canonicalJson } from '../key.ts';
 import { isRecord } from '../host.ts';
 import type { Knowledge, WorkspaceEntry } from '../knowledge.ts';
-import type { JaqCheckOptions, JaqOptions, JaqOutcome } from '../jaq.ts';
+import type { JaqCheckOptions, JaqOptions, JaqOutcome, JaqDiagnostic } from '../jaq.ts';
 import { checkJaq, runJaq, JaqCompileError } from '../jaq.ts';
 import { limitProblem } from '../intent-limit.ts';
 import { appendNode, describeRows, isResultColumn, originOf, rowsOf, resultStamp } from '../results.ts';
@@ -19,17 +20,18 @@ import { checkAuthorXhtml } from '../report/xhtml.ts';
 import { assembleReport } from '../report/assemble.ts';
 import type { ReportBinding } from '../report/assemble.ts';
 import { restoreAssets } from '../report/page.ts';
+import { SourceFile } from './source.ts';
 import { DraftSyntaxError } from './pipeline.ts';
-import type { Expr, Operator, Span } from './pipeline.ts';
+import type { Expr, Operator, Span, SourceDiagnostic } from './pipeline.ts';
 import type { DraftAsset, DraftDocument } from './document.ts';
-import type { CallContext, Computed, DraftBackend, DraftValue } from './runtime.ts';
+import type { CallContext, Computed, DraftBackend, DraftValue, QueryPlan } from './runtime.ts';
 
 const UNKNOWN = Symbol('dynamic');
 const digest = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
 const jsonPath = (path: (string | number)[]) => '.data' + path.map(key => `[${JSON.stringify(key)}]`).join('');
 const fail = (message: string, span: Span): never => { throw new DraftSyntaxError(message, span); };
 
-type CachedCheck = { error?: string; result?: unknown };
+type CachedCheck = { error?:string;result?:unknown;jqErrors?:JaqDiagnostic[];xhtmlErrors?:{line:number;column:number;message:string}[] };
 /** Per-source validation cache. Only deterministic completed checks are admitted. */
 class Checks {
   private entries = new Map<string, CachedCheck>();
@@ -118,15 +120,16 @@ export function createDraftBackend(options: {
   const { knowledge, entry, file } = options;
   const jq = options.jq ?? { run: runJaq, check: checkJaq };
   const checks = new Checks();
-  const queryEnvironment = () => ({ model: entry.modelHash, domain: entry.settings.domain, dataFile: entry.settings.dataFile, limit: entry.settings.queryMaxRows });
-  const environment = (operator: Operator): unknown => operator === 'query' ? queryEnvironment()
-    : operator === 'context' ? { clock: 1, zone: options.contextZone() }
-    : { operator, version: 1 };
-  type PreparedQuery = { sql: string; bindings: unknown[]; columns?: ResultColumn[]; limit_slot: number };
+  const planEnvironment = () => ({model:entry.modelHash,domain:entry.settings.domain,compiler:1});
+  const queryEnvironment = () => ({...planEnvironment(), dataFile: entry.settings.dataFile, limit: entry.settings.queryMaxRows });
+  const environment = (operator: Operator): unknown => operator === 'query' ? planEnvironment() : operator === 'exec_query' ? queryEnvironment()
+    : operator === 'context' ? { clock: 1 }
+    : { operator, version: 2 };
+  type PreparedQuery = { sql: string; bindings: unknown[]; columns: ResultColumn[]; limit_slot: number };
   const lower = async (intent: unknown, signal?: AbortSignal): Promise<PreparedQuery> => {
     const problem = limitProblem(intent);
     if (problem) throw new Error(problem);
-    const key = digest({ intent, environment: queryEnvironment() });
+    const key = digest({ intent, environment: planEnvironment() });
     const cached = checks.get(key);
     if (cached?.error) throw new Error(cached.error);
     if (cached?.result) return cached.result as PreparedQuery;
@@ -144,18 +147,18 @@ export function createDraftBackend(options: {
       throw new Error('Invalid model limit_slot: expected the binding index of the requested top-level limit');
     }
     const rawColumns = lowered[0].columns;
-    if (rawColumns !== undefined && (!Array.isArray(rawColumns) || !rawColumns.every(isResultColumn)
-        || new Set(rawColumns.map(column => column.name)).size !== rawColumns.length)) {
+    if (!Array.isArray(rawColumns) || !rawColumns.every(isResultColumn)
+        || new Set(rawColumns.map(column => column.name)).size !== rawColumns.length) {
       throw new Error('Invalid model result columns: expected ordered {name,type,nullable} declarations');
     }
-    const columns = rawColumns as ResultColumn[] | undefined;
+    const columns = rawColumns as ResultColumn[];
     const result: PreparedQuery = { sql: lowered[0].sql, bindings: lowered[0].bindings, limit_slot: limitSlot,
-      ...(columns ? { columns: columns.map(({name, type, nullable}) => ({name, type, nullable})) } : {}) };
+      columns: columns.map(({name, type, nullable}) => ({name, type, nullable})) };
     checks.set(key, { result });
     return result;
   };
   const checkAsset = async (asset: DraftAsset, signal?: AbortSignal) => {
-    const key = digest({ language: asset.language, source: asset.source, checker: 1 });
+    const key = digest({ language: asset.language, source: asset.source, checker: 2 });
     let checked = checks.get(key);
     if (!checked) {
       if (asset.language === 'jq') {
@@ -164,15 +167,33 @@ export function createDraftBackend(options: {
           checked = {};
         } catch (error) {
           if (!(error instanceof JaqCompileError)) throw error;
-          checked = { error: error.message };
+          checked = { error: error.message,jqErrors:error.diagnostics };
         }
       } else {
         const result = checkAuthorXhtml(asset.source);
-        checked = { result, ...(result.errors.length ? { error: result.errors.map(error => `${error.line}:${error.column} ${error.message}`).join('\n') } : {}) };
+        checked = { result, ...(result.errors.length ? { error:result.errors[0].message,xhtmlErrors:result.errors } : {}) };
       }
       checks.set(key, checked);
     }
-    if (checked.error) fail(`${asset.name}: ${checked.error.replaceAll('<draft-asset>', asset.name)}`, { start: asset.body, end: asset.body });
+    if(checked.error){
+      const diagnostics:SourceDiagnostic[]=[];
+      const map=(start:number,end:number,unit:'utf16'|'utf8'='utf16'):Span=>{
+        if(asset.sourceMap)return asset.sourceMap.find(m=>m.start<=start&&start<m.end)?.original??asset.span;
+        return asset.fragment?.locate(start,end,unit).span??{start:asset.body,end:asset.body};
+      };
+      for(const error of checked.jqErrors??[]) {
+        const location=error.path==='<draft-asset>'?map(error.start,error.end,'utf8'):asset.span;
+        diagnostics.push({file,stage:'jq',asset:asset.name,message:error.message,span:location,
+          related:error.path==='<draft-asset>'?error.related.map(r=>({message:'related location',span:map(r.start,r.end,'utf8')})):[]});
+      }
+      const generated=new SourceFile('xhtml',asset.source);
+      for(const error of checked.xhtmlErrors??[]){
+        const offset=Math.min(asset.source.length,generated.scalarOffset(error.line,error.column));
+        diagnostics.push({file,stage:'template',asset:asset.name,message:error.message,span:map(offset,offset)});
+      }
+      if(!diagnostics.length)diagnostics.push({file,stage:asset.language==='jq'?'jq':'template',asset:asset.name,message:checked.error.slice(0,1000),span:asset.span});
+      throw new DraftSyntaxError(diagnostics[0].message,diagnostics[0].span,diagnostics.slice(0,16));
+    }
   };
   const windowCode = (raw: unknown) => {
     if (!isRecord(raw) || Object.keys(raw).some(key => !['unit', 'count', 'mode'].includes(key))) throw new Error('time_windows options are {unit,count,mode}');
@@ -186,8 +207,12 @@ export function createDraftBackend(options: {
     return parsed;
   };
   const preflight = async (document: DraftDocument, signal?: AbortSignal) => {
-    const referenced = new Set(document.nodes.flatMap(node => node.assets.map(asset => asset.name)));
-    for (const name of referenced) await checkAsset(document.assets.get(name)!, signal);
+    const diagnostics:SourceDiagnostic[]=[];
+    for(const asset of document.assets.values()){
+      try{await checkAsset(asset,signal);}catch(error){if(error instanceof DraftSyntaxError)diagnostics.push(...error.diagnostics);else throw error;}
+      if(diagnostics.length>=16)break;
+    }
+    if(diagnostics.length)throw new DraftSyntaxError(diagnostics[0].message,diagnostics[0].span,diagnostics.slice(0,16));
     const constants = new Map<string, unknown>();
     const visit = async (expr: Expr): Promise<void> => {
       if (expr.kind === 'array') { for (const value of expr.values) await visit(value); }
@@ -202,7 +227,7 @@ export function createDraftBackend(options: {
           if (expr.operator === 'render_figure' && second !== UNKNOWN && isRecord(second) && (!Object.hasOwn(second, 'data') || Object.keys(second).some(key => key !== 'data' && key !== 'nodes'))) throw new Error('render_figure inputs must be {data,nodes?}');
           if (expr.operator === 'time_windows' && second !== UNKNOWN) windowCode(second);
           if (expr.operator === 'query' && first !== UNKNOWN) await lower(first, signal);
-          if (expr.operator === 'render_figure' && first !== UNKNOWN) validateFigure(first);
+          if (expr.operator === 'render_figure' && first !== UNKNOWN){try{validateFigure(componentSpec(first,expr.figureKind));}catch(error){fail(error instanceof Error?error.message:String(error),expr.args[0].span);}}
           if (expr.operator === 'data' && expr.args[1]) {
             const nature = constant(expr.args[1], constants);
             if (nature !== UNKNOWN) dataNature(nature);
@@ -217,6 +242,7 @@ export function createDraftBackend(options: {
           }
         } catch (error) {
           if (signal?.aborted) throw error;
+          if(error instanceof DraftSyntaxError)throw error;
           fail(error instanceof Error ? error.message : String(error), expr.span);
         }
       }
@@ -245,8 +271,17 @@ export function createDraftBackend(options: {
     if (ctx.operator === 'query') {
       const intent = ctx.args[0].data;
       const lowered = await lower(intent, ctx.signal);
+      const plan:QueryPlan={...lowered,intent,environment:digest(planEnvironment())};
+      return {data:{columns:lowered.columns},evidence:{plan}};
+    }
+    if(ctx.operator==='exec_query') {
+      const plan=ctx.args[0].plan;
+      if(!plan)throw new Error('exec_query requires a complete plan returned by query(intent); JSON objects and projections are not executable plans');
+      if(plan.environment!==digest(planEnvironment()))throw new Error('Query plan belongs to a different model/compiler environment; regenerate it with query(intent)');
+      const {intent}=plan;
+      const lowered=plan;
       const dataFile = entry.settings.dataFile;
-      let observed: Record<string, unknown> = { dataFile };
+      let observed: Record<string, unknown> = dataFile === undefined ? {} : { dataFile };
       if (dataFile) {
         try { const info = statSync(dataFile); observed = { dataFile, bytes: info.size, modifiedAt: new Date(info.mtimeMs).toISOString() }; }
         catch { observed.readable = false; }
@@ -280,7 +315,7 @@ export function createDraftBackend(options: {
       return { data: result.data };
     }
     if (ctx.operator === 'render_figure') {
-      const raw = ctx.args[0].data;
+      const raw = componentSpec(ctx.args[0].data,ctx.figureKind);
       validateFigure(raw);
       const spec = raw as Record<string, unknown>;
       const input = ctx.args[1].data;
@@ -307,6 +342,10 @@ export function createDraftBackend(options: {
     }
     if (ctx.operator === 'render_html') {
       if (!isRecord(ctx.args[1].data)) throw new Error('render_html inputs must be a named object');
+      for(const [name,ref]of Object.entries(ctx.asset!.references??{}))if(ref.kind==='value'){
+        const value=ctx.args[1].data[name];
+        if(value!==null&&!['string','number','boolean'].includes(typeof value))fail('Value.data must select a scalar; construct a summary in pipeline/jq',ref.span);
+      }
       return { data: { items: ctx.args[1].data } };
     }
     throw new Error(`Unsupported operator ${ctx.operator}`);
@@ -316,23 +355,24 @@ export function createDraftBackend(options: {
     const parents = named ? Object.values(named).map(binding => binding.origin) : ctx.args.map(draftValueOrigin);
     const inputs = named ? Object.fromEntries(Object.entries(named).map(([key, binding]) => [key, binding.origin.root])) : Object.fromEntries(parents.map((parent, index) => [String(index), parent.root]));
     const node: OriginNode = {
-      kind: ctx.operator === 'query' ? 'query' : ctx.operator === 'data' ? 'input' : ctx.operator === 'context' ? 'context' : ctx.operator === 'render_figure' ? 'display' : 'transform',
+      kind: ctx.operator === 'exec_query' ? 'query' : ctx.operator === 'data' ? 'input' : ctx.operator === 'context' ? 'context' : ctx.operator === 'render_figure' ? 'display' : 'transform',
       motivation: ctx.statement.motivation,
       inputs,
       ...(named ? { inputPaths: Object.fromEntries(Object.keys(named).map(key => [key, '.data'])) } : {}),
       draft: { file, hash: ctx.sourceHash, line: ctx.span.start.line, column: ctx.span.start.column, ...(ctx.asset ? { asset: ctx.asset.name } : {}) },
-      ...(ctx.operator === 'query' ? { intent: ctx.args[0].data, source: computed.evidence } : {}),
+      ...(ctx.operator === 'exec_query' ? { intent: ctx.args[0].plan!.intent, source: computed.evidence } : {}),
+      ...(ctx.operator === 'query' ? {method:'identity' as const,data:computed.data,intent:ctx.args[0].data} : {}),
       ...(ctx.operator === 'data' || ctx.operator === 'context' ? { data: computed.data } : {}),
       ...(ctx.operator === 'data' ? { nature: dataNature(ctx.args[1]?.data) } : {}),
       ...(ctx.operator === 'jq' ? { method: 'jq', snip: ctx.asset!.source, snipFile: `${file}#${ctx.asset!.name}`, inputShape: 'named', outputs: 1 } : {}),
       ...(ctx.operator === 'time_windows' ? {method:'jq',snip:windowCode(ctx.args[1].data).text,snipFile:'builtin://time/windows.jq',inputShape:'named',outputs:1} : {}),
-      ...(ctx.operator === 'render_figure' ? { spec: ctx.args[0].data } : {}),
+      ...(ctx.operator === 'render_figure' ? { spec: (computed.data as {spec:unknown}).spec } : {}),
     };
     let origin = appendNode(parents, node, computed.data);
     if (ctx.operator === 'render_html') {
       const bindings = bindingsOf(ctx.args[1]);
       const title = ctx.title ?? ctx.asset!.name.replace(/\.xhtml$/, '');
-      const report = assembleReport({ name: 'answer', title, subtitle: null, category: '即时分析', at: resultStamp(), draft: node.draft, motivation: node.motivation, xhtml: ctx.asset!.source, bindings,
+      const report = assembleReport({ name: 'answer', title, subtitle: null, category: '即时分析', at: resultStamp(), draft: node.draft, motivation: node.motivation, xhtml: ctx.asset!.source, figurePlacement:ctx.asset!.figurePlacement, bindings,
         valueOf: (ref, pick) => pickScalar(bindings[ref]?.value, pick),
       });
       if ('error' in report) throw new Error(report.error);
@@ -340,7 +380,8 @@ export function createDraftBackend(options: {
       return { data: { assets: report.assets, items: report.items }, sources: [{ origin, at: [], path: [], delivery: { html: report.page, title } }] };
     }
     const evidence = computed.evidence as { display?: { kind: 'chart' | 'table'; content: string } } | undefined;
-    return { data: computed.data, sources: [{ origin, at: [], path: [], ...(evidence?.display ? { display: evidence.display } : {}) }] };
+    return { data: computed.data, sources: [{ origin, at: [], path: [], ...(evidence?.display ? { display: evidence.display } : {}) }],
+      ...(ctx.operator==='query'?{plan:(computed.evidence as {plan:QueryPlan}).plan}:{}) };
   };
   return { preflight, environment, execute, assemble };
 }

@@ -1,3 +1,4 @@
+import { COMPONENT_KINDS } from './draft/components.ts';
 /** 工具初始化时挂载的呈现知识；领域模型只负责业务事实。 */
 import { CHART_KINDS, EXPRESSION_SUPPORT } from './chart/shared.ts';
 import type { ChartKind } from './chart/shared.ts';
@@ -24,20 +25,22 @@ const kindDetails: Record<ChartKind, {names:string[];doc:string;required:string[
 export const tableHeaderExample = {
   input:{rows:[{level:'major',count:3}]},
   jq:'.facts.rows | map({"告警级别":.level,"数量":.count})',
-  spec:{kind:'table',columns:['告警级别','数量']},
+  spec:{columns:['告警级别','数量']},
 };
 export const presentationExample = [
-  '# 呈现示例', '示例数据仅用于验证呈现方式。', '## pipeline', '```js',
-  'let facts = data({rows:[{level:"major",count:3}]},{kind:"example"});',
-  'let rows = jq("headers.jq",{facts});',
-  'let chart = render_figure({kind:"column",x:"告警级别",value:"数量"},{data:rows});',
-  'let table = render_figure({kind:"table",columns:["告警级别","数量"]},{data:rows});',
-  'let summary = jq("summary.jq",{facts});',
-  'let answer = render_html("answer.xhtml",{summary,chart,table});', '```', '## assets',
-  '```jq name="headers.jq"',tableHeaderExample.jq,'```',
-  '```jq name="summary.jq"','{total:(.facts.rows | map(.count) | add),rows:.facts.rows}','```',
-  '```xhtml name="answer.xhtml"',
-  '<article><h1>示例结果</h1><p>数量：<span data-oks-ref="summary" data-oks-pick=".total" /></p><p>首项：<span data-oks-ref="summary" data-oks-pick=".rows.0.level" /></p><figure data-oks-ref="chart"><figcaption>类别比较</figcaption></figure><figure data-oks-ref="table"><figcaption>明细</figcaption></figure></article>', '```',
+ '<Dari title="呈现示例">',
+ '<Pipeline>',
+ 'let facts = data({rows:[{level:"major",count:3}]},{kind:"example"});',
+ 'let rows = jq("headers.jq",{facts});',
+ 'let chartSpec = data({x:"告警级别",value:"数量"});',
+ 'let tableSpec = data({columns:["告警级别","数量"]});',
+ 'let summary = jq("summary.jq",{facts});',
+ '</Pipeline>',
+ '<Asset language="jq" name="headers.jq">',tableHeaderExample.jq,'</Asset>',
+ '<Asset language="jq" name="summary.jq">','{total:(.facts.rows | map(.count) | add),rows:.facts.rows}','</Asset>',
+ '<Template name="answer">',
+ '<article><h1>示例结果</h1><p>数量：<Value data={summary.total} /></p><p>首项：<Value data={summary.rows[0].level} /></p><figure><ColumnChart spec={chartSpec} data={rows} /><figcaption>类别比较</figcaption></figure><figure><Table spec={tableSpec} data={rows} /><figcaption>明细</figcaption></figure></article>',
+ '</Template></Dari>',
 ].join('\n');
 
 /** 挂载一次；items 只放名称与说明，事实与示例留在可独立投影的分支。 */
@@ -49,17 +52,19 @@ export function mountPresentationKnowledge(graph:SemanticGraph):void {
     add(key,names,doc);
   };
   graph.tools={
-    render_figure:{signature:'render_figure(spec,{data:rows,nodes?:rows})',input:'data accepts rows[] or {rows:[...]}; nodes is only used by graph',kinds:{},topics:{},related:{tools:['tools/render_html']}},
-    render_html:{signature:'render_html("answer.xhtml",{binding:value,...})',topics:{},related:{tools:['tools/render_figure']}},
+    render_figure:{signature:'<figure><Component spec={spec} data={rows} /><figcaption>说明</figcaption></figure>',pipelineSignature:'render_figure({kind,...spec},{data:rows,nodes?:rows})',input:'data accepts rows[] or {rows:[...]}; nodes is only used by graph',kinds:{},topics:{},related:{tools:['tools/render_html']}},
+    render_html:{signature:'<Template name="answer"><article>...</article></Template>',pipelineSignature:'render_html("answer.xhtml",{binding:value,...})',topics:{},related:{tools:['tools/render_figure']}},
   };
   add('tools/render_figure',['图表','图形','表格','呈现','render_figure'],'生成图表或表格。kinds 提供逐图元的必填映射、series 语义、专属开关及最小示例；topics 提供规格、表头与完整分析稿。');
   add('tools/render_html',['答案模板','XHTML','报告','render_html'],'使用严格 XHTML 绑定标量和图表，生成答案。topics 提供引用、路径、数值声明、交付和完整示例。');
   for(const kind of CHART_KINDS){
     const d=kindDetails[kind];
-    (graph.tools.render_figure.kinds as Record<string,unknown>)[kind]={required:d.required,series:d.series,switches:Object.keys(EXPRESSION_SUPPORT).filter(feature=>(EXPRESSION_SUPPORT[feature as keyof typeof EXPRESSION_SUPPORT] as readonly string[]).includes(kind)),example:d.example,tools:['tools/render_figure']};
-    add(`tools/render_figure#kinds/${kind}`,d.names,d.doc);
+    const component=Object.entries(COMPONENT_KINDS).find(([,value])=>value===kind)![0];
+    const {kind:_,...spec}=d.example.spec;
+    (graph.tools.render_figure.kinds as Record<string,unknown>)[kind]={required:d.required,series:d.series,switches:Object.keys(EXPRESSION_SUPPORT).filter(feature=>(EXPRESSION_SUPPORT[feature as keyof typeof EXPRESSION_SUPPORT] as readonly string[]).includes(kind)),component,example:{...d.example,spec},tools:['tools/render_figure']};
+    add(`tools/render_figure#kinds/${kind}`,[...d.names,component],d.doc);
   }
-  (graph.tools.render_figure.kinds as Record<string,unknown>).table={required:[],columns:'string[]: existing column names in display order; default is data keys',example:{spec:{kind:'table',columns:['label','count']},rows:[{label:'甲',count:3}]},tools:['tools/render_figure']};
+  (graph.tools.render_figure.kinds as Record<string,unknown>).table={component:'Table',required:[],columns:'string[]: existing column names in display order; default is data keys',example:{spec:{columns:['label','count']},rows:[{label:'甲',count:3}]},tools:['tools/render_figure']};
   add('tools/render_figure#kinds/table',['表格','列顺序','table'],'columns 为字符串列名数组，决定选列和顺序；表头就是数据键名。中文表头先用 jq 重命名数据键，详见 table_headers 主题。');
   topic('render_figure','switches',['图表能力矩阵','stack','series','专属开关'],'专属开关的支持矩阵由渲染器生成；series 的含义见各个 kinds 节点。开关放在 spec 顶层。',{
     support:EXPRESSION_SUPPORT,values:{stack:['total','percent'],size:'column name',bins:'integer 1..200',second:{value:'column name',kind:'line',label:'optional',unit:'optional'},marks:'1..12 entries: {value:number|string,axis?:x|y,label?:string}',donut:'Bool',connectNulls:'Bool',entityColor:'Bool'},
@@ -70,23 +75,29 @@ export function mountPresentationKnowledge(graph:SemanticGraph):void {
     aggregation:'Prepare unique (x,series) rows for grouped categorical charts in query/jq; repeated cells keep the last valid numeric value, they are not aggregated. Missing combinations remain absent.',
   });
   topic('render_figure','table_headers',['表头','中文列名','columns','label'],'表格 columns 只接受字符串列名数组；表头取数据键名。用 jq 重命名后再选列；{key,label} 会报错。',{example:tableHeaderExample});
-  topic('render_figure','nodes',['关系图节点表','nodes'],'graph 的输入 nodes 必填；边的起终点使用节点 id。每个节点应提供 depth，或同时提供 x/y 固定坐标。',{fields:{id:'node ID',label:'optional display name',depth:'numeric layer',x:'optional coordinate with y',y:'optional coordinate with x',category:'optional color category',status:'focus emphasizes node or edge'},call:'render_figure({kind:"graph",x:"source",series:"target"},{data:edges,nodes})'});
-  topic('render_figure','draft',['图表完整示例','分析稿','pipeline'],'可运行 Markdown：示例数据、jq 表头转换、柱图、表格与 XHTML 答案。',{markdown:presentationExample});
-  topic('render_html','references',['引用','绑定','data-oks-ref','data-oks-pick','路径'],'输入键与模板 data-oks-ref 双向对应。span 引用标量；figure 引用渲染后的图表。data-oks-pick 仅用于带 ref 的 span。',{
-    scalar:'<span data-oks-ref="summary" data-oks-pick=".total" />',
-    arrayScalar:'<span data-oks-ref="summary" data-oks-pick=".rows.0.level" />',
-    pick:'Dot segments only: .field.0.name, or . for root. Segment is ASCII identifier or decimal array index. Extract unusual/Chinese keys in jq into a named scalar first. Bracket paths like .rows[0].level are invalid.',
-    figure:'<figure data-oks-ref="chart"><figcaption>说明</figcaption></figure>',bindings:'render_html("answer.xhtml",{summary,chart})',
+  topic('render_figure','nodes',['关系图节点表','nodes'],'graph 的输入 nodes 必填；边的起终点使用节点 id。每个节点应提供 depth，或同时提供 x/y 固定坐标。',{fields:{id:'node ID',label:'optional display name',depth:'numeric layer',x:'optional coordinate with y',y:'optional coordinate with x',category:'optional color category',status:'focus emphasizes node or edge'},call:'<figure><NetworkGraph spec={spec} data={edges} nodes={nodes} /></figure>'});
+  topic('render_figure','draft',['图表完整示例','分析稿','pipeline'],'可运行 DARI：示例数据、jq 表头转换、柱图、表格与 XHTML 答案。',{dari:presentationExample});
+  topic('render_html','references',['引用','绑定','data-oks-ref','data-oks-pick','路径','DARI','Value','figure','图序号'],'DARI 模板只引用 pipeline 绑定及静态投影。Value 显示标量；具体图元如 ColumnChart 放在原生 figure 中，figcaption 自动获得图/表编号。',{
+    scalar:'<Value data={summary.total} />',
+    arrayScalar:'<Value data={summary.rows[0].level} />',
+    pick:'Static projections: binding.field[0]["中文键"]. Template braces accept only references; construct objects in pipeline and compute in jq.',
+    figure:'<figure><ColumnChart spec={chartSpec} data={rows} /><figcaption>说明</figcaption></figure>',
+    bindings:'<Template name="answer"><article>...</article></Template>',
+    components:COMPONENT_KINDS,
+    spec:'Component spec omits kind. Tag determines type; only NetworkGraph accepts nodes. Components are self-closing.',
+    structure:'figure contains one component then an optional figcaption. Keep id/class/title/lang on figure; figures and tables number separately per answer, in document order. Captions follow the chart/table.',
+    lowLevel:'Explicit Asset language="xhtml" resources may use render_html and data-oks-ref/data-oks-pick; the primary draft format is .dari.',
   });
   topic('render_html','xhtml',['XHTML 语法','元素','属性','data-oks-lit','data-oks-shrink'],'正文根为 article；XML 良构、属性加引号、空元素显式闭合；转义 & 与 <。业务数字通过引用进入正文。',{
     elements:AUTHOR_ELEMENTS,attributes:AUTHOR_ATTRIBUTES,numbers:'Literal numbers in prose require <span data-oks-lit="">…</span>; observed business numbers come from bindings.',
+    dariMarkers:'In DARI Template, data-oks-shrink and data-oks-lit may omit =""; they compile to empty string attributes. Other attributes require explicit values. XHTML assets use quoted values.',
     shrink:'data-oks-shrink="" marks interpretation/evaluation text for a shortened preview when reading report structure; attribute presence enables it.',
   });
-  topic('render_html','delivery',['交付','reply','artifact'],'直接 render_html 绑定可作为答案；只有一个时自动选择，多个时 oks_run_answer 使用 answer 指定绑定。',{
-    reply:'oks_run_answer({src:".work/draft.md",delivery:"reply"}) returns native Markdown; default mode',
-    artifact:'oks_run_answer({src:".work/draft.md",delivery:"artifact"}) delivers a standalone report path',
+  topic('render_html','delivery',['交付','reply','artifact'],'template 的 name 是答案名；只有一个时自动选择，多个时 oks_run_answer 使用 answer 指定名字。显式 render_html 绑定也可交付。',{
+    reply:'oks_run_answer({src:".work/draft.dari",delivery:"reply"}) returns native Markdown; default mode',
+    artifact:'oks_run_answer({src:".work/draft.dari",delivery:"artifact"}) delivers a standalone report path',
   });
-  topic('render_html','draft',['XHTML 完整示例','答案示例'],'可运行 Markdown：精确绑定标量、数组元素、图表与表格。',{markdown:presentationExample});
+  topic('render_html','draft',['XHTML 完整示例','答案示例'],'可运行 DARI：精确绑定标量、数组元素、图表与表格。',{dari:presentationExample});
   // 图元到具体用法的分类引用；反向引用由工具生成。
   for(const kind of [...CHART_KINDS,'table']) {
     const fact=resolveFact(graph,`tools/render_figure#kinds/${kind}`);
@@ -104,7 +115,7 @@ export function mountPresentationKnowledge(graph:SemanticGraph):void {
 export const presentationHelp={
   roots:['tools/render_figure','tools/render_html'],
   discover:{jq:{src:'builtin://knowledge/search.jq',args:{query:'图表',take:5}}},
-  kinds:{project:{tools:{render_figure:{kinds:['Map',{required:'Value',series:'Value',switches:'Value'}]}}}},
+  kinds:{project:{tools:{render_figure:{kinds:['Map',{component:'Value',required:'Value',series:'Value',switches:'Value'}]}}}},
   read:{jq:{src:'builtin://knowledge/read.jq',args:{key:'tools/render_figure#kinds/column'}}},
   topics:['tools/render_figure#topics/switches','tools/render_figure#topics/spec','tools/render_figure#topics/table_headers','tools/render_figure#topics/nodes','tools/render_figure#topics/draft','tools/render_html#topics/references','tools/render_html#topics/xhtml','tools/render_html#topics/delivery'],
 };

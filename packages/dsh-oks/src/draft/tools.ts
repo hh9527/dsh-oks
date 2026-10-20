@@ -16,7 +16,6 @@ import { chartTitle, type ChartSpec } from '../chart/spec.ts';
 import { DraftRuntime } from './runtime.ts';
 import type { DraftBackend, DraftRun, DraftValue } from './runtime.ts';
 import { renderDraftReply } from './reply.ts';
-import { parseDraft } from './document.ts';
 import { canonicalJson } from '../key.ts';
 
 const shape = createProjector('Shape');
@@ -93,7 +92,7 @@ export function createDraftTools(options: {
       }
       const state = { zone: { kind: 'missing' } as ContextTimeZone, touched: Date.now(), active: false };
       const backend = options.backend?.(entry, file, () => state.zone) ?? createDraftBackend({ knowledge: options.knowledge, entry, file, contextZone: () => state.zone });
-      record = Object.assign(state, { runtime: new DraftRuntime(backend) });
+      record = Object.assign(state, { runtime: new DraftRuntime(backend,{file}) });
       records.set(key, record);
     }
     if (!record) throw new Error('No retained run for this session and source; execute the draft first');
@@ -110,8 +109,18 @@ export function createDraftTools(options: {
   };
   const receipt = (run: DraftRun, file: string) => {
     const counts = { executed: 0, cached: 0, failed: 0, blocked: 0 };
+    const failures: Record<string, unknown>[] = [];
+    let failureCount = 0;
+    for (const status of ['failed', 'blocked']) for (const [name,state] of run.outputs) {
+      if (state.status !== status) continue;
+      failureCount++;
+      const item = {name:state.display?.label??name,...(state.display?{...state.display}:{}),status,at:{line:state.span.start.line,column:state.span.start.column},
+        ...(state.context?{...state.context,bindings:state.context.bindings.slice(0,8)}:{}),error:(state.error??status).slice(0,600),messageTruncated:(state.error??status).length>600};
+      failures.push(item);
+    }
     const outputs: Record<string, unknown>[] = [];
     let debugBytes = 0;
+    let hiddenOutputs=0;
     const acquisitions: DraftRun['acquisitions'] = [];
     for (const acquisition of run.acquisitions) {
       if (jsonBytes(acquisitions) + jsonBytes(acquisition) < 1500) acquisitions.push(acquisition);
@@ -119,15 +128,15 @@ export function createDraftTools(options: {
     const acquisitionBytes = jsonBytes(acquisitions);
     for (const [name, state] of run.outputs) {
       counts[state.status]++;
-      const item: Record<string, unknown> = { name, status: state.status, at: { line: state.span.start.line, column: state.span.start.column }, input: `${file}#${name}` };
+      if(state.internal&&state.value){hiddenOutputs++;continue;}
+      const item: Record<string, unknown> = { name:state.display?.label??name,...(state.display?{...state.display}:{}), status: state.status, at: { line: state.span.start.line, column: state.span.start.column }, ...(state.internal?{}:{input: `${file}#${name}`}) };
       if (state.value) {
         item.shape = shapeOf(state.value.data);
         if (isRecord(state.value.data) && Array.isArray(state.value.data.rows)) {
           item.rowCount = state.value.data.rows.length;
           if (typeof state.value.data.truncated === 'boolean') item.truncated = state.value.data.truncated;
         }
-        if (isRecord(state.value.data) && Array.isArray(state.value.data.rows)
-            && Array.isArray(state.value.data.columns) && state.value.data.columns.every(isResultColumn)) {
+        if (isRecord(state.value.data) && Array.isArray(state.value.data.columns) && state.value.data.columns.every(isResultColumn)) {
           const columns: unknown[] = [];
           for (const column of state.value.data.columns.slice(0, 12)) {
             if (jsonBytes([...columns, column]) > 1200) break;
@@ -143,18 +152,34 @@ export function createDraftTools(options: {
       if (state.error) item.error = state.error.slice(0, 800);
       if (acquisitionBytes + jsonBytes(outputs) + jsonBytes(item) < 5500) outputs.push(item);
     }
-    return { ok: run.status === 'complete' && counts.failed === 0 && counts.blocked === 0, computation: counts.failed || counts.blocked ? 'partial' : run.status === 'complete' ? 'succeeded' : 'unavailable', run: run.id, sourceHash: run.sourceHash, batch: run.batch, status: run.status, counts, acquisitions, omittedAcquisitions: run.acquisitions.length - acquisitions.length, outputs, omittedOutputs: run.outputs.size - outputs.length,
-      ...(run.error ? { error: run.error.slice(0, 2500), at: run.errorSpan?.start } : {}) };
+    const diagnostics=run.diagnostics?.slice(0,8).map(({related,...diagnostic})=>({
+      ...diagnostic,message:diagnostic.message.slice(0,600),
+      ...(related?{related:related.slice(0,2).map(r=>({...r,message:r.message.slice(0,120)}))}:{}),
+    }));
+    const result = { ok: run.status === 'complete' && counts.failed === 0 && counts.blocked === 0, computation: counts.failed || counts.blocked ? 'partial' : run.status === 'complete' ? 'succeeded' : 'unavailable', run: run.id, sourceHash: run.sourceHash, batch: run.batch, status: run.status,
+      ...(diagnostics?{diagnostics}:{}),counts, failures, omittedFailures:failureCount-failures.length, failuresInput:`${file}#failures`, acquisitions, omittedAcquisitions: run.acquisitions.length - acquisitions.length, outputs, omittedOutputs: run.outputs.size - hiddenOutputs - outputs.length,
+      ...(run.error ? { error: run.error.slice(0, 2500), ...(run.errorSpan?{at:run.errorSpan.start}:{}) } : {}) };
+    while(jsonBytes(result)>6500 && outputs.length){outputs.pop();result.omittedOutputs++;}
+    while(jsonBytes(result)>6500 && diagnostics?.length) diagnostics.pop();
+    // Preserve failure identities; shorten messages instead of omitting failed nodes.
+    for (const limit of [300,150,80]) {
+      if(jsonBytes(result)<=6500) break;
+      for(const failure of failures) {
+        const message=String(failure.error);
+        if(message.length>limit){failure.error=message.slice(0,limit);failure.messageTruncated=true;}
+      }
+    }
+    return result;
   };
   const tools: ToolDefinition[] = [
     {
       name: 'oks_run_answer',
-      description: 'Evaluate the complete pipeline and named jq/XHTML assets in a .work Markdown draft. Reuses this session/source acquisition batch and deterministic computations; refresh starts a new batch. Returns bounded statuses/debug and readonly references. With one answer it delivers reply Markdown or a self-contained report; with multiple answers select a binding explicitly. Computation, query and rendering are defined in the draft.',
+      description: 'Evaluate the complete pipeline and named assets and templates in a .work .dari report. Reuses this session/source acquisition batch and deterministic computations; refresh starts a new acquisition batch for exec_query/context, while query(intent) only compiles a reusable plan with columns. Returns root failures first with component/asset, bindings, source location and reason; #failures reads the full list with pagination. Returns bounded statuses/debug and readonly references. With one answer it delivers reply Markdown or a self-contained report; with multiple answers select a binding explicitly. Computation, query and rendering are defined in the draft.',
       parameters: { type: 'object', properties: { src: { type: 'string' }, answer: { type: 'string' }, delivery: { type: 'string', enum: ['reply', 'artifact'] }, refresh: { type: 'boolean' } }, required: ['src'], additionalProperties: false },
       output: { schema: OBJECT, render: (_args: unknown, value: { reply?: string }) => [{ type: 'text', text: JSON.stringify({ ...value, reply: undefined }) + (value.reply ? '\n\n' + value.reply : '') }] },
       async execute(args: { src?: unknown; answer?: unknown; delivery?: unknown; refresh?: unknown }, exec: ToolExec) {
         assertKeys(args, ['src', 'answer', 'delivery', 'refresh']);
-        if (typeof args.src !== 'string' || !args.src.endsWith('.md')) throw new Error('src must be a .work Markdown path');
+        if (typeof args.src !== 'string' || !args.src.endsWith('.dari')) throw new Error('src must be a .work/*.dari report path; migrate Markdown explicitly');
         if (args.answer !== undefined && typeof args.answer !== 'string') throw new Error('answer must be a binding name');
         if (args.delivery !== undefined && !['reply', 'artifact'].includes(String(args.delivery))) throw new Error('delivery must be reply or artifact');
         if (args.refresh !== undefined && typeof args.refresh !== 'boolean') throw new Error('refresh must be boolean');
@@ -170,15 +195,15 @@ export function createDraftTools(options: {
           const run = await record.runtime.run(read.text, { refresh: args.refresh === true, signal });
           const base = receipt(run, read.file);
           if (run.status !== 'complete') return { ...base, delivery: { status: 'unavailable' } };
-          const candidates = parseDraft(read.text).nodes.flatMap(({statement}) => statement.kind === 'binding' && statement.value.kind === 'call' && statement.value.operator === 'render_html' ? [statement.name] : []);
+          const candidates = run.answers ?? [];
           let selected: [string, DraftValue] | undefined;
           if (typeof args.answer === 'string') {
             const state = run.outputs.get(args.answer);
-            if (!state?.value) return { ...base, delivery: { status: 'unavailable', answer: args.answer, error: state?.error ?? 'Answer binding is undefined or unsuccessful' } };
+            if (!state?.value || state.internal) return { ...base, delivery: { status: 'unavailable', answer: args.answer, error: state?.error ?? 'Answer binding is undefined or unsuccessful' } };
             selected = [args.answer, state.value];
           } else if (candidates.length === 1) {
             const state = run.outputs.get(candidates[0]);
-            if (!state?.value) return { ...base, delivery: { status: 'unavailable', answer: candidates[0], error: state?.error ?? 'Answer is unsuccessful' } };
+            if (!state?.value || state.internal) return { ...base, delivery: { status: 'unavailable', answer: candidates[0], error: state?.error ?? 'Answer is unsuccessful' } };
             selected = [candidates[0], state.value];
           }
           else if (candidates.length > 1) return { ...base, delivery: { status: 'selection_required', candidates: candidates.slice(0, 20) } };
@@ -220,8 +245,24 @@ export function createDraftTools(options: {
       },
     },
     {
+      name:'renew_context',
+      description:'Reset the acquisition batch of one .work/*.dari source in the current session. Does not execute the draft or query the database. The next run captures a new context and query results; deterministic query plans remain reusable. Existing outputs become unavailable until the next run.',
+      parameters:{type:'object',properties:{src:{type:'string'}},required:['src'],additionalProperties:false},
+      output,
+      async execute(args:{src?:unknown},exec:ToolExec){
+        assertKeys(args,['src']);
+        if(typeof args.src!=='string'||!args.src.endsWith('.dari'))throw new Error('src must be a .work/*.dari report path');
+        const entry=options.knowledge.ensureWorkspace(exec);
+        const read=readWorkText(entry.root,args.src,'renew_context');
+        const record=recordFor(entry,exec,read.file,true);
+        if(record.active)throw new Error('This draft is already running; wait for it to finish');
+        const batch=record.runtime.renew();record.touched=Date.now();
+        return {ok:true,src:read.file,batch,status:'renewed'};
+      },
+    },
+    {
       name: 'oks_data',
-      description: 'Read existing output only: input=".work/draft.md#binding", #debug for the debug index, or #debug/1 for one output. Also reads existing artifact data. Does not execute, refresh, transform or save. Query outputs contain {rows,columns}; pointer="/columns" reads model-declared {name,type,nullable}. Optional JSON Pointer selects an existing subtree; offset/limit page arrays or object members. Edits mark retained output stale; failed/removed latest bindings never fall back to older success. Read oks://help/... resources with oks_knowledge.',
+      description: 'Read existing output only: input=".work/draft.dari#binding", #debug for the debug index, or #debug/1 for one output. Also reads existing artifact data. Does not execute, refresh, transform or save. query plans contain {columns}; exec_query outputs contain {rows,columns,truncated}; pointer="/columns" reads model-declared {name,type,nullable}. Optional JSON Pointer selects an existing subtree; offset/limit page arrays or object members. Edits mark retained output stale; failed/removed latest bindings never fall back to older success. Read oks://help/... resources with oks_knowledge.',
       parameters: { type: 'object', properties: { input: { type: 'string' }, pointer: { type: 'string' }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 100 }, meta: { type: 'boolean' } }, required: ['input'], additionalProperties: false },
       output,
       async execute(args: { input?: unknown; pointer?: unknown; offset?: unknown; limit?: unknown; meta?: unknown }, exec: ToolExec) {
@@ -229,14 +270,15 @@ export function createDraftTools(options: {
         if (typeof args.input !== 'string') throw new Error('input must be one existing output or artifact reference');
         if (args.meta !== undefined && typeof args.meta !== 'boolean') throw new Error('meta must be boolean');
         const entry = options.knowledge.ensureWorkspace(exec);
-        const match = /^(\.work\/.+\.md)#([^#]+)$/.exec(args.input);
+        const match = /^(\.work\/.+\.dari)#([^#]+)$/.exec(args.input);
         if (match) {
           const read = readWorkText(entry.root, match[1], 'oks_data');
           const record = recordFor(entry, exec, read.file, false);
-          if (match[2] === 'debug') {
+          if (match[2] === 'debug' || match[2] === 'failures') {
             const described = record.runtime.describe(read.text);
-            const data = described.outputs.filter(output => output.name.startsWith('debug/')).map(output => ({ ...output, input: `${read.file}#${output.name}` }));
-            return { ok: true, ...described, outputs: undefined, ...readRange(data, args) };
+            const data = described.outputs.filter(output => match[2]==='failures' ? output.status==='failed'||output.status==='blocked' : output.name.startsWith('debug/')).map(output => ({ ...output, ...(match[2]==='debug'?{input: `${read.file}#${output.name}`}:{}) }));
+            const {outputs:_outputs,...summary}=described;
+            return { ok: true, ...summary, ...readRange(data, args) };
           }
           const readValue = record.runtime.read(match[2], read.text);
           const data = args.meta ? { sources: readValue.value.sources.map(({origin, at, path}) => ({origin, at, path})), run: readValue.run, sourceHash: readValue.sourceHash } : readValue.value.data;

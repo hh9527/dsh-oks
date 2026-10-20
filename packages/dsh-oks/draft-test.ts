@@ -31,6 +31,8 @@ for (const [source, pattern] of [
   ['let query = data(1);', /Reserved binding/],
   ['let a = unknown();', /Unknown operator/],
   ['let a = query();', /argument count/],
+  ['let a = exec_query();', /argument count/],
+  ['let a = exec_query({},{});', /argument count/],
   ['let a = jq("../peek.jq", {});', /single-file/],
   ['let a = jq("a.xhtml", {});', /single-file/],
   ['let p = data("a.jq"); let a = jq(p, {});', /literal/],
@@ -67,7 +69,7 @@ try {
 }
 console.log('draft pipeline: dependency, source mapping and rejected-language checks passed');
 
-const { parseDraft } = await import('./src/draft/document.ts');
+const { parseMarkdownFixture: parseDraft } = await import('./test-markdown.ts');
 const draft = [
   '# Analysis', '',
   '```md', '## pipeline', '```', '',

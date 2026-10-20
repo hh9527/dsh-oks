@@ -6,7 +6,7 @@
 //!   - 其余能力一律**不组装**——于是它们在语义上不存在，而不是"被拦住"。
 //!
 //! C ABI：`alloc` / `dealloc` / `run` / `check_program` / `load_document` / `run_document`。
-//! `run` 的返回缓冲：`[status u8][len u32 LE][payload]`，status 0 = 单值 JSON，1 = 错误文本，2 = 超限值的形状 JSON。
+//! `run` 的返回缓冲：`[status u8][len u32 LE][payload]`，status 0 = 单值 JSON，1 = 错误文本，2 = 超限值的形状 JSON，3 = 结构化编译诊断 JSON。
 
 mod diagnostic;
 mod format;
@@ -44,6 +44,41 @@ fn render(reports: Vec<FileReports<String>>) -> String {
     out.trim_end().to_string()
 }
 
+// Relative UTF-8 ranges cross the ABI before any human formatting loses them.
+struct CompileFailure { message: String, diagnostics: Vec<String> }
+fn json_text(text: &str) -> String { Val::from(text.to_string()).to_string() }
+fn diagnostic_json(path: &str, stage: &str, message: &str, range: core::ops::Range<usize>, related: Vec<core::ops::Range<usize>>) -> String {
+    let related = related.into_iter().map(|r| format!("{{\"start\":{},\"end\":{}}}",r.start,r.end)).collect::<Vec<_>>().join(",");
+    format!("{{\"path\":{},\"stage\":{},\"message\":{},\"start\":{},\"end\":{},\"related\":[{}]}}",json_text(path),json_text(stage),json_text(&diagnostic::runtime_error(message.to_string())),range.start,range.end,related)
+}
+fn load_failure(errs: jaq_core::load::Errors<&str,String>) -> CompileFailure {
+    use jaq_core::load::{Error, lex::Expect, span};
+    let mut diagnostics=Vec::new();
+    for (file,error) in &errs {
+        match error {
+            Error::Lex(errors) => for (expected,found) in errors {
+                let token=&found[..found.char_indices().nth(1).map_or(found.len(), |(i,_)|i)];
+                let related=match expected { Expect::Delim(open)=>vec![span(file.code,open)], _=>vec![] };
+                diagnostics.push(diagnostic_json(&file.path,"lex",&format!("expected {}",expected.as_str()),span(file.code,token),related));
+            },
+            Error::Parse(errors) => for (expected,found) in errors {
+                diagnostics.push(diagnostic_json(&file.path,"parse",&format!("expected {}",expected.as_str()),span(file.code,found),vec![]));
+            },
+            Error::Io(errors) => for (found,message) in errors {
+                diagnostics.push(diagnostic_json(&file.path,"load",message,span(file.code,found),vec![]));
+            },
+        }
+    }
+    diagnostics.truncate(16);
+    CompileFailure {message:render(load_errors(errs)),diagnostics}
+}
+fn compile_failure(errs: jaq_core::compile::Errors<&str,String>) -> CompileFailure {
+    let diagnostics=errs.iter().flat_map(|(file,errors)|errors.iter().map(|(found,undefined)|
+        diagnostic_json(&file.path,"compile",&format!("undefined {}",undefined.as_str()),jaq_core::load::span(file.code,found),vec![])
+    )).take(16).collect();
+    CompileFailure{message:render(compile_errors(errs)),diagnostics}
+}
+
 /// 跑一次：解析输入 → 取得或编译程序（`include` / `import` 在装载时被拒）→ 求值。
 ///
 /// 程序必须恰好输出一个 JSON 值；返回完整 JSON 或超限值的形状摘要。
@@ -56,6 +91,9 @@ fn evaluate(program: &str, path: &str, input: &str, max_bytes: usize) -> Result<
 /// The successful compiler product owns its graph; no arena or source lifetime escapes.
 /// Cache identity excludes the diagnostic path so moving/renaming an asset can reuse it.
 fn compiled(program: &str, path: &str) -> Result<(Rc<Compiled>, bool), String> {
+    compiled_checked(program,path).map_err(|error|error.message)
+}
+fn compiled_checked(program: &str, path: &str) -> Result<(Rc<Compiled>, bool), CompileFailure> {
     if let Some(filter) = PROGRAMS.with(|programs| {
         let mut programs = programs.borrow_mut();
         let index = programs.iter().position(|(source, _)| source == program)?;
@@ -81,7 +119,7 @@ fn compiled(program: &str, path: &str) -> Result<(Rc<Compiled>, bool), String> {
     Ok((filter, false))
 }
 
-fn compile_program(program: &str, path: &str) -> Result<Compiled, String> {
+fn compile_program(program: &str, path: &str) -> Result<Compiled, CompileFailure> {
     let defs = jaq_core::defs()
         .chain(jaq_std::defs())
         .chain(jaq_json::defs());
@@ -102,7 +140,7 @@ fn compile_program(program: &str, path: &str) -> Result<Compiled, String> {
     let loader: Loader<&str, String, _> = Loader::new(defs);
     let modules = loader
         .load(&arena, File { code: program, path: path.clone() })
-        .map_err(|errs| render(load_errors(errs)))?;
+        .map_err(load_failure)?;
     // 这一步就是"没有文件系统"的落点：模块与数据文件都在这里被拒。少了它，未解析的导入变量
     // 会留到运行时，一用就 panic（wasm 里是 trap，实例报废）。
     import(&modules, |Import { path, .. }| {
@@ -110,11 +148,11 @@ fn compile_program(program: &str, path: &str) -> Result<Compiled, String> {
             "这条求值路上没有文件系统：模块与数据文件（`{path}`）都进不来。\n             要用外面的值，先用工具把它落成材料，再当输入传给程序。"
         ))
     })
-        .map_err(|errs| render(load_errors(errs)))?;
+        .map_err(load_failure)?;
     jaq_core::Compiler::default()
         .with_funs(funs)
         .compile(modules)
-        .map_err(|errs| render(compile_errors(errs)))
+        .map_err(compile_failure)
 }
 
 fn evaluate_value(program: &str, path: &str, input: Val, max_bytes: usize) -> Result<(String, bool), String> {
@@ -198,9 +236,9 @@ pub extern "C" fn check_program(
 ) -> *mut u8 {
     let program = unsafe { core::slice::from_raw_parts(program_ptr, program_len) };
     let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len) };
-    match compiled(&String::from_utf8_lossy(program), &String::from_utf8_lossy(path)) {
+    match compiled_checked(&String::from_utf8_lossy(program), &String::from_utf8_lossy(path)) {
         Ok((_, cached)) => reply(0, format!("{{\"cached\":{cached}}}")),
-        Err(error) => reply(1, error),
+        Err(error) => reply(3, format!("{{\"message\":{},\"diagnostics\":[{}]}}",json_text(&diagnostic::runtime_error(error.message)),error.diagnostics.join(","))),
     }
 }
 

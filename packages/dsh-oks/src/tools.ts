@@ -181,7 +181,7 @@ export function createTools({ knowledge, va, timeContext, log }: {
     },
     {
       name: 'work_read',
-      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. Read a UTF-8 text file under ${WORK_DIR}/ and return line-numbered content — the same shape as the usual read tool (file_path / offset / limit), except that only ${WORK_DIR}/ is reachable: that is enforced, not requested. ${WORK_DIR}/ holds Markdown answer drafts, standalone knowledge jq programs and scratch files. Pass ".work/" as file_path to list what is in ${WORK_DIR}/ instead, so a fresh session can see what it left behind.`,
+      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. Read a UTF-8 text file under ${WORK_DIR}/ and return line-numbered content — the same shape as the usual read tool (file_path / offset / limit), except that only ${WORK_DIR}/ is reachable: that is enforced, not requested. ${WORK_DIR}/ holds DARI answer drafts, standalone knowledge jq programs and scratch files. Pass ".work/" as file_path to list what is in ${WORK_DIR}/ instead, so a fresh session can see what it left behind.`,
       parameters: {
         type: 'object',
         properties: {
@@ -208,7 +208,7 @@ export function createTools({ knowledge, va, timeContext, log }: {
     },
     {
       name: 'work_write',
-      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. Write a UTF-8 text file under ${WORK_DIR}/, creating or overwriting it — the same shape as the usual write tool (file_path / content), except that only ${WORK_DIR}/ is reachable. Write a Markdown draft here, then execute it with oks_run_answer. Its pipeline defines query, data, jq and rendering; named jq/XHTML assets live in the same document. Standalone .jq files support oks_knowledge discovery. Edit files later without resending the whole content. Parent directories are created.`,
+      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. Write a UTF-8 text file under ${WORK_DIR}/, creating or overwriting it — the same shape as the usual write tool (file_path / content), except that only ${WORK_DIR}/ is reachable. Write a DARI draft here, then execute it with oks_run_answer. Its pipeline defines query, data, jq and rendering; named jq/XHTML assets live in the same document. Standalone .jq files support oks_knowledge discovery. Edit files later without resending the whole content. Parent directories are created.`,
       parameters: {
         type: 'object',
         properties: {
@@ -251,7 +251,7 @@ export function createTools({ knowledge, va, timeContext, log }: {
     },
     {
       name: 'work_list',
-      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. List the files in ${WORK_DIR}/ — name, size and when each was last written. The work area holds Markdown answer drafts, standalone knowledge jq programs and scratch files. Use it when a name is in doubt, or before deleting something.`,
+      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. List the files in ${WORK_DIR}/ — name, size and when each was last written. The work area holds DARI answer drafts, standalone knowledge jq programs and scratch files. Use it when a name is in doubt, or before deleting something.`,
       parameters: { type: 'object', properties: {}, additionalProperties: false },
       output: { schema: OBJECT_OUTPUT, render: renderValue },
       async execute(_args: unknown, exec: ToolExec) {

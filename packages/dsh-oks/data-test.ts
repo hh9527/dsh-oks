@@ -1,3 +1,4 @@
+import { asDari } from './test-markdown.ts';
 // Public readonly/work boundary plus the real draft backend and self-contained archive codec.
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -39,8 +40,8 @@ const drafts=createDraftTools({knowledge,timeContext,
   readResource(){throw new Error('persistent reads are tested through public oks_data');},
 });
 const draftCall=(name:string,args:unknown)=>drafts.tools.find(tool=>tool.name===name)!.execute(args as never,exec) as Promise<any>;
-const file='.work/report.md';
-const write=(content:string)=>call('work_write',{file_path:file,content});
+const file='.work/report.dari';
+const write=(content:string)=>call('work_write',{file_path:file,content:asDari(content)});
 const payload={rowCount:1,rows:[{name:'A',count:7}]};
 const source=(binding:string,body:string,extra='')=>[
   '# 负荷视图','## pipeline','```js',
@@ -50,7 +51,7 @@ const source=(binding:string,body:string,extra='')=>[
 ].join('\n');
 try {
   mkdirSync(join(root,'.work'));
-  assert.deepEqual(tools.map(tool=>tool.name).sort(),['oks_artifacts','oks_data','oks_knowledge','oks_run_answer','va_ask','work_delete','work_edit','work_list','work_read','work_write'].sort());
+  assert.deepEqual(tools.map(tool=>tool.name).sort(),['oks_artifacts','oks_data','oks_knowledge','oks_run_answer','renew_context','va_ask','work_delete','work_edit','work_list','work_read','work_write'].sort());
   await assert.rejects(call('oks_data',{load:{knowledge:'knowledge://'}}),/Expected only/);
   await assert.rejects(call('oks_data',{input:'.work/report.md#fact',save:{name:'escape'}}),/Expected only/);
   await assert.rejects(call('oks_knowledge',{jq:{src:'.work/missing.jq'}}),/读不到/);

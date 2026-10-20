@@ -32,6 +32,7 @@ export interface AssembleInput {
   category: string;
   at: string;
   xhtml: string;
+  figurePlacement?: 'before-caption';
   bindings: Record<string, ReportBinding>;
   /** 取一个 span 的值：超范围的形状（对象、数组）在这里明确报错，不留给渲染层。 */
   valueOf: (ref: string, pick: string | undefined) => { value: string } | { error: string };
@@ -112,6 +113,7 @@ export function assembleReport(input: AssembleInput): AssembleResult {
   }
   const rendered = renderStructure({
     xhtml: input.xhtml,
+    figurePlacement: input.figurePlacement,
     outline,
     valueOf: (ref, pick) => values.get(`${ref}\u0000${pick ?? ''}`) ?? '',
     inlineOf: (ref) => {
@@ -133,7 +135,7 @@ export function assembleReport(input: AssembleInput): AssembleResult {
     keys.map((key) => input.bindings[key]!.origin),
     {
       kind: 'report',
-      spec: { xhtml: input.xhtml },
+      spec: { xhtml: input.xhtml, ...(input.figurePlacement?{figurePlacement:input.figurePlacement}:{}) },
       ...(input.draft ? { draft: input.draft } : {}),
       ...(input.motivation ? { motivation: input.motivation } : {}),
       inputs: Object.fromEntries(keys.map((key) => [key, input.bindings[key]!.origin.root])),

@@ -1,3 +1,4 @@
+import { asDari } from './test-markdown.ts';
 // Retained visual regression assertions now execute Markdown render_figure pipelines.
 import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
@@ -29,14 +30,14 @@ let passed=0;
 const ok=(label:string,condition:unknown)=>{assert.ok(condition,label);passed++;};
 // This is a test fixture writer, not an adapter for the removed write tools.
 const chart=async({spec,data,nodes}:any)=>{
- const file='.work/chart.md';
+ const file='.work/chart.dari';
  const source=['# 图表回归','## pipeline','```js',
   `let rows=data(${JSON.stringify(data)},{kind:"example"});`,
   ...(nodes?[`let nodes=data(${JSON.stringify(nodes)},{kind:"example"});`]:[]),
   `let figure=render_figure(${JSON.stringify(spec)},{data:rows${nodes?',nodes':''}});`,
   'let answer=render_html("answer.xhtml",{figure});','```','## assets',
   '```xhtml name="answer.xhtml"','<article><figure data-oks-ref="figure" /></article>','```'].join('\n');
- writeFileSync(join(DEV_ROOT,file),source);
+ writeFileSync(join(DEV_ROOT,file),asDari(source));
  const result=await call('oks_run_answer',{src:file});
  if(result.delivery.status!=='ready')throw new Error(JSON.stringify(result));
  const match=/\]\(([^)]+\.svg)\)/.exec(result.reply);
@@ -616,7 +617,7 @@ try {
   const graphRoot=graphInput.origin.nodes[graphInput.origin.root];
   assert.deepEqual(Object.keys(graphRoot.inputs!).sort(),['data','nodes']);
   for(const parent of Object.values(graphRoot.inputs!))assert.ok(graphInput.origin.nodes[parent]);
-  const archived=await call('oks_run_answer',{src:'.work/chart.md',delivery:'artifact'});
+  const archived=await call('oks_run_answer',{src:'.work/chart.dari',delivery:'artifact'});
   assert.equal(archived.delivery.status,'ready');
   const graphReport=readReportPage(readFileSync(resolve(DEV_ROOT,archived.delivery.asset),'utf8'));
   assert.ok(!('error' in graphReport));

@@ -1,3 +1,4 @@
+import { asDari } from './test-markdown.ts';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -31,10 +32,14 @@ const drafts=createDraftTools({knowledge,timeContext,
   readResource(){return {value:{saved:true}};},
   backend:(entry,file,contextZone)=>createDraftBackend({knowledge,entry,file,contextZone,jq}),
 });
-const call=(name:string,args:unknown,exec=caller)=>(drafts.tools.find(tool=>tool.name===name)!.execute as unknown as (args:unknown,exec:ToolExec)=>Promise<any>)(args,exec);
-const file='.work/draft.md';
-const source=['# Answer title','## pipeline','```js','let facts=query({limit:5});','let total=jq("total.jq",{facts});','debug(total);','let answer=render_html("answer.xhtml",{total});','```','## assets','```jq name="total.jq"','.facts.rows[0].n','```','```xhtml name="answer.xhtml"','<article><p>Total: <span data-oks-ref="total" /></p></article>','```'].join('\n');
-const write=(value:string)=>writeFileSync(join(root,file),value);
+const call=async(name:string,args:unknown,exec=caller)=>{
+  const value=await (drafts.tools.find(tool=>tool.name===name)!.execute as unknown as (args:unknown,exec:ToolExec)=>Promise<any>)(args,exec);
+  assert.deepEqual(value,JSON.parse(JSON.stringify(value)),`${name} output must be lossless JSON before rendering`);
+  return value;
+};
+const file='.work/draft.dari';
+const source=['# Answer title','## pipeline','```js','let facts=exec_query(query({limit:5}));','let total=jq("total.jq",{facts});','debug(total);','let answer=render_html("answer.xhtml",{total});','```','## assets','```jq name="total.jq"','.facts.rows[0].n','```','```xhtml name="answer.xhtml"','<article><p>Total: <span data-oks-ref="total" /></p></article>','```'].join('\n');
+const write=(value:string)=>writeFileSync(join(root,file),asDari(value));
 try {
   const helpIndex = await call('oks_knowledge', {help:'oks://help/query'});
   assert.ok(helpIndex.data.topics.includes('graph/filter'));
@@ -44,6 +49,8 @@ try {
   assert.ok(Buffer.byteLength(JSON.stringify(filterHelp)) < 16384);
   await assert.rejects(call('oks_knowledge', {help:'oks://help/query',topic:'toString'}), /Unknown help topic/);
   await assert.rejects(call('oks_knowledge', {project:{},topic:'graph'}), /topic requires help/);
+  write('<Dari><Pipeline></Pipeline><Template name="empty"><article><p>静态正文</p></article></Template></Dari>');
+  assert.equal((await call('oks_run_answer',{src:file})).delivery.status,'ready');
   write(source);
   let result=await call('oks_run_answer',{src:file});
   assert.equal(result.delivery.status,'ready');assert.equal(result.delivery.mode,'reply');assert.match(result.reply,/Total: 7/);assert.equal(writes,0);assert.equal(queries,1);
@@ -58,6 +65,7 @@ try {
   assert.equal((await call('oks_data',{input:file+'#debug/1'})).data,7);
   await assert.rejects(call('oks_data',{input:file+'#total'},other),/No retained run/);
   await assert.rejects(call('oks_data',{input:file+'#total',save:{name:'escape'}}),/Expected only/);
+  await call('oks_data',{input:file+'#total',meta:true});
   write(source+'\n');assert.equal((await call('oks_data',{input:file+'#total'})).stale,true);assert.equal(queries,1);
   write(source);
   result=await call('oks_run_answer',{src:file,delivery:'artifact'});assert.equal(result.delivery.status,'ready');assert.equal(writes,1);assert.equal(queries,1);
@@ -69,6 +77,11 @@ try {
   write(source.replace('.facts.rows[0].n','error("bad")'));
   result=await call('oks_run_answer',{src:file});assert.equal(result.counts.failed,1);assert.equal(result.delivery.status,'unavailable');
   await assert.rejects(call('oks_data',{input:file+'#total'}),/failed/);
+  assert.equal(result.failures[0].name,'total');
+  assert.equal(result.failures[0].asset,'total.jq');
+  assert.match(result.failures[0].error,/bad/);
+  assert.ok(result.failures[0].at.line>0);
+  assert.equal((await call('oks_data',{input:file+'#failures'})).data[0].context.asset,'total.jq');
   write(source.replace('debug(total);', 'debug(jq("failure.jq",{}));')+'\n```jq name="failure.jq"\nerror("independent")\n```');
   result=await call('oks_run_answer',{src:file});assert.equal(result.computation,'partial');assert.equal(result.delivery.status,'ready');
   write(source.replace('let total=','const total='));
@@ -89,5 +102,71 @@ try {
   assert.equal(wide.columns.length,12);assert.equal(wide.omittedColumns,18);
   assert.deepEqual((await call('oks_data',{input:file+'#wide',pointer:'/columns'})).data,wideColumns);
   assert.ok(Buffer.byteLength(blocks({},result)[0].text)<16384);
+  await assert.rejects(call('oks_run_answer',{src:'.work/old.md'}),/migrate Markdown explicitly/);
+  const multi=`<Dari><Pipeline>let facts=data([{x:"A",n:2}]); let spec={x:"x",value:"n"};</Pipeline>
+<Template name="first"><article><figure><ColumnChart spec={spec} data={facts} /></figure></article></Template>
+<Template name="second"><article><Value data={facts[0].n} /></article></Template></Dari>`;
+  write(multi);
+  result=await call('oks_run_answer',{src:file});assert.equal(result.delivery.status,'selection_required');
+  assert.ok(result.outputs.every((out:any)=>!out.name.startsWith('@')));assert.equal(result.omittedOutputs,0);
+  result=await call('oks_run_answer',{src:file,answer:'second'});assert.equal(result.delivery.status,'ready');assert.match(result.reply,/2/);
+  await assert.rejects(call('oks_data',{input:file+'#@figure/1'}),/internal|not defined/i);
+  result=await call('oks_run_answer',{src:file,answer:'@figure/1'});assert.equal(result.delivery.status,'unavailable');
+  write(multi.replace('data={facts} />','data={facts[0]} />'));
+  result=await call('oks_run_answer',{src:file,answer:'first'});assert.equal(result.delivery.status,'unavailable');assert.ok(result.counts.failed>0);
+  const manyBindings=Array.from({length:60},(_,i)=>`let item${i}=data({${Array.from({length:30},(_,j)=>`key${j}: ${j}`).join(',')}});`).join('\n');
+  const failureReport=`<Dari><Pipeline>${manyBindings}
+let rows=data([{name:"A",count:1}]);
+let tableSpec=data({columns:["name","占比(%)"]});
+</Pipeline><Template name="report"><article><figure id="tbl-dominant"><Table spec={tableSpec} data={rows} /></figure></article></Template></Dari>`;
+  write(failureReport);
+  result=await call('oks_run_answer',{src:file});
+  assert.equal(result.computation,'partial',JSON.stringify(result));
+  assert.equal(result.failures[0].status,'failed');
+  assert.equal(result.failures[0].component,'Table');
+  assert.equal(result.failures[0].figureId,'tbl-dominant');
+  assert.equal(result.failures[0].template,'report');
+  assert.equal(result.failures[0].name,'report#tbl-dominant（Table）');
+  assert.match(result.failures.find((f:any)=>f.status==='blocked').error,/report#tbl-dominant（Table）/);
+  assert.ok(!JSON.stringify(result.failures).includes('@figure/'));
+  assert.ok(result.failures[0].bindings.includes('rows'));
+  assert.match(result.failures[0].error,/占比/);
+  assert.ok(result.omittedOutputs>0);
+  assert.ok(Buffer.byteLength(JSON.stringify(result))<7500);
+  const allFailures=await call('oks_data',{input:file+'#failures',offset:0,limit:1});
+  assert.equal(allFailures.data[0].context.component,'Table');
+  assert.equal(allFailures.data[0].figureId,'tbl-dominant');
+  assert.ok(allFailures.range.total>=2);
+  write(failureReport.replace(' id="tbl-dominant"',''));
+  result=await call('oks_run_answer',{src:file});
+  assert.match(result.failures[0].name,/^report:\d+:\d+（Table）$/);
+  assert.equal(result.failures[0].figureId,undefined);
+  const beforePlan=queries;
+  write('<Dari><Pipeline>let plan=query({limit:5}); debug(plan.columns);</Pipeline></Dari>');
+  result=await call('oks_run_answer',{src:file});
+  assert.equal(queries,beforePlan);
+  assert.deepEqual(result.outputs.find((item:any)=>item.name==='plan').columns,[{name:'n',type:'Int',nullable:true}]);
+  assert.equal(result.acquisitions.length,0);
+  assert.deepEqual((await call('oks_data',{input:file+'#plan'})).data,{columns:[{name:'n',type:'Int',nullable:true}]});
+  write(source);
+  result=await call('oks_run_answer',{src:file});
+  const originalBatch=result.batch, beforeRenew=queries;
+  const otherRun=await call('oks_run_answer',{src:file},other);
+  writeFileSync(join(root,'.work/other.dari'),asDari(source));
+  const anotherFile=await call('oks_run_answer',{src:'.work/other.dari'});
+  const countBeforeRenew=queries;
+  const renewed=await call('renew_context',{src:file});
+  assert.equal(queries,countBeforeRenew,'renew does not execute');
+  assert.equal((await call('oks_run_answer',{src:'.work/other.dari'})).batch,anotherFile.batch);
+  assert.equal(queries,countBeforeRenew,'other sources remain captured');
+  assert.notEqual(renewed.batch,originalBatch);assert.equal(queries,beforeRenew+2);
+  await assert.rejects(call('oks_data',{input:file+'#total'}),/No retained/);
+  assert.equal((await call('oks_run_answer',{src:file},other)).batch,otherRun.batch);
+  assert.equal(queries,beforeRenew+2,'renew is session scoped');
+  result=await call('oks_run_answer',{src:file});
+  assert.equal(result.batch,renewed.batch);assert.equal(queries,beforeRenew+3);
+  assert.equal(result.acquisitions[0].operator,'exec_query');
+  assert.equal((await call('oks_run_answer',{src:file})).batch,renewed.batch);
+  assert.equal(queries,beforeRenew+3);
   console.log('draft tools: readonly pagination, session isolation, delivery, debug and failed/removed-output lifecycle passed');
 } finally {drafts.dispose();jq.dispose();rmSync(root,{recursive:true,force:true});}
