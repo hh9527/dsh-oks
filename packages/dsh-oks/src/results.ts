@@ -59,6 +59,19 @@ export const kindOfFile = (fileKind: string): ArtifactKind | undefined => {
   return (CHART_KINDS as readonly string[]).includes(fileKind) ? 'chart' : undefined;
 };
 
+/** 模型声明的结果列：逻辑类型和可空性来自静态投影，与实际返回行无关。 */
+export const RESULT_TYPES = ['Int', 'Float', 'Bool', 'String', 'DatetimeUtc', 'EpochMillis', 'LocalDateTime'] as const;
+export interface ResultColumn {
+  name: string;
+  type: typeof RESULT_TYPES[number];
+  nullable: boolean;
+}
+export function isResultColumn(value: unknown): value is ResultColumn {
+  return isRecord(value) && typeof value.name === 'string' && value.name.trim() !== ''
+    && typeof value.type === 'string' && (RESULT_TYPES as readonly string[]).includes(value.type)
+    && typeof value.nullable === 'boolean';
+}
+
 /** 一列的观察结果：列名取自 SQL 元数据，类型按返回值观察。 */
 export interface ColumnInfo {
   name: string;
@@ -1130,9 +1143,9 @@ export function rowsOf(data: unknown, asset: unknown): Array<Record<string, unkn
     if (!Array.isArray(data.columns)) throw new Error('data.columns 需要列声明数组。');
     for (const [index, column] of data.columns.entries()) {
       if (!isRecord(column) || typeof column.name !== 'string' || column.name.trim() === ''
-          || !Array.isArray(column.types) || !column.types.every((type: unknown) => typeof type === 'string')
+          || (!isResultColumn(column) && (!Array.isArray(column.types) || !column.types.every((type: unknown) => typeof type === 'string')))
           || typeof column.nullable !== 'boolean') {
-        throw new Error(`data.columns[${index}] 列声明无效：需要 {"name":"count","types":["number"],"nullable":false} 形式的对象；行对象数组或仅带 rows 的对象也可直接用于表格与图表。`);
+        throw new Error(`data.columns[${index}] 列声明无效：需要 {"name":"count","type":"Int","nullable":false} 或带 types 数组的列对象；行对象数组或仅带 rows 的对象也可直接用于表格与图表。`);
       }
     }
   }

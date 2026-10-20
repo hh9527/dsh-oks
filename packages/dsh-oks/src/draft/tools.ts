@@ -9,7 +9,7 @@ import type { Knowledge, WorkspaceEntry } from '../knowledge.ts';
 import type { TimeContext } from '../time-context.ts';
 import type { ContextTimeZone } from '../time.ts';
 import { builtinCode, toolResource } from '../knowledge-programs.ts';
-import { embedChartInput, readCodeFile, readWorkText } from '../results.ts';
+import { embedChartInput, isResultColumn, readCodeFile, readWorkText } from '../results.ts';
 import type { SaveArtifactOptions } from '../results.ts';
 import { createDraftBackend } from './backend.ts';
 import { chartTitle, type ChartSpec } from '../chart/spec.ts';
@@ -122,7 +122,20 @@ export function createDraftTools(options: {
       const item: Record<string, unknown> = { name, status: state.status, at: { line: state.span.start.line, column: state.span.start.column }, input: `${file}#${name}` };
       if (state.value) {
         item.shape = shapeOf(state.value.data);
-        if (isRecord(state.value.data) && Array.isArray(state.value.data.rows)) item.rowCount = state.value.data.rows.length;
+        if (isRecord(state.value.data) && Array.isArray(state.value.data.rows)) {
+          item.rowCount = state.value.data.rows.length;
+          if (typeof state.value.data.truncated === 'boolean') item.truncated = state.value.data.truncated;
+        }
+        if (isRecord(state.value.data) && Array.isArray(state.value.data.rows)
+            && Array.isArray(state.value.data.columns) && state.value.data.columns.every(isResultColumn)) {
+          const columns: unknown[] = [];
+          for (const column of state.value.data.columns.slice(0, 12)) {
+            if (jsonBytes([...columns, column]) > 1200) break;
+            columns.push(column);
+          }
+          item.columns = columns;
+          if (columns.length < state.value.data.columns.length) item.omittedColumns = state.value.data.columns.length - columns.length;
+        }
         if (name.startsWith('debug/') && jsonBytes(state.value.data) <= 512 && debugBytes < 1536) {
           item.data = state.value.data; debugBytes += jsonBytes(state.value.data);
         }
@@ -208,7 +221,7 @@ export function createDraftTools(options: {
     },
     {
       name: 'oks_data',
-      description: 'Read existing output only: input=".work/draft.md#binding", #debug for the debug index, or #debug/1 for one output. Also reads existing artifact data. Does not execute, refresh, transform or save. Optional JSON Pointer selects an existing subtree; offset/limit page arrays or object members. Edits mark retained output stale; failed/removed latest bindings never fall back to older success. Read oks://help/... resources with oks_knowledge.',
+      description: 'Read existing output only: input=".work/draft.md#binding", #debug for the debug index, or #debug/1 for one output. Also reads existing artifact data. Does not execute, refresh, transform or save. Query outputs contain {rows,columns}; pointer="/columns" reads model-declared {name,type,nullable}. Optional JSON Pointer selects an existing subtree; offset/limit page arrays or object members. Edits mark retained output stale; failed/removed latest bindings never fall back to older success. Read oks://help/... resources with oks_knowledge.',
       parameters: { type: 'object', properties: { input: { type: 'string' }, pointer: { type: 'string' }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 100 }, meta: { type: 'boolean' } }, required: ['input'], additionalProperties: false },
       output,
       async execute(args: { input?: unknown; pointer?: unknown; offset?: unknown; limit?: unknown; meta?: unknown }, exec: ToolExec) {
@@ -235,7 +248,7 @@ export function createDraftTools(options: {
     },
     {
       name: 'oks_knowledge',
-      description: 'Discover the semantic knowledge graph before authoring a business draft. Root shape is datasets/types/relations/items. Use project for a precise graph view, or jq with a .work .jq program or builtin://knowledge/{search,read,members,references}.jq and args. jq input is {knowledge:<graph>}. help reads oks://help/{knowledge,query,time} or a builtin descriptor; topic selects one exact help key. time_windows(ctx,{unit,count,mode}) in the draft computes calendar windows. Readonly; no business data, saves or draft computation.',
+      description: 'Discover the semantic knowledge graph before authoring a business draft. Root shape is datasets/types/relations/tools/items. Rendering knowledge: tools/render_figure#kinds/<kind> and #topics/<topic>; XHTML: tools/render_html#topics/references. Use project for a precise graph view, or jq with a .work .jq program or builtin://knowledge/{search,read,members,references}.jq and args. jq input is {knowledge:<graph>}. help reads oks://help/{knowledge,query,time,render} or a builtin descriptor; topic selects one exact help key. time_windows(ctx,{unit,count,mode}) in the draft computes calendar windows. Readonly; no business data, saves or draft computation.',
       parameters: { type: 'object', properties: { project: {}, jq: { type: 'object', properties: { src: { type: 'string' }, args: { type: 'object' } }, required: ['src'], additionalProperties: false }, help: { type: 'string' }, topic:{type:'string'} }, additionalProperties: false },
       output,
       async execute(args: { project?: unknown; jq?: unknown; help?: unknown; topic?: unknown }, exec: ToolExec) {

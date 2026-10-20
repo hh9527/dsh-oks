@@ -24,7 +24,7 @@
     "typecheck": "tsc --noEmit",
     "prepare": "pnpm run build",
     "pretest": "pnpm run build",
-    "test": "node draft-test.ts && node draft-runtime-test.ts && node draft-reply-test.ts && node project-test.ts && node feedback-test.ts && node payload-test.ts && node data-test.ts && node knowledge-test.ts && node jaq-test.ts lib/oks-wti.wasm && node draft-jaq-test.ts lib/oks-wti.wasm && node draft-backend-test.ts lib/oks-wti.wasm && node draft-tools-test.ts lib/oks-wti.wasm && node draft-chart-test.ts lib/oks-wti.wasm && node time-test.ts lib/oks-wti.wasm && node smoke.ts",
+    "test": "node draft-test.ts && node draft-runtime-test.ts && node draft-columns-test.ts && node draft-truncation-test.ts && node draft-reply-test.ts && node project-test.ts && node feedback-test.ts && node payload-test.ts && node data-test.ts && node knowledge-test.ts && node presentation-knowledge-test.ts lib/oks-wti.wasm && node jaq-test.ts lib/oks-wti.wasm && node draft-jaq-test.ts lib/oks-wti.wasm && node draft-backend-test.ts lib/oks-wti.wasm && node draft-tools-test.ts lib/oks-wti.wasm && node draft-chart-test.ts lib/oks-wti.wasm && node time-test.ts lib/oks-wti.wasm && node smoke.ts",
     "check": "pnpm run typecheck && pnpm run test"
   },
   "dsh": {

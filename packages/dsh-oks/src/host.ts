@@ -244,6 +244,8 @@ export interface DiagnosticEntry {
 export interface QueryPayload {
   sql?: unknown;
   bindings?: unknown;
+  columns?: unknown;
+  limit_slot?: unknown;
 }
 
 export interface DocumentPayload {

@@ -25,7 +25,7 @@ export interface QueryOutcome {
 }
 
 /** 只读查询执行器：接口是 { send(sql, bindings, signal, maxRows), dispose() }。
- *  maxRows 由调用方按该 Intent 的 limit 给出（缺省才回落到 queryMaxRows）。 */
+ *  maxRows 由调用方按读取预算给出（query 会为截断探测多读一行）（缺省才回落到 queryMaxRows）。 */
 export interface Executor {
   send(sql: string, bindings: unknown[], signal?: AbortSignal, maxRows?: number): Promise<QueryOutcome>;
   dispose(): void;

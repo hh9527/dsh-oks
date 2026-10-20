@@ -23,8 +23,8 @@ const runner=(contract:any=discovery,source=nodes)=>({send:async(method:string,i
 const entry=(contract:any=discovery,source=nodes)=>({settings:{domain:'test'},runner:runner(contract,source)}) as any;
 const index=await buildRetrievalIndex(entry(),'hash',()=>{});
 const graph=index.knowledge;
-assert.deepEqual(Object.keys(graph),['datasets','types','relations','items']);
-assert.equal(graph.items.length,nodes.length-1);
+assert.deepEqual(Object.keys(graph),['datasets','types','relations','tools','items']);
+assert.equal(graph.items.filter(item=>!item.key.startsWith('tools/')).length,nodes.length-1);
 assert.equal(index.sourceNodes.length,nodes.length);
 assert.equal(index.meta.format,'oks-knowledge-v2');
 assert.ok(Buffer.byteLength(JSON.stringify(index.meta))<1024);

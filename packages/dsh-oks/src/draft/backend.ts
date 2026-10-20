@@ -6,8 +6,8 @@ import type { Knowledge, WorkspaceEntry } from '../knowledge.ts';
 import type { JaqCheckOptions, JaqOptions, JaqOutcome } from '../jaq.ts';
 import { checkJaq, runJaq, JaqCompileError } from '../jaq.ts';
 import { limitProblem } from '../intent-limit.ts';
-import { appendNode, describeRows, originOf, rowsOf, resultStamp } from '../results.ts';
-import type { DataOrigin, OriginNode } from '../results.ts';
+import { appendNode, describeRows, isResultColumn, originOf, rowsOf, resultStamp } from '../results.ts';
+import type { DataOrigin, OriginNode, ResultColumn } from '../results.ts';
 import { timeWindowCode } from '../time-programs.ts';
 import { encode, resolveZone } from '../time.ts';
 import type { ContextTimeZone } from '../time.ts';
@@ -122,13 +122,14 @@ export function createDraftBackend(options: {
   const environment = (operator: Operator): unknown => operator === 'query' ? queryEnvironment()
     : operator === 'context' ? { clock: 1, zone: options.contextZone() }
     : { operator, version: 1 };
-  const lower = async (intent: unknown, signal?: AbortSignal): Promise<{ sql: string; bindings: unknown[] }> => {
+  type PreparedQuery = { sql: string; bindings: unknown[]; columns?: ResultColumn[]; limit_slot: number };
+  const lower = async (intent: unknown, signal?: AbortSignal): Promise<PreparedQuery> => {
     const problem = limitProblem(intent);
     if (problem) throw new Error(problem);
     const key = digest({ intent, environment: queryEnvironment() });
     const cached = checks.get(key);
     if (cached?.error) throw new Error(cached.error);
-    if (cached?.result) return cached.result as { sql: string; bindings: unknown[] };
+    if (cached?.result) return cached.result as PreparedQuery;
     const response = await entry.runner!.send(`${entry.settings.domain}/transform`, { intents: [intent] }, signal);
     if (signal?.aborted) throw new Error('aborted');
     const lowered = response.ok?.queries;
@@ -137,7 +138,19 @@ export function createDraftBackend(options: {
       if (response.ok?.accepted === false && Array.isArray(response.ok?.diagnostics)) checks.set(key, { error });
       throw new Error(error);
     }
-    const result = { sql: lowered[0].sql, bindings: lowered[0].bindings };
+    const limitSlot = lowered[0].limit_slot;
+    if (typeof limitSlot !== 'number' || !Number.isInteger(limitSlot) || limitSlot < 0
+        || limitSlot >= lowered[0].bindings.length || lowered[0].bindings[limitSlot] !== (intent as {limit:number}).limit) {
+      throw new Error('Invalid model limit_slot: expected the binding index of the requested top-level limit');
+    }
+    const rawColumns = lowered[0].columns;
+    if (rawColumns !== undefined && (!Array.isArray(rawColumns) || !rawColumns.every(isResultColumn)
+        || new Set(rawColumns.map(column => column.name)).size !== rawColumns.length)) {
+      throw new Error('Invalid model result columns: expected ordered {name,type,nullable} declarations');
+    }
+    const columns = rawColumns as ResultColumn[] | undefined;
+    const result: PreparedQuery = { sql: lowered[0].sql, bindings: lowered[0].bindings, limit_slot: limitSlot,
+      ...(columns ? { columns: columns.map(({name, type, nullable}) => ({name, type, nullable})) } : {}) };
     checks.set(key, { result });
     return result;
   };
@@ -240,9 +253,17 @@ export function createDraftBackend(options: {
       }
       const acquiredAt = new Date().toISOString();
       const { executor, manifest } = knowledge.executorFor(entry.settings);
-      const outcome = await executor.send(lowered.sql, lowered.bindings, ctx.signal, (intent as { limit: number }).limit);
-      if (outcome.truncated) throw new Error('Query exceeded its declared row limit; narrow the Intent before continuing');
-      const data = describeRows(outcome.columns, outcome.rows);
+      const limit = (intent as { limit: number }).limit;
+      const bindings = [...lowered.bindings];
+      bindings[lowered.limit_slot] = limit + 1;
+      const outcome = await executor.send(lowered.sql, bindings, ctx.signal, limit + 1);
+      const truncated = outcome.truncated || outcome.rows.length > limit;
+      if (lowered.columns && (lowered.columns.length !== outcome.columns.length
+          || lowered.columns.some((column, index) => column.name !== outcome.columns[index]))) {
+        throw new Error('Model result columns do not match SQL result column order');
+      }
+      const described = describeRows(outcome.columns, outcome.rows.slice(0, limit));
+      const data = { rows: described.rows, columns: lowered.columns ?? described.columns, truncated };
       return { data, evidence: { ...observed, acquiredAt, model: entry.modelHash, domain: entry.settings.domain, batch: ctx.batch, manifest } };
     }
     if (ctx.operator === 'time_windows') {

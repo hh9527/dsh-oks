@@ -6,6 +6,7 @@ export interface SemanticGraph {
   datasets: Record<string, Record<string, unknown>>;
   types: Record<string, Record<string, unknown>>;
   relations: Record<string, Record<string, unknown>>;
+  tools: Record<string, Record<string, unknown>>;
   items: KnowledgeItem[];
 }
 export const kindRoles: Record<string,string> = {Dataset:'datasets',Field:'fields',Dimension:'dimensions',Measure:'measures',Ty:'types',Value:'values',Relation:'relations',TimeRole:'time_roles',BusinessLink:'business_links'};
@@ -17,7 +18,7 @@ export function refPath(ref:string):string[] {
   if (halves.length>2 || halves.some(p=>p==='')) throw new Error(`Invalid knowledge address: ${ref}`);
   const root=halves[0].split('/');
   const member=halves[1]?.split('/') ?? [];
-  if (root.length!==2 || !['datasets','types','relations'].includes(root[0]) || (member.length!==0 && (member.length!==2 || !Object.values(kindRoles).includes(member[0])))) throw new Error(`Invalid knowledge address: ${ref}`);
+  if (root.length!==2 || !['datasets','types','relations','tools'].includes(root[0]) || (member.length!==0 && (member.length!==2 || ![...Object.values(kindRoles),'kinds','topics'].includes(member[0])))) throw new Error(`Invalid knowledge address: ${ref}`);
   return [...root,...member].map((s,i)=>{
     if (i%2===0) return s;
     const value=decodeURIComponent(s);
@@ -35,7 +36,7 @@ const own=(o:Record<string,unknown>,key:string,value:unknown) => Object.definePr
 const unique=(texts:unknown[])=>[...new Set(texts.filter((s):s is string=>typeof s==='string'&&s!==''))];
 
 export function buildSemanticGraph(nodes:KnowledgeNode[]):{graph:SemanticGraph;addresses:Map<string,string>} {
-  const graph:SemanticGraph={datasets:{},types:{},relations:{},items:[]};
+  const graph:SemanticGraph={datasets:{},types:{},relations:{},tools:{},items:[]};
   const addresses=new Map<string,string>();const facts=new Map<string,Record<string,unknown>>();const used=new Set<string>();
   for(const n of nodes) {
     if(n.type==='Index') continue;

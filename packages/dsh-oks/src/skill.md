@@ -6,7 +6,7 @@
 ## 准备知识
 
 - 用 `oks_knowledge({help:"oks://help/knowledge"})` 了解知识图。用户说法与领域词汇有差距时用 `va_ask`，随后搜索并读取事实核实。
-- 知识图为 `{datasets,types,relations,items}`。datasets 内有 fields/dimensions/measures/time_roles/business_links；types 内有 values 和分类引用。items 保存 `{key,names,doc}`。
+- 知识图为 `{datasets,types,relations,tools,items}`。datasets 内有 fields/dimensions/measures/time_roles/business_links；types 内有 values 和分类引用。items 保存 `{key,names,doc}`。
 - 搜索：`oks_knowledge({jq:{src:"builtin://knowledge/search.jq",args:{query:"候选词",take:10}}})`。返回的二元地址原样使用，例如 `datasets/<encoded-id>#dimensions/<encoded-id>`。
 - 读取：`oks_knowledge({jq:{src:"builtin://knowledge/read.jq",args:{key:"返回地址"}}})`，取得配对的事实和说明。成员导航用 members.jq 的 key/link，反向导航用 references.jq；用 next 作为 skip 分页。
 - 精确投影直接从知识图根开始，例如 `oks_knowledge({project:{types:{"原始类型ID":{values:"Value"}}}})`，只读取值域。地址中的 ID 为 URI 编码，字典键为原始 ID。
@@ -45,7 +45,7 @@ let summary = jq("summary.jq", {facts});
 
 - pipeline 支持不可变 let、debug、JSON 字面量/数组/对象、静态字段或下标，以及固定算子。变量先定义后引用，每条语句以分号结束。筛选、遍历、运算和聚合写在 jq。
 - 算子输入直接是绑定的 `.data` 负荷：`jq("a.jq", {facts})` 看到 `{facts:负荷}`；`facts.rows[0]` 选择数据，来源和路径自动携带。字段缺失或越界明确失败。
-- `query(Intent)` 自动校验并只读执行；顶层 limit 必填，范围 1..500。优先在 Intent 中完成总体聚合和排名。查询结果为 `{rows,columns}`，limit 是最终输出行数上限，不是总体规模或业务 Top-N。
+- `query(Intent)` 自动校验并只读执行；顶层 limit 必填，范围 1..500。优先在 Intent 中完成总体聚合和排名。查询结果为 `{rows,columns,truncated}`；truncated 为 true 表示还有未返回的行，当前 rows 只是一部分；columns 是模型声明的 `{name,type,nullable}`，空结果也保留类型。回执预览列声明；完整读取用 `oks_data({input:".work/draft.md#facts",pointer:"/columns"})`，稿内可用 `debug(facts.columns)`。limit 是最终输出行数上限，不是总体规模或业务 Top-N。
 - `data(value,{kind:"given"|"parameter"|"assumption"|"example"})` 记录给定材料的性质；第二参数默认 given。参数或假设要写清楚来源性质。
 - `jq("a.jq",{...})` 引用当前文档的具名 jq，恰好输出一个 JSON 值。进入 map 后用 `$in` 保留具名输入：`. as $in | ...`。空结果用 [] 或 null。
 - `debug(expr)` 查看中间值，可以嵌套 jq 或直接投影。小值进入回执，大值按返回引用只读查看。
@@ -70,6 +70,7 @@ complete 排除当前未完成期间；current 包含当前期间、末端可在
 
 ## 形成答案
 
+- 呈现知识从图中读取：`tools/render_figure#kinds/<kind>` 提供图元映射与示例；`tools/render_figure#topics/table_headers` 提供表头转换；`tools/render_html#topics/references` 提供 XHTML 绑定与路径。用 read.jq 读取；`oks_knowledge({help:"oks://help/render"})` 查看入口。
 - 纯探索稿不要求答案模板。形成结论后用 `render_figure(spec,{data:rows,nodes:可选节点表})` 生成图或表；表用 `{kind:"table",columns:[...]}`，图用领域无关的 x/value/series 列映射及 kind。
 - `let conclusion = render_html("answer.xhtml",{summary,chart});` 生成答案；模板在 assets 中以 xhtml name="answer.xhtml" 定义。
 - 正文 `<article>` 使用严格 XHTML：空元素显式自闭合；标量用 `<span data-oks-ref="summary" data-oks-pick=".rowsReturned" />`，图表用 `<figure data-oks-ref="chart"><figcaption>说明</figcaption></figure>`。输入键与正文引用双向对应。

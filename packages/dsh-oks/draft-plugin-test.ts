@@ -33,6 +33,9 @@ try {
   assert.equal(result.value.delivery.status,'ready',result.text);
   assert.equal(result.value.delivery.mode,'reply');
   assert.match(result.text,/当前告警数/);
+  assert.equal(result.value.outputs.find((item:any)=>item.name==='facts').truncated,false);
+  assert.deepEqual(result.value.outputs.find((item:any)=>item.name==='facts').columns,[{name:'a_count',type:'Int',nullable:false}]);
+  assert.deepEqual((await call('oks_data',{input:'.work/draft.md#facts',pointer:'/columns'})).value.data,[{name:'a_count',type:'Int',nullable:false}]);
   const firstBatch=result.value.batch;
   const count=(await call('oks_data',{input:'.work/draft.md#total'})).value.data;
   assert.ok(typeof count==='number' && count>0);
@@ -75,5 +78,23 @@ try {
   assert.equal(result.value.delivery.status,'ready',result.text);
   const exampleReport=(await call('oks_data',{input:result.value.delivery.asset})).value.data;
   assert.deepEqual(exampleReport.items.summary,{total:5,rows:2});
+  const columnSource=['## pipeline','```js',
+    'let epoch=query({op:"Graph",root:"x",nodes:[{id:"x",entity:"device"}],edges:[],select:[{node:"x",dimension:"device_create_ms"}],limit:1});',
+    'let utc=query({op:"Graph",root:"x",nodes:[{id:"x",entity:"device_kpi"}],edges:[],select:[{node:"x",dimension:"device_kpi_ts_raw"}],limit:1});',
+    'let cpu=query({op:"Graph",root:"x",nodes:[{id:"x",entity:"device_kpi"}],edges:[],select:[],measures:[{node:"x",measure:"cpu_usage"}],limit:1});',
+    'debug(epoch.columns);','```'].join('\n');
+  await call('work_write',{file_path:'.work/columns.md',content:columnSource});
+  const typed=await call('oks_run_answer',{src:'.work/columns.md'});
+  assert.equal(typed.value.ok,true,typed.text);
+  for(const [binding,type] of [['epoch','EpochMillis'],['utc','DatetimeUtc'],['cpu','Float']]) {
+    const columns=(await call('oks_data',{input:'.work/columns.md#'+binding,pointer:'/columns'})).value.data;
+    assert.equal(columns[0].type,type);
+    const data=(await call('oks_data',{input:'.work/columns.md#'+binding})).value.data;
+    assert.equal(data.truncated,binding!=='cpu');
+    assert.equal(data.rows.length,1);
+    assert.equal(typed.value.outputs.find((item:any)=>item.name===binding).truncated,binding!=='cpu');
+    assert.equal(typed.value.outputs.find((item:any)=>item.name===binding).columns[0].type,type);
+  }
+  assert.equal((await call('oks_data',{input:'.work/columns.md#debug/1'})).value.data[0].type,'EpochMillis');
   console.log(JSON.stringify({ok:true,tools:[...registered.keys()],businessCount:count,standaloneBundle:true,sourceDatabaseReadOnly:true}));
 } finally {for(const fn of dispose.reverse())fn();rmSync(root,{recursive:true,force:true});}

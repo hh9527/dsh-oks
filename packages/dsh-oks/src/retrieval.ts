@@ -1,3 +1,4 @@
+import { mountPresentationKnowledge } from './presentation-knowledge.ts';
 import { buildSemanticGraph } from './knowledge-graph.ts';
 import type { SemanticGraph } from './knowledge-graph.ts';
 import { modelContracts } from './contracts.ts';
@@ -127,18 +128,19 @@ function deriveIndex(nodes: KnowledgeNode[], contract: {
     terms.push(deriveTerm(node, declaration));
   }
   const {graph,addresses} = buildSemanticGraph(nodes);
+  mountPresentationKnowledge(graph);
   for(const term of terms) term.key=addresses.get(term.key)!;
   return {
     sourceNodes: nodes, contract: contract.discovery,
     knowledge: graph,
     meta: {
       format: 'oks-knowledge-v2', revision: contract.revision,
-      roots: ['datasets','types','relations'],
-      counts: {datasets:Object.keys(graph.datasets).length,types:Object.keys(graph.types).length,relations:Object.keys(graph.relations).length,items:graph.items.length},
+      roots: ['datasets','types','relations','tools'],
+      counts: {datasets:Object.keys(graph.datasets).length,types:Object.keys(graph.types).length,relations:Object.keys(graph.relations).length,tools:Object.keys(graph.tools).length,items:graph.items.length},
     },
     revision: contract.revision,
     terms,
-    keys: new Set(addresses.values()),
+    keys: new Set(graph.items.map(item=>item.key)),
     links: [...edges.values()].filter(e=>addresses.has(e.source)&&addresses.has(e.target)).map(e=>({...e,source:addresses.get(e.source)!,target:addresses.get(e.target)!})),
 
   };

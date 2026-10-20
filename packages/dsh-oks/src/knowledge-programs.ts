@@ -1,17 +1,18 @@
 import { timeHelp, timeWindows, timeWindowCode } from './time-programs.ts';
+import { presentationHelp } from './presentation-knowledge.ts';
 import { queryHelp } from './query-help.ts';
 
 const definitions = `
   def pathof: split("#") | map(split("/") | map(decode_uri)) | add;
   def fact($g; $key): ($key | pathof) as $p | $g | getpath($p);
   def identity($key): ($key | pathof) as $p
-    | {key:$key,type:({datasets:"Dataset",types:"Ty",relations:"Relation",fields:"Field",dimensions:"Dimension",measures:"Measure",values:"Value",time_roles:"TimeRole",business_links:"BusinessLink"}[$p[-2]]),
+    | {key:$key,type:({datasets:"Dataset",types:"Ty",relations:"Relation",fields:"Field",dimensions:"Dimension",measures:"Measure",values:"Value",time_roles:"TimeRole",business_links:"BusinessLink",tools:"Tool",kinds:"FigureKind",topics:"ToolTopic"}[$p[-2]]),
        id:$p[-1],dataset:(if $p[0] == "datasets" then $p[1] else null end)};
   def page($skip; $take): {total:length,start:$skip,items:.[$skip:($skip+$take)],next:(if ($skip+$take)<length then ($skip+$take) else null end)};
   def edges($g):
     $g.items[] | .key as $source | fact($g;$source) | to_entries[]
     | . as $entry
-    | if (["datasets","types","relations","fields","dimensions","measures","values","time_roles","business_links"] | index($entry.key)) != null then
+    | if (["datasets","types","relations","fields","dimensions","measures","values","time_roles","business_links","tools","kinds","topics"] | index($entry.key)) != null then
         if ($entry.value | type) == "array" then $entry.value[] | {source:$source,key:.,link:$entry.key}
         elif ($entry.value | type) == "object" then $entry.value | keys[] | {source:$source,key:($source + "#" + $entry.key + "/" + (. | encode_uri)),link:$entry.key}
         else empty end
@@ -68,14 +69,15 @@ export const knowledgePrograms: Record<string, {description:string;args:string[]
   },
 };
 export const knowledgeHelp = {
-  resource:{data:'oks_knowledge project sees {datasets,types,relations,items}; jq sees {knowledge:<graph>}. Dictionaries use original business IDs; items is [{key,names,doc}].',
-    address:'Independent node: datasets/<encoded-id>, types/<encoded-id>, relations/<encoded-id>. Member: node#fields/<encoded-id>, #dimensions/<id>, #measures/<id>, #time_roles/<id>, #business_links/<id>, or types/<id>#values/<id>. Each ID is URI-component encoded exactly once in addresses; use returned keys verbatim. Dictionary keys are original IDs.',
+  resource:{data:'oks_knowledge project sees {datasets,types,relations,tools,items}; jq sees {knowledge:<graph>}. Dictionaries use original business IDs; items is [{key,names,doc}].',
+    address:'Independent node: datasets/<encoded-id>, types/<encoded-id>, relations/<encoded-id>, tools/<tool-name>. Tool members: #kinds/<kind>, #topics/<topic>. Member: node#fields/<encoded-id>, #dimensions/<id>, #measures/<id>, #time_roles/<id>, #business_links/<id>, or types/<id>#values/<id>. Each ID is URI-component encoded exactly once in addresses; use returned keys verbatim. Dictionary keys are original IDs.',
+    toolKnowledge:'tools.render_figure owns kinds and topics; tools.render_html owns topics. Tool knowledge describes rendering and XHTML usage, is injected by the plugin, and shares search/read/member/reference navigation with model facts. Read a kind or topic independently; examples are executable with example data.',
     navigation:'Datasets own fields/dimensions/measures/time_roles/business_links dictionaries. Types own values dictionaries and categorized references such as fields/dimensions. The tool derives reverse references from ownership and forward facts; member navigation is bidirectional; related/traversable retain their category and referenced_by provides reverse navigation. Reference arrays contain addresses; owned dictionaries contain facts. References preserve associations and never grant query authorization.',
     typeFields:'types.<id>.fields includes fields exposed through dimensions declaring that value type. This is navigation, not a claim about raw field storage. Dimensions use type for their declared value-domain ID and input_kinds for accepted literal kinds.',
     projections:'Selecting a branch reads only that branch: .knowledge.types.Severity.values does not include fields. Names and prose live in items; read.jq pairs a fact slice with its descriptions. facts retain business constraints (including nulls, ordering, scope, time encoding and deterministic Latest selection).'},
   examples:{
     overview:{project:'Shape'},
-    shape:{project:{datasets:'Shape',types:'Shape',relations:'Shape',items:'Shape'}},
+    shape:{project:{datasets:'Shape',types:'Shape',relations:'Shape',tools:'Shape',items:'Shape'}},
     search:{jq:{src:'builtin://knowledge/search.jq',args:{query:'<word returned by va_ask>',take:10}}},
     read:{jq:{src:'builtin://knowledge/read.jq',args:{key:'<returned address>'}}},
     dimensions:{jq:{src:'builtin://knowledge/members.jq',args:{key:'datasets/<returned encoded ID>',link:'dimensions',take:10}}},
@@ -89,6 +91,7 @@ export const knowledgeHelp = {
   query:'Use oks_knowledge help=oks://help/query and topic for Intent grammar. Vocabulary normalization is va_ask; verify its leads through search and facts.',
 };
 export function toolResource(src:string):unknown {
+  if(['oks://help/render','oks://help/figure','oks://help/answer','oks://help/draft'].includes(src))return presentationHelp;
   if(src==='oks://help/time')return timeHelp;
   if(src==='builtin://time/windows.jq')return timeWindows;
   if(src==='oks://help/knowledge')return knowledgeHelp;
@@ -107,6 +110,6 @@ export function builtinCode(src:string,rawArgs:unknown):{file:string;text:string
   if(name!=='read'&&(!Number.isSafeInteger(args.skip)||Number(args.skip)<0||!Number.isSafeInteger(args.take)||Number(args.take)<1||Number(args.take)>50))throw new Error('builtin skip must be nonnegative; take must be 1..50');
   for(const key of ['input','key','query','type','dataset','link'])if(args[key]!==undefined&&(typeof args[key]!=='string'||(key!=='query'&&args[key]==='')))throw new Error(`builtin ${key} must be a string`);
   if(name!=='search'&&typeof args.key!=='string')throw new Error('builtin requires key');
-  if(typeof args.key==='string' && !/^(datasets|types|relations)\/[^/#]+(?:#[^#]+)?$/.test(args.key))throw new Error(`Unknown knowledge key: ${args.key}`);
+  if(typeof args.key==='string' && !/^(datasets|types|relations|tools)\/[^/#]+(?:#[^#]+)?$/.test(args.key))throw new Error(`Unknown knowledge key: ${args.key}`);
   return {file:src,text:`${JSON.stringify(args)} as $args | ${program.source}`};
 }

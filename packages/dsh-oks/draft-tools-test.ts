@@ -21,7 +21,7 @@ mkdirSync(join(root,'.work'));
 const wasm=process.argv[2]; assert.ok(wasm);
 const jq=createJaqEngine(wasm);
 let queries=0; let writes=0;
-const entry={root,modelHash:'test',settings:{workspaceRoot:root,domain:'test',dataFile:undefined,queryMaxRows:200},runner:{async send(){return {ok:{accepted:true,queries:[{sql:'select 1',bindings:[]}]}};}}} as unknown as WorkspaceEntry;
+const entry={root,modelHash:'test',settings:{workspaceRoot:root,domain:'test',dataFile:undefined,queryMaxRows:200},runner:{async send(_method:string,{intents}: {intents:{limit:number}[]}){return {ok:{accepted:true,queries:[{sql:'select 1',bindings:[intents[0].limit],limit_slot:0,columns:[{name:'n',type:'Int',nullable:true}]}]}};}}} as unknown as WorkspaceEntry;
 const knowledge={ensureWorkspace:()=>entry,executorFor:()=>({manifest:null,executor:{async send(){queries++;return {rows:[{n:7}],columns:['n'],truncated:false};},dispose(){}}})} as unknown as Knowledge;
 const caller={agent:{session:{id:'A'}}} as unknown as ToolExec;
 const other={agent:{session:{id:'B'}}} as unknown as ToolExec;
@@ -48,6 +48,9 @@ try {
   let result=await call('oks_run_answer',{src:file});
   assert.equal(result.delivery.status,'ready');assert.equal(result.delivery.mode,'reply');assert.match(result.reply,/Total: 7/);assert.equal(writes,0);assert.equal(queries,1);
   assert.equal(result.outputs.find((item:any)=>item.name==='facts').rowCount,1);
+  assert.equal(result.outputs.find((item:any)=>item.name==='facts').truncated,false);
+  assert.deepEqual(result.outputs.find((item:any)=>item.name==='facts').columns,[{name:'n',type:'Int',nullable:true}]);
+  assert.deepEqual((await call('oks_data',{input:file+'#facts',pointer:'/columns'})).data,[{name:'n',type:'Int',nullable:true}]);
   assert.equal(result.acquisitions[0].reason,'no-retained-acquisition');assert.equal(result.omittedAcquisitions,0);
   result=await call('oks_data',{input:file+'#total'});assert.equal(result.data,7);assert.equal(result.stale,false);assert.equal(writes,0);assert.equal(queries,1);
   result=await call('oks_data',{input:file+'#facts',pointer:'/rows',offset:0,limit:1});assert.deepEqual(result.data,[{n:7}]);assert.equal(result.range.total,1);
@@ -79,5 +82,12 @@ try {
   assert.ok(Buffer.byteLength(blocks({},result)[0].text)<16384);
   const saved=await import('node:fs').then(fs=>fs.readFileSync(join(root,'output-1.html'),'utf8'));
   assert.equal(checkWellFormed(saved).length,0);
+  const wideColumns=Array.from({length:30},(_,index)=>({name:'column_'+index,type:'String',nullable:true}));
+  write('## pipeline\n```js\nlet wide=data('+JSON.stringify({rows:[],columns:wideColumns})+');\n```');
+  result=await call('oks_run_answer',{src:file});
+  const wide=result.outputs.find((item:any)=>item.name==='wide');
+  assert.equal(wide.columns.length,12);assert.equal(wide.omittedColumns,18);
+  assert.deepEqual((await call('oks_data',{input:file+'#wide',pointer:'/columns'})).data,wideColumns);
+  assert.ok(Buffer.byteLength(blocks({},result)[0].text)<16384);
   console.log('draft tools: readonly pagination, session isolation, delivery, debug and failed/removed-output lifecycle passed');
 } finally {drafts.dispose();jq.dispose();rmSync(root,{recursive:true,force:true});}

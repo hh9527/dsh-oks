@@ -14,7 +14,7 @@ let validations = 0;
 let checks = 0;
 const entry = {
   modelHash: 'model-sha', settings: { domain: 'test', dataFile: '/tmp/fixture.sqlite', queryMaxRows: 200 },
-  runner: { async send(_method: string, { intents }: { intents: unknown[] }) { validations++; return { ok: { accepted: true, queries: intents.map(() => ({ sql: 'SELECT n FROM fixture', bindings: [] })) } }; } },
+  runner: { async send(_method: string, { intents }: { intents: unknown[] }) { validations++; return { ok: { accepted: true, queries: intents.map((intent) => ({ sql: 'SELECT n FROM fixture LIMIT ?1', bindings: [(intent as {limit:number}).limit], limit_slot: 0 })) } }; } },
 } as unknown as WorkspaceEntry;
 const backend = createDraftBackend({ entry, file: '.work/draft.md', contextZone: () => ({ kind: 'resolved', timeZone: 'Asia/Shanghai' } satisfies ContextTimeZone),
   knowledge: { executorFor: () => ({ manifest: null, executor: { async send() { executions++; return { rows: [{ n: 42 }], columns: ['n'], truncated: false }; }, dispose() {} } }) },

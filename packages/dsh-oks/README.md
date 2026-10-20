@@ -8,7 +8,7 @@
 | 工具 | 职责 |
 | --- | --- |
 | `va_ask({query})` | 词汇规整，返回线索，随后核实事实 |
-| `oks_knowledge({project})` / `({jq:{src,args}})` | 在 datasets/types/relations/items 图上精确投影或执行只读知识检索 |
+| `oks_knowledge({project})` / `({jq:{src,args}})` | 在 datasets/types/relations/tools/items 图上精确投影或执行只读知识检索 |
 | `oks_knowledge({help,topic?})` | 读取工具帮助；query 帮助默认列主题，topic 精确选取 |
 | `work_read/write/edit/list/delete` | 只读写 `.work/` 文本文件，参数为完整工作区相对路径 |
 | `oks_run_answer({src,answer?,delivery?,refresh?})` | 执行整份分析稿，复用采集与计算，返回有界反馈及可选答案 |
@@ -54,7 +54,7 @@ let summary = jq("summary.jq", {facts, params});
 | `data(value,{kind?})` | given（默认）/parameter/assumption/example，实际内容随来源保存 |
 | `context()` | 显式捕获浏览器时区与时刻，批次内固定；utc 有 epochMillis/epochSeconds/rfc3339 |
 | `time_windows(ctx,{unit,count,mode})` | 带 label、zone、毫秒及 RFC3339 起止的半开日历窗口 |
-| `query(Intent)` | 模型校验后只读执行，结果 `{rows,columns}`，顶层 limit 为 1..500 |
+| `query(Intent)` | 模型校验后只读执行，结果 `{rows,columns,truncated}`，columns 为模型声明的 `{name,type,nullable}`，顶层 limit 为 1..500 |
 | `jq("a.jq",{...})` | 当前文档具名 asset，恰好输出一个 JSON 值，完整源码随来源保存 |
 | `render_figure(spec,{data,nodes?})` | 图/表展示件；table 选 columns，图使用 x/value/series 等列映射 |
 | `render_html("a.xhtml",{...})` | 以当前绑定及来源组装答案 |
@@ -109,6 +109,12 @@ oks_data({input:".work/draft.md#summary",meta:true})
 
 pointer 是 JSON Pointer，范围读取支持数组或对象成员，limit 1..100。
 读取对应当前会话该源码的最近一次运行；失败/移除/阻塞/回收不回退旧成功值。改稿后保留结果标 stale。
+查询的 `truncated` 表示是否还有未返回的行；rows 最多包含请求的 limit 行。
+查询的 `columns` 采用模型声明的 Int/Float/Bool/String/DatetimeUtc/EpochMillis/LocalDateTime，
+保留最终投影顺序与保守 nullable；空结果、全 NULL 不影响声明。运行回执有列预览，完整读取可用
+`oks_data({input:".work/draft.md#facts",pointer:"/columns"})`，稿内可写 `debug(facts.columns)`。
+LocalDateTime 是不带时区或偏移量的日期与钟表时间。旧模型未提供 columns 时使用观察类型 `types`。
+
 新的计算、筛选或取样写回稿件再运行。debug 无需人为命名，回执关联原位置，小值直接返回，大值给引用。
 
 单个直接 render_html 绑定自动选择；多个时用 answer 指定。计算和交付状态分开报告。
@@ -191,3 +197,12 @@ Rust 需要 wasm32-unknown-unknown target；求值器没有时钟、环境或文
 真实模型/只读 SQLite 的工具集成使用 draft-plugin-test.ts，可对只含两份产物的独立目录验收。
 
 完整设计、协议、实施记录及验收方向见 [RFC 0013](../../rfc/0013-answer-source.md)。
+
+### 呈现知识
+
+工具初始化时将领域无关的呈现用法挂载到 `tools`，与模型事实共享搜索、导航与投影。
+`tools/render_figure#kinds/<kind>` 提供必填列映射、series 语义、专属开关和可执行示例；
+`tools/render_figure#topics/table_headers` 说明字符串列名与 jq 表头重命名；
+`tools/render_html#topics/references` 说明 XHTML 绑定和点分路径。
+使用 `oks_knowledge({help:"oks://help/render"})` 查看入口，或用知识搜索查“图表”“表头”“data-oks-pick”。
+每个主题可单独读取；`#topics/draft` 提供完整可运行 Markdown 示例。
