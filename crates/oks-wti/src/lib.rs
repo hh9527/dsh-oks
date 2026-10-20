@@ -242,6 +242,41 @@ pub extern "C" fn check_program(
     }
 }
 
+/// Parse only top-level definitions, then compile without executing a body.
+fn check_library_source(program: &str, path: &str) -> Result<String, CompileFailure> {
+    use jaq_core::load::{lex::{Lexer, Token}, parse::Parser, Error, span};
+    let file = File { code: program, path: path.to_string() };
+    let tokens = Lexer::new(program).lex()
+        .map_err(|e| load_failure(vec![(file.clone(), Error::Lex(e))]))?;
+    let defs = Parser::new(&tokens).parse(|p| p.defs()).map_err(|errors| {
+        let errors = errors.into_iter().map(|(expected,found)| (expected,Token::opt_as_str(found,program))).collect();
+        load_failure(vec![(file.clone(),Error::Parse(errors))])
+    })?;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut methods=Vec::new();
+    for def in defs {
+        let range=span(program,def.name);
+        if !seen.insert((def.name,def.args.len())) {
+            return Err(CompileFailure {message:format!("{path}: duplicate method {}/{}",def.name,def.args.len()),
+                diagnostics:vec![diagnostic_json(path,"library","duplicate method signature",range,vec![])]});
+        }
+        let args=def.args.iter().map(|s|json_text(s)).collect::<Vec<_>>().join(",");
+        methods.push(format!("{{\"name\":{},\"args\":[{}],\"start\":{},\"end\":{}}}",json_text(def.name),args,range.start,range.end));
+    }
+    let (_,cached)=compiled_checked(&format!("{program}\nnull"),path)?;
+    Ok(format!("{{\"cached\":{cached},\"methods\":[{}]}}",methods.join(",")))
+}
+
+#[no_mangle]
+pub extern "C" fn check_library(program_ptr:*const u8,program_len:usize,path_ptr:*const u8,path_len:usize)->*mut u8 {
+    let program=unsafe{core::slice::from_raw_parts(program_ptr,program_len)};
+    let path=unsafe{core::slice::from_raw_parts(path_ptr,path_len)};
+    match check_library_source(&String::from_utf8_lossy(program),&String::from_utf8_lossy(path)) {
+        Ok(result)=>reply(0,result),
+        Err(error)=>reply(3,format!("{{\"message\":{},\"diagnostics\":[{}]}}",json_text(&diagnostic::runtime_error(error.message)),error.diagnostics.join(","))),
+    }
+}
+
 /// 解析并常驻一份 JSON，成功时返回 JSON 数字 `handle`，文档与实例同生命周期。
 #[no_mangle]
 pub extern "C" fn load_document(ptr: *const u8, len: usize) -> *mut u8 {

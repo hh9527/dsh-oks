@@ -28,7 +28,7 @@ export const timeWindows = {
 
 export const timeHelp = {
   input: 'Define let ctx = context(); then let windows = time_windows(ctx, {unit,count,mode}); in the draft. The helper consumes utc.epochMillis and tz.client.id; no conversion or fixed-offset arithmetic is needed.',
-  program: {src:'builtin://time/windows.jq', args:{input:'ctx (default)',unit:'year | quarter | month | week | day',count:'integer 1..50',mode:'required: complete | current | rolling'}},
+  helper: {name:'time_windows', args:{unit:'year | quarter | month | week | day',count:'integer 1..50',mode:'required: complete | current | rolling'}},
   semantics: {
     complete: 'Last N completed calendar periods. Excludes the current period.',
     current: 'N calendar periods including the current period. The last end is the next calendar boundary, which can be in the future.',

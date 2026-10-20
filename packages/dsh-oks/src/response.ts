@@ -147,7 +147,7 @@ export function renderView(_args: unknown, value: ViewValue | null | undefined):
 
 const textBlock = (lines: readonly string[]): RenderBlock[] => [{ type: 'text', text: `${lines.join('\n')}\n` }];
 
-/** work_read：`.work/` 下的文件正文（带行号）或目录清单。
+/** oks_read：`.work/` 下的文件正文（带行号）或目录清单。
  *  分页是明说的：给出"共 N 行、这是第 from 行起"，不是悄悄截断。 */
 export interface WorkReadValue {
   ok?: boolean;
@@ -165,7 +165,7 @@ export function renderWorkRead(_args: unknown, value: WorkReadValue | null | und
   if (entries.length > 0 || (value.lines ?? []).length === 0) {
     const lines = [`${value.file ?? ''}：${entries.length} 个文件`];
     for (const entry of entries) lines.push(`  ${entry.name} · ${entry.bytes} B · ${entry.modifiedAt}`);
-    if (entries.length === 0) lines.push(`（${value.file ?? ''} 里还没有文件：用 work_write 建一份。）`);
+    if (entries.length === 0) lines.push(`（${value.file ?? ''} 里还没有文件：用 oks_write 建一份。）`);
     return textBlock(lines);
   }
   const from = value.from ?? 1;
@@ -183,7 +183,7 @@ export function renderWorkRead(_args: unknown, value: WorkReadValue | null | und
   return textBlock(lines);
 }
 
-/** work_write / work_edit：落点与尺寸。 */
+/** oks_write / oks_edit：落点与尺寸。 */
 export interface WorkWriteValue {
   ok?: boolean;
   file?: string;
@@ -208,7 +208,7 @@ export interface TransformValue {
   data: unknown;
 }
 
-/** work_delete 渲染删除结果。 */
+/** oks_delete 渲染删除结果。 */
 export function renderWorkDelete(_args: unknown, value: { ok?: boolean; file?: string; remaining?: number } | null | undefined): RenderBlock[] {
   if (value?.ok !== true) {
     return textBlock([JSON.stringify(value ?? { ok: false, error: { code: 'work_unwritable' } })]);
@@ -392,7 +392,7 @@ export function renderCheck(_args: unknown, value: CheckValue | null | undefined
   const runnable = value?.queryCount ?? 0;
   lines.push('', results.length > 0 && accepted.length === results.length
     ? `校验结论：${results.length} 个 Intent 全部可用（${runnable} 个查询可执行）。用 oks_exec_query_intent 带同一批名字与各自的 key 提交就能拿到结果。`
-    : `校验结论：${accepted.length}/${results.length} 可用（${runnable} 个查询可执行）。用 oks_data 以 load={knowledge:"knowledge://"} 加载，在 .knowledge 下按返回的 key 读声明再修；查询语法通过 oks://help/query 读取，保持业务含义不变。`);
+    : `校验结论：${accepted.length}/${results.length} 可用（${runnable} 个查询可执行）。用 oks_data 读取 input="oks://knowledge"，按返回的 key 核实声明再修；查询语法通过 oks://help/query 读取，保持业务含义不变。`);
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 

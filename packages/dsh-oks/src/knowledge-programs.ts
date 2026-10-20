@@ -25,7 +25,7 @@ export const knowledgePrograms: Record<string, {description:string;args:string[]
     description:'Search IDs, names and documentation; return exact semantic addresses and compact matches.',
     args:['input','query','type','dataset','skip','take'],
     source:definitions+`
-      .[$args.input] as $g | ($args.query // "" | ascii_downcase) as $q
+      . as $g | ($args.query // "" | ascii_downcase) as $q
       | [$g.items[] | . as $item | identity(.key) as $id
          | select(($args.type == null or $id.type == $args.type) and ($args.dataset == null or $id.dataset == $args.dataset))
          | ([{field:"id",text:$id.id,weight:4}] + [$item.names[] | {field:"name",text:.,weight:3}] + [{field:"doc",text:$item.doc,weight:1}])
@@ -38,7 +38,7 @@ export const knowledgePrograms: Record<string, {description:string;args:string[]
     description:'Read categorized outgoing navigation or owned members. link selects fields/dimensions/values/etc.; optional target type.',
     args:['input','key','link','type','skip','take'],
     source:definitions+`
-      .[$args.input] as $g
+      . as $g
       | if fact($g;$args.key) == null then error("Unknown knowledge key: "+$args.key) else
         ($g.items | map({key:.key,value:.}) | from_entries) as $docs
         | [edges($g) | select(.source == $args.key and ($args.link == null or .link == $args.link))
@@ -50,7 +50,7 @@ export const knowledgePrograms: Record<string, {description:string;args:string[]
     description:'Find incoming navigation references to an exact semantic address; optional category and source type.',
     args:['input','key','link','type','skip','take'],
     source:definitions+`
-      .[$args.input] as $g
+      . as $g
       | if fact($g;$args.key) == null then error("Unknown knowledge key: "+$args.key) else
         ($g.items | map({key:.key,value:.}) | from_entries) as $docs
         | [edges($g) | select(.key == $args.key and ($args.link == null or .link == $args.link))
@@ -62,38 +62,46 @@ export const knowledgePrograms: Record<string, {description:string;args:string[]
     description:'Read facts and matching descriptions together. key may address a node, a member, or a category such as datasets/alarm#dimensions. No sibling branches are expanded.',
     args:['input','key'],
     source:definitions+`
-      .[$args.input] as $g | fact($g;$args.key) as $facts
+      . as $g | fact($g;$args.key) as $facts
       | if $facts == null then error("Unknown knowledge key: "+$args.key) else
         ($args.key + (if ($args.key|contains("#")) then "/" else "#" end)) as $prefix
         | {key:$args.key,facts:$facts,items:[$g.items[] | select(.key == $args.key or (.key|startswith($prefix)))]} end`,
   },
 };
+/** Readable library source; public methods receive one JSON object. */
+export const builtinKtoolsSource = '# Readonly methods. Input is the knowledge graph root: {datasets,types,relations,tools,items}.\n'
+  + definitions + Object.entries(knowledgePrograms).map(([name,program]) =>
+    `\n# ${program.description}\n# args: ${program.args.filter(key=>key!=='input').join(', ')}\ndef ${name}($args):\n`
+    + `  ({${name==='read'?'':'skip:0,take:10'}} + $args) as $args |\n`
+    + program.source.slice(definitions.length) + ';\n').join('');
+
 export const knowledgeHelp = {
-  resource:{data:'oks_knowledge project sees {datasets,types,relations,tools,items}; jq sees {knowledge:<graph>}. Dictionaries use original business IDs; items is [{key,names,doc}].',
+  resource:{data:'oks_data with input=oks://knowledge sees {datasets,types,relations,tools,items}; methods receive the graph root directly. Dictionaries use original business IDs; items is [{key,names,doc}].',
     address:'Independent node: datasets/<encoded-id>, types/<encoded-id>, relations/<encoded-id>, tools/<tool-name>. Tool members: #kinds/<kind>, #topics/<topic>. Member: node#fields/<encoded-id>, #dimensions/<id>, #measures/<id>, #time_roles/<id>, #business_links/<id>, or types/<id>#values/<id>. Each ID is URI-component encoded exactly once in addresses; use returned keys verbatim. Dictionary keys are original IDs.',
     toolKnowledge:'tools.render_figure owns kinds and topics; tools.render_html owns topics. Tool knowledge describes rendering and XHTML usage, is injected by the plugin, and shares search/read/member/reference navigation with model facts. Read a kind or topic independently; examples are executable with example data.',
     navigation:'Datasets own fields/dimensions/measures/time_roles/business_links dictionaries. Types own values dictionaries and categorized references such as fields/dimensions. The tool derives reverse references from ownership and forward facts; member navigation is bidirectional; related/traversable retain their category and referenced_by provides reverse navigation. Reference arrays contain addresses; owned dictionaries contain facts. References preserve associations and never grant query authorization.',
     typeFields:'types.<id>.fields includes fields exposed through dimensions declaring that value type. This is navigation, not a claim about raw field storage. Dimensions use type for their declared value-domain ID and input_kinds for accepted literal kinds.',
-    projections:'Selecting a branch reads only that branch: .knowledge.types.Severity.values does not include fields. Names and prose live in items; read.jq pairs a fact slice with its descriptions. facts retain business constraints (including nulls, ordering, scope, time encoding and deterministic Latest selection).'},
+    projections:'Selecting a branch reads only that branch: .types.Severity.values does not include fields. Names and prose live in items; read pairs a fact slice with its descriptions. facts retain business constraints (including nulls, ordering, scope, time encoding and deterministic Latest selection).'},
   examples:{
-    overview:{project:'Shape'},
-    shape:{project:{datasets:'Shape',types:'Shape',relations:'Shape',tools:'Shape',items:'Shape'}},
-    search:{jq:{src:'builtin://knowledge/search.jq',args:{query:'<word returned by va_ask>',take:10}}},
-    read:{jq:{src:'builtin://knowledge/read.jq',args:{key:'<returned address>'}}},
-    dimensions:{jq:{src:'builtin://knowledge/members.jq',args:{key:'datasets/<returned encoded ID>',link:'dimensions',take:10}}},
-    valuesOnly:{project:{types:{'<original type ID>':{values:'Value'}}}},
-    references:{jq:{src:'builtin://knowledge/references.jq',args:{key:'<returned address>'}}},
-    fieldDescriptions:{jq:{src:'builtin://knowledge/read.jq',args:{key:'datasets/<returned encoded ID>#fields'}}},
-    customSource:'.knowledge.datasets | to_entries | map({id:.key,dimensions:(.value.dimensions|keys)})',
+    overview:{input:'oks://knowledge',project:'Shape'},
+    shape:{input:'oks://knowledge',project:{datasets:'Shape',types:'Shape',relations:'Shape',tools:'Shape',items:'Shape'}},
+    search:{input:'oks://knowledge',method:'oks://builtin/tools/ktools.lib.jq#search',args:{query:'<word returned by va_ask>',take:10}},
+    read:{input:'oks://knowledge',method:'oks://builtin/tools/ktools.lib.jq#read',args:{key:'<returned address>'}},
+    dimensions:{input:'oks://knowledge',method:'oks://builtin/tools/ktools.lib.jq#members',args:{key:'datasets/<returned encoded ID>',link:'dimensions',take:10}},
+    valuesOnly:{input:'oks://knowledge',project:{types:{'<original type ID>':{values:'Value'}}}},
+    references:{input:'oks://knowledge',method:'oks://builtin/tools/ktools.lib.jq#references',args:{key:'<returned address>'}},
+    fieldDescriptions:{input:'oks://knowledge',method:'oks://builtin/tools/ktools.lib.jq#read',args:{key:'datasets/<returned encoded ID>#fields'}},
+    customSource:'def dataset_dimensions($args): .datasets | to_entries | map({id:.key,dimensions:(.value.dimensions|keys)});',
   },
-  programs:Object.fromEntries(Object.entries(knowledgePrograms).map(([name,p])=>[name,{src:`builtin://knowledge/${name}.jq`,description:p.description,args:p.args}])),
-  paging:'Search/members/references defaults: input=knowledge, skip=0, take=10 (1..50). Use next as skip. read args are input and key. All run in the same Wasm jq engine as .work programs; builtin source is readable as a resource. Final output is limited to 16 KiB; narrow a branch or use builtin pagination.',
-  query:'Use oks_knowledge help=oks://help/query and topic for Intent grammar. Vocabulary normalization is va_ask; verify its leads through search and facts.',
+  programs:Object.fromEntries(Object.entries(knowledgePrograms).map(([name,p])=>[name,{method:`oks://builtin/tools/ktools.lib.jq#${name}`,description:p.description,args:p.args.filter(key=>key!=='input')}])),
+  paging:'Search/members/references defaults: skip=0, take=10 (1..50). Use next as skip. read requires key. Methods run in the Wasm jq engine. Read source with oks_read oks://builtin/tools/ktools.lib.jq; add custom def name($args): ...; methods to oks://memory/tools/ktools.lib.jq, which persists across sessions and work cleanup. Libraries contain only definitions and comments. Saves compile before replacing the valid file. Final output is limited to 16 KiB; narrow a branch or use builtin pagination.',
+  query:'Read oks://help/query with oks_data, then select a topic using a JSON Pointer (graph/filter becomes /graph~1filter) for Intent grammar. Vocabulary normalization is va_ask; verify its leads through search and facts.',
 };
 export function toolResource(src:string):unknown {
   if(['oks://help/render','oks://help/figure','oks://help/answer','oks://help/draft'].includes(src))return presentationHelp;
   if(src==='oks://help/time')return timeHelp;
   if(src==='builtin://time/windows.jq')return timeWindows;
+  if(src==='oks://builtin/tools/ktools.lib.jq')return {source:builtinKtoolsSource,readonly:true};
   if(src==='oks://help/knowledge')return knowledgeHelp;
   if(src==='oks://help/query')return queryHelp;
   const match=/^builtin:\/\/knowledge\/([a-z_]+)\.jq$/.exec(src);
@@ -111,5 +119,5 @@ export function builtinCode(src:string,rawArgs:unknown):{file:string;text:string
   for(const key of ['input','key','query','type','dataset','link'])if(args[key]!==undefined&&(typeof args[key]!=='string'||(key!=='query'&&args[key]==='')))throw new Error(`builtin ${key} must be a string`);
   if(name!=='search'&&typeof args.key!=='string')throw new Error('builtin requires key');
   if(typeof args.key==='string' && !/^(datasets|types|relations|tools)\/[^/#]+(?:#[^#]+)?$/.test(args.key))throw new Error(`Unknown knowledge key: ${args.key}`);
-  return {file:src,text:`${JSON.stringify(args)} as $args | ${program.source}`};
+  return {file:src,text:`.[${JSON.stringify(args.input)}] | ${builtinKtoolsSource}\n${name}(${JSON.stringify(args)})`};
 }

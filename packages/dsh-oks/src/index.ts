@@ -1,6 +1,6 @@
 // Workspace-scoped ontology tools. oks.json declares the model and readonly data file.
 // work_* edits DARI drafts; oks_run_answer evaluates them; oks_data reads retained outputs.
-// oks_knowledge discovers facts and declared capabilities; va_ask normalizes vocabulary.
+// oks_data reads facts and declared capabilities from oks://knowledge; va_ask normalizes vocabulary.
 // Reports archive evidence and code; the artifacts panel manages retention and pinning.
 
 export { createProjector } from './project.ts';

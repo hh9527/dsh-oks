@@ -41,14 +41,14 @@ const file='.work/draft.dari';
 const source=['# Answer title','## pipeline','```js','let facts=exec_query(query({limit:5}));','let total=jq("total.jq",{facts});','debug(total);','let answer=render_html("answer.xhtml",{total});','```','## assets','```jq name="total.jq"','.facts.rows[0].n','```','```xhtml name="answer.xhtml"','<article><p>Total: <span data-oks-ref="total" /></p></article>','```'].join('\n');
 const write=(value:string)=>writeFileSync(join(root,file),asDari(value));
 try {
-  const helpIndex = await call('oks_knowledge', {help:'oks://help/query'});
+  const helpIndex = await call('oks_data',{input:'oks://help/query'});
   assert.ok(helpIndex.data.topics.includes('graph/filter'));
   assert.equal(helpIndex.data.graph, undefined);
-  const filterHelp = await call('oks_knowledge', {help:'oks://help/query',topic:'graph/filter'});
+  const filterHelp = await call('oks_data',{input:'oks://help/query',pointer:'/graph~1filter'});
   assert.equal(typeof filterHelp.data.text, 'string');
   assert.ok(Buffer.byteLength(JSON.stringify(filterHelp)) < 16384);
-  await assert.rejects(call('oks_knowledge', {help:'oks://help/query',topic:'toString'}), /Unknown help topic/);
-  await assert.rejects(call('oks_knowledge', {project:{},topic:'graph'}), /topic requires help/);
+  await assert.rejects(call('oks_data',{input:'oks://help/query',pointer:'/toString'}), /Missing JSON Pointer member/);
+  await assert.rejects(call('oks_data',{input:'oks://knowledge',project:{},pointer:'/graph'}), /Choose exactly one/);
   write('<Dari><Pipeline></Pipeline><Template name="empty"><article><p>静态正文</p></article></Template></Dari>');
   assert.equal((await call('oks_run_answer',{src:file})).delivery.status,'ready');
   write(source);

@@ -1,3 +1,7 @@
+import { WORK_URI, MEMORY_URI, sourceUri } from './resource-path.ts';
+import { createKtools, type Ktools } from './ktools.ts';
+import { KTOOLS_FILE, KTOOLS_BUILTIN } from './ktools-path.ts';
+import { builtinKtoolsSource } from './knowledge-programs.ts';
 /** Host bridge: work files, retained artifacts, vocabulary and draft tool lifecycle. */
 import { unlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -14,7 +18,7 @@ import { renderAsk, VA_HELPER_PREFIX } from './va.ts';
 import type { VaRuntime } from './va.ts';
 import { OBJECT_OUTPUT, renderArtifacts, renderValue, renderWorkDelete, renderWorkEdit, renderWorkRead, renderWorkWrite } from './response.ts';
 import { adoptArtifacts, collectMaterials, collectWork, listArtifacts, markCleanup, materialCount, openState, pruneArtifacts, reconcileArtifacts, recordArtifact, VISIBLE } from './state.ts';
-import { deleteWorkFile, editWorkFile, listWorkFiles, readArtifact, readWorkFile, WORK_DIR, writeWorkFile, saveArtifact } from './results.ts';
+import { deleteWorkFile, prepareWorkEdit, readWorkText, readTextLines, listWorkFiles, readArtifact, readWorkFile, WORK_DIR, writeWorkFile, saveArtifact } from './results.ts';
 import type { DataOrigin, Envelope, SaveArtifactOptions } from './results.ts';
 
 function readProduct(root: string, asset: string): Envelope {
@@ -59,24 +63,24 @@ function readDataResource(root: string, src: string): { value: unknown; origin: 
 }
 
 interface WorkReadArgs {
-  file_path?: unknown;
+  path?: unknown;
   offset?: unknown;
   limit?: unknown;
 }
 interface WorkWriteArgs {
-  file_path?: unknown;
+  path?: unknown;
   content?: unknown;
 }
 interface WorkEditArgs {
-  file_path?: unknown;
+  path?: unknown;
   old_string?: unknown;
   new_string?: unknown;
   replace_all?: unknown;
 }
 
-/** work_delete 的入参：要删的那份代码文件。 */
+/** oks_delete 的入参：要删的那份代码文件。 */
 interface WorkDeleteArgs {
-  file_path?: unknown;
+  path?: unknown;
 }
 
 /** 当前会话词汇咨询的入参。 */
@@ -85,8 +89,9 @@ interface AskArgs {
 }
 
 /** 注册宿主工具及其工作区／会话运行状态。 */
-export function createTools({ knowledge, va, timeContext, log }: {
+export function createTools({ knowledge, va, timeContext, log, ktools=createKtools() }: {
   knowledge: Knowledge;
+  ktools?: Ktools;
   va: VaRuntime;
   timeContext: TimeContext;
   log: LogFn;
@@ -180,108 +185,119 @@ export function createTools({ knowledge, va, timeContext, log }: {
       },
     },
     {
-      name: 'work_read',
-      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. Read a UTF-8 text file under ${WORK_DIR}/ and return line-numbered content — the same shape as the usual read tool (file_path / offset / limit), except that only ${WORK_DIR}/ is reachable: that is enforced, not requested. ${WORK_DIR}/ holds DARI answer drafts, standalone knowledge jq programs and scratch files. Pass ".work/" as file_path to list what is in ${WORK_DIR}/ instead, so a fresh session can see what it left behind.`,
+      name: 'oks_read',
+      description: 'Read line-numbered source from oks://work/<file>, persistent oks://memory/tools/ktools.lib.jq, or readonly oks://builtin/tools/ktools.lib.jq. offset/limit page lines. A missing oks://memory/tools/ktools.lib.jq returns an editable starter. Use oks_list({path:"oks://work/"}) to list files.',
       parameters: {
         type: 'object',
         properties: {
-          file_path: { type: 'string', description: `Full workspace-relative path under ${WORK_DIR}/, e.g. "${WORK_DIR}/analysis.jq". Use "${WORK_DIR}/" to list the directory.` },
+          path: { type: 'string', description: 'Source path: oks://work/<file>, oks://memory/tools/ktools.lib.jq or oks://builtin/tools/ktools.lib.jq; oks://work/ lists files.' },
           offset: { type: 'number', description: 'First line to return, 1-based. Default 1.' },
           limit: { type: 'number', description: 'How many lines to return, 1..2000. Default 400.' },
         },
-        required: ['file_path'],
+        required: ['path'],
         additionalProperties: false,
       },
       output: { schema: OBJECT_OUTPUT, render: renderWorkRead },
       async execute(args: WorkReadArgs, exec: ToolExec) {
+        if(args?.path===KTOOLS_BUILTIN)return {ok:true as const,...readTextLines(builtinKtoolsSource,KTOOLS_BUILTIN,args.offset,args.limit,'oks_read'),entries:[]};
         const entry = knowledge.ensureWorkspace(exec);
         const root = entry.settings.workspaceRoot;
-        const given = args?.file_path;
-        if (given === `${WORK_DIR}/`) {
-          return { ok: true as const, file: WORK_DIR, entries: listWorkFiles(root), lines: [], from: 1, total: 0, bytes: 0 };
+        const given = args?.path;
+        if (given === WORK_URI) {
+          return { ok: true as const, file: WORK_URI, entries: listWorkFiles(root).filter(f=>f.name.startsWith('.work/')).map(f=>({...f,name:sourceUri(f.name)})), lines: [], from: 1, total: 0, bytes: 0 };
         }
-        const read = readWorkFile(root, args?.file_path, args?.offset, args?.limit, 'work_read');
-        log(`[oks] work_read ${read.file} · 第 ${read.from} 行起 ${read.lines.length} 行`
+        const read = readWorkFile(root, args?.path, args?.offset, args?.limit, 'oks_read');
+        log(`[oks] oks_read ${read.file} · 第 ${read.from} 行起 ${read.lines.length} 行`
           + `（共 ${read.total} 行 · ${(read.bytes / 1024).toFixed(1)} KB）`);
         return { ok: true as const, ...read, entries: [] };
       },
     },
     {
-      name: 'work_write',
-      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. Write a UTF-8 text file under ${WORK_DIR}/, creating or overwriting it — the same shape as the usual write tool (file_path / content), except that only ${WORK_DIR}/ is reachable. Write a DARI draft here, then execute it with oks_run_answer. Its pipeline defines query, data, jq and rendering; named jq/XHTML assets live in the same document. Standalone .jq files support oks_knowledge discovery. Edit files later without resending the whole content. Parent directories are created.`,
+      name: 'oks_write',
+      description: 'Write UTF-8 source to oks://work/<file> or persistent oks://memory/tools/ktools.lib.jq. DARI drafts contain their own jq assets; execute them with oks_run_answer. Knowledge methods belong in oks://memory/tools/ktools.lib.jq: only comments and def name($args): ...; definitions, compiled before saving. Invalid content preserves the existing file. Read oks://builtin/tools/ktools.lib.jq for examples. The library is exempt from automatic cleanup.',
       parameters: {
         type: 'object',
         properties: {
-          file_path: { type: 'string', description: `Full workspace-relative path under ${WORK_DIR}/, e.g. "${WORK_DIR}/analysis.jq".` },
-          content: { type: 'string', description: 'The text to write — the jq program itself, verbatim.' },
+          path: { type: 'string', description: 'Source address: oks://work/<file> or oks://memory/tools/ktools.lib.jq.' },
+          content: { type: 'string', description: 'Source text, verbatim.' },
         },
-        required: ['file_path', 'content'],
+        required: ['path', 'content'],
         additionalProperties: false,
       },
       output: { schema: OBJECT_OUTPUT, render: renderWorkWrite },
       async execute(args: WorkWriteArgs, exec: ToolExec) {
         const entry = knowledge.ensureWorkspace(exec);
-        const saved = writeWorkFile(entry.settings.workspaceRoot, args?.file_path, args?.content, 'work_write');
-        log(`[oks] work_write ${saved.file} · ${(saved.bytes / 1024).toFixed(1)} KB · ${saved.created ? '新建' : '覆盖'}`);
+        if(args?.path===KTOOLS_FILE)await ktools.validate(args.content,KTOOLS_FILE,exec.signal);
+        const saved = writeWorkFile(entry.settings.workspaceRoot, args?.path, args?.content, 'oks_write');
+        log(`[oks] oks_write ${saved.file} · ${(saved.bytes / 1024).toFixed(1)} KB · ${saved.created ? '新建' : '覆盖'}`);
         return { ok: true as const, ...saved };
       },
     },
     {
-      name: 'work_edit',
-      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. Replace a literal passage in a text file under ${WORK_DIR}/ — the same shape as the usual edit tool (file_path / old_string / new_string / replace_all), except that only ${WORK_DIR}/ is reachable. It is how a file gets iterated: write it once, then fix one passage at a time instead of resending the whole file. old_string must appear in the file exactly as given (whitespace included); it must be unique unless replace_all is true.`,
+      name: 'oks_edit',
+      description: 'Replace exact text in oks://work/<file> or persistent oks://memory/tools/ktools.lib.jq. old_string must occur once unless replace_all=true. Library edits compile before saving; invalid content preserves the existing file.',
       parameters: {
         type: 'object',
         properties: {
-          file_path: { type: 'string', description: `Full workspace-relative path under ${WORK_DIR}/, e.g. "${WORK_DIR}/analysis.jq".` },
+          path: { type: 'string', description: 'Source address: oks://work/<file> or oks://memory/tools/ktools.lib.jq.' },
           old_string: { type: 'string', description: 'The exact text to replace (must occur verbatim).' },
           new_string: { type: 'string', description: 'What to put in its place.' },
           replace_all: { type: 'boolean', description: 'Replace every occurrence instead of requiring uniqueness. Default false.' },
         },
-        required: ['file_path', 'old_string', 'new_string'],
+        required: ['path', 'old_string', 'new_string'],
         additionalProperties: false,
       },
       output: { schema: OBJECT_OUTPUT, render: renderWorkEdit },
       async execute(args: WorkEditArgs, exec: ToolExec) {
         const entry = knowledge.ensureWorkspace(exec);
-        const saved = editWorkFile(entry.settings.workspaceRoot, args?.file_path, args?.old_string,
-      args?.new_string, args?.replace_all, 'work_edit');
-        log(`[oks] work_edit ${saved.file} · 替换 ${saved.replaced} 处 · ${(saved.bytes / 1024).toFixed(1)} KB`);
+        const root=entry.settings.workspaceRoot;
+        const candidate=prepareWorkEdit(root,args?.path,args?.old_string,args?.new_string,args?.replace_all,'oks_edit');
+        if(candidate.file===KTOOLS_FILE)await ktools.validate(candidate.body,KTOOLS_FILE,exec.signal);
+        if(readWorkText(root,candidate.file,'oks_edit').text!==candidate.original)throw new Error('File changed while validating; read and retry');
+        writeWorkFile(root,candidate.file,candidate.body,'oks_edit');
+        const saved={file:candidate.file,replaced:candidate.replaced,bytes:candidate.bytes};
+        log(`[oks] oks_edit ${saved.file} · 替换 ${saved.replaced} 处 · ${(saved.bytes / 1024).toFixed(1)} KB`);
         return { ok: true as const, ...saved };
       },
     },
     {
-      name: 'work_list',
-      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. List the files in ${WORK_DIR}/ — name, size and when each was last written. The work area holds DARI answer drafts, standalone knowledge jq programs and scratch files. Use it when a name is in doubt, or before deleting something.`,
-      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      name: 'oks_list',
+      description: 'List oks://work/ scratch files and the existing persistent oks://memory/tools/ktools.lib.jq library: path, size and modification time.',
+      parameters: { type: 'object', properties: {path:{type:'string'}}, additionalProperties: false },
       output: { schema: OBJECT_OUTPUT, render: renderValue },
-      async execute(_args: unknown, exec: ToolExec) {
+      async execute(args:{path?:unknown}, exec: ToolExec) {
         const entry = knowledge.ensureWorkspace(exec);
-        const files = listWorkFiles(entry.settings.workspaceRoot);
+        const path=args?.path;
+        const dirs=[WORK_URI,MEMORY_URI,MEMORY_URI+'tools/','oks://builtin/','oks://builtin/tools/'];
+        if(path!==undefined&&!dirs.includes(path as string))throw new Error('path must be an OKS source directory');
+        const all=listWorkFiles(entry.settings.workspaceRoot).map(file=>({...file,name:sourceUri(file.name)}));
+        if(typeof path==='string'&&path.startsWith('oks://builtin/'))all.push({name:KTOOLS_BUILTIN,bytes:Buffer.byteLength(builtinKtoolsSource),modifiedAt:''});
+        const files=all.filter(file=>path===undefined||file.name.startsWith(path as string));
         return { ok: true as const, files, count: files.length };
       },
     },
     {
-      name: 'work_delete',
-      description: `Only files under the workspace-relative ${WORK_DIR}/ directory are accessible to work_* tools for reading, writing, editing, listing or deletion. Delete one file under ${WORK_DIR}/ — how a file you no longer need goes away (a jq program, a report body, any scratch file). It deletes files only: empty a directory first if you want it gone. The receipt says which file went and how many are left in ${WORK_DIR}/. Deleting a file does not cost provenance: a jq program's text is recorded in the source chain of whatever used it, so what is lost is only the ability to run it again.`,
+      name: 'oks_delete',
+      description: 'Delete one file in oks://work/ or explicitly delete oks://memory/tools/ktools.lib.jq. The persistent library is only removed by explicit deletion; automatic cleanup retains it.',
       parameters: {
         type: 'object',
         properties: {
-          file_path: { type: 'string', description: `Full workspace-relative path under ${WORK_DIR}/, e.g. "${WORK_DIR}/analysis.jq".` },
+          path: { type: 'string', description: 'Source address: oks://work/<file> or oks://memory/tools/ktools.lib.jq.' },
         },
-        required: ['file_path'],
+        required: ['path'],
         additionalProperties: false,
       },
       output: { schema: OBJECT_OUTPUT, render: renderWorkDelete },
       async execute(args: WorkDeleteArgs, exec: ToolExec) {
         const entry = knowledge.ensureWorkspace(exec);
-        const removed = deleteWorkFile(entry.settings.workspaceRoot, args?.file_path);
-        log(`[oks] work_delete ${removed.file} · 还剩 ${removed.remaining} 个文件`);
+        const removed = deleteWorkFile(entry.settings.workspaceRoot, args?.path);
+        log(`[oks] oks_delete ${removed.file} · 还剩 ${removed.remaining} 个文件`);
         return { ok: true as const, ...removed };
       },
     },
     {
       name: 'va_ask',
-      description: 'Consult this session\'s vocabulary helper and get its answer back: send one paraphrase — a word, a phrase or a sentence, any language — and you receive the vocabulary\'s own equivalent or near expressions, one per line and verbatim. The helper holds the whole vocabulary in its system prompt, so the first call sets it up and takes longer; each later call is one question. Treat what it returns as leads: look the strings up with oks_knowledge jq builtin://knowledge/search.jq and read declarations with oks_knowledge; read.jq resolves the exact returned address and pairs facts with descriptions.',
+      description: 'Consult this session\'s vocabulary helper and get its answer back: send one paraphrase — a word, a phrase or a sentence, any language — and you receive the vocabulary\'s own equivalent or near expressions, one per line and verbatim. The helper holds the whole vocabulary in its system prompt, so the first call sets it up and takes longer; each later call is one question. Treat what it returns as leads: look the strings up with oks_data input=oks://knowledge method oks://builtin/tools/ktools.lib.jq#search and read declarations with oks_data; read resolves the exact returned address and pairs facts with descriptions.',
       parameters: {
         type: 'object',
         properties: {
@@ -310,6 +326,6 @@ export function createTools({ knowledge, va, timeContext, log }: {
     },
   ];
 
-  const drafts = createDraftTools({ knowledge, timeContext, save: saveAndRecord, readResource: readDataResource });
+  const drafts = createDraftTools({ knowledge, timeContext, save: saveAndRecord, readResource: readDataResource, ktools });
   return Object.assign([...definitions, ...drafts.tools], { dispose: drafts.dispose });
 }

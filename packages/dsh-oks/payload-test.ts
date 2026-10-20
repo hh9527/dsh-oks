@@ -61,9 +61,9 @@ assert.equal(multiError.error.actualBytes, 17000);
 assert.equal(JSON.parse(render(result('中'.repeat(6000)))).shape.size, 6000);
 
 // 通用工具按自身结构摘要；字段数、嵌套键名与诊断文本都受约束。
-const generic = JSON.parse(render({ ok: true, lines: data.fact }, definition('work_read', renderValue)));
+const generic = JSON.parse(render({ ok: true, lines: data.fact }, definition('oks_read', renderValue)));
 assert.deepEqual(generic.shape.keys, ['lines', 'ok']);
-assert.equal(generic.error.tool, 'work_read');
+assert.equal(generic.error.tool, 'oks_read');
 const wide = Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`field_${i}`, 'PRIVATE_CONTENT'.repeat(i + 1)]));
 const wideError = JSON.parse(render(result(wide)));
 assert.equal(wideError.shape.size, 100);

@@ -1,5 +1,7 @@
+import { sourcePath, LIBRARY_PATH } from './resource-path.ts';
+import { KTOOLS_FILE, KTOOLS_INITIAL_SOURCE } from './ktools-path.ts';
 import { createHash } from 'node:crypto';
-import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync,
+import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync,
   writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { errorText, isRecord } from './host.ts';
@@ -848,10 +850,20 @@ export function workspaceFilePath(root: string, raw: unknown): string {
   return target;
 }
 
-/** `.work/` 文件统一使用完整相对路径，并逐次验证真实边界。 */
+/** 工作文件与唯一持久库均使用完整相对路径，并逐次验证真实边界。 */
 export function workPath(root: string, raw: unknown, tool: string): { rel: string; full: string } {
+  const given=raw;
+  raw=sourcePath(raw);
   validateFilePath(raw);
-  if (!raw.startsWith(`${WORK_DIR}/`)) throw new Error(`${tool} 需要 ${WORK_DIR}/ 下的完整相对文件路径，例如 .work/analysis.jq`);
+  if (raw === LIBRARY_PATH) {
+    if(given!==KTOOLS_FILE)throw new Error(`Use ${KTOOLS_FILE} for the persistent library`);
+    for (const part of ['memory','memory/oks','memory/oks/tools',LIBRARY_PATH]) {
+      try { if(lstatSync(resolve(root,part)).isSymbolicLink()) throw new Error(`${tool}: library symlinks are not allowed`); }
+      catch(error) { if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error; }
+    }
+    return {rel:given as string,full:workspaceFilePath(root,raw)};
+  }
+  if (!raw.startsWith(`${WORK_DIR}/`)) throw new Error(`${tool} 需要 oks://work/ 下的完整文件地址，例如 oks://work/analysis.jq`);
   const full = workspaceFilePath(root, raw);
   const base = resolve(root, WORK_DIR);
   if (existsSync(base)) {
@@ -861,7 +873,7 @@ export function workPath(root: string, raw: unknown, tool: string): { rel: strin
     const inside = relative(realBase, realpathSync(candidate));
     if (inside.startsWith('..') || isAbsolute(inside)) throw new Error(`${tool} 路径经符号链接越出 ${WORK_DIR}/。`);
   }
-  return { rel: raw, full };
+  return { rel: given as string, full };
 }
 
 /** `.work/` 里的现有文件（按名字排序）：agent 换会话回来时先看这个。 */
@@ -875,9 +887,9 @@ export function listWorkFiles(root: string): Array<{ name: string; bytes: number
       .map((entry) => entry.name)
       .sort();
   } catch {
-    return [];
+    entries=[];
   }
-  return entries.map((name) => {
+  const files=entries.map((name) => {
     const info = statSync(join(base, name));
     return {
       name: `${WORK_DIR}/${name}`,
@@ -885,12 +897,18 @@ export function listWorkFiles(root: string): Array<{ name: string; bytes: number
       modifiedAt: new Date(info.mtimeMs).toISOString().replace(/\.\d{3}Z$/, 'Z'),
     };
   });
+  const library=workPath(root,KTOOLS_FILE,'oks_list');
+  if(existsSync(library.full)) {
+    const info=statSync(library.full);
+    files.push({name:KTOOLS_FILE,bytes:info.size,modifiedAt:info.mtime.toISOString().replace(/\.\d{3}Z$/, 'Z')});
+  }
+  return files;
 }
 
 /** 把父目录建出来，再做一次真实路径复核（父目录若是符号链接指向 `.work/` 外面，这里就挡住）。 */
 function ensureInsideWork(root: string, target: string): void {
   mkdirSync(dirname(target), { recursive: true });
-  const base = realpathSync(resolve(root, WORK_DIR));
+  const base = realpathSync(resolve(root, relative(root,target)===LIBRARY_PATH?dirname(LIBRARY_PATH):WORK_DIR));
   const real = realpathSync(dirname(target));
   const inside = relative(base, real);
   if (inside.length > 0 && (inside.startsWith('..') || isAbsolute(inside))) {
@@ -906,15 +924,15 @@ function ensureInsideWork(root: string, target: string): void {
  *  没有"独占创建"这条规矩——`edit` 与重写是它迭代代码的方式）。 */
 /** 删一份 `.work/` 下的文件。只删文件——目录要先把它里面的文件删掉。 */
 export function deleteWorkFile(root: string, raw: unknown): { file: string; remaining: number } {
-  const { rel, full } = workPath(root, raw, 'work_delete');
+  const { rel, full } = workPath(root, raw, 'oks_delete');
   let info: ReturnType<typeof statSync>;
   try {
     info = statSync(full);
   } catch {
-    throw new Error(`work_delete 找不到 ${rel}。`);
+    throw new Error(`oks_delete 找不到 ${rel}。`);
   }
   if (!info.isFile()) {
-    throw new Error(`work_delete 只能删文件：${rel} 是一个目录（先删它里面的文件）。`);
+    throw new Error(`oks_delete 只能删文件：${rel} 是一个目录（先删它里面的文件）。`);
   }
   unlinkSync(full);
   return { file: rel, remaining: listWorkFiles(root).length };
@@ -945,19 +963,13 @@ export function readWorkText(root: string, raw: unknown, tool: string): { text: 
   return { text, file: rel };
 }
 
-export function editWorkFile(root: string, path: unknown, old: unknown, next: unknown, replaceAll: unknown, tool: string): {
-  file: string; replaced: number; bytes: number;
+export function prepareWorkEdit(root: string, path: unknown, old: unknown, next: unknown, replaceAll: unknown, tool: string): {
+  file: string; replaced: number; bytes: number; body:string; original:string;
 } {
-  const { rel, full } = workPath(root, path, tool);
+  const { rel } = workPath(root, path, tool);
   if (typeof old !== 'string' || old === '') throw new Error(`${tool} 需要 old：要替换掉的原样文本`);
   if (typeof next !== 'string') throw new Error(`${tool} 需要 new：替换成什么`);
-  let text: string;
-  try {
-    text = readFileSync(full, 'utf8');
-  } catch {
-    throw new Error(`读不到 ${rel}`
-      + `。要改它先 work_write 写出这个文件；材料、图表件与报告由工具生成，不在 ${WORK_DIR}/ 下。`);
-  }
+  const {text}=readWorkTextWhole(root,path,tool);
   const parts = text.split(old);
   const replaced = parts.length - 1;
   if (replaced === 0) {
@@ -972,8 +984,13 @@ export function editWorkFile(root: string, path: unknown, old: unknown, next: un
   if (bytes > WORK_MAX_BYTES) {
     throw new Error(`改完是 ${(bytes / 1024).toFixed(0)} KB，超过 ${WORK_DIR}/ 单份文件的上限。`);
   }
-  writeFileSync(full, body);
-  return { file: rel, replaced, bytes };
+  return { file: rel, replaced, bytes, body, original:text };
+}
+
+export function editWorkFile(root:string,path:unknown,old:unknown,next:unknown,replaceAll:unknown,tool:string) {
+  const prepared=prepareWorkEdit(root,path,old,next,replaceAll,tool);
+  writeWorkFile(root,prepared.file,prepared.body,tool);
+  return {file:prepared.file,replaced:prepared.replaced,bytes:prepared.bytes};
 }
 
 /** 读 `.work/` 下**一整份文本文件**：`readWorkFile`（给 agent 看的行窗口）与报告正文都用它。
@@ -982,10 +999,10 @@ function readWorkTextWhole(root: string, path: unknown, tool: string): { rel: st
   const { rel, full } = workPath(root, path, tool);
   let text: string;
   try {
-    text = readFileSync(full, 'utf8');
+    text = rel===KTOOLS_FILE&&!existsSync(full)?KTOOLS_INITIAL_SOURCE:readFileSync(full, 'utf8');
   } catch {
     throw new Error(`读不到 ${rel}`
-      + `。材料、图表件与报告不在 ${WORK_DIR}/ 下：要读它们用 oks_data（用 project 或 jq 取一段）；`
+      + `。材料、图表件与报告不在 ${WORK_DIR}/ 下：要读它们用 oks_data（用 pointer、project 或 method 取一段）；`
       + `${WORK_DIR}/ 只装你自己写的文件。`);
   }
   const bytes = Buffer.byteLength(text, 'utf8');
@@ -1000,6 +1017,10 @@ export function readWorkFile(root: string, path: unknown, offset: unknown, limit
   file: string; lines: string[]; from: number; total: number; bytes: number;
 } {
   const { rel, text } = readWorkTextWhole(root, path, tool);
+  return readTextLines(text,rel,offset,limit,tool);
+}
+
+export function readTextLines(text:string,rel:string,offset:unknown,limit:unknown,tool:string) {
   const all = text.replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n');
   const from = offset === undefined ? 1 : offset;
   if (typeof from !== 'number' || !Number.isInteger(from) || from < 1) {
@@ -1034,7 +1055,7 @@ export const isCodeFile = (name: string): boolean => name.endsWith('.jq');
  *
  *  为什么代码只走文件、不进参数：内层语言（jq）与外层序列化（JSON）的语法长得像，模型一进
  *  "代码模式"就会把 jq 的 `{a: b}` 直接写成 JSON 值（实测 13 次整轮失败里有 3 次是这样）。
- *  参数里只留一个文件名，两侧语法就不再相邻；程序本身用 `work_write` 写、`work_edit` 增量改，
+ *  参数里只留一个文件名，两侧语法就不再相邻；程序本身用 `oks_write` 写、`oks_edit` 增量改，
  *  还能回读、报错能带上下文。 */
 export function readCodeFile(root: string, raw: unknown): { text: string; file: string } {
   const { rel, full } = workPath(root, raw, 'jq.src');
@@ -1046,7 +1067,7 @@ export function readCodeFile(root: string, raw: unknown): { text: string; file: 
     text = readFileSync(full, 'utf8');
   } catch {
     throw new Error(`读不到 ${rel}`
-      + `。jq.src 只认 ${WORK_DIR}/ 下的 .jq：先用 work_write 写出这个程序。`);
+      + `。jq.src 只认 ${WORK_DIR}/ 下的 .jq：先用 oks_write 写出这个程序。`);
   }
   const bytes = Buffer.byteLength(text);
   if (bytes > CODE_MAX_BYTES) {

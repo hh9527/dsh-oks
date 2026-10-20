@@ -37,6 +37,7 @@ export class JaqCompileError extends Error {
   constructor(message:string,diagnostics:JaqDiagnostic[] = []) { super(message);this.name='JaqCompileError';this.diagnostics=diagnostics; }
 }
 
+export type JaqLibraryCheck = {cached:boolean;methods:{name:string;args:string[];start:number;end:number}[]};
 export type JaqCheckOptions = Pick<JaqOptions, 'timeoutMs' | 'signal' | 'programFile'>;
 
 /** 引擎的位置：与 `index.mjs` 同目录（profile 里是 `link:` 装的，运行时就是这个 `lib/`）。 */
@@ -155,6 +156,16 @@ export function createJaqEngine(wasmPath = enginePath()) {
     }
     return result.data as { cached: boolean };
   };
+  const checkLibrary=async(source:string,options:JaqCheckOptions):Promise<JaqLibraryCheck>=>{
+    if(options.signal?.aborted)throw new Error('aborted');
+    const target=worker??spawn();
+    const reply=await send(target,{kind:'library',program:source,path:options.programFile??''},options);
+    if(reply.status===1)throw new JaqCompileError(reply.message);
+    if(reply.status===3)throw new JaqCompileError(reply.data.message,reply.data.diagnostics);
+    const result=outcome(reply);
+    if(!result.ok||!result.data||typeof result.data!=='object'||!Array.isArray((result.data as JaqLibraryCheck).methods))throw new Error('Invalid jq library check response');
+    return result.data as JaqLibraryCheck;
+  };
   // 每个知识执行器只绑定一份文档。Promise 成功后保留，失败移除，随实例失效。
   const runDocument = async (query: string, document: unknown, options: JaqOptions): Promise<JaqOutcome> => {
     if (options.signal?.aborted === true) throw new Error('aborted');
@@ -180,11 +191,12 @@ export function createJaqEngine(wasmPath = enginePath()) {
   const dispose = (): void => {
     if (worker !== null) discard(worker, new Error('jaq 引擎已释放'));
   };
-  return { run, runDocument, check, dispose };
+  return { run, runDocument, check, checkLibrary, dispose };
 }
 
 const calculator = createJaqEngine();
 /** 程序正文由调用方读取一次，programFile 仅用于诊断定位。 */
 export const runJaq = calculator.run;
 export const checkJaq = calculator.check;
+export const checkJaqLibrary = calculator.checkLibrary;
 export const disposeJaqEngine = calculator.dispose;

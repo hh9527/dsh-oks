@@ -1,3 +1,4 @@
+import { createKtools, type Ktools } from '../ktools.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -8,8 +9,8 @@ import { isRecord } from '../host.ts';
 import type { Knowledge, WorkspaceEntry } from '../knowledge.ts';
 import type { TimeContext } from '../time-context.ts';
 import type { ContextTimeZone } from '../time.ts';
-import { builtinCode, toolResource } from '../knowledge-programs.ts';
-import { embedChartInput, isResultColumn, readCodeFile, readWorkText } from '../results.ts';
+import { toolResource } from '../knowledge-programs.ts';
+import { embedChartInput, isResultColumn, readWorkText } from '../results.ts';
 import type { SaveArtifactOptions } from '../results.ts';
 import { createDraftBackend } from './backend.ts';
 import { chartTitle, type ChartSpec } from '../chart/spec.ts';
@@ -61,8 +62,10 @@ export function createDraftTools(options: {
   timeContext: TimeContext;
   save: (entry: WorkspaceEntry, value: Omit<SaveArtifactOptions, 'root'>) => { asset: string; at: string };
   readResource: (root: string, input: string) => { value: unknown };
+  ktools?: Ktools;
   backend?: (entry: WorkspaceEntry, file: string, zone: () => ContextTimeZone) => DraftBackend;
 }) {
+  const ktools=options.ktools??createKtools();
   const records = new Map<string, RecordState>();
   const anonymousSessions = new WeakMap<object, string>();
   const delivered = new Map<string, { asset: string; at: string }>();
@@ -179,7 +182,7 @@ export function createDraftTools(options: {
       output: { schema: OBJECT, render: (_args: unknown, value: { reply?: string }) => [{ type: 'text', text: JSON.stringify({ ...value, reply: undefined }) + (value.reply ? '\n\n' + value.reply : '') }] },
       async execute(args: { src?: unknown; answer?: unknown; delivery?: unknown; refresh?: unknown }, exec: ToolExec) {
         assertKeys(args, ['src', 'answer', 'delivery', 'refresh']);
-        if (typeof args.src !== 'string' || !args.src.endsWith('.dari')) throw new Error('src must be a .work/*.dari report path; migrate Markdown explicitly');
+        if (typeof args.src !== 'string' || !args.src.endsWith('.dari')) throw new Error('src must be a oks://work/*.dari report path; migrate Markdown explicitly');
         if (args.answer !== undefined && typeof args.answer !== 'string') throw new Error('answer must be a binding name');
         if (args.delivery !== undefined && !['reply', 'artifact'].includes(String(args.delivery))) throw new Error('delivery must be reply or artifact');
         if (args.refresh !== undefined && typeof args.refresh !== 'boolean') throw new Error('refresh must be boolean');
@@ -246,12 +249,12 @@ export function createDraftTools(options: {
     },
     {
       name:'renew_context',
-      description:'Reset the acquisition batch of one .work/*.dari source in the current session. Does not execute the draft or query the database. The next run captures a new context and query results; deterministic query plans remain reusable. Existing outputs become unavailable until the next run.',
+      description:'Reset the acquisition batch of one oks://work/*.dari source in the current session. Does not execute the draft or query the database. The next run captures a new context and query results; deterministic query plans remain reusable. Existing outputs become unavailable until the next run.',
       parameters:{type:'object',properties:{src:{type:'string'}},required:['src'],additionalProperties:false},
       output,
       async execute(args:{src?:unknown},exec:ToolExec){
         assertKeys(args,['src']);
-        if(typeof args.src!=='string'||!args.src.endsWith('.dari'))throw new Error('src must be a .work/*.dari report path');
+        if(typeof args.src!=='string'||!args.src.endsWith('.dari'))throw new Error('src must be a oks://work/*.dari report path');
         const entry=options.knowledge.ensureWorkspace(exec);
         const read=readWorkText(entry.root,args.src,'renew_context');
         const record=recordFor(entry,exec,read.file,true);
@@ -262,62 +265,61 @@ export function createDraftTools(options: {
     },
     {
       name: 'oks_data',
-      description: 'Read existing output only: input=".work/draft.dari#binding", #debug for the debug index, or #debug/1 for one output. Also reads existing artifact data. Does not execute, refresh, transform or save. query plans contain {columns}; exec_query outputs contain {rows,columns,truncated}; pointer="/columns" reads model-declared {name,type,nullable}. Optional JSON Pointer selects an existing subtree; offset/limit page arrays or object members. Edits mark retained output stale; failed/removed latest bindings never fall back to older success. Read oks://help/... resources with oks_knowledge.',
-      parameters: { type: 'object', properties: { input: { type: 'string' }, pointer: { type: 'string' }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 100 }, meta: { type: 'boolean' } }, required: ['input'], additionalProperties: false },
+      description: 'Read structured resources: oks://knowledge is the datasets/types/relations/tools/items graph; oks://help/{knowledge,query,time,render} provides usage knowledge; oks://work/draft.dari#binding reads retained output (#debug and #failures index diagnostics); artifacts paths read delivered data. Select exactly one view: pointer with offset/limit, project, or method plus args. Method addresses are oks://builtin/tools/ktools.lib.jq#search (also read/members/references) or oks://memory/tools/ktools.lib.jq#name. Methods receive the selected resource value directly. Pure reading/computation: never executes SQL, runs drafts, refreshes or saves. Read the persistent method library first with oks_read. Query plans expose {columns}; query results expose {rows,columns,truncated}.',
+      parameters:{type:'object',properties:{input:{type:'string'},pointer:{type:'string'},offset:{type:'integer',minimum:0},limit:{type:'integer',minimum:1,maximum:100},meta:{type:'boolean'},project:{},method:{type:'string'},args:{type:'object'}},required:['input'],additionalProperties:false},
       output,
-      async execute(args: { input?: unknown; pointer?: unknown; offset?: unknown; limit?: unknown; meta?: unknown }, exec: ToolExec) {
-        assertKeys(args, ['input', 'pointer', 'offset', 'limit', 'meta']);
-        if (typeof args.input !== 'string') throw new Error('input must be one existing output or artifact reference');
-        if (args.meta !== undefined && typeof args.meta !== 'boolean') throw new Error('meta must be boolean');
-        const entry = options.knowledge.ensureWorkspace(exec);
-        const match = /^(\.work\/.+\.dari)#([^#]+)$/.exec(args.input);
-        if (match) {
-          const read = readWorkText(entry.root, match[1], 'oks_data');
-          const record = recordFor(entry, exec, read.file, false);
-          if (match[2] === 'debug' || match[2] === 'failures') {
-            const described = record.runtime.describe(read.text);
-            const data = described.outputs.filter(output => match[2]==='failures' ? output.status==='failed'||output.status==='blocked' : output.name.startsWith('debug/')).map(output => ({ ...output, ...(match[2]==='debug'?{input: `${read.file}#${output.name}`}:{}) }));
+      async execute(args:{input?:unknown;pointer?:unknown;offset?:unknown;limit?:unknown;meta?:unknown;project?:unknown;method?:unknown;args?:unknown},exec:ToolExec) {
+        assertKeys(args,['input','pointer','offset','limit','meta','project','method','args']);
+        if(typeof args.input!=='string')throw new Error('input must identify one structured resource');
+        if(args.meta!==undefined&&typeof args.meta!=='boolean')throw new Error('meta must be boolean');
+        const ranged=args.pointer!==undefined||args.offset!==undefined||args.limit!==undefined;
+        if(Number(ranged)+Number(args.project!==undefined)+Number(args.method!==undefined)>1)throw new Error('Choose exactly one of pointer/range, project or method');
+        if(args.args!==undefined&&args.method===undefined)throw new Error('args requires method');
+        const resource=args.input;
+        const isKnowledge=resource==='oks://knowledge';
+        const isHelp=resource.startsWith('oks://help/');
+        if((isKnowledge||isHelp)&&args.meta)throw new Error('meta applies to retained outputs or artifacts');
+        // Read help without requiring a configured model or a workspace.
+        let entry:WorkspaceEntry|undefined;
+        const workspace=()=>entry??=options.knowledge.ensureWorkspace(exec);
+        const view=async(data:unknown)=>{
+          if(args.project!==undefined)return {data:createProjector(args.project as ProjectRule)(data as JsonValue)};
+          if(args.method!==undefined){
+            const code=await ktools.program(workspace().settings.workspaceRoot,args.method,args.args,exec.signal);
+            const result=isKnowledge
+              ?await options.knowledge.queryKnowledge(workspace(),code.text,{input:null,timeoutMs:5000,maxBytes:16384,signal:exec.signal,programFile:code.file})
+              :await ktools.run(code.text,{input:data,timeoutMs:5000,maxBytes:16384,signal:exec.signal,programFile:code.file});
+            return result.ok?{data:result.data}:{ok:false,error:'Output exceeds the budget; narrow the view',shape:result.shape};
+          }
+          return readRange(data,args);
+        };
+        if(isKnowledge){
+          if(args.method!==undefined)return {ok:true,model:workspace().modelHash,...await view(null)};
+          const index=await options.knowledge.ensureIndex(workspace());
+          return {ok:true,model:workspace().modelHash,...await view(index.knowledge)};
+        }
+        if(isHelp){
+          const data=toolResource(resource);
+          const indexOnly=resource==='oks://help/query'&&!ranged&&args.project===undefined&&args.method===undefined;
+          return {ok:true,...await view(indexOnly?{topics:Object.keys(data as object)}:data)};
+        }
+        const match=/^((?:oks:\/\/work\/|\.work\/).+\.dari)#([^#]+)$/.exec(resource);
+        if(match){
+          const read=readWorkText(workspace().root,match[1],'oks_data');
+          const record=recordFor(workspace(),exec,read.file,false);
+          if(match[2]==='debug'||match[2]==='failures'){
+            const described=record.runtime.describe(read.text);
+            const data=described.outputs.filter(output=>match[2]==='failures'?output.status==='failed'||output.status==='blocked':output.name.startsWith('debug/')).map(output=>({...output,...(match[2]==='debug'?{input:`${read.file}#${output.name}`}:{})}));
             const {outputs:_outputs,...summary}=described;
-            return { ok: true, ...summary, ...readRange(data, args) };
+            return {ok:true,...summary,...await view(data)};
           }
-          const readValue = record.runtime.read(match[2], read.text);
-          const data = args.meta ? { sources: readValue.value.sources.map(({origin, at, path}) => ({origin, at, path})), run: readValue.run, sourceHash: readValue.sourceHash } : readValue.value.data;
-          return { ok: true, run: readValue.run, sourceHash: readValue.sourceHash, stale: readValue.stale, ...readRange(data, args) };
+          const readValue=record.runtime.read(match[2],read.text);
+          const data=args.meta?{sources:readValue.value.sources.map(({origin,at,path})=>({origin,at,path})),run:readValue.run,sourceHash:readValue.sourceHash}:readValue.value.data;
+          return {ok:true,run:readValue.run,sourceHash:readValue.sourceHash,stale:readValue.stale,...await view(data)};
         }
-        const read = options.readResource(entry.root, args.input + (args.meta && !args.input.endsWith('#meta') ? '#meta' : ''));
-        return { ok: true, ...readRange(read.value, args) };
-      },
-    },
-    {
-      name: 'oks_knowledge',
-      description: 'Discover the semantic knowledge graph before authoring a business draft. Root shape is datasets/types/relations/tools/items. Rendering knowledge: tools/render_figure#kinds/<kind> and #topics/<topic>; XHTML: tools/render_html#topics/references. Use project for a precise graph view, or jq with a .work .jq program or builtin://knowledge/{search,read,members,references}.jq and args. jq input is {knowledge:<graph>}. help reads oks://help/{knowledge,query,time,render} or a builtin descriptor; topic selects one exact help key. time_windows(ctx,{unit,count,mode}) in the draft computes calendar windows. Readonly; no business data, saves or draft computation.',
-      parameters: { type: 'object', properties: { project: {}, jq: { type: 'object', properties: { src: { type: 'string' }, args: { type: 'object' } }, required: ['src'], additionalProperties: false }, help: { type: 'string' }, topic:{type:'string'} }, additionalProperties: false },
-      output,
-      async execute(args: { project?: unknown; jq?: unknown; help?: unknown; topic?: unknown }, exec: ToolExec) {
-        assertKeys(args, ['project', 'jq', 'help', 'topic']);
-        if (Object.keys(args).filter(key=>key!=='topic').length !== 1) throw new Error('Choose exactly one of project, jq or help');
-        if (typeof args.help === 'string') {
-          const resource = toolResource(args.help);
-          if (args.topic !== undefined) {
-            if (typeof args.topic !== 'string' || !isRecord(resource) || !Object.hasOwn(resource, args.topic)) throw new Error('Unknown help topic');
-            return {ok:true,data:resource[args.topic]};
-          }
-          return {ok:true,data:args.help==='oks://help/query' && isRecord(resource) ? {topics:Object.keys(resource)} : resource};
-        }
-        if (args.topic !== undefined) throw new Error('topic requires help');
-        const entry = options.knowledge.ensureWorkspace(exec);
-        if (args.project !== undefined) {
-          const project = createProjector(args.project as ProjectRule);
-          const index = await options.knowledge.ensureIndex(entry);
-          return { ok: true, model: entry.modelHash, data: project(index.knowledge as unknown as JsonValue) };
-        }
-        if (!isRecord(args.jq) || typeof args.jq.src !== 'string' || Object.keys(args.jq).some(key => !['src', 'args'].includes(key))) throw new Error('jq must be {src,args?}');
-        const builtin = args.jq.src.startsWith('builtin://knowledge/');
-        if (!builtin && args.jq.args !== undefined) throw new Error('jq.args is for builtin programs');
-        const code = builtin ? builtinCode(args.jq.src, args.jq.args) : readCodeFile(entry.root, args.jq.src);
-        const inputName = builtin && isRecord(args.jq.args) && typeof args.jq.args.input === 'string' ? args.jq.args.input : 'knowledge';
-        const result = await options.knowledge.queryKnowledge(entry, code.text, { input: null, inputName, timeoutMs: 5000, maxBytes: 16384, signal: exec.signal, programFile: code.file });
-        return result.ok ? { ok: true, model: entry.modelHash, data: result.data } : { ok: false, error: 'Knowledge output exceeds the budget; narrow the view', shape: result.shape };
+        if(resource.startsWith('oks://')&&!resource.startsWith('oks://work/'))throw new Error('Unknown structured resource; use oks_read for source text');
+        const read=options.readResource(workspace().root,resource+(args.meta&&!resource.endsWith('#meta')?'#meta':''));
+        return {ok:true,...await view(read.value)};
       },
     },
   ];

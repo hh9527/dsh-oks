@@ -94,8 +94,8 @@ export function mountPresentationKnowledge(graph:SemanticGraph):void {
     shrink:'data-oks-shrink="" marks interpretation/evaluation text for a shortened preview when reading report structure; attribute presence enables it.',
   });
   topic('render_html','delivery',['交付','reply','artifact'],'template 的 name 是答案名；只有一个时自动选择，多个时 oks_run_answer 使用 answer 指定名字。显式 render_html 绑定也可交付。',{
-    reply:'oks_run_answer({src:".work/draft.dari",delivery:"reply"}) returns native Markdown; default mode',
-    artifact:'oks_run_answer({src:".work/draft.dari",delivery:"artifact"}) delivers a standalone report path',
+    reply:'oks_run_answer({src:"oks://work/draft.dari",delivery:"reply"}) returns native Markdown; default mode',
+    artifact:'oks_run_answer({src:"oks://work/draft.dari",delivery:"artifact"}) delivers a standalone report path',
   });
   topic('render_html','draft',['XHTML 完整示例','答案示例'],'可运行 DARI：精确绑定标量、数组元素、图表与表格。',{dari:presentationExample});
   // 图元到具体用法的分类引用；反向引用由工具生成。
@@ -114,8 +114,8 @@ export function mountPresentationKnowledge(graph:SemanticGraph):void {
 
 export const presentationHelp={
   roots:['tools/render_figure','tools/render_html'],
-  discover:{jq:{src:'builtin://knowledge/search.jq',args:{query:'图表',take:5}}},
+  discover:{input:'oks://knowledge',method:'oks://builtin/tools/ktools.lib.jq#search',args:{query:'图表',take:5}},
   kinds:{project:{tools:{render_figure:{kinds:['Map',{component:'Value',required:'Value',series:'Value',switches:'Value'}]}}}},
-  read:{jq:{src:'builtin://knowledge/read.jq',args:{key:'tools/render_figure#kinds/column'}}},
+  read:{input:'oks://knowledge',method:'oks://builtin/tools/ktools.lib.jq#read',args:{key:'tools/render_figure#kinds/column'}},
   topics:['tools/render_figure#topics/switches','tools/render_figure#topics/spec','tools/render_figure#topics/table_headers','tools/render_figure#topics/nodes','tools/render_figure#topics/draft','tools/render_html#topics/references','tools/render_html#topics/xhtml','tools/render_html#topics/delivery'],
 };

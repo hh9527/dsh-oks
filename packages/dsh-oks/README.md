@@ -8,25 +8,25 @@
 | 工具 | 职责 |
 | --- | --- |
 | `va_ask({query})` | 词汇规整，返回线索，随后核实事实 |
-| `oks_knowledge({project})` / `({jq:{src,args}})` | 在 datasets/types/relations/tools/items 图上精确投影或执行只读知识检索 |
-| `oks_knowledge({help,topic?})` | 读取工具帮助；query 帮助默认列主题，topic 精确选取 |
-| `work_read/write/edit/list/delete` | 只读写 `.work/` 文本文件，参数为完整工作区相对路径 |
-| `oks_run_answer({src,answer?,delivery?,refresh?})` | 执行整份分析稿，复用采集与计算，返回有界反馈及可选答案 |
-| `renew_context({src})` | 重置当前会话中指定稿件的采集批次，不执行；下次运行重新采集 |
-| `oks_data({input,pointer?,offset?,limit?,meta?})` | 只读取已有运行输出或产物数据 |
-| `oks_artifacts({})` | 列出工作区报告；保留/清理由右侧栏操作 |
+| `oks_data({input,pointer?,offset?,limit?})` | 读取已有草稿输出、制品数据、知识图或帮助；JSON Pointer 和范围选择 |
+| `oks_data({input,project})` / `({input,method,args})` | 精确投影或调用只读纯方法，返回 `.data` |
+| `oks_read/write/edit/list/delete` | 管理逻辑源码地址；read 支持内置源码，list 用 path 指定目录 |
+| `oks_run_answer({src,answer?,delivery?,refresh?})` | 执行分析稿并交付答案 |
+| `renew_context({src})` | 重置稿件采集批次，下次运行重新采集 |
+| `oks_artifacts({})` | 列出已交付报告 |
+
 
 业务计算定义在稿件内。`oks_data` 的普通读取视图是 `.data`；meta 显式查看追踪信息。
 
 ## 快速体验
 
-把 [examples/answer.dari](examples/answer.dari) 的内容写到工作区 `.work/draft.dari`，随后：
+把 [examples/answer.dari](examples/answer.dari) 的内容写到工作区 `oks://work/draft.dari`，随后：
 
 ```js
-oks_run_answer({src: ".work/draft.dari"})
-oks_data({input: ".work/draft.dari#summary"})
-oks_data({input: ".work/draft.dari#debug"})
-oks_run_answer({src: ".work/draft.dari", delivery: "artifact"})
+oks_run_answer({src: "oks://work/draft.dari"})
+oks_data({input: "oks://work/draft.dari#summary"})
+oks_data({input: "oks://work/draft.dari#debug"})
+oks_run_answer({src: "oks://work/draft.dari", delivery: "artifact"})
 ```
 
 该示例明确使用演示数据。真实任务应先发现模型能力，在 pipeline 中先用 `query(Intent)` 校验计划，再用 `exec_query(plan)` 取得业务证据。
@@ -88,16 +88,16 @@ let summary = jq("summary.jq", {facts, params});
 ## 知识发现
 
 ```js
-oks_knowledge({project:{datasets:"Shape",types:"Shape"}})
-oks_knowledge({jq:{src:"builtin://knowledge/search.jq",args:{query:"候选词",take:10}}})
-oks_knowledge({jq:{src:"builtin://knowledge/read.jq",args:{key:"返回的地址"}}})
-oks_knowledge({help:"oks://help/query",topic:"graph/filter"})
+oks_data({input:"oks://knowledge",project:{datasets:"Shape",types:"Shape"}})
+oks_data({input:"oks://knowledge",method:"oks://builtin/tools/ktools.lib.jq#search",args:{query:"候选词",take:10}})
+oks_data({input:"oks://knowledge",method:"oks://builtin/tools/ktools.lib.jq#read",args:{key:"返回的地址"}})
+oks_data({input:"oks://help/query",pointer:"/graph~1filter"})
 ```
 
-project 直接作用于图根，jq 输入为 `{knowledge:<图>}`。自定义知识程序为 `.work/*.jq`。
-成员导航用 members.jq，反向引用用 references.jq；next 作为 skip 续页。
+project 直接作用于图根，jq 输入为所选资源的值（知识图直接为 `{datasets,types,relations,tools,items}`）。内置源码可用 `oks_read({path:"oks://builtin/tools/ktools.lib.jq"})` 阅读。自定义方法统一保存在 `oks://memory/tools/ktools.lib.jq`，只含注释及 `def name($args): ...;`，调用地址为 `oks://memory/tools/ktools.lib.jq#name`；保存前编译，错误保留原文件。文件跨会话持久保留，不参与 `.work` 自动清理。
+成员导航用 members，反向引用用 references；next 作为 skip 续页。
 独立地址形如 `datasets/<URI编码ID>`，成员形如 `datasets/<ID>#dimensions/<ID>`；返回地址原样使用。
-字典键是原始 ID。names/doc 与事实分开保存在 items；read.jq 配对读取。
+字典键是原始 ID。names/doc 与事实分开保存在 items；read 配对读取。
 精确选择 types 下的 values 不携带 fields 等分类引用。导航引用不授予查询能力，能力以领域声明为准。
 
 ## 时间与缓存
@@ -110,12 +110,12 @@ debug(months);
 
 complete 为最近 N 个完整期间；current 含当前期间，末端可能在未来；rolling 以捕获时刻为末端按日历回移。
 unit 为 year/quarter/month/week/day，count 为 1..50。周从周一开始，边界分别适用时区/DST 规则。
-细节见 `oks_knowledge({help:"oks://help/time"})`，jq 时间原语使用 epoch 秒。
+细节见 `oks_data({input:"oks://help/time"})`，jq 时间原语使用 epoch 秒。
 
 低成本验证时，稿内只写 `let plan=query(intent); debug(plan.columns);`，确认后加入 `let facts=exec_query(plan);`。计划身份保存在运行器内部，完整绑定可直接引用；JSON 构造、投影和 jq 重构不会生成可执行计划。
 
 反复提交完整源码默认复用本采集批次中相同计划的执行结果；输入计划变化只重采该查询，改 jq 或模板只影响其实际依赖。context 无输入，同批捕获的时间与时区固定。
-`refresh:true` 新建采集批次并立即运行；`renew_context({src:".work/draft.dari"})` 只重置当前会话中指定稿件的批次，下次运行才采集，旧输出暂不可读。编译计划不因采集刷新而失效。批次不代表数据库事务快照，实际采集时间随证据保存。
+`refresh:true` 新建采集批次并立即运行；`renew_context({src:"oks://work/draft.dari"})` 只重置当前会话中指定稿件的批次，下次运行才采集，旧输出暂不可读。编译计划不因采集刷新而失效。批次不代表数据库事务快照，实际采集时间随证据保存。
 运行回执的 acquisitions 摘要包含 acquiredAt、fromRun/fromBatch，以及复用、显式刷新、环境变化等原因；省略项有计数。
 校验缓存包含程序/模型/检查器身份，计算缓存按实际值与环境判断，命中后仍装配本轮真实来源。
 
@@ -126,9 +126,9 @@ unit 为 year/quarter/month/week/day，count 为 1..50。周从周一开始，�
 ## 只读查看与交付
 
 ```js
-oks_data({input:".work/draft.dari#facts",pointer:"/rows",offset:0,limit:5})
-oks_data({input:".work/draft.dari#debug/1"})
-oks_data({input:".work/draft.dari#summary",meta:true})
+oks_data({input:"oks://work/draft.dari#facts",pointer:"/rows",offset:0,limit:5})
+oks_data({input:"oks://work/draft.dari#debug/1"})
+oks_data({input:"oks://work/draft.dari#summary",meta:true})
 ```
 
 pointer 是 JSON Pointer，范围读取支持数组或对象成员，limit 1..100。
@@ -136,7 +136,7 @@ pointer 是 JSON Pointer，范围读取支持数组或对象成员，limit 1..10
 查询的 `truncated` 表示是否还有未返回的行；rows 最多包含请求的 limit 行。
 查询的 `columns` 采用模型声明的 Int/Float/Bool/String/DatetimeUtc/EpochMillis/LocalDateTime，
 保留最终投影顺序与保守 nullable；空结果、全 NULL 不影响声明。运行回执有列预览，完整读取可用
-`oks_data({input:".work/draft.dari#facts",pointer:"/columns"})`，稿内可写 `debug(facts.columns)`。
+`oks_data({input:"oks://work/draft.dari#facts",pointer:"/columns"})`，稿内可写 `debug(facts.columns)`。
 LocalDateTime 是不带时区或偏移量的日期与钟表时间。旧模型未提供 columns 时使用观察类型 `types`。
 
 新的计算、筛选或取样写回稿件再运行。debug 无需人为命名，回执关联原位置，小值直接返回，大值给引用。
@@ -192,7 +192,7 @@ bin/telora -C <模型目录> build <模型名> --snapshot \
   包升成 profile 的 bundle 层，本包自带的 `cordis.patch.yml`（一行顶层 `oks`）跟着生效。
 - **只把工具面放进 preset**：`dsh.profile.bundles` 里不列本包，改在一个 preset 行
   （`@deepseek-ai/dsh-agent-preset`，`config.plugins` 里含 `"@local/dsh-oks"`）里挂载。
-  此时 `oks_*` / `work_*` / `va_ask` 只属于该 preset 的作用域，其它 preset 的会话没有
+  此时 `oks_*` / `oks_*` / `va_ask` 只属于该 preset 的作用域，其它 preset 的会话没有
   这些工具。仓库根的 `install-preset.sh` 一次配好这个形态——初始化 profile、写 `link:` 依赖、在
   该 profile 里装链接、把 preset 追加进 `cordis.patch.yml`，可重复执行，在仓库根直接跑就行：
   `./install-preset.sh`（profile 默认取 `$DSH_PROFILE`，没有就 `web`；`--profile` /
@@ -228,7 +228,7 @@ Rust 需要 wasm32-unknown-unknown target；求值器没有时钟、环境或文
 `tools/render_figure#kinds/<kind>` 提供必填列映射、series 语义、专属开关和可执行示例；
 `tools/render_figure#topics/table_headers` 说明字符串列名与 jq 表头重命名；
 `tools/render_html#topics/references` 说明 XHTML 绑定和点分路径。
-使用 `oks_knowledge({help:"oks://help/render"})` 查看入口，或用知识搜索查“图表”“表头”“data-oks-pick”。
+使用 `oks_data({input:"oks://help/render"})` 查看入口，或用知识搜索查“图表”“表头”“data-oks-pick”。
 每个主题可单独读取；`#topics/draft` 提供完整可运行 DARI 示例。
 
 已有稿件若使用 query 直接取数，可显式迁移并保留原稿：
@@ -238,3 +238,14 @@ node scripts/split-query.ts old.dari new.dari
 ```
 
 该命令将旧 query 调用包装为 exec_query(query(...))；新写的计划探索稿无需迁移。
+
+## 逻辑文件系统
+
+- `oks://work/`：临时草稿与工作文件，物理位置为 `.work/`，按工作区策略回收。
+- `oks://memory/tools/ktools.lib.jq`：持久方法库，物理位置为 `memory/oks/tools/ktools.lib.jq`，跨会话保留。
+- `oks://builtin/tools/ktools.lib.jq`：插件内置方法库，只读。
+- `artifacts/...`：已交付制品，沿用现有路径。
+
+知识发现前先 `oks_read({path:"oks://memory/tools/ktools.lib.jq"})`，复用已有方法，需要时再读内置源码。
+`.lib.jq` 只含注释与 def 定义，保存前编译；方法入口为 `def name($args): ...;`，接收所选资源的值。
+`oks_data` 的 project、method+args、pointer/offset/limit 三种视图互斥。帮助主题通过 JSON Pointer 选择，例如 `/graph~1filter`。

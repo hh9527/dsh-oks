@@ -6,6 +6,7 @@ import { registerHooks } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createKtools } from './src/ktools.ts';
 import { createJaqEngine } from './src/jaq.ts';
 import { saveInputData, saveArtifact } from './src/results.ts';
 import { readReportPage } from './src/report/page.ts';
@@ -29,7 +30,7 @@ let loads=0;
 const knowledge = {ensureWorkspace:()=>entry,ensureIndex:async()=>{loads++;return {knowledge:document};},
   queryKnowledge:(_entry,program,options)=>engine.runDocument(program,document,options)} as Knowledge;
 const timeContext={zones:new Map(),install(){}};
-const definitions=createTools({knowledge,log:()=>{},config:undefined,va:{ask:async()=>{throw new Error('unused');}},timeContext});
+const definitions=createTools({ktools:createKtools(engine.checkLibrary,engine.run),knowledge,log:()=>{},config:undefined,va:{ask:async()=>{throw new Error('unused');}},timeContext});
 const tools=definitions.map(withOutputLimit);
 const exec={agent:{session:{id:'data-test'}}} as ToolExec;
 const call=(name:string,args:unknown)=>tools.find(tool=>tool.name===name)!.execute(args as never,exec) as Promise<any>;
@@ -41,7 +42,7 @@ const drafts=createDraftTools({knowledge,timeContext,
 });
 const draftCall=(name:string,args:unknown)=>drafts.tools.find(tool=>tool.name===name)!.execute(args as never,exec) as Promise<any>;
 const file='.work/report.dari';
-const write=(content:string)=>call('work_write',{file_path:file,content:asDari(content)});
+const write=(content:string)=>call('oks_write',{path:file,content:asDari(content)});
 const payload={rowCount:1,rows:[{name:'A',count:7}]};
 const source=(binding:string,body:string,extra='')=>[
   '# 负荷视图','## pipeline','```js',
@@ -51,19 +52,17 @@ const source=(binding:string,body:string,extra='')=>[
 ].join('\n');
 try {
   mkdirSync(join(root,'.work'));
-  assert.deepEqual(tools.map(tool=>tool.name).sort(),['oks_artifacts','oks_data','oks_knowledge','oks_run_answer','renew_context','va_ask','work_delete','work_edit','work_list','work_read','work_write'].sort());
+  assert.deepEqual(tools.map(tool=>tool.name).sort(),['oks_artifacts','oks_data','oks_run_answer','renew_context','va_ask','oks_delete','oks_edit','oks_list','oks_read','oks_write'].sort());
   await assert.rejects(call('oks_data',{load:{knowledge:'knowledge://'}}),/Expected only/);
   await assert.rejects(call('oks_data',{input:'.work/report.md#fact',save:{name:'escape'}}),/Expected only/);
-  await assert.rejects(call('oks_knowledge',{jq:{src:'.work/missing.jq'}}),/读不到/);
-  await assert.rejects(call('oks_knowledge',{jq:{src:'../outside.jq'}}),/完整文件路径/);
+  await assert.rejects(call('oks_data',{input:'oks://knowledge',method:'.work/missing.jq#read'}),/library|method must/);
+  await assert.rejects(call('oks_data',{input:'oks://knowledge',method:'../outside.jq#read'}),/library|method must/);
   assert.equal(loads,0,'非法程序路径不加载知识');
-  assert.deepEqual((await call('oks_knowledge',{project:{datasets:'Value'}})).data,{datasets:document.datasets});
-  writeFileSync(join(root,'.work/null.jq'),'null');
-  assert.equal((await call('oks_knowledge',{jq:{src:'.work/null.jq'}})).data,null,'合法 null 保持为完整值');
-  writeFileSync(join(root,'.work/names.jq'),'keys');
-  assert.deepEqual((await call('oks_knowledge',{jq:{src:'.work/names.jq'}})).data,['knowledge']);
-  writeFileSync(join(root,'.work/large.jq'),'[range(100000)]');
-  const tooLarge=await call('oks_knowledge',{jq:{src:'.work/large.jq'}});
+  assert.deepEqual((await call('oks_data',{input:'oks://knowledge',project:{datasets:'Value'}})).data,{datasets:document.datasets});
+  await call('oks_write',{path:'oks://memory/tools/ktools.lib.jq',content:'def nil($args): null; def names($args): keys; def large($args): [range(100000)];'});
+  assert.equal((await call('oks_data',{input:'oks://knowledge',method:'oks://memory/tools/ktools.lib.jq#nil'})).data,null,'合法 null 保持为完整值');
+  assert.deepEqual((await call('oks_data',{input:'oks://knowledge',method:'oks://memory/tools/ktools.lib.jq#names'})).data,['datasets','items','relations','types']);
+  const tooLarge=await call('oks_data',{input:'oks://knowledge',method:'oks://memory/tools/ktools.lib.jq#large'});
   assert.equal(tooLarge.ok,false);assert.deepEqual(tooLarge.shape,{type:'array',size:100000});
   assert.equal(readdirSync(root).includes('.oks'),false,'只读知识与失败不创建材料');
 
@@ -111,7 +110,7 @@ try {
   const report=readReportPage(html);assert.ok(!('error' in report));
   assert.ok(Object.values(report.assets).some(code=>code.trim()==='.fact.rows[0].count'));
   assert.ok(Object.values(report.origin.nodes).some(node=>node.snipFile===file+'#select.jq'));
-  await call('work_delete',{file_path:file});
+  await call('oks_delete',{path:file});
   assert.equal((await call('oks_data',{input:result.delivery.asset})).data.items.selected,7,'源码删除后自足报告仍可读取');
   console.log('data boundary: readonly knowledge/data, budgets, pagination, projected report payloads and archived jq provenance passed');
 } finally {definitions.dispose();drafts.dispose();engine.dispose();rmSync(root,{recursive:true,force:true});}
