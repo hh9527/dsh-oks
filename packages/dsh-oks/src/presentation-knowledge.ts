@@ -38,9 +38,10 @@ export const presentationExample = [
  '</Pipeline>',
  '<Asset language="jq" name="headers.jq">',tableHeaderExample.jq,'</Asset>',
  '<Asset language="jq" name="summary.jq">','{total:(.facts.rows | map(.count) | add),rows:.facts.rows}','</Asset>',
- '<Template name="answer">',
- '<article><h1>示例结果</h1><p>数量：<Value data={summary.total} /></p><p>首项：<Value data={summary.rows[0].level} /></p><figure><ColumnChart spec={chartSpec} data={rows} /><figcaption>类别比较</figcaption></figure><figure><Table spec={tableSpec} data={rows} /><figcaption>明细</figcaption></figure></article>',
- '</Template></Dari>',
+ '<Figures><ColumnChart name="comparison" spec={chartSpec} data={rows} /><Table name="details" spec={tableSpec} data={rows} /></Figures>',
+ '<Report name="answer">',
+ '<article><h1>示例结果</h1><p>数量：<Value data={summary.total} /></p><p>首项：<Value data={summary.rows[0].level} /></p><figure><Figure ref="comparison" /><figcaption>类别比较</figcaption></figure><figure><Figure ref="details" /><figcaption>明细</figcaption></figure></article>',
+ '</Report></Dari>',
 ].join('\n');
 
 /** 挂载一次；items 只放名称与说明，事实与示例留在可独立投影的分支。 */
@@ -52,8 +53,8 @@ export function mountPresentationKnowledge(graph:SemanticGraph):void {
     add(key,names,doc);
   };
   graph.tools={
-    render_figure:{signature:'<figure><Component spec={spec} data={rows} /><figcaption>说明</figcaption></figure>',pipelineSignature:'render_figure({kind,...spec},{data:rows,nodes?:rows})',input:'data accepts rows[] or {rows:[...]}; nodes is only used by graph',kinds:{},topics:{},related:{tools:['tools/render_html']}},
-    render_html:{signature:'<Template name="answer"><article>...</article></Template>',pipelineSignature:'render_html("answer.xhtml",{binding:value,...})',topics:{},related:{tools:['tools/render_figure']}},
+    render_figure:{signature:'<Figures><ColumnChart name="comparison" spec={spec} data={rows} /></Figures>',pipelineSignature:'render_figure({kind,...spec},{data:rows,nodes?:rows})',input:'data accepts rows[] or {rows:[...]}; nodes is only used by graph',kinds:{},topics:{},related:{tools:['tools/render_html']}},
+    render_html:{signature:'<Report name="answer"><article>...</article></Report>',pipelineSignature:'render_html("answer.xhtml",{binding:value,...})',topics:{},related:{tools:['tools/render_figure']}},
   };
   add('tools/render_figure',['图表','图形','表格','呈现','render_figure'],'生成图表或表格。kinds 提供逐图元的必填映射、series 语义、专属开关及最小示例；topics 提供规格、表头与完整分析稿。');
   add('tools/render_html',['答案模板','XHTML','报告','render_html'],'使用严格 XHTML 绑定标量和图表，生成答案。topics 提供引用、路径、数值声明、交付和完整示例。');
@@ -75,27 +76,27 @@ export function mountPresentationKnowledge(graph:SemanticGraph):void {
     aggregation:'Prepare unique (x,series) rows for grouped categorical charts in query/jq; repeated cells keep the last valid numeric value, they are not aggregated. Missing combinations remain absent.',
   });
   topic('render_figure','table_headers',['表头','中文列名','columns','label'],'表格 columns 只接受字符串列名数组；表头取数据键名。用 jq 重命名后再选列；{key,label} 会报错。',{example:tableHeaderExample});
-  topic('render_figure','nodes',['关系图节点表','nodes'],'graph 的输入 nodes 必填；边的起终点使用节点 id。每个节点应提供 depth，或同时提供 x/y 固定坐标。',{fields:{id:'node ID',label:'optional display name',depth:'numeric layer',x:'optional coordinate with y',y:'optional coordinate with x',category:'optional color category',status:'focus emphasizes node or edge'},call:'<figure><NetworkGraph spec={spec} data={edges} nodes={nodes} /></figure>'});
+  topic('render_figure','nodes',['关系图节点表','nodes'],'graph 的输入 nodes 必填；边的起终点使用节点 id。每个节点应提供 depth，或同时提供 x/y 固定坐标。',{fields:{id:'node ID',label:'optional display name',depth:'numeric layer',x:'optional coordinate with y',y:'optional coordinate with x',category:'optional color category',status:'focus emphasizes node or edge'},call:'<Figures><NetworkGraph name="network" spec={spec} data={edges} nodes={nodes} /></Figures>'});
   topic('render_figure','draft',['图表完整示例','分析稿','pipeline'],'可运行 DARI：示例数据、jq 表头转换、柱图、表格与 XHTML 答案。',{dari:presentationExample});
-  topic('render_html','references',['引用','绑定','data-oks-ref','data-oks-pick','路径','DARI','Value','figure','图序号'],'DARI 模板只引用 pipeline 绑定及静态投影。Value 显示标量；具体图元如 ColumnChart 放在原生 figure 中，figcaption 自动获得图/表编号。',{
+  topic('render_html','references',['引用','绑定','data-oks-ref','data-oks-pick','路径','DARI','Value','figure','图序号'],'DARI 模板只引用 pipeline 绑定及静态投影。Value 显示标量；Figures 定义具名图表；Report 通过 Figure 引用，figcaption 自动获得图/表编号，FigureRef 显示文字编号。',{
     scalar:'<Value data={summary.total} />',
     arrayScalar:'<Value data={summary.rows[0].level} />',
-    pick:'Static projections: binding.field[0]["中文键"]. Template braces accept only references; construct objects in pipeline and compute in jq.',
-    figure:'<figure><ColumnChart spec={chartSpec} data={rows} /><figcaption>说明</figcaption></figure>',
-    bindings:'<Template name="answer"><article>...</article></Template>',
+    pick:'Static projections: binding.field[0]["中文键"]. Report braces accept only references; construct objects in pipeline and compute in jq.',
+    figure:'<figure><Figure ref="comparison" /><figcaption>说明</figcaption></figure>',
+    bindings:'<Report name="answer"><article>...</article></Report>',
     components:COMPONENT_KINDS,
     spec:'Component spec omits kind. Tag determines type; only NetworkGraph accepts nodes. Components are self-closing.',
-    structure:'figure contains one component then an optional figcaption. Keep id/class/title/lang on figure; figures and tables number separately per answer, in document order. Captions follow the chart/table.',
+    structure:'Figures contains named self-closing chart components. Report figure contains Figure ref then optional figcaption. FigureRef ref emits the report-local label; its target must be displayed in the same Report. Keep id/class/title/lang on figure; figures and tables number separately per answer, in document order. Captions follow the chart/table.',
     lowLevel:'Explicit Asset language="xhtml" resources may use render_html and data-oks-ref/data-oks-pick; the primary draft format is .dari.',
   });
   topic('render_html','xhtml',['XHTML 语法','元素','属性','data-oks-lit','data-oks-shrink'],'正文根为 article；XML 良构、属性加引号、空元素显式闭合；转义 & 与 <。业务数字通过引用进入正文。',{
     elements:AUTHOR_ELEMENTS,attributes:AUTHOR_ATTRIBUTES,numbers:'Literal numbers in prose require <span data-oks-lit="">…</span>; observed business numbers come from bindings.',
-    dariMarkers:'In DARI Template, data-oks-shrink and data-oks-lit may omit =""; they compile to empty string attributes. Other attributes require explicit values. XHTML assets use quoted values.',
+    dariMarkers:'In DARI Report, data-oks-shrink and data-oks-lit may omit =""; they compile to empty string attributes. Other attributes require explicit values. XHTML assets use quoted values.',
     shrink:'data-oks-shrink="" marks interpretation/evaluation text for a shortened preview when reading report structure; attribute presence enables it.',
   });
-  topic('render_html','delivery',['交付','reply','artifact'],'template 的 name 是答案名；只有一个时自动选择，多个时 oks_run_answer 使用 answer 指定名字。显式 render_html 绑定也可交付。',{
-    reply:'oks_run_answer({src:"oks://work/draft.dari",delivery:"reply"}) returns native Markdown; default mode',
-    artifact:'oks_run_answer({src:"oks://work/draft.dari",delivery:"artifact"}) delivers a standalone report path',
+  topic('render_html','delivery',['交付','附件','attachment'],'Report 的 name 对应 reports.name；只有一个时自动选择，多个时用 answer 指定 reports.name。Figures 可独立于 Report 运行与展示。',{
+    reply:'oks_show({input:"oks://work/draft.dari#figures.comparison"}) or #reports.answer publishes a durable host attachment; include returned markdown verbatim in the answer for inline SVG. For reports/tables call the host present tool with the returned present object to display a native file card. Reads retained outputs',
+    report:'oks_show({input:"oks://work/draft.dari#reports.answer"}) exports a self-contained .report.html host attachment including data, provenance and analysis sources; then call present(result.present) to show a native file card',
   });
   topic('render_html','draft',['XHTML 完整示例','答案示例'],'可运行 DARI：精确绑定标量、数组元素、图表与表格。',{dari:presentationExample});
   // 图元到具体用法的分类引用；反向引用由工具生成。

@@ -2,65 +2,16 @@ import { WORK_URI, MEMORY_URI, sourceUri } from './resource-path.ts';
 import { createKtools, type Ktools } from './ktools.ts';
 import { KTOOLS_FILE, KTOOLS_BUILTIN } from './ktools-path.ts';
 import { builtinKtoolsSource } from './knowledge-programs.ts';
-/** Host bridge: work files, retained artifacts, vocabulary and draft tool lifecycle. */
-import { unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+/** Host bridge: work files, vocabulary and draft tool lifecycle. */
 import { createDraftTools } from './draft/tools.ts';
-import { parseArtifactOrigin } from './report/read.ts';
-import { restoreAssets } from './report/page.ts';
-import { windowText } from './config.ts';
 import type { PluginConfig } from './config.ts';
-import { errorText, isRecord } from './host.ts';
-import type { LogFn, ToolDefinition, ToolExec } from './host.ts';
-import type { Knowledge, WorkspaceEntry } from './knowledge.ts';
+import type { AttachmentsService, LogFn, ToolDefinition, ToolExec } from './host.ts';
+import type { Knowledge } from './knowledge.ts';
 import type { TimeContext } from './time-context.ts';
 import { renderAsk, VA_HELPER_PREFIX } from './va.ts';
 import type { VaRuntime } from './va.ts';
-import { OBJECT_OUTPUT, renderArtifacts, renderValue, renderWorkDelete, renderWorkEdit, renderWorkRead, renderWorkWrite } from './response.ts';
-import { adoptArtifacts, collectMaterials, collectWork, listArtifacts, markCleanup, materialCount, openState, pruneArtifacts, reconcileArtifacts, recordArtifact, VISIBLE } from './state.ts';
-import { deleteWorkFile, prepareWorkEdit, readWorkText, readTextLines, listWorkFiles, readArtifact, readWorkFile, WORK_DIR, writeWorkFile, saveArtifact } from './results.ts';
-import type { DataOrigin, Envelope, SaveArtifactOptions } from './results.ts';
-
-function readProduct(root: string, asset: string): Envelope {
-  const extension = asset.endsWith('.report.html') ? '.html'
-    : asset.endsWith('.svg') ? '.svg'
-      : asset.endsWith('.table.md') ? '.md' : '.json';
-  let content: string;
-  try {
-    if (extension === '.json' && !/\.(qres|tr|def|ctx)\.json$/.test(asset)) {
-      throw new Error(`资源不是已声明的数据资产类型：${asset}`);
-    }
-    content = readArtifact(root, asset, extension);
-  } catch (cause) {
-    throw new Error(`读不到这份产物：${asset}（${errorText(cause)}）`);
-  }
-  const parsed = parseArtifactOrigin(asset, content);
-  if ('error' in parsed) throw new Error(parsed.error);
-  return parsed;
-}
-
-function originForCarrying(asset: string, product: Envelope): DataOrigin {
-  if (!asset.endsWith('.report.html')) return product.origin;
-  const data = product.data;
-  if (!isRecord(data) || !isRecord(data.assets)) return product.origin;
-  return restoreAssets(product.origin, data.assets as Record<string, string>);
-}
-
-/** 普通资源只暴露负荷，#meta 显式暴露追踪信息；上游来源独立携带。 */
-function readDataResource(root: string, src: string): { value: unknown; origin: DataOrigin; root: '.data' | '#meta' } {
-  const parts = src.split('#');
-  if (parts.length > 2 || (parts.length === 2 && parts[1] !== 'meta')) {
-    throw new Error(`资源选择符错误：${src}`);
-  }
-  const asset = parts[0];
-  const product = readProduct(root, asset);
-  const meta = parts.length === 2;
-  return {
-    value: meta ? { meta: product.meta, origin: product.origin } : product.data,
-    origin: originForCarrying(asset, product),
-    root: meta ? '#meta' : '.data',
-  };
-}
+import { OBJECT_OUTPUT, renderValue, renderWorkDelete, renderWorkEdit, renderWorkRead, renderWorkWrite } from './response.ts';
+import { deleteWorkFile, prepareWorkEdit, readWorkText, readTextLines, listWorkFiles, readWorkFile, WORK_DIR, writeWorkFile } from './results.ts';
 
 interface WorkReadArgs {
   path?: unknown;
@@ -89,101 +40,16 @@ interface AskArgs {
 }
 
 /** 注册宿主工具及其工作区／会话运行状态。 */
-export function createTools({ knowledge, va, timeContext, log, ktools=createKtools() }: {
+export function createTools({ knowledge, va, timeContext, log, attachments, ktools=createKtools() }: {
   knowledge: Knowledge;
+  attachments?:()=>AttachmentsService|undefined;
   ktools?: Ktools;
   va: VaRuntime;
   timeContext: TimeContext;
   log: LogFn;
   config: PluginConfig | undefined;
 }): ToolDefinition[] & { dispose(): void } {
-  const pruneBeforeWrite = (entry: WorkspaceEntry): void => {
-    const root = entry.settings.workspaceRoot;
-    const windows = entry.settings.retention.auto;
-    const state = openState(root);
-    try {
-      const artifacts = pruneArtifacts(state, root, windows.artifacts);
-      if (artifacts.removed.length > 0) {
-        log(`[oks] prune · 清理 ${artifacts.removed.length} 个过期产物（窗口 ${windowText(windows.artifacts)}；`
-          + `保留 ${artifacts.kept} 个、文件已经不在了 ${artifacts.missing} 个）`);
-      }
-      const materials = collectMaterials(root, windows.materials);
-      if (materials.removed.length > 0) {
-        log(`[oks] prune · 清理 ${materials.removed.length} 个过期材料（窗口 ${windowText(windows.materials)}；`
-          + `认不出 ${materials.untouched} 个不动）`);
-      }
-      let workRemoved = 0;
-      if (windows.work !== null) {
-        const work = collectWork(root, windows.work);
-        workRemoved = work.removed.length;
-        if (work.removed.length > 0) {
-          log(`[oks] prune · 清理 ${work.removed.length} 个过期程序文件（窗口 ${windowText(windows.work)}）`);
-        }
-      }
-      // 顺手把账本对齐一次（补登 + 清掉文件已不在的行）：这是写路径该做的事，
-      // 读路径因此可以完全不碰目录。人工放进 artifacts/ 的报告也在这里被收进清单。
-      // "最后一次清理"只在确实清了东西时更新（每次写操作都刷一遍时间，这行就没意义了）。
-      markCleanup(root, 'auto', artifacts.removed.length + materials.removed.length + workRemoved);
-      const reconciled = reconcileArtifacts(state, root);
-      if (reconciled.adopted > 0 || reconciled.removed.length > 0) {
-        log(`[oks] 账本 · 补登 ${reconciled.adopted} 份、清掉 ${reconciled.removed.length} 条`
-          + `（文件已经不在了）`);
-      }
-    } finally {
-      state.close();
-    }
-  };
-
-  /** 产出一份文件，并在**同一处**记账（只对进清单的那一类）。
-   *  行与磁盘上的文件由这一次调用一起产生，于是不存在"文件在、账上没有"；记账失败就把文件删掉、
-   *  整个调用失败，也不留孤文件。图不进清单（它是报表里的材料），产出流程一样，只是不记账。 */
-  const saveAndRecord = (entry: WorkspaceEntry, options: Omit<SaveArtifactOptions, 'root'>): { asset: string; at: string } => {
-    const root = entry.settings.workspaceRoot;
-    pruneBeforeWrite(entry);
-    const saved = saveArtifact({ root, ...options });
-    const file = saved.asset.slice(saved.asset.lastIndexOf('/') + 1);
-    if (!VISIBLE.test(file)) return saved;
-    const state = openState(root);
-    try {
-      recordArtifact(state, file, saved.meta);
-    } catch (cause) {
-      try {
-        unlinkSync(join(root, saved.asset));
-      } catch {
-        // 删不掉也不掩盖真正的原因：底下那句错误才是要看的。
-      }
-      throw new Error(`这份产物没能登记进清单（已把它删掉，不留孤文件）：${errorText(cause)}`);
-    } finally {
-      state.close();
-    }
-    return saved;
-  };
-
   const definitions: ToolDefinition[] = [
-    {
-      name: 'oks_artifacts',
-      description: 'List this workspace\'s reports, newest first, each with its title, category, time and whether it is pinned. Figures live inside reports, and query results are internal: neither appears here. Everything the workspace produces expires on the retention window its oks.json declares, so a report from an earlier session may already be gone. Use it when the user asks what has been produced in this workspace.',
-      parameters: {
-        type: 'object',
-        properties: {},
-        additionalProperties: false,
-      },
-      output: { schema: OBJECT_OUTPUT, render: renderArtifacts },
-      async execute(_args: unknown, exec: ToolExec) {
-        const entry = knowledge.ensureWorkspace(exec);
-        const root = entry.settings.workspaceRoot;
-        const state = openState(root);
-        try {
-          // 读工具与端点走同一条路：账本就是清单，外加一次"只补登、不删除"的对账。
-          adoptArtifacts(state, root);
-          const entries = listArtifacts(state);
-          log(`[oks] artifacts · ${entries.length} 条（保留 ${entries.filter((item) => item.pinned).length}）`);
-          return { ok: true as const, keepAliveMinutes: entry.settings.retention.auto.artifacts, entries };
-        } finally {
-          state.close();
-        }
-      },
-    },
     {
       name: 'oks_read',
       description: 'Read line-numbered source from oks://work/<file>, persistent oks://memory/tools/ktools.lib.jq, or readonly oks://builtin/tools/ktools.lib.jq. offset/limit page lines. A missing oks://memory/tools/ktools.lib.jq returns an editable starter. Use oks_list({path:"oks://work/"}) to list files.',
@@ -326,6 +192,6 @@ export function createTools({ knowledge, va, timeContext, log, ktools=createKtoo
     },
   ];
 
-  const drafts = createDraftTools({ knowledge, timeContext, save: saveAndRecord, readResource: readDataResource, ktools });
+  const drafts = createDraftTools({ knowledge, timeContext, attachments, ktools });
   return Object.assign([...definitions, ...drafts.tools], { dispose: drafts.dispose });
 }

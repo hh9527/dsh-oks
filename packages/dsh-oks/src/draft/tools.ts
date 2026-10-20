@@ -1,22 +1,20 @@
+import {chartTitle} from '../chart/spec.ts';
+import type {ChartSpec} from '../chart/spec.ts';
 import { createKtools, type Ktools } from '../ktools.ts';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
 import { createProjector } from '../project.ts';
 import type { JsonValue, ProjectRule } from '../project.ts';
-import type { ToolDefinition, ToolExec } from '../host.ts';
+import type { AttachmentsService, FileAttachmentRef, ToolDefinition, ToolExec } from '../host.ts';
 import { isRecord } from '../host.ts';
 import type { Knowledge, WorkspaceEntry } from '../knowledge.ts';
 import type { TimeContext } from '../time-context.ts';
 import type { ContextTimeZone } from '../time.ts';
 import { toolResource } from '../knowledge-programs.ts';
 import { embedChartInput, isResultColumn, readWorkText } from '../results.ts';
-import type { SaveArtifactOptions } from '../results.ts';
 import { createDraftBackend } from './backend.ts';
-import { chartTitle, type ChartSpec } from '../chart/spec.ts';
 import { DraftRuntime } from './runtime.ts';
 import type { DraftBackend, DraftRun, DraftValue } from './runtime.ts';
-import { renderDraftReply } from './reply.ts';
+import { escapeHtml, renderMarkdown } from '../chart/markdown.ts';
 import { canonicalJson } from '../key.ts';
 
 const shape = createProjector('Shape');
@@ -59,16 +57,14 @@ export function readRange(data: unknown, args: { pointer?: unknown; offset?: unk
 
 export function createDraftTools(options: {
   knowledge: Knowledge;
+  attachments?:()=>AttachmentsService|undefined;
   timeContext: TimeContext;
-  save: (entry: WorkspaceEntry, value: Omit<SaveArtifactOptions, 'root'>) => { asset: string; at: string };
-  readResource: (root: string, input: string) => { value: unknown };
   ktools?: Ktools;
   backend?: (entry: WorkspaceEntry, file: string, zone: () => ContextTimeZone) => DraftBackend;
 }) {
   const ktools=options.ktools??createKtools();
   const records = new Map<string, RecordState>();
   const anonymousSessions = new WeakMap<object, string>();
-  const delivered = new Map<string, { asset: string; at: string }>();
   const shutdown = new AbortController();
   let closed = false;
   const keyFor = (entry: WorkspaceEntry, exec: ToolExec, file: string) => {
@@ -100,15 +96,6 @@ export function createDraftTools(options: {
     }
     if (!record) throw new Error('No retained run for this session and source; execute the draft first');
     return record;
-  };
-  const saveOnce = (entry: WorkspaceEntry, value: Omit<SaveArtifactOptions, 'root'>) => {
-    const key = sha(canonicalJson([entry.root, value.content]));
-    const existing = delivered.get(key);
-    if (existing && existsSync(join(entry.root, existing.asset))) return existing;
-    const saved = options.save(entry, value);
-    if (delivered.size >= 128) delivered.delete(delivered.keys().next().value!);
-    delivered.set(key, saved);
-    return saved;
   };
   const receipt = (run: DraftRun, file: string) => {
     const counts = { executed: 0, cached: 0, failed: 0, blocked: 0 };
@@ -155,15 +142,17 @@ export function createDraftTools(options: {
       if (state.error) item.error = state.error.slice(0, 800);
       if (acquisitionBytes + jsonBytes(outputs) + jsonBytes(item) < 5500) outputs.push(item);
     }
-    const diagnostics=run.diagnostics?.slice(0,8).map(({related,...diagnostic})=>({
-      ...diagnostic,message:diagnostic.message.slice(0,600),
-      ...(related?{related:related.slice(0,2).map(r=>({...r,message:r.message.slice(0,120)}))}:{}),
-    }));
+    const allDiagnostics=run.diagnostics??[];
+    const seen=new Set<string>();
+    const firstByUnit=allDiagnostics.filter(d=>{const key=d.asset??d.stage;if(seen.has(key))return false;seen.add(key);return true;});
+    const diagnostics=allDiagnostics.length?[...firstByUnit,...allDiagnostics.filter(d=>!firstByUnit.includes(d))].slice(0,8).map(({related,...diagnostic})=>({
+      ...diagnostic,message:diagnostic.message.slice(0,400),messageTruncated:diagnostic.message.length>400,
+    })):undefined;
     const result = { ok: run.status === 'complete' && counts.failed === 0 && counts.blocked === 0, computation: counts.failed || counts.blocked ? 'partial' : run.status === 'complete' ? 'succeeded' : 'unavailable', run: run.id, sourceHash: run.sourceHash, batch: run.batch, status: run.status,
-      ...(diagnostics?{diagnostics}:{}),counts, failures, omittedFailures:failureCount-failures.length, failuresInput:`${file}#failures`, acquisitions, omittedAcquisitions: run.acquisitions.length - acquisitions.length, outputs, omittedOutputs: run.outputs.size - hiddenOutputs - outputs.length,
+      ...(diagnostics?{diagnostics,omittedDiagnostics:allDiagnostics.length-diagnostics.length,diagnosticsInput:`${file}#diagnostics`}:{}),counts, failures, omittedFailures:failureCount-failures.length, failuresInput:`${file}#failures`, acquisitions, omittedAcquisitions: run.acquisitions.length - acquisitions.length, outputs, omittedOutputs: run.outputs.size - hiddenOutputs - outputs.length,
       ...(run.error ? { error: run.error.slice(0, 2500), ...(run.errorSpan?{at:run.errorSpan.start}:{}) } : {}) };
     while(jsonBytes(result)>6500 && outputs.length){outputs.pop();result.omittedOutputs++;}
-    while(jsonBytes(result)>6500 && diagnostics?.length) diagnostics.pop();
+    while(jsonBytes(result)>6500 && diagnostics?.length){diagnostics.pop();result.omittedDiagnostics=allDiagnostics.length-diagnostics.length;}
     // Preserve failure identities; shorten messages instead of omitting failed nodes.
     for (const limit of [300,150,80]) {
       if(jsonBytes(result)<=6500) break;
@@ -177,14 +166,13 @@ export function createDraftTools(options: {
   const tools: ToolDefinition[] = [
     {
       name: 'oks_run_answer',
-      description: 'Evaluate the complete pipeline and named assets and templates in a .work .dari report. Reuses this session/source acquisition batch and deterministic computations; refresh starts a new acquisition batch for exec_query/context, while query(intent) only compiles a reusable plan with columns. Returns root failures first with component/asset, bindings, source location and reason; #failures reads the full list with pagination. Returns bounded statuses/debug and readonly references. With one answer it delivers reply Markdown or a self-contained report; with multiple answers select a binding explicitly. Computation, query and rendering are defined in the draft.',
-      parameters: { type: 'object', properties: { src: { type: 'string' }, answer: { type: 'string' }, delivery: { type: 'string', enum: ['reply', 'artifact'] }, refresh: { type: 'boolean' } }, required: ['src'], additionalProperties: false },
-      output: { schema: OBJECT, render: (_args: unknown, value: { reply?: string }) => [{ type: 'text', text: JSON.stringify({ ...value, reply: undefined }) + (value.reply ? '\n\n' + value.reply : '') }] },
-      async execute(args: { src?: unknown; answer?: unknown; delivery?: unknown; refresh?: unknown }, exec: ToolExec) {
-        assertKeys(args, ['src', 'answer', 'delivery', 'refresh']);
+      description: 'Evaluate the complete pipeline and named assets, Figures and optional Reports in a .work .dari report. Reuses this session/source acquisition batch and deterministic computations; refresh starts a new acquisition batch for exec_query/context, while query(intent) only compiles a reusable plan with columns. Collects independent pipeline, asset, figure and report validation errors before execution; #diagnostics pages the full list. Returns root failures first with component/asset, bindings, source location and reason; #failures reads the full list with pagination. Returns bounded statuses/debug and readonly references. A single Report returns its retained #reports.name address; use oks_show to publish an attachment. With multiple Reports select reports.name explicitly. Computation, query and rendering are defined in the draft.',
+      parameters: { type: 'object', properties: { src: { type: 'string' }, answer: { type: 'string' }, refresh: { type: 'boolean' } }, required: ['src'], additionalProperties: false },
+      output,
+      async execute(args: { src?: unknown; answer?: unknown; refresh?: unknown }, exec: ToolExec) {
+        assertKeys(args, ['src', 'answer', 'refresh']);
         if (typeof args.src !== 'string' || !args.src.endsWith('.dari')) throw new Error('src must be a oks://work/*.dari report path; migrate Markdown explicitly');
-        if (args.answer !== undefined && typeof args.answer !== 'string') throw new Error('answer must be a binding name');
-        if (args.delivery !== undefined && !['reply', 'artifact'].includes(String(args.delivery))) throw new Error('delivery must be reply or artifact');
+        if (args.answer !== undefined && typeof args.answer !== 'string') throw new Error('answer must be reports.name or a render_html binding name');
         if (args.refresh !== undefined && typeof args.refresh !== 'boolean') throw new Error('refresh must be boolean');
         const entry = options.knowledge.ensureWorkspace(exec);
         const read = readWorkText(entry.root, args.src, 'oks_run_answer');
@@ -214,37 +202,55 @@ export function createDraftTools(options: {
           const [name, value] = selected;
           const source = value.sources.length === 1 ? value.sources[0] : undefined;
           if (!source?.delivery || source.at.length || source.path.length) return { ...base, delivery: { status: 'unavailable', error: 'Selected output is not a complete render_html answer' } };
-          if (args.delivery === 'artifact') {
-            // Stable evidence identity avoids rewriting the same report on an unchanged acquisition/source.
-            const key = sha(canonicalJson([entry.root, source.origin.root, 'report']));
-            let saved = delivered.get(key);
-            if (!saved || !existsSync(join(entry.root, saved.asset))) {
-              saved = saveOnce(entry, { name: 'answer', title: source.delivery.title, category: '即时分析', kind: 'report', content: source.delivery.html, extension: '.html', contentHasMeta: true });
-              if (delivered.size >= 128) delivered.delete(delivered.keys().next().value!);
-              delivered.set(key, saved);
-            }
-            return { ...base, delivery: { status: 'ready', mode: 'artifact', answer: name, ...saved } };
-          }
-          try {
-            const reply = renderDraftReply(source.delivery.html, (svg, ref) => {
-              const reportNode = source.origin.nodes[source.origin.root];
-              const inputRoot = reportNode.inputs?.[ref];
-              const item = (value.data as { items: Record<string, unknown> }).items[ref];
-              if (!inputRoot || item === undefined) throw new Error(`Missing figure evidence ${ref}`);
-              const content = embedChartInput(svg, { origin: { root: inputRoot, nodes: source.origin.nodes }, data: item as never });
-              const title = isRecord(item) && isRecord(item.spec) ? chartTitle(item.spec as unknown as ChartSpec) : ref;
-              return saveOnce(entry, { name: 'answer_chart', title, kind: 'chart', content, extension: '.svg' }).asset;
-            });
-            if (Buffer.byteLength(reply) > 8192) return { ...base, delivery: { status: 'too_large', error: 'Reply exceeds 8 KiB; shorten the draft answer or use delivery:"artifact"' } };
-            return { ...base, delivery: { status: 'ready', mode: 'reply', answer: name }, reply };
-          } catch (error) {
-            return { ...base, delivery: { status: 'unsupported', error: error instanceof Error ? error.message.slice(0, 1000) : String(error).slice(0, 1000) } };
-          }
+          return {...base,delivery:{status:'ready',mode:'retained',answer:name,input:`${args.src}#${name}`,show:'oks_show'}};
         } finally {
           record.active = false;
           record.touched = Date.now();
           if (closed) record.runtime.dispose();
         }
+      },
+    },
+    {
+      name: 'oks_show',
+      description: 'Publish an existing DARI figure or report as a durable host attachment and return its reference and presentation instructions. input is oks://work/analysis.dari#figures.name or #reports.name. Reads the latest retained output in this session; never executes SQL, runs a draft, refreshes context or saves a business report. Include the returned markdown verbatim in the answer to show SVG inline; for reports and tables call the host present tool with the returned present object to show a native file card. Bytes stay outside model context. Edited sources are marked stale.',
+      parameters: {type:'object',properties:{input:{type:'string'}},required:['input'],additionalProperties:false},
+      output: {
+        schema: OBJECT,
+        render: (_args:unknown,value:{attachment:FileAttachmentRef}) => [{type:'text',text:JSON.stringify(value)},{type:'file',attachment:value.attachment}],
+        presentationMeta: (_args:unknown,value:{attachment:FileAttachmentRef}) => ({attachment:value.attachment}),
+      },
+      async execute(args:{input?:unknown},exec:ToolExec){
+        assertKeys(args,['input']);
+        const match=typeof args.input==='string' ? /^((?:oks:\/\/work\/|\.work\/).+\.dari)#((?:(?:figures|reports)\.)?[A-Za-z_$][A-Za-z0-9_$]*)$/.exec(args.input) : null;
+        if(!match)throw new Error('input must select #figures.name or #reports.name in an oks://work/*.dari source');
+        const entry=options.knowledge.ensureWorkspace(exec);
+        const read=readWorkText(entry.root,match[1],'oks_show');
+        const record=recordFor(entry,exec,read.file,false);
+        const retained=record.runtime.read(match[2],read.text);
+        const source=retained.value.sources.length===1?retained.value.sources[0]:undefined;
+        if(!source||source.at.length||source.path.length)throw new Error('Selected output is not a complete presentation');
+        const attachments=options.attachments?.();
+        if(!attachments)throw new Error('The host attachments service is unavailable');
+        let html:string,title:string,kind:string;
+        if(source.delivery){html=source.delivery.html;title=source.delivery.title;kind='report';}
+        else if(source.display){
+          const data=retained.value.data;
+          title=isRecord(data)&&isRecord(data.spec)
+            ? source.display.kind==='chart'?chartTitle(data.spec as unknown as ChartSpec):typeof data.spec.title==='string'?data.spec.title:match[2].slice(match[2].indexOf('.')+1)
+            :match[2].slice(match[2].indexOf('.')+1);
+          kind=source.display.kind;
+          const body=kind==='chart'?source.display.content:renderMarkdown(source.display.content,(_info,text)=>`<pre><code>${escapeHtml(text)}</code></pre>`);
+          html=`<!doctype html><html><head><meta charset="utf-8"><style>body{margin:12px;font:14px sans-serif;color:#222}svg{max-width:100%;height:auto}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:6px;text-align:left}h2{font-size:16px}</style></head><body><h2>${escapeHtml(title)}</h2>${body}</body></html>`;
+        }else throw new Error('Selected output has no presentation');
+        const content=kind==='chart'?embedChartInput(source.display!.content.replace(/<svg[^>]*>/,open=>open+`<title>${escapeHtml(title)}</title>`),{origin:source.origin,data:retained.value.data as never}):html;
+        const extension=kind==='chart'?'.svg':kind==='report'?'.report.html':'.html';
+        if(exec.signal?.aborted)throw new Error('aborted');
+        const attachment=await attachments.saveFile({data:Buffer.from(content),name:match[2].slice(match[2].indexOf('.')+1)+extension});
+        const path=attachments.fileHostPath(attachment);
+        const label=title.replace(/[\r\n]/g,' ').replace(/[\\[\]]/g,'\\$&');
+        const markdown=path&&kind==='chart'?`![${label}](${encodeURI(path).replaceAll('(','%28').replaceAll(')','%29').replaceAll('#','%23').replaceAll('?','%3F')})`:undefined;
+        const present=path&&kind!=='chart'?{files:[{path,description:title}]}:undefined;
+        return {ok:true,input:args.input,run:retained.run,sourceHash:retained.sourceHash,stale:retained.stale,kind,title,attachment,...(path?{path}:{}),...(markdown?{markdown}:{}),...(present?{present}:{})};
       },
     },
     {
@@ -265,7 +271,7 @@ export function createDraftTools(options: {
     },
     {
       name: 'oks_data',
-      description: 'Read structured resources: oks://knowledge is the datasets/types/relations/tools/items graph; oks://help/{knowledge,query,time,render} provides usage knowledge; oks://work/draft.dari#binding reads retained output (#debug and #failures index diagnostics); artifacts paths read delivered data. Select exactly one view: pointer with offset/limit, project, or method plus args. Method addresses are oks://builtin/tools/ktools.lib.jq#search (also read/members/references) or oks://memory/tools/ktools.lib.jq#name. Methods receive the selected resource value directly. Pure reading/computation: never executes SQL, runs drafts, refreshes or saves. Read the persistent method library first with oks_read. Query plans expose {columns}; query results expose {rows,columns,truncated}.',
+      description: 'Read structured resources: oks://knowledge is the datasets/types/relations/tools/items graph; oks://help/{knowledge,query,time,render} provides usage knowledge; oks://work/draft.dari#binding, #figures.name or #reports.name reads retained output (#debug and #failures index runtime diagnostics; #diagnostics pages full validation diagnostics). Select exactly one view: pointer with offset/limit, project, or method plus args. Method addresses are oks://builtin/tools/ktools.lib.jq#search (also read/members/references) or oks://memory/tools/ktools.lib.jq#name. Methods receive the selected resource value directly. Pure reading/computation: never executes SQL, runs drafts, refreshes or saves. Read the persistent method library first with oks_read. Query plans expose {columns}; query results expose {rows,columns,truncated}.',
       parameters:{type:'object',properties:{input:{type:'string'},pointer:{type:'string'},offset:{type:'integer',minimum:0},limit:{type:'integer',minimum:1,maximum:100},meta:{type:'boolean'},project:{},method:{type:'string'},args:{type:'object'}},required:['input'],additionalProperties:false},
       output,
       async execute(args:{input?:unknown;pointer?:unknown;offset?:unknown;limit?:unknown;meta?:unknown;project?:unknown;method?:unknown;args?:unknown},exec:ToolExec) {
@@ -278,7 +284,7 @@ export function createDraftTools(options: {
         const resource=args.input;
         const isKnowledge=resource==='oks://knowledge';
         const isHelp=resource.startsWith('oks://help/');
-        if((isKnowledge||isHelp)&&args.meta)throw new Error('meta applies to retained outputs or artifacts');
+        if((isKnowledge||isHelp)&&args.meta)throw new Error('meta applies to retained outputs');
         // Read help without requiring a configured model or a workspace.
         let entry:WorkspaceEntry|undefined;
         const workspace=()=>entry??=options.knowledge.ensureWorkspace(exec);
@@ -307,19 +313,17 @@ export function createDraftTools(options: {
         if(match){
           const read=readWorkText(workspace().root,match[1],'oks_data');
           const record=recordFor(workspace(),exec,read.file,false);
-          if(match[2]==='debug'||match[2]==='failures'){
+          if(match[2]==='debug'||match[2]==='failures'||match[2]==='diagnostics'){
             const described=record.runtime.describe(read.text);
-            const data=described.outputs.filter(output=>match[2]==='failures'?output.status==='failed'||output.status==='blocked':output.name.startsWith('debug/')).map(output=>({...output,...(match[2]==='debug'?{input:`${read.file}#${output.name}`}:{})}));
-            const {outputs:_outputs,...summary}=described;
+            const data=match[2]==='diagnostics'?described.diagnostics:described.outputs.filter(output=>match[2]==='failures'?output.status==='failed'||output.status==='blocked':output.name.startsWith('debug/')).map(output=>({...output,...(match[2]==='debug'?{input:`${read.file}#${output.name}`}:{})}));
+            const {outputs:_outputs,diagnostics:_diagnostics,...summary}=described;
             return {ok:true,...summary,...await view(data)};
           }
           const readValue=record.runtime.read(match[2],read.text);
           const data=args.meta?{sources:readValue.value.sources.map(({origin,at,path})=>({origin,at,path})),run:readValue.run,sourceHash:readValue.sourceHash}:readValue.value.data;
           return {ok:true,run:readValue.run,sourceHash:readValue.sourceHash,stale:readValue.stale,...await view(data)};
         }
-        if(resource.startsWith('oks://')&&!resource.startsWith('oks://work/'))throw new Error('Unknown structured resource; use oks_read for source text');
-        const read=options.readResource(workspace().root,resource+(args.meta&&!resource.endsWith('#meta')?'#meta':''));
-        return {ok:true,...await view(read.value)};
+        throw new Error('Unknown structured resource; use oks://knowledge, oks://help/<topic>, or oks://work/<file>.dari#<binding>');
       },
     },
   ];
@@ -328,7 +332,7 @@ export function createDraftTools(options: {
     dispose() {
       closed = true; shutdown.abort();
       for (const record of records.values()) if (!record.active) record.runtime.dispose();
-      records.clear(); delivered.clear();
+      records.clear();
     },
   };
 }

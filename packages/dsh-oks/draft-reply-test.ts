@@ -9,7 +9,7 @@ assert.match(markdown, /\| x \| 7 \|/);
 assert.match(renderDraftReply(page('<p>[fake](javascript:evil)</p>'), () => ''), /\\\[fake\\\]/);
 assert.match(renderDraftReply(page('<pre><code>```\ncontent\n```</code></pre>'), () => ''), /^````/);
 let saved = 0;
-assert.match(renderDraftReply(page('<figure data-oks-ref="chart"><figcaption>Chart</figcaption><svg xmlns="http://www.w3.org/2000/svg"><text>x</text></svg></figure>'), (svg, ref) => { saved++; assert.equal(ref, 'chart'); assert.match(svg, /<svg/); return '.oks/figures/one.svg'; }), /!\[图\]\(\.oks\/figures\/one\.svg\)/);
+assert.match(renderDraftReply(page('<figure data-oks-ref="chart"><figcaption>Chart</figcaption><svg xmlns="http://www.w3.org/2000/svg"><text>x</text></svg></figure>'), (svg, ref) => { saved++; assert.equal(ref, 'chart'); assert.match(svg, /<svg/); return '/attachments/one.svg'; }), /!\[图\]\(\/attachments\/one\.svg\)/);
 assert.equal(saved, 1);
 assert.throws(() => renderDraftReply(page('<table><tr><td colspan="2">x</td></tr></table>'), () => ''), /merged cells/);
 assert.throws(() => renderDraftReply(page('<svg/>'), () => ''), /Unsupported reply/);

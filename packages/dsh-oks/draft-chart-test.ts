@@ -1,3 +1,4 @@
+import {testAttachments} from './test-attachments.ts';
 import { asDari } from './test-markdown.ts';
 // Retained visual regression assertions now execute Markdown render_figure pipelines.
 import assert from 'node:assert/strict';
@@ -7,7 +8,7 @@ import {join,resolve} from 'node:path';
 import {buildOption,CHART_WIDTH} from './src/chart/option.ts';
 import {renderEchartsSvg} from './src/chart/echarts.ts';
 import {CHART_KINDS,SERIES_COLORS,supports} from './src/chart/shared.ts';
-import {readArtifactMeta,saveArtifact,readChartInput} from './src/results.ts';
+import {readChartInput} from './src/results.ts';
 import {createDraftTools} from './src/draft/tools.ts';
 import {createDraftBackend} from './src/draft/backend.ts';
 import {readReportPage} from './src/report/page.ts';
@@ -21,8 +22,7 @@ const entry={root:DEV_ROOT,modelHash:'fixture',settings:{workspaceRoot:DEV_ROOT,
 const knowledge={ensureWorkspace:()=>entry} as Knowledge;
 const drafts=createDraftTools({knowledge,timeContext:{zones:new Map(),install(){}},
  backend:(entry,file,contextZone)=>createDraftBackend({knowledge,entry,file,contextZone,jq:engine}),
- save:(entry,options)=>saveArtifact({root:entry.root,...options}),
- readResource(){throw new Error('unused');},
+ attachments:()=>testAttachments(DEV_ROOT),
 });
 const exec={agent:{session:{id:'chart-regression'}}} as ToolExec;
 const call=(name:string,args:unknown)=>drafts.tools.find(tool=>tool.name===name)!.execute(args as never,exec) as Promise<any>;
@@ -40,11 +40,9 @@ const chart=async({spec,data,nodes}:any)=>{
  writeFileSync(join(DEV_ROOT,file),asDari(source));
  const result=await call('oks_run_answer',{src:file});
  if(result.delivery.status!=='ready')throw new Error(JSON.stringify(result));
- const match=/\]\(([^)]+\.svg)\)/.exec(result.reply);
- assert.ok(match,result.reply);
+ const shown=await call('oks_show',{input:file+'#figure'});
  const figure=await call('oks_data',{input:file+'#figure'});
- const meta=readArtifactMeta(readFileSync(join(DEV_ROOT,match[1]),'utf8'));
- return {value:{ok:true,asset:match[1],rowCount:figure.data.rows.length,spec:figure.data.spec,title:meta?.title},text:result.reply};
+ return {value:{ok:true,asset:shown.path,rowCount:figure.data.rows.length,spec:figure.data.spec,title:shown.title},text:shown.markdown};
 };
 try {
   // 负值走 0 轴另一侧，并且换色，方向一眼可辨。
@@ -119,7 +117,7 @@ try {
   console.log(`  排版覆盖：labelFont/height/slantTicks 生效 → ${(tunedSvg.match(/<path/g) ?? []).length} 个 path`);
   if (!tunedSvg.includes('<path')) throw new Error('覆盖排版后仍应出图');
   // 这张图没有标题：自述里那一行**永不为空**，工具按"维度 × 度量"造一个（只进自述，不改绘制）。
-  const tunedMeta = readArtifactMeta(tunedSvg);
+  const tunedMeta = {title:tuned.value.title};
   if (tunedMeta === null) throw new Error('落盘的图应当带自述');
   if (tunedMeta.title !== 'label × value') {
     throw new Error(`没给标题时应当按维度与度量造一个，收到 ${JSON.stringify(tunedMeta.title)}`);
@@ -617,9 +615,9 @@ try {
   const graphRoot=graphInput.origin.nodes[graphInput.origin.root];
   assert.deepEqual(Object.keys(graphRoot.inputs!).sort(),['data','nodes']);
   for(const parent of Object.values(graphRoot.inputs!))assert.ok(graphInput.origin.nodes[parent]);
-  const archived=await call('oks_run_answer',{src:'.work/chart.dari',delivery:'artifact'});
+  const archived=await call('oks_run_answer',{src:'.work/chart.dari'});
   assert.equal(archived.delivery.status,'ready');
-  const graphReport=readReportPage(readFileSync(resolve(DEV_ROOT,archived.delivery.asset),'utf8'));
+  const graphReport=readReportPage(readFileSync((await call('oks_show',{input:'.work/chart.dari#answer'})).path,'utf8'));
   assert.ok(!('error' in graphReport));
   assert.deepEqual((graphReport.items.figure as any).nodeRows,graphNodes);
   assert.deepEqual((graphReport.items.figure as any).rows,graphEdges);

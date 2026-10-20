@@ -216,14 +216,6 @@ export function renderWorkDelete(_args: unknown, value: { ok?: boolean; file?: s
   return textBlock([`${value.file ?? ''} · 已删除 · 代码区还剩 ${value.remaining ?? 0} 个文件`]);
 }
 
-/** oks_data（save 那条路）渲染读到的值：结果写进 .oks/data/。 */
-/** 物化回执包含落点、大小与执行方式；值和来源链保存在文件里。 */
-export interface IntoValue {
-  asset: string;
-  bytes: number;
-  execution?: { method: 'jq' | 'project' | 'identity'; src?: string };
-}
-
 /** 将结构化值渲染成 JSON。 */
 export interface JsonValue {
   trace?: readonly TraceStep[] | null;
@@ -295,27 +287,6 @@ function renderTrace(trace: readonly TraceStep[] | null | undefined): string[] {
 }
 
 /** 纯计算类工具（不经过 OKS）的渲染：直接给结构化结果。 */
-
-/** oks_artifacts 的回执：清单本身（最新在前）。界面里是双行块，这里一行一条就够。 */
-export interface ArtifactsValue {
-  ok?: boolean;
-  keepAliveMinutes?: number;
-  entries?: Array<{ title?: string; kind?: string; at?: string; file?: string; pinned?: boolean }>;
-}
-
-export function renderArtifacts(_args: unknown, value: ArtifactsValue | null | undefined): RenderBlock[] {
-  if (value?.ok !== true) return [{ type: 'text', text: '拿不到清单。\n' }];
-  const entries = value.entries ?? [];
-  if (entries.length === 0) return [{ type: 'text', text: '这个工作区还没有图或报告。\n' }];
-  const pinned = entries.filter((entry) => entry.pinned === true).length;
-  const lines = [`${entries.length} 条产物（最新在前，其中保留 ${pinned} 条）：`, ''];
-  for (const entry of entries.slice(0, 40)) {
-    lines.push(`${entry.pinned === true ? '★' : '·'} ${entry.title ?? ''}`);
-    lines.push(`    ${entry.kind === 'report' ? '报告' : '图表'} · ${entry.at ?? ''} · ${entry.file ?? ''}`);
-  }
-  if (entries.length > 40) lines.push(`… 还有 ${entries.length - 40} 条（界面里能看全）`);
-  return [{ type: 'text', text: `${lines.join('\n')}\n` }];
-}
 
 export function renderValue(_args: unknown, value: unknown): RenderBlock[] {
   return [{ type: 'text', text: `${JSON.stringify(value, null, 2)}\n` }];
@@ -553,24 +524,7 @@ export function renderJqTransform(args: unknown, value: TransformValue | null | 
   return renderValue(args, value);
 }
 
-/** oks_data：失败保留完整错误；成功时按查看或保存模式渲染。 */
+/** oks_data：完整渲染结构化值，最终回执由工具预算约束。 */
 export function renderJqResult(args: unknown, value: unknown): RenderBlock[] {
-  if ((value as { ok?: unknown } | null | undefined)?.ok === false) return renderValue(args, value);
-  const saved = (args as { save?: unknown } | null | undefined)?.save !== undefined;
-  return saved
-    ? renderJqInto(args, value as IntoValue | null | undefined)
-    : renderJqTransform(args, value as TransformValue | null | undefined);
-}
-
-/** 物化（save）的模型可见回执：落点、大小与执行方式。
- *  值与来源链通过 oks_data 普通资源和 #meta 读取。 */
-export function renderJqInto(args: unknown, value: IntoValue | null | undefined): RenderBlock[] {
-  if (typeof value?.asset !== 'string' || value.asset === '' || typeof value.bytes !== 'number') {
-    return renderValue(args, value);
-  }
-  const size = `${(value.bytes / 1024).toFixed(1)} KB`;
-  const execution = value.execution;
-  const detail = execution === undefined ? ''
-    : `execution: ${execution.method}${execution.src === undefined ? '' : ` · ${execution.src}`}\n`;
-  return [{ type: 'text', text: `asset:  ${value.asset} · ${size}\n${detail}` }];
+  return renderJqTransform(args,value as TransformValue);
 }

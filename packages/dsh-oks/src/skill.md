@@ -37,14 +37,14 @@ let summary = jq("summary.jq", {facts});
 <Asset language="jq" name="summary.jq">
 {rowsReturned: (.facts.rows | length)}
 </Asset>
-<Template name="answer">
+<Report name="answer">
 <article><h1>本次查询</h1><p>返回行数：<Value data={summary.rowsReturned} /></p></article>
-</Template>
+</Report>
 </Dari>
 ```
 
-- Dari 包含一个 Pipeline、具名 Asset（language="jq"，name="a.jq"）、可选 Notes 和 Template。纯探索可省略 Template。
-- Template 以 article 为根；花括号中只写 pipeline 绑定或静态投影，例如 `{summary.rows[0]["中文键"]}`。对象在 pipeline 中构造，运算放 jq。
+- Dari 包含一个 Pipeline、具名 Asset（language="jq"，name="a.jq"）、可选 Notes、Figures 和 Report。Figures 中定义具名图表，Report 可省略；没有 Report 时也可用 DARI 驱动对话回答。
+- Report 以 article 为根；花括号中只写 pipeline 绑定或静态投影，例如 `{summary.rows[0]["中文键"]}`。对象在 pipeline 中构造，运算放 jq。
 - 诊断携带原始 `.dari` 路径、行列和阶段；全部具名程序先校验，再执行查询。
 - pipeline 支持不可变 let、debug、JSON 字面量/数组/对象、静态字段或下标，以及固定算子 query/exec_query/context/data/time_windows/jq/render_figure/render_html。变量先定义后引用，每条语句以分号结束。筛选、遍历、运算和聚合写在 jq。
 - 算子输入直接是绑定的 `.data` 负荷：`jq("a.jq", {facts})` 看到 `{facts:负荷}`；`facts.rows[0]` 选择数据，来源和路径自动携带。字段缺失或越界明确失败。
@@ -75,13 +75,16 @@ complete 排除当前未完成期间；current 包含当前期间、末端可在
 ## 形成答案
 
 - 呈现知识从图中读取：`tools/render_figure#kinds/<kind>` 提供图元映射与示例；`tools/render_figure#topics/table_headers` 提供表头转换；`tools/render_html#topics/references` 提供 XHTML 绑定与路径。用内置 read 方法读取；`oks_data({input:"oks://help/render"})` 查看入口。
-- 图表规格在 Pipeline 定义：`let spec = {x:"level",value:"count"};`；模板写 `<figure><ColumnChart spec={spec} data={facts.rows} /><figcaption>说明</figcaption></figure>`。每个 figure 放一个自闭合图元，再接可选 figcaption；图和表分别按文档顺序自动编号，说明显示在图表后方。id/class/title/lang 写在 figure。
+- 图表规格在 Pipeline 定义：`let spec = {x:"level",value:"count"};`；图表独立定义为 `<Figures><ColumnChart name="severity" spec={spec} data={facts.rows} /></Figures>`。报告引用 `<figure><Figure ref="severity"/><figcaption>说明</figcaption></figure>`；文字交叉引用用 `<FigureRef ref="severity"/>`，目标必须在本 Report 出现。每份 Report 按首次展示顺序分别编图号、表号，重复引用复用编号。id/class/title/lang 写在 figure。
 - 图元：BarChart/ColumnChart/LineChart/AreaChart/PieChart/ScatterChart/Histogram/BoxPlot/Heatmap/RadarChart/Sankey/NetworkGraph/Gauge/Table。标签选择类型，spec 省略 kind；仅 NetworkGraph 接受 nodes 引用。Table 的 spec 如 `{columns:["列名"]}`；中文表头在 jq 重命名。
 - 标量写 `<Value data={summary.total} />`；普通正文元素和属性静态书写。正文遵守 XHTML 元素/属性白名单，文本中的 & 与 < 使用实体；pipeline 与 jq 无需 XML 转义。
 - 业务数字从引用和计算进入正文；文字中的数字用 `<span data-oks-lit="">…</span>` 声明。结论和评价用 data-oks-shrink 标记。
-- 单个 Template 自动交付；多个时用运行参数 answer 指定 Template name。
-- 默认 delivery:"reply" 生成原生 Markdown。较长答案或需要完整排版时用 delivery:"artifact"，交付回执里的报告路径。报告自带展示数据、来源及 jq/XHTML，不依赖中间文件存活。
+- 输出地址：`#binding` 读取 pipeline 数据，`#figures.severity` 读取具名图表，`#reports.answer` 读取报告；均用 oks_data，返回负荷为 .data。单个 Report 自动选中；多个时用 answer:"reports.answer" 选择。
+- 运行后用 `oks_show({input:"oks://work/分析.dari#figures.severity"})` 将已有图表保存为宿主持久附件；将返回的 markdown 原样嵌入回答，SVG 在对话中展示。`#reports.answer` 与 Table 导出 HTML 附件；收到 `present` 字段后，立即以该对象为参数调用宿主 `present` 工具，显示文件卡片。此调用读取已运行的结果；回执的 stale 标明源码是否已编辑。附件按内容寻址，工作区清理不影响已导出内容。独立图表用标题，不添加报告编号。
+- 运行返回选中的报告地址 `delivery.input`；用 `oks_show({input:"oks://work/分析.dari#reports.answer"})` 导出 `.report.html` 附件，随后调用 `present(返回值.present)`，将报告作为文件卡片交付。最终回答说明结论即可。报告自带展示数据、来源及 jq/XHTML。
 - 计算状态和交付状态分别检查；独立 debug 失败不代表答案依赖失败。回复超过预算或呈现形式不受支持时，改稿或选择报告交付。
-- `oks_artifacts` 查已交付报告；`oks_data({input:"返回的产物路径"})` 读其数据，报告视图有 assets/items/structure。`oks_read/write/edit/list/delete` 管理 `oks://work/` 临时源码与 `oks://memory/tools/ktools.lib.jq` 持久方法库；`oks_read` 也支持只读的内置源码。
+- 导出前用 `oks_data({input:"oks://work/分析.dari#reports.answer"})` 读取报告数据（assets/items/structure）。`oks_read/write/edit/list/delete` 管理 `oks://work/` 临时源码与 `oks://memory/tools/ktools.lib.jq` 持久方法库；`oks_read` 也支持只读的内置源码。
 
 回答中解释业务口径、证据和局限，与用户原始意图核对；能力不支持时说明缺口，避免用不同统计口径悄悄替代。
+
+- 编译预检汇总独立的 pipeline、jq assets、figures 和 reports 错误；有错误时只检查、不执行。回执预览多个单元的诊断，`omittedDiagnostics` 标明未展示数量。用 `oks_data({input:"oks://work/分析.dari#diagnostics",offset:0,limit:10})` 分页读取完整诊断；单元失败不阻止其他可独立判断的检查。容器结构无法解析时先修复容器语法。

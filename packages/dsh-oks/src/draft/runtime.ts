@@ -2,7 +2,7 @@ import { COMPONENT_KINDS, type FigureKind } from './components.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { canonicalJson } from '../key.ts';
 import { isRecord } from '../host.ts';
-import { parseDraft } from './document.ts';
+import { parseDraftForValidation } from './document.ts';
 import type { DraftDocument, DraftAsset } from './document.ts';
 import { DraftSyntaxError } from './pipeline.ts';
 import type { Expr, Operator, Span, Statement, SourceDiagnostic, PipelineNode } from './pipeline.ts';
@@ -94,7 +94,7 @@ export class DraftRuntime {
 
   constructor(backend: DraftBackend, options: { file?:string;parse?:(source:string,file?:string)=>DraftDocument;now?: () => number; maxCacheBytes?: number; maxCacheEntries?: number; retentionMs?: number; maxOutputBytes?: number } = {}) {
     this.backend = backend;
-    this.parse=options.parse??parseDraft;this.file=options.file??'draft.dari';
+    this.parse=options.parse??parseDraftForValidation;this.file=options.file??'draft.dari';
     this.now = options.now ?? Date.now;
     this.maxCacheBytes = options.maxCacheBytes ?? 16 * 1024 * 1024;
     this.maxCacheEntries = options.maxCacheEntries ?? 128;
@@ -161,6 +161,7 @@ export class DraftRuntime {
       run.answers=document.answers;
       if (options.signal?.aborted) throw new Error('aborted');
       await this.backend.preflight(document, options.signal);
+      if(document.diagnostics?.length){const first=document.diagnostics[0];throw new DraftSyntaxError(first.message,first.span,document.diagnostics);}
       if (options.signal?.aborted) throw new Error('aborted');
       if (options.refresh) {
         this.resetAcquisitions();
@@ -305,6 +306,7 @@ export class DraftRuntime {
     if (!run) throw new Error('No retained run for this draft');
     return {
       run: run.id, sourceHash: run.sourceHash, stale: hash(currentSource) !== run.sourceHash, status: run.status,
+      diagnostics:structuredClone(run.diagnostics??[]),
       outputs: [...run.outputs].map(([name, output]) => ({ name:output.display?.label??name, ...(output.display?{...output.display}:{}), status: output.status, span: output.span, ...(output.context?{context:output.context}:{}), ...(output.error ? { error: output.error } : {}) })),
     };
   }

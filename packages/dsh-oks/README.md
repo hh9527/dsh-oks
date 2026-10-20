@@ -8,12 +8,12 @@
 | 工具 | 职责 |
 | --- | --- |
 | `va_ask({query})` | 词汇规整，返回线索，随后核实事实 |
-| `oks_data({input,pointer?,offset?,limit?})` | 读取已有草稿输出、制品数据、知识图或帮助；JSON Pointer 和范围选择 |
+| `oks_data({input,pointer?,offset?,limit?})` | 读取已有草稿输出、知识图或帮助；JSON Pointer 和范围选择 |
 | `oks_data({input,project})` / `({input,method,args})` | 精确投影或调用只读纯方法，返回 `.data` |
 | `oks_read/write/edit/list/delete` | 管理逻辑源码地址；read 支持内置源码，list 用 path 指定目录 |
-| `oks_run_answer({src,answer?,delivery?,refresh?})` | 执行分析稿并交付答案 |
+| `oks_run_answer({src,answer?,refresh?})` | 执行分析稿并保留结果 |
+| `oks_show({input})` | 将已有图表/报告写入宿主持久附件，返回引用及呈现指引 |
 | `renew_context({src})` | 重置稿件采集批次，下次运行重新采集 |
-| `oks_artifacts({})` | 列出已交付报告 |
 
 
 业务计算定义在稿件内。`oks_data` 的普通读取视图是 `.data`；meta 显式查看追踪信息。
@@ -26,7 +26,8 @@
 oks_run_answer({src: "oks://work/draft.dari"})
 oks_data({input: "oks://work/draft.dari#summary"})
 oks_data({input: "oks://work/draft.dari#debug"})
-oks_run_answer({src: "oks://work/draft.dari", delivery: "artifact"})
+oks_show({input: "oks://work/draft.dari#figures.comparison"})
+oks_show({input: "oks://work/draft.dari#reports.conclusion"})
 ```
 
 该示例明确使用演示数据。真实任务应先发现模型能力，在 pipeline 中先用 `query(Intent)` 校验计划，再用 `exec_query(plan)` 取得业务证据。
@@ -35,15 +36,16 @@ oks_run_answer({src: "oks://work/draft.dari", delivery: "artifact"})
 ## DARI 与最小语言
 
 `.dari`（Data Analysis and Representation Intermediate Format）是 JSX 风格的专用容器。
-Dari 内包含一个 Pipeline、具名 jq Asset（language="jq"）、可选 Notes 与 Template。代码正文无需 XML 转义。
+Dari 内包含一个 Pipeline、具名 jq Asset（language="jq"）、可选 Notes、Figures 与 Report。代码正文无需 XML 转义。
 pipeline 是独立的进程内语言模块；jq 使用真实 Wasm 引擎独立编译。
 诊断携带原文件路径和 UTF-16 半开范围、从 1 开始的行列，支持中文、emoji 与 CRLF。
 全部具名程序在查询前预检，缓存结果重新映射到本轮原文件位置。
 
 模板以 article 为根：`<Value data={summary.total} />` 显示标量，
-`<figure><ColumnChart spec={chartSpec} data={facts.rows} /><figcaption>说明</figcaption></figure>` 生成图表及编号。
+`<Figures><ColumnChart name="severity" spec={chartSpec} data={facts.rows} /></Figures>` 生成独立图表。
+可选 `<Report name="overview">` 内通过 `<figure><Figure ref="severity"/><figcaption>说明</figcaption></figure>` 编排，`<FigureRef ref="severity"/>` 生成交叉引用编号。
 图元自闭合，spec 省略 kind，由标签决定类型；仅 NetworkGraph 接受 nodes。
-每个 figure 放一个图元和可选的尾部 figcaption；图和表各自按文档顺序编号，每个答案重新开始。
+每个 figure 放一个 Figure 引用和可选的尾部 figcaption；图和表各自按首次展示顺序编号，每份报告重新开始，重复引用复用编号。
 花括号只接受 pipeline 绑定和静态投影；对象构造在 pipeline，运算在 jq。
 普通正文元素遵守 XHTML 白名单，属性为静态字符串，文本中的 & 与 < 使用实体。
 Notes 为静态原文，以 `</Notes>` 为保留结束标记；不参与计算。
@@ -84,6 +86,9 @@ let summary = jq("summary.jq", {facts, params});
 绑定传递 `.data` 值，来源带外携带。紧邻语句前的独立 // 行注释记录该步业务说明。
 资产语法、静态 Intent 和可提前判断的规格先检查，再开始新业务计算；动态 Intent 就绪后校验。
 运行中单分支失败阻塞其下游，独立分支继续。
+预检独立收集 pipeline、jq assets、figures、reports 的诊断；单个错误不阻止其他单元检查。
+运行回执提供有界预览和 omittedDiagnostics，完整诊断可通过 `#diagnostics` 分页读取。
+容器结构无法解析时先修复结构；本地预检有错时停止执行，也不发起模型相关的计划检查。
 
 ## 知识发现
 
@@ -94,7 +99,7 @@ oks_data({input:"oks://knowledge",method:"oks://builtin/tools/ktools.lib.jq#read
 oks_data({input:"oks://help/query",pointer:"/graph~1filter"})
 ```
 
-project 直接作用于图根，jq 输入为所选资源的值（知识图直接为 `{datasets,types,relations,tools,items}`）。内置源码可用 `oks_read({path:"oks://builtin/tools/ktools.lib.jq"})` 阅读。自定义方法统一保存在 `oks://memory/tools/ktools.lib.jq`，只含注释及 `def name($args): ...;`，调用地址为 `oks://memory/tools/ktools.lib.jq#name`；保存前编译，错误保留原文件。文件跨会话持久保留，不参与 `.work` 自动清理。
+project 直接作用于图根，jq 输入为所选资源的值（知识图直接为 `{datasets,types,relations,tools,items}`）。内置源码可用 `oks_read({path:"oks://builtin/tools/ktools.lib.jq"})` 阅读。自定义方法统一保存在 `oks://memory/tools/ktools.lib.jq`，只含注释及 `def name($args): ...;`，调用地址为 `oks://memory/tools/ktools.lib.jq#name`；保存前编译，错误保留原文件。文件跨会话持久保留，跨会话保留。
 成员导航用 members，反向引用用 references；next 作为 skip 续页。
 独立地址形如 `datasets/<URI编码ID>`，成员形如 `datasets/<ID>#dimensions/<ID>`；返回地址原样使用。
 字典键是原始 ID。names/doc 与事实分开保存在 items；read 配对读取。
@@ -141,9 +146,11 @@ LocalDateTime 是不带时区或偏移量的日期与钟表时间。旧模型未
 
 新的计算、筛选或取样写回稿件再运行。debug 无需人为命名，回执关联原位置，小值直接返回，大值给引用。
 
-单个直接 render_html 绑定自动选择；多个时用 answer 指定。计算和交付状态分开报告。
-reply（默认）转为原生 Markdown，图为含来源的内部 SVG；8 KiB 以外或不支持的版式给诊断。
-artifact 生成自足 HTML 并登记报告，带全部引用数据、来源、jq/XHTML，内部材料回收后仍可解释。
+单个 Report 自动选择；多个时用 answer:"reports.name" 指定。计算和交付状态分开报告。
+`#figures.name` 与 `#reports.name` 通过 oks_data 读取结构数据。
+`oks_show({input:"oks://work/analysis.dari#figures.severity"})` 将已有 SVG（含证据）写入 ctx.attachments，返回 FileAttachmentRef、只读 path 与 markdown；将 markdown 原样嵌入回答即可在对话展示。报告输出 `.report.html`、Table 输出 `.html` 附件；收到 `present` 字段后，用它作为宿主 `present` 工具的参数，显示原生文件卡片。此调用读取已保留结果。附件按内容寻址，不受工作区清理影响；宿主通过 file 内容块保留持久引用，模型仅接收简短回执。
+报告附件为自包含 HTML，带全部引用数据、来源与 jq/XHTML，删除工作源码后仍可解释。
+存储、呈现和生命周期统一由宿主附件服务管理。
 相同证据/源码重复交付复用仍存在的文件。最终工具反馈限制为 16 KiB。
 
 XHTML 使用 `<article>` 根、严格元素/属性子集、显式自闭合空元素。
@@ -161,8 +168,7 @@ XHTML 使用 `<article>` 根、严格元素/属性子集、显式自闭合空元
 
 插件行 config 可覆盖 domain/model/dataFile；requestTimeoutMs 默认 60000，queryTimeoutMs 默认 30000。
 exec_query 使用计划内的 Intent limit 作为行数保险。模型和数据源是独立部署物；当前进程已加载的工作区环境在重启后重新加载。
-retention.auto 管理报告与磁盘内部材料，retention.manual 供用户清理；work 默认不自动清理。
-运行器的内存结果保留窗口独立于磁盘保留配置。
+运行器的内存结果有独立的容量与保留窗口，导出的宿主附件持久保留。
 
 ## 快照怎么来
 
@@ -215,7 +221,7 @@ pnpm run build
 pnpm run check
 ```
 
-build/prepare/pretest 会更新 lib，运行中的 link 安装需先隔离构建验收，再更新在线产物。
+build/prepare/pretest 直接更新 lib，运行中的 link 安装需先暂停服务，验收通过后重启。
 Rust 需要 wasm32-unknown-unknown target；求值器没有时钟、环境或文件系统，超时/取消可强制终止 worker。
 源码解析、依赖/缓存/来源、只读生命周期、图表/XHTML、知识索引与原生引擎各有独立测试。
 真实模型/只读 SQLite 的工具集成使用 draft-plugin-test.ts，可对只含两份产物的独立目录验收。
@@ -241,11 +247,13 @@ node scripts/split-query.ts old.dari new.dari
 
 ## 逻辑文件系统
 
-- `oks://work/`：临时草稿与工作文件，物理位置为 `.work/`，按工作区策略回收。
+- `oks://work/`：临时草稿与工作文件，物理位置为 `.work/`，通过 oks_delete 显式清理。
 - `oks://memory/tools/ktools.lib.jq`：持久方法库，物理位置为 `memory/oks/tools/ktools.lib.jq`，跨会话保留。
 - `oks://builtin/tools/ktools.lib.jq`：插件内置方法库，只读。
-- `artifacts/...`：已交付制品，沿用现有路径。
+- 导出内容由宿主附件服务持久保存，回执返回 FileAttachmentRef、path 和 Markdown。
 
 知识发现前先 `oks_read({path:"oks://memory/tools/ktools.lib.jq"})`，复用已有方法，需要时再读内置源码。
 `.lib.jq` 只含注释与 def 定义，保存前编译；方法入口为 `def name($args): ...;`，接收所选资源的值。
 `oks_data` 的 project、method+args、pointer/offset/limit 三种视图互斥。帮助主题通过 JSON Pointer 选择，例如 `/graph~1filter`。
+
+工作区文件由 `oks://work/` 与 `oks://memory/` 管理；运行结果与缓存保留在内存，图表和报告导出至宿主附件。

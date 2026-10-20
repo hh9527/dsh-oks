@@ -33,9 +33,7 @@ assert.deepEqual(error.fields, [
 ]);
 assert.ok(!render(value).includes('tenant_0'));
 
-// 保存只返回小回执；合法小值与引擎超限诊断原样通过。
-const saved = { asset: '.oks/data/saved.tr.json', bytes: 50000, execution: { method: 'project' } };
-assert.equal(render(saved, definition(), { save: {} }), renderJqResult({ save: {} }, saved)[0].text);
+// 合法小值与引擎超限诊断原样通过。
 for (const data of [null, false, 0, '', [], {}, { ok: true, data: { business: 'value' } }]) {
   assert.equal(render(result(data)), renderJqResult({}, result(data))[0].text);
 }

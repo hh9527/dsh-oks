@@ -1,7 +1,8 @@
+import {resolveSettings} from './src/config.ts';
+import {testAttachments} from './test-attachments.ts';
 // 集成冒烟：真实插件、动态领域发现与只读数据源；在隔离工作区执行。
 import { apply, artifactName, buildOption, CHART_WIDTH, embedArtifactMeta, NAME_MAX, readArtifactMeta,
-  renderEchartsSvg, resultStamp, saveArtifact } from './lib/index.mjs';
-import { collectWindows, resolveSettings, retentionMinutes, windowText } from './src/config.ts';
+  renderEchartsSvg, resultStamp } from './lib/index.mjs';
 import { checkAuthorXhtml, extractStructure, shrinkStructure, stripChartMetadata } from './src/report/xhtml.ts';
 import { checkWellFormed, escapeText } from './src/report/xhtml.ts';
 import { assetKey, buildReportPage, extractAssets, readReportPage, renderStructure, restoreAssets,
@@ -13,12 +14,8 @@ import { singleFlight } from './src/single-flight.ts';
 import { intentKey } from './src/key.ts';
 import { CHART_KINDS, SERIES_COLORS, supports } from './src/chart/shared.ts';
 import { tableMarkdown } from './src/view/table.ts';
-// 保留走的是 `pinByAsset`——界面端点与冒烟都直接调它（这条能力不在工具面里）。
-import { adoptArtifacts, collectMaterials, collectWithWindows, deleteArtifact, KEEP_ALIVE_MINUTES, markCleanup,
-  listArtifacts, MATERIAL_KEEP_ALIVE_MINUTES, openState, pinByAsset, pruneArtifacts, reconcileArtifacts,
-  recordArtifact, VISIBLE } from './src/state.ts';
 // 来源链的读取与易读视图：冒烟直接调这一层，验证编码与边界（不经工具）。
-import { canonicalJson, chainLines, readChartInput, readEnvelope, readTableView, recordId, rowsOf } from './src/results.ts';
+import { canonicalJson, chainLines, readChartInput, recordId, rowsOf } from './src/results.ts';
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync,
   symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -26,9 +23,9 @@ import { join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const DEV_ROOT = process.env.OKS_WORKSPACE ?? process.cwd();
-const SCRATCH = `${DEV_ROOT}/.oks-smoke`;
-// 插件只在工作区的内部材料目录（.oks/data、.oks/figures）与交付目录（artifacts/）里写东西。
-const workspaceListing = () => readdirSync(DEV_ROOT).filter((name) => name !== '.oks-smoke').sort().join(',');
+const SCRATCH = `${DEV_ROOT}/oks-smoke`;
+// 临时测试资源在专用子目录中创建。
+const workspaceListing = () => readdirSync(DEV_ROOT).filter((name) => name !== 'oks-smoke').sort().join(',');
 const listingBefore = workspaceListing();
 // 目录里可能已经躺着上次跑剩下的文件，所以只看"这次新增的"。
 const dataListingBefore = new Set(existsSync(`${DEV_ROOT}/artifacts`) ? readdirSync(`${DEV_ROOT}/artifacts`) : []);
@@ -59,7 +56,7 @@ const waterfall = (listeners, payload, terminal) => {
 const ctx = {
   logger: { info: (message) => { logs.push(message); console.error(`[log] ${message}`); } },
   // 技能服务是可选的：插件能拿到就注册，拿不到就静默降级。
-  get: (name) => (name === 'skills'
+  get: (name) => (name === 'attachments' ? testAttachments(SCRATCH) : name === 'skills'
     ? { register: (skill) => { skillsRegistered.push(skill); return () => {}; } }
     : undefined),
   tools: {
@@ -96,7 +93,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['oks_read', 'oks_write', 'oks_edit', 'oks_list', 'oks_delete', 'oks_run_answer', 'renew_context', 'oks_data',  'oks_artifacts', 'va_ask'];
+const EXPECTED_TOOLS = ['oks_read', 'oks_write', 'oks_edit', 'oks_list', 'oks_delete', 'oks_run_answer', 'oks_show', 'renew_context', 'oks_data',   'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -108,12 +105,7 @@ for (const name of EXPECTED_TOOLS) {
     return typeof description === 'string' && description.length > 0;
   });
   console.log(`  每个工具都有非空描述: ${described ? '✓' : '✗'}`);{
-  const expected = ['/oks/artifacts', '/oks/pin', '/oks/delete', '/oks/collect', '/oks/download'];
-  const missing = expected.filter((path) => !webPaths.includes(path));
-  console.log(`=== 面板端点 ===\n  启动时注册了 ${webPaths.length} 条：${webPaths.join(' · ')} ${
-    missing.length === 0 && webPaths.length === expected.length ? '✓' : '✗'}`);
-  if (missing.length > 0) throw new Error(`启动时没有注册这些端点: ${missing.join(', ')}`);
-  if (webPaths.length !== expected.length) throw new Error(`端点数量不对：${webPaths.join(', ')}`);
+  if (webPaths.length) throw new Error('插件不应注册制品端点');
 }
 
   if (!described) throw new Error('有工具的描述为空');
@@ -847,13 +839,14 @@ debug(total);
 </Dari>`;
 await call('oks_write',{path:draftFile,content:draftSource});
 const firstRun=await call('oks_run_answer',{src:draftFile});
-ok('真实查询与 jq 形成对话答案',firstRun.value.delivery.status==='ready' && firstRun.text.includes('总数'));
+ok('真实查询与 jq 形成对话答案',firstRun.value.delivery.status==='ready' && firstRun.value.delivery.mode==='retained');
 const total=(await call('oks_data',{input:draftFile+'#total'})).value.data;
 ok('真实计数为非负数',typeof total==='number' && total>=0);
-const secondRun=await call('oks_run_answer',{src:draftFile,delivery:'artifact'});
+const secondRun=await call('oks_run_answer',{src:draftFile});
 ok('重复运行复用全部计算',secondRun.value.counts.executed===0);
-ok('报告落盘',secondRun.value.delivery.status==='ready' && existsSync(resolve(DEV_ROOT,secondRun.value.delivery.asset)));
-const reportView=(await call('oks_data',{input:secondRun.value.delivery.asset})).value.data;
+const shownReport=await call('oks_show',{input:draftFile+'#answer'});
+ok('报告附件落盘',existsSync(shownReport.value.path));
+const reportView=readReportPage(readFileSync(shownReport.value.path,'utf8'));
 ok('报告携带实际数据和 jq 代码',reportView.items.value_1===total && Object.values(reportView.assets).some(code=>String(code).includes('to_entries')));
 await call('oks_edit',{path:draftFile,old_string:'总数 ',new_string:'查询总数 '});
 ok('改稿读取标记旧运行', (await call('oks_data',{input:draftFile+'#total'})).value.stale===true);
@@ -957,249 +950,8 @@ console.log('=== 产物自述 ===');
   ok('报告形状不符时报错', throwsWith(() => embedArtifactMeta('<html><body>没有 head</body></html>', { ...meta, kind: 'report' }), '<head>') !== null);
   ok('图形状不符时报错', throwsWith(() => embedArtifactMeta('not svg', meta), '<svg>') !== null);
 
-  // 标题永不为空：这是存储层守的门（工具侧会先造一个，见图表一节）。
-  const emptyTitle = throwsWith(
-    () => saveArtifact({ root: SCRATCH, name: 'no_title', content: '<svg/>', extension: '.svg', kind: 'chart', title: '   ' }),
-    '标题不能为空');
-  ok('空标题被存储层拒掉', emptyTitle !== null);
   console.log(`  自述：${back?.title} · at=${back?.at}`);
 }
-console.log('=== 页签的交付形态 ===');
-{
-  const client = readFileSync(new URL('../dsh-oks-ui/lib/client.mjs', import.meta.url), 'utf8');
-  ok('用宿主的模块加载器协议交付',
-    client.includes('__ModuleLoader__.load(') && /id:\s*["']@local\/dsh-oks-ui["']/.test(client));
-  // 页面加载器按经典脚本执行它：顶层出现 import/export 就会整条 entry 不激活。
-  ok('没有顶层 import / export', !/^\s*(import|export)\s/m.test(client));
-  ok('依赖走工厂的 require()', /factory: \(require\)/.test(client) || /factory: \(require\)\s*=>/.test(client));
-}
-console.log('=== 账本：清单不依赖文件系统 ===');
-{
-  const dir = mkdtempSync(join(tmpdir(), 'oks-ledger-'));
-  const report = readdirSync(join(DEV_ROOT, 'artifacts')).find((name) => VISIBLE.test(name));
-  const source = readFileSync(join(DEV_ROOT, 'artifacts', String(report)), 'utf8');
-  const target = join(dir, 'artifacts', String(report));
-  mkdirSync(join(dir, 'artifacts'), { recursive: true });
-  copyFileSync(join(DEV_ROOT, 'artifacts', String(report)), target);
-  const state = openState(dir);
-  try {
-    // 补登（读路径）：目录里有、账本上没有的可读产物就地登记；只加不删。
-    ok('库空时把目录里的产物补登进来', adoptArtifacts(state, dir).adopted === 1
-      && listArtifacts(state).length === 1);
-    const handDropped = `${resultStamp()}-hand_dropped.report.html`;
-    writeFileSync(join(dir, 'artifacts', handDropped), source);
-    ok('文件在、账本上没有：一次读就补进来（不必等写操作）',
-      adoptArtifacts(state, dir).adopted === 1 && listArtifacts(state).length === 2);
-    ok('补登不重复：再补一次什么都不做', adoptArtifacts(state, dir).adopted === 0
-      && listArtifacts(state).length === 2);
-
-    // 读路径不写：同一个库**只读**打开也能出清单（`ensureLedger` 在表非空时只是一句 count）。
-    {
-      const readOnly = new DatabaseSync(join(dir, '.oks', 'state.db'), { readOnly: true });
-      try {
-        const state2 = { db: readOnly, close: () => { /* 只读的那份自己关 */ } };
-        ok('读路径不写：库只读打开也能出清单，没有要补登的就不动手',
-          adoptArtifacts(state2, dir).adopted === 0 && listArtifacts(state2).length === 2);
-      } finally {
-        readOnly.close();
-      }
-    }
-
-    // 目录整个看不见：清单照旧（读路径不碰目录，所以"看不见"不会变成"没有"）。
-    rmSync(join(dir, 'artifacts'), { recursive: true, force: true });
-    ok('目录不在时清单照旧（补登也不凭空加行、更不删行）',
-      adoptArtifacts(state, dir).adopted === 0 && listArtifacts(state).length === 2);
-    ok('目录不在时补登/清悬挂都什么都不做',
-      reconcileArtifacts(state, dir).removed.length === 0 && listArtifacts(state).length === 2);
-
-    mkdirSync(join(dir, 'artifacts'), { recursive: true });
-    copyFileSync(join(DEV_ROOT, 'artifacts', String(report)), target);
-    writeFileSync(join(dir, 'artifacts', handDropped), source);
-    // 一个**从没被读过**的新产物：写路径的对账也要能补登它（人工放进来、或刚好错过一次读）。
-    const writeOnly = `${resultStamp()}-write_only.report.html`;
-    writeFileSync(join(dir, 'artifacts', writeOnly), source);
-
-    const reconciled = reconcileArtifacts(state, dir);
-    ok('写路径的对账也补登目录里还没登记的产物',
-      reconciled.adopted === 1 && listArtifacts(state).length === 3);
-
-    // 行是权威：文件还在、自述读不出时**不重新解析**，原来那一行（含标题与保留）照旧。
-    const before = listArtifacts(state).find((row) => row.asset === String(report));
-    pinByAsset(dir, `artifacts/${String(report)}`, true);
-    writeFileSync(target, '<!doctype html><html><head><title>只写了一半');
-    const afterHalf = reconcileArtifacts(state, dir);
-    const kept = listArtifacts(state).find((row) => row.asset === String(report));
-    ok('文件还在但读不出自述：那一行照旧，标题与保留都不动（不重新解析文件）',
-      afterHalf.unreadable.length === 0 && kept?.title === before?.title && kept?.pinned === true);
-
-    // 文件真的没了：行才被清掉（连同保留）。
-    copyFileSync(join(DEV_ROOT, 'artifacts', String(report)), target);
-    rmSync(target, { force: true });
-    const gone = reconcileArtifacts(state, dir);
-    ok('文件真的不在时才清掉那一行', gone.removed.length === 1 && listArtifacts(state).length === 2);
-
-    // 保活清理遍历**行**：过期的删文件 + 删行；保留的跳过。
-    const expiredMeta = (name: string, title: string) => ({ name, kind: 'report' as const, at: '20200101T000000Z', title });
-    const stale = '20200101T000000Z-stale_probe.report.html';
-    const keep = '20200101T000000Z-kept_probe.report.html';
-    writeFileSync(join(dir, 'artifacts', stale), source);
-    writeFileSync(join(dir, 'artifacts', keep), source);
-    recordArtifact(state, stale, expiredMeta('stale_probe', '过期的探针报告'));
-    recordArtifact(state, keep, expiredMeta('kept_probe', '留住的探针报告'));
-    pinByAsset(dir, `artifacts/${keep}`, true);
-    const pruned = pruneArtifacts(state, dir, KEEP_ALIVE_MINUTES);
-    ok('保活清理按行做：过期的文件与行一起没，保留的那份（行与文件）都不动',
-      pruned.removed.includes(stale) && !existsSync(join(dir, 'artifacts', stale))
-      && !listArtifacts(state).some((row) => row.asset === stale)
-      && existsSync(join(dir, 'artifacts', keep))
-      && listArtifacts(state).some((row) => row.asset === keep && row.pinned === true));
-    ok('目录看不见时保活清理什么都不做（那次"看不见"不当成"都没了"）',
-      (() => {
-        rmSync(join(dir, 'artifacts'), { recursive: true, force: true });
-        const idle = pruneArtifacts(state, dir, 0);   // 保活设成 0：所有行都过期
-        return idle.removed.length === 0 && listArtifacts(state).length >= 1;
-      })());
-
-    // 记账用的是**手里的那份 meta**，不是从文件里读回来的：标题里的 `&` 与引号在库里是原文。
-    const raw = '原文 & "引号" 的标题';
-    const written = saveArtifact({
-      root: dir,
-      name: 'raw_meta',
-      content: `<!doctype html><html><head><title>${raw}</title></head><body>x</body></html>`,
-      extension: '.html',
-      kind: 'report',
-      title: raw,
-    });
-    recordArtifact(state, written.asset.slice(written.asset.lastIndexOf('/') + 1), written.meta);
-    const onDisk = readFileSync(join(dir, written.asset), 'utf8');
-    const row = listArtifacts(state).find((item) => item.asset === written.asset.slice(written.asset.lastIndexOf('/') + 1));
-    ok('库里的标题是原文，文件里的自述是转义后的（不靠解析文件记账）',
-      row?.title === raw && onDisk.includes('&amp;') && onDisk.includes('&quot;')
-      && readArtifactMeta(onDisk)?.title === raw);
-  } finally {
-    state.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-// ── 内部材料的保活：比报表多 2 分钟；回收材料不碰保留状态 ───────────────────────
-console.log('=== 内部材料的回收 ===');
-{
-  const dir = mkdtempSync(join(tmpdir(), 'oks-materials-'));
-  mkdirSync(join(dir, '.oks', 'data'), { recursive: true });
-  mkdirSync(join(dir, '.oks', 'figures'), { recursive: true });
-  const stale = join(dir, '.oks', 'data', '20200101T000000Z-old-aaaaaaaa.qres.json');
-  const stranger = join(dir, '.oks', 'figures', 'notes.txt');
-  writeFileSync(stale, '{}');
-  writeFileSync(stranger, '用户自己放在这里的东西');
-  const longAgo = new Date(Date.now() - 6 * 3600_000);   // 6 小时前：比任何保活窗口都旧
-  utimesSync(stale, longAgo, longAgo);
-  const state = openState(dir);
-  try {
-    const { removed, untouched, freedBytes, remaining } = collectMaterials(dir, 60);
-    ok('过期的内部材料被回收', removed.length === 1 && !existsSync(stale));
-    ok('内部材料里认不出的不动', existsSync(stranger) && untouched >= 1);
-    ok('回收报出释放的字节与剩余份数', freedBytes > 0 && remaining === 0);
-    ok('内部材料比报表多活 2 分钟', MATERIAL_KEEP_ALIVE_MINUTES === KEEP_ALIVE_MINUTES + 2);
-  } finally {
-    state.close();
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-console.log('=== 清理窗口的配置 ===');
-{
-  const dir = mkdtempSync(join(tmpdir(), 'oks-retention-'));
-  const base = JSON.parse(readFileSync(join(DEV_ROOT, 'oks.json'), 'utf8'));
-  // 用**绝对** model 路径，免得相对路径在临时目录里解析不到。
-  const model = resolve(DEV_ROOT, String(base.model ?? ''));
-  const withRetention = (retention: unknown): void => {
-    writeFileSync(join(dir, 'oks.json'),
-      `${JSON.stringify({ ...base, model, ...(retention === undefined ? {} : { retention }) }, null, 2)}\n`);
-  };
-  const parsed = (retention: unknown): ReturnType<typeof resolveSettings> | string => {
-    withRetention(retention);
-    try { return resolveSettings(dir, undefined); } catch (cause) { return String((cause as Error).message); }
-  };
-  try {
-    const fallback = parsed(undefined);
-    ok('没写 retention 时用默认窗口（auto 62/60、manual 5/5、.work 不参与）',
-      typeof fallback !== 'string' && fallback.retention.auto.materials === MATERIAL_KEEP_ALIVE_MINUTES
-      && fallback.retention.auto.artifacts === KEEP_ALIVE_MINUTES && fallback.retention.auto.work === null
-      && fallback.retention.manual.materials === 5 && fallback.retention.manual.work === 5);
-    const custom = parsed({ auto: { materials: '2h', artifacts: 90 }, manual: { materials: '7d', work: 30 } });
-    ok('时长三种写法都认："2h" / "7d" / 纯数字分钟',
-      typeof custom !== 'string' && custom.retention.auto.materials === 120
-      && custom.retention.auto.artifacts === 90 && custom.retention.manual.materials === 10080
-      && custom.retention.manual.work === 30);
-    const noWork = parsed({ auto: { materials: '62m', artifacts: '60m', work: null } });
-    ok('auto.work 给 null＝这一类不参与自动清理',
-      typeof noWork !== 'string' && noWork.retention.auto.work === null);
-    const tooSmallAuto = parsed({ auto: { materials: '4m' } });
-    const tooSmallManual = parsed({ manual: { materials: '4s' } });
-    ok('auto 守 5 分钟下限、manual 守 5 秒下限，各自说清',
-      typeof tooSmallAuto === 'string' && /下限是 5 分钟/.test(tooSmallAuto)
-      && typeof tooSmallManual === 'string' && /下限是 5 秒/.test(tooSmallManual));
-    const zeroValue = parsed({ auto: { materials: 0 } });
-    ok('0 仍被拒（不设保护这个语义没有实现）',
-      typeof zeroValue === 'string' && /下限是 5 分钟/.test(zeroValue));
-    const inSeconds = parsed({ manual: { materials: '15s', work: '30s' } });
-    ok('manual 认秒级：\"15s\" → 0.25 分钟、\"30s\" → 0.5 分钟',
-      typeof inSeconds !== 'string' && inSeconds.retention.manual.materials === 0.25
-      && inSeconds.retention.manual.work === 0.5);
-    ok('秒级窗口的解析与写法：15s / 5 分钟 / 2 小时',
-      retentionMinutes('15s', 'x') === 0.25 && retentionMinutes('90', 'x') === 90
-      && windowText(0.25) === '15 秒' && windowText(5) === '5 分钟' && windowText(120) === '2 小时');
-    const floorMessage = (ttl: unknown): string => {
-      try { retentionMinutes(ttl, 'x'); return ''; } catch (cause) { return String((cause as Error).message); }
-    };
-    ok('显式窗口的下限是 5 秒（"4s" 与 0 都被拒）',
-      /下限是 5 秒/.test(floorMessage('4s')) && /下限是 5 秒/.test(floorMessage(0)));
-    const bogus = parsed({ auto: { materials: 'soon' } });
-    ok('写错的时长被拒，并给出写法', typeof bogus === 'string' && /例如 "15s"/.test(bogus));
-    const withSwitch = parsed({ auto: { enabled: true } });
-    ok('retention 里写错键被拒（例如 auto.enabled——自动清理是必做）',
-      typeof withSwitch === 'string' && /没有开关/.test(withSwitch));
-    const manualArtifacts = parsed({ manual: { artifacts: '10m' } });
-    ok('manual 里不认 artifacts（报表的显式清理走页签逐条删除）',
-      typeof manualArtifacts === 'string' && /只认 materials \/ work/.test(manualArtifacts));
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-console.log('=== 最后清理的记账 ===');
-{
-  const dir = mkdtempSync(join(tmpdir(), 'oks-cleanup-'));
-  try {
-    const { markCleanup, readLastCleanup, openState } = await import('./src/state.ts');
-    {
-      const state = openState(dir);
-      try {
-        markCleanup(dir, 'auto', 0);   // 没清掉东西：不记
-        ok('自动清理没清到东西时不记（否则每次写操作都刷一遍时间）', readLastCleanup(state) === undefined);
-      } finally { state.close(); }
-    }
-    {
-      const state = openState(dir);
-      try {
-        markCleanup(dir, 'auto', 3);
-        ok('清到东西时记下来源与时间', readLastCleanup(state)?.kind === 'auto');
-      } finally { state.close(); }
-    }
-    {
-      const state = openState(dir);   // 重新开一次库：说明它记在账本里，不是内存里
-      try {
-        ok('重启（重开库）之后仍然读得到', readLastCleanup(state)?.kind === 'auto');
-        markCleanup(dir, 'manual', 1);
-        ok('之后的手工清理会覆盖它', readLastCleanup(state)?.kind === 'manual');
-      } finally { state.close(); }
-    }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
 console.log('=== oks_delete：代码区删除 ===');
 {
   await call('oks_write', { path: '.work/doomed.jq', content: '. | length\n' });
@@ -1225,293 +977,6 @@ console.log('=== oks_delete：代码区删除 ===');
   await call('oks_delete', { path: '.work/kept.jq' });
 }
 
-console.log('=== 会话 → 工作区：两段式解析（绝不猜）===');
-{
-  const { sessionRootResolver } = await import('./src/endpoint.ts');
-
-  const liveFirst = sessionRootResolver({
-    sessions: { get: () => ({ header: { cwd: '/ws/live' } }) },
-    persistence: { stat: async () => ({ header: { cwd: '/ws/disk' } }) },
-  });
-  ok('活会话表的会话头有 cwd 就用它（新建会话第一轮对话之前就有）',
-    await liveFirst('s1') === '/ws/live');
-
-  const fromPersistence = sessionRootResolver({
-    sessions: { get: () => undefined },
-    persistence: { stat: async () => ({ header: { cwd: '/ws/disk' } }) },
-  });
-  ok('活表落空时读宿主的会话持久化（进程重启前建的会话靠它）',
-    await fromPersistence('s2') === '/ws/disk');
-
-  let attempts = 0;
-  const late = sessionRootResolver(
-    { sessions: { get: () => (attempts += 1, attempts < 3 ? undefined : { header: { cwd: '/ws/late' } }) } },
-    { attempts: 3, waitsMs: [1, 1] });
-  ok('会话刚建、登记晚一拍：解析会重试到成功', await late('s3') === '/ws/late' && attempts === 3);
-  const beforeCached = attempts;
-  await late('s3');
-  ok('解析结果会被记住：同一会话只解析一次', attempts === beforeCached);
-
-  const nothing = sessionRootResolver({}, { attempts: 2, waitsMs: [1] });
-  let message = '';
-  try { await nothing('s4'); } catch (cause) { message = String((cause as Error).message); }
-  ok('两条路都没有时明确报错——宁可"读不到"，也不用部署 cwd 顶替', /找不到会话 s4/.test(message));
-
-  const blank = sessionRootResolver(
-    { sessions: { get: () => ({ header: { cwd: '' } }) },
-      persistence: { stat: async () => ({ header: { cwd: '   ' } }) } },
-    { attempts: 2, waitsMs: [1] });
-  let blankMessage = '';
-  try { await blank('s5'); } catch (cause) { blankMessage = String((cause as Error).message); }
-  ok('空串 / 空格不算答案', /找不到会话 s5/.test(blankMessage));
-}
-
-console.log('=== 界面那两条端点 ===');
-{
-  const { createArtifactsEndpoint, createCollectEndpoint, createDeleteEndpoint, createDownloadEndpoint,
-    createPinEndpoint } = await import('./src/endpoint.ts');
-  const asked: string[] = [];
-  const deps = {
-    rootFor: (sessionId: string) => { asked.push(sessionId); return DEV_ROOT; },
-    pin: (root: string, asset: string, pinned: boolean) => pinByAsset(root, asset, pinned),
-    remove: (root: string, asset: string) => deleteArtifact(root, asset),
-    keepAliveMinutes: () => KEEP_ALIVE_MINUTES,
-    // 清理端点走真实路径：窗口来自工作区声明（DEV_ROOT 没写 retention，于是用默认的 manual 5/5）。
-    collect: (root: string, ttl?: unknown) => {
-      const manual = resolveSettings(root, undefined).retention.manual;
-      const outcome = collectWithWindows(root, collectWindows(manual, ttl));
-      markCleanup(root, 'manual', outcome.removedMaterials + outcome.removedWork);
-      return outcome;
-    },
-  };
-  const artifacts = createArtifactsEndpoint(deps);
-  const pin = createPinEndpoint(deps);
-  const del = createDeleteEndpoint(deps);
-  const download = createDownloadEndpoint(deps);
-  const collect = createCollectEndpoint(deps);
-  const call = async (
-    handler: (req: never, res: never) => Promise<void>,
-    method: string,
-    url: string,
-    body?: unknown,
-  ): Promise<{ status: number; body: Record<string, unknown>; text: string; headers: Record<string, string> }> => {
-    const chunks = body === undefined ? [] : [Buffer.from(JSON.stringify(body))];
-    const req = { method, url, [Symbol.asyncIterator]: async function* () { for (const chunk of chunks) yield chunk; } };
-    let status = 0;
-    let text = '';
-    let headers: Record<string, string> = {};
-    const res = {
-      writeHead(value: number, extra?: Record<string, string>) {
-        status = value;
-        headers = extra ?? {};
-        return { end(payload?: string) { text = payload ?? ''; } };
-      },
-    };
-    await handler(req as never, res as never);
-    // 回执是 JSON 就解析（下载端点是 HTML，原样留着给断言看）。注意别和入参 body 撞名。
-    const parsed = (headers['content-type'] ?? '').startsWith('application/json') && text !== ''
-      ? JSON.parse(text) as Record<string, unknown>
-      : {};
-    return { status, body: parsed, text, headers };
-  };
-
-  const first = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
-  const value = first.body.value as { keepAliveMinutes: number; entries: { file: string; pinned: boolean }[] } | undefined;
-  ok('GET 清单：回执是 { ok, value }', first.status === 200 && first.body.ok === true && Array.isArray(value?.entries));
-  const usage = (first.body.value as { usage?: Record<string, { files?: unknown; bytes?: unknown }> } | undefined)?.usage;
-  ok('清单回执带上那块概览要的四类占用（数据 / 图表 / 工作 / 输出）',
-    usage !== undefined && ['data', 'charts', 'work', 'artifacts'].every((kind) =>
-      typeof usage[kind]?.files === 'number' && typeof usage[kind]?.bytes === 'number'));
-  ok('输出文件那类还带"保留了几份"',
-    typeof (usage?.artifacts as { pinned?: unknown } | undefined)?.pinned === 'number');
-  ok('清单里有产物（界面要的就是这些）', (value?.entries.length ?? 0) > 0);
-  ok('回执带着保活窗口', Number(value?.keepAliveMinutes) > 0);
-
-  const target = value?.entries[0];
-  const pinned = await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: `artifacts/${target?.asset}`, pinned: true });
-  ok(`POST 保留：落状态并回执（实际 ${pinned.status} ${JSON.stringify(pinned.body)}）`,
-    pinned.status === 200 && (pinned.body.value as { pinned: boolean } | undefined)?.pinned === true);
-
-  const again = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
-  const after = (again.body.value as { entries: { src: string; pinned: boolean }[] }).entries;
-  ok('再问一次清单：状态已经变了（界面重读即见）', after.find((item) => item.asset === target?.asset)?.pinned === true);
-  ok('两条端点都按 sessionId 找过工作区', asked.join(',') === 'probe,probe,probe');
-
-  // 同步这一步失败不该让这次刷新变成"读不到清单"：清单是**投影**，库里已有的行照旧给出。
-  // （这里把 artifacts 换成一个同名文件，让扫描报 ENOTDIR——现场更常见的是撞上清理或写锁。）
-  const artifactsDir = join(DEV_ROOT, 'artifacts');
-  const stashed = `${artifactsDir}.stash`;
-  renameSync(artifactsDir, stashed);
-  writeFileSync(artifactsDir, '不是一个目录\n');
-  try {
-    const degraded = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
-    const entries = (degraded.body.value as { entries: unknown[] } | undefined)?.entries;
-    ok('同步失败不吞掉清单：按库里已有的照常回执',
-      degraded.status === 200 && Array.isArray(entries) && entries.length > 0);
-  } finally {
-    rmSync(artifactsDir, { force: true });
-    renameSync(stashed, artifactsDir);
-  }
-  const restored = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
-  ok('恢复之后清单照旧', ((restored.body.value as { entries: unknown[] }).entries).length > 0);
-
-  // 现场那个形态：文件在磁盘上（能打开），账本里没有它那一行——**一次读**就该补进来，
-  // 而不是等下一次写产物。以前只在"库空"时收养，于是这种产物会一直不可见。
-  const unlisted = `${resultStamp()}-adopted_by_read.report.html`;
-  copyFileSync(join(DEV_ROOT, 'artifacts', String(target?.asset)), join(DEV_ROOT, 'artifacts', unlisted));
-  const adoptedRead = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
-  const adoptedEntries = (adoptedRead.body.value as { entries: { file: string }[] }).entries;
-  ok('文件在、账本上没有时：一次读就补进来（不必等写操作）',
-    adoptedEntries.some((entry) => entry.asset === unlisted));
-  await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: `artifacts/${unlisted}` });
-
-  // 主动删除（界面每行那个 x）：只有未保留的能删；文件与行一起去掉。
-  const doomed = saveArtifact({
-    root: DEV_ROOT,
-    name: 'delete_probe',
-    content: '<!doctype html><html><head><title>待删的冒烟报告</title></head><body>删我</body></html>',
-    extension: '.html',
-    kind: 'report',
-    title: '待删的冒烟报告',
-  });
-  const doomedFile = doomed.asset.slice(doomed.asset.lastIndexOf('/') + 1);
-  const listFiles = async (): Promise<string[]> => {
-    const listing = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
-    return ((listing.body.value as { entries: { file: string }[] } | undefined)?.entries ?? [])
-      .map((entry) => entry.asset);
-  };
-  {
-    const state = openState(DEV_ROOT);
-    try { reconcileArtifacts(state, DEV_ROOT); } finally { state.close(); }
-  }
-  ok('删除前：产物在磁盘上、也在清单里',
-    existsSync(join(DEV_ROOT, doomed.asset)) && (await listFiles()).includes(doomedFile));
-  await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: doomed.asset, pinned: true });
-  const pinnedDelete = await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: doomed.asset });
-  ok('保留中的产物删不掉：报错，文件与那一行都还在',
-    pinnedDelete.status === 400 && /先取消保留/.test(String(pinnedDelete.body.message))
-    && existsSync(join(DEV_ROOT, doomed.asset)) && (await listFiles()).includes(doomedFile));
-  await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: doomed.asset, pinned: false });
-  const removed = await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: doomed.asset });
-  ok('未保留的产物能删：文件与那一行一起没了',
-    removed.status === 200 && removed.body.ok === true
-    && !existsSync(join(DEV_ROOT, doomed.asset)) && !(await listFiles()).includes(doomedFile));
-  // 文件已经不在磁盘上时，那一行仍然删得掉：用户点的是**清单上的那一行**，清单是权威。
-  // （这里不经过清单端点，避免读路径的同步先把那一行收掉。）
-  const orphan = saveArtifact({
-    root: DEV_ROOT,
-    name: 'orphan_probe',
-    content: '<!doctype html><html><head><title>文件先没了</title></head><body>删我</body></html>',
-    extension: '.html',
-    kind: 'report',
-    title: '文件先没了',
-  });
-  const orphanFile = orphan.asset.slice(orphan.asset.lastIndexOf('/') + 1);
-  {
-    const state = openState(DEV_ROOT);
-    try { reconcileArtifacts(state, DEV_ROOT); } finally { state.close(); }
-  }
-  rmSync(join(DEV_ROOT, orphan.asset), { force: true });
-  const orphanGone = await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: orphan.asset });
-  const orphanRows = (() => {
-    const state = openState(DEV_ROOT);
-    try { return listArtifacts(state); } finally { state.close(); }
-  })();
-  ok('文件已经不在时那一行照样能删掉（清单是权威，用户点的是清单上的行）',
-    orphanGone.status === 200 && !orphanRows.some((row) => row.asset === orphanFile));
-
-  ok('再删一次明确报错（登记已经没了）',
-    (await call(del, 'POST', '/oks/delete', { sessionId: 'probe', src: doomed.asset })).status === 400);
-  ok('删除只接受 POST', (await call(del, 'GET', '/oks/delete')).status === 405);
-  ok('删除缺字段明确报错', (await call(del, 'POST', '/oks/delete', { sessionId: 'probe' })).status === 400);
-
-  // 边界：这两条端点很窄，不能被当成通用入口
-  ok('清单只接受 GET', (await call(artifacts, 'POST', '/oks/artifacts?sessionId=probe')).status === 405);
-  ok('保留只接受 POST', (await call(pin, 'GET', '/oks/pin')).status === 405);
-  ok('清单缺 sessionId 明确报错', (await call(artifacts, 'GET', '/oks/artifacts')).status === 400);
-  ok('保留缺字段明确报错', (await call(pin, 'POST', '/oks/pin', { sessionId: 'probe' })).status === 400);
-  ok('pinned 必须是布尔', (await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: `artifacts/${target?.asset}`, pinned: 'yes' })).status === 400);
-  ok('不存在的产物不静默成功',
-    (await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: '.oks/figures/nope.bar.svg', pinned: true })).status === 400);
-
-  await call(pin, 'POST', '/oks/pin', { sessionId: 'probe', src: `artifacts/${target?.asset}`, pinned: false });
-
-  // 下载：报表内容原样交给浏览器（带 attachment 头），界面用一个普通链接就能下载。
-  const file = encodeURIComponent(String(target?.asset));
-  const got = await call(download, 'GET', `/oks/download?sessionId=probe&file=${file}`);
-  ok('GET 下载：报表内容原样返回', got.status === 200 && /<html/i.test(got.text));
-  ok('下载带 attachment 头（浏览器才当下载）', /attachment/.test(got.headers['content-disposition'] ?? ''));
-  ok('下载带文件名', (got.headers['content-disposition'] ?? '').includes(String(target?.asset)));
-  ok('下载只接受 GET', (await call(download, 'POST', `/oks/download?sessionId=probe&file=${file}`)).status === 405);
-  ok('下载不接受路径', (await call(download, 'GET', '/oks/download?sessionId=probe&file=../state.db')).status === 400);
-  const figureFile = (existsSync(join(DEV_ROOT, '.oks', 'figures'))
-    ? readdirSync(join(DEV_ROOT, '.oks', 'figures')) : []).find((name) => CHART_KINDS.some((kind) => name.endsWith(`.${kind}.svg`)));
-  // 清理端点：按工作区配置的 manual 窗口清一次（材料 + 代码区）；报表不在其中。
-  {
-    mkdirSync(join(DEV_ROOT, '.oks', 'data'), { recursive: true });
-    mkdirSync(join(DEV_ROOT, '.work'), { recursive: true });
-    const stamp = resultStamp();
-    const oldMaterial = join(DEV_ROOT, '.oks', 'data', `${stamp}-endpoint_old-cccccccc.qres.json`);
-    const freshMaterial = join(DEV_ROOT, '.oks', 'data', `${stamp}-endpoint_fresh-dddddddd.qres.json`);
-    const oldProgram = join(DEV_ROOT, '.work', 'endpoint_old.jq');
-    const strangerFile = join(DEV_ROOT, '.oks', 'data', 'endpoint_user_file.json');
-    writeFileSync(oldMaterial, '{"rows":[],"columns":[]}');
-    writeFileSync(freshMaterial, '{"rows":[],"columns":[]}');
-    writeFileSync(strangerFile, '用户自己放的');
-    writeFileSync(oldProgram, '.\n');
-    const tenMin = new Date(Date.now() - 10 * 60_000);
-    utimesSync(oldMaterial, tenMin, tenMin);
-    utimesSync(oldProgram, tenMin, tenMin);
-    const reportsBefore = readdirSync(join(DEV_ROOT, 'artifacts')).length;
-    // 菜单给的大窗口（30 分钟）：10 分钟前那份**留得住**，窗口秒数如实回执。
-    const wide = await call(collect, 'POST', '/oks/collect', { sessionId: 'probe', ttl: '30m' });
-    const wideValue = JSON.parse(wide.text).value ?? {};
-    ok('菜单给 30 分钟窗口时按它留人：回执 1800 秒，10 分钟前的材料与程序都没被误删',
-      wide.status === 200 && wideValue.windowSeconds === 1800
-      && existsSync(oldMaterial) && existsSync(oldProgram));
-    // 不给 ttl：按工作区配置的 manual 策略（DEV_ROOT 没写 retention → 默认 5 分钟）。
-    const cleaned = await call(collect, 'POST', '/oks/collect', { sessionId: 'probe' });
-    const value = JSON.parse(cleaned.text).value ?? {};
-    ok('清理端点按 manual 窗口清了材料与代码区',
-      cleaned.status === 200 && value.removedMaterials >= 1 && value.removedWork >= 1
-      && !existsSync(oldMaterial) && !existsSync(oldProgram) && existsSync(freshMaterial));
-    ok('窗口内的材料留着、不是我们命名的文件不动', existsSync(strangerFile));
-    ok('清理端点不碰报表', readdirSync(join(DEV_ROOT, 'artifacts')).length === reportsBefore);
-    ok('回执够界面写一句话：截止时刻、窗口、还剩几个、总大小、释放多少',
-      Math.abs(Date.now() - Number(value.cutoffMs) - 300_000) < 5_000   // DEV_ROOT 没写 retention：manual 默认 5 分钟
-      && value.windowSeconds === 300
-      && typeof value.remainingMaterials === 'number' && typeof value.remainingMaterialBytes === 'number'
-      && typeof value.remainingWork === 'number' && typeof value.remainingWorkBytes === 'number'
-      && typeof value.freedBytes === 'number');
-    ok('端点不把路径交给界面（界面只显示数量与大小）',
-      value.materials === undefined && value.work === undefined);
-    ok('清理只接受 POST', (await call(collect, 'GET', '/oks/collect')).status === 405);
-    // 菜单给的小窗口（5 分钟）：再摆一份 10 分钟前的材料，这次该被清掉。
-    const shortMaterial = join(DEV_ROOT, '.oks', 'data', `${stamp}-endpoint_short-eeeeeeee.qres.json`);
-    writeFileSync(shortMaterial, '{"rows":[],"columns":[]}');
-    utimesSync(shortMaterial, tenMin, tenMin);
-    const narrow = await call(collect, 'POST', '/oks/collect', { sessionId: 'probe', ttl: '5m' });
-    const narrowValue = JSON.parse(narrow.text).value ?? {};
-    ok('菜单给 5 分钟窗口时按它清：10 分钟前那份走掉',
-      narrow.status === 200 && narrowValue.windowSeconds === 300 && !existsSync(shortMaterial));
-
-    ok('清理缺 sessionId 明确报错', (await call(collect, 'POST', '/oks/collect', {})).status === 400);
-    const afterClean = await call(artifacts, 'GET', '/oks/artifacts?sessionId=probe');
-    const lastCleanup = (afterClean.body.value as { usage?: { lastCleanup?: { kind?: unknown; at?: unknown } } })
-      ?.usage?.lastCleanup;
-    ok('清理之后"最后清理"记成手工，并且带时间',
-      lastCleanup?.kind === 'manual' && typeof lastCleanup?.at === 'number');
-    rmSync(freshMaterial, { force: true });
-    rmSync(strangerFile, { force: true });
-  }
-
-  ok('下载不读图（当前只有报表算制品）',
-    (await call(download, 'GET', `/oks/download?sessionId=probe&file=${encodeURIComponent(String(figureFile))}`)).status === 400);
-  ok('不存在的报表回 404',
-    (await call(download, 'GET', '/oks/download?sessionId=probe&file=20260101T000000Z-nope.report.html')).status === 404);
-
-
-}
 console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
 {
   mkdirSync(SCRATCH, { recursive: true });
@@ -1525,7 +990,7 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     const captured = [];
     mod.apply({
       logger: { info: () => {} },
-      get: (name) => (name === 'skills'
+      get: (name) => (name === 'attachments' ? testAttachments(SCRATCH) : name === 'skills'
         ? { register: (skill) => { captured.push(skill); return () => {}; } }
         : undefined),
       tools: { register: () => () => {} },
@@ -1730,7 +1195,7 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     !('error' in back) && back.structure.includes('<h2 id="section-1">趋势</h2>'));
   // 组装（纯函数）：校验 → 绑定过滤 → 编号 → 渲染 → 归档 → 页面。
   const makeBinding = (value, display) => ({
-    src: '.oks/data/x.tr.json',
+    src: 'oks://work/analysis.dari#x',
     root: '.data',
     value,
     origin: { root: 'n1', nodes: { n1: { kind: 'transform', snip: 'x', snipFile: 'p.jq' } } },

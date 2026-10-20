@@ -1,4 +1,2 @@
-# 多包仓库：插件本体在 packages/dsh-oks，右侧栏的 UI 包在 packages/dsh-oks-ui（见 rfc/0004）。
-# workspace 清单同时是构建期 Typert 生成器发现贡献包的入口——它按 workspace 根找包。
 packages:
   - packages/*

@@ -1,3 +1,4 @@
+import {testAttachments} from './test-attachments.ts';
 import { asDari } from './test-markdown.ts';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
@@ -21,15 +22,14 @@ const root = mkdtempSync(join(tmpdir(), 'oks-draft-tools-'));
 mkdirSync(join(root,'.work'));
 const wasm=process.argv[2]; assert.ok(wasm);
 const jq=createJaqEngine(wasm);
-let queries=0; let writes=0;
+let queries=0; let writes=0; let savedPath="";
 const entry={root,modelHash:'test',settings:{workspaceRoot:root,domain:'test',dataFile:undefined,queryMaxRows:200},runner:{async send(_method:string,{intents}: {intents:{limit:number}[]}){return {ok:{accepted:true,queries:[{sql:'select 1',bindings:[intents[0].limit],limit_slot:0,columns:[{name:'n',type:'Int',nullable:true}]}]}};}}} as unknown as WorkspaceEntry;
 const knowledge={ensureWorkspace:()=>entry,executorFor:()=>({manifest:null,executor:{async send(){queries++;return {rows:[{n:7}],columns:['n'],truncated:false};},dispose(){}}})} as unknown as Knowledge;
 const caller={agent:{session:{id:'A'}}} as unknown as ToolExec;
 const other={agent:{session:{id:'B'}}} as unknown as ToolExec;
 const timeContext={zones:new Map(),install(){}} as TimeContext;
 const drafts=createDraftTools({knowledge,timeContext,
-  save(_entry,options){writes++;const asset=`output-${writes}${options.extension}`;writeFileSync(join(root,asset),options.content);return {asset,at:'test'};},
-  readResource(){return {value:{saved:true}};},
+  attachments:()=>testAttachments(root),
   backend:(entry,file,contextZone)=>createDraftBackend({knowledge,entry,file,contextZone,jq}),
 });
 const call=async(name:string,args:unknown,exec=caller)=>{
@@ -53,7 +53,7 @@ try {
   assert.equal((await call('oks_run_answer',{src:file})).delivery.status,'ready');
   write(source);
   let result=await call('oks_run_answer',{src:file});
-  assert.equal(result.delivery.status,'ready');assert.equal(result.delivery.mode,'reply');assert.match(result.reply,/Total: 7/);assert.equal(writes,0);assert.equal(queries,1);
+  assert.equal(result.delivery.status,'ready');assert.equal(result.delivery.mode,'retained');assert.equal(writes,0);assert.equal(queries,1);
   assert.equal(result.outputs.find((item:any)=>item.name==='facts').rowCount,1);
   assert.equal(result.outputs.find((item:any)=>item.name==='facts').truncated,false);
   assert.deepEqual(result.outputs.find((item:any)=>item.name==='facts').columns,[{name:'n',type:'Int',nullable:true}]);
@@ -68,9 +68,9 @@ try {
   await call('oks_data',{input:file+'#total',meta:true});
   write(source+'\n');assert.equal((await call('oks_data',{input:file+'#total'})).stale,true);assert.equal(queries,1);
   write(source);
-  result=await call('oks_run_answer',{src:file,delivery:'artifact'});assert.equal(result.delivery.status,'ready');assert.equal(writes,1);assert.equal(queries,1);
-  await call('oks_run_answer',{src:file,delivery:'artifact'});assert.equal(writes,1,'重复交付相同证据不重复落盘');
-  result=await call('oks_data',{input:'output-1.html'});assert.equal(result.data.saved,true);assert.equal(writes,1);
+  result=await call('oks_run_answer',{src:file});assert.equal(result.delivery.status,'ready');assert.equal(writes,0);assert.equal(queries,1);
+  const shown=await call('oks_show',{input:file+'#answer'});savedPath=shown.path;assert.deepEqual((await call('oks_show',{input:file+'#answer'})).attachment,shown.attachment);
+  await assert.rejects(call('oks_data',{input:'output-1.html'}),/Unknown structured resource/);
   write(source.replace('let total=jq("total.jq",{facts});','let total=jq("total.jq",{facts}); let second=render_html("answer.xhtml",{total});'));
   result=await call('oks_run_answer',{src:file});assert.equal(result.delivery.status,'selection_required');
   result=await call('oks_run_answer',{src:file,answer:'second'});assert.equal(result.delivery.status,'ready');
@@ -93,7 +93,7 @@ try {
   assert.equal(queries,1,'所有读取和改稿都没有隐式刷新查询');
   const blocks=drafts.tools[0].output.render as unknown as (args:unknown,value:unknown)=>{text:string}[];
   assert.ok(Buffer.byteLength(blocks({},result)[0].text)<16384);
-  const saved=await import('node:fs').then(fs=>fs.readFileSync(join(root,'output-1.html'),'utf8'));
+  const saved=await import('node:fs').then(fs=>fs.readFileSync(savedPath,'utf8'));
   assert.equal(checkWellFormed(saved).length,0);
   const wideColumns=Array.from({length:30},(_,index)=>({name:'column_'+index,type:'String',nullable:true}));
   write('## pipeline\n```js\nlet wide=data('+JSON.stringify({rows:[],columns:wideColumns})+');\n```');
@@ -109,7 +109,7 @@ try {
   write(multi);
   result=await call('oks_run_answer',{src:file});assert.equal(result.delivery.status,'selection_required');
   assert.ok(result.outputs.every((out:any)=>!out.name.startsWith('@')));assert.equal(result.omittedOutputs,0);
-  result=await call('oks_run_answer',{src:file,answer:'second'});assert.equal(result.delivery.status,'ready');assert.match(result.reply,/2/);
+  result=await call('oks_run_answer',{src:file,answer:'second'});assert.equal(result.delivery.status,'ready');assert.equal(result.delivery.input,file+'#second');
   await assert.rejects(call('oks_data',{input:file+'#@figure/1'}),/internal|not defined/i);
   result=await call('oks_run_answer',{src:file,answer:'@figure/1'});assert.equal(result.delivery.status,'unavailable');
   write(multi.replace('data={facts} />','data={facts[0]} />'));

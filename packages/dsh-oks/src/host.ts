@@ -22,10 +22,18 @@ export type Disposable = () => void;
 /** 插件的宿主日志出口（createTools / createKnowledge 等一路带上来的那个）。 */
 export type LogFn = (message: string) => void;
 
-/** 模型可见渲染块：插件只产出 text。 */
+/** 宿主内容块：简短 text 与持久 file 引用；文件内容不进模型上下文。 */
 export interface RenderBlock {
   type: string;
-  text: string;
+  text?: string;
+  attachment?: FileAttachmentRef;
+}
+
+/** Durable host file attachment; bytes are stored verbatim by ctx.attachments. */
+export interface FileAttachmentRef { attachmentId:string; name:string; bytes:number }
+export interface AttachmentsService {
+  saveFile(input:{data:Uint8Array;name?:string}):Promise<FileAttachmentRef>;
+  fileHostPath(ref:FileAttachmentRef):string|undefined;
 }
 
 /** 自带技能：注册进 skills 服务时用的形状。 */
@@ -117,13 +125,12 @@ export interface WorkspaceProbe {
  *  `get` 按已知服务名给具体类型，其余回落成 unknown，取到后各调用处照旧自己判断。 */
 export interface PluginContext {
   logger?: LoggerLike | null;
+  get(name: 'attachments'): AttachmentsService | undefined;
   get(name: 'skills'): SkillsService | undefined;
   get(name: 'agents'): AgentsService | undefined;
   get(name: 'agentPresets'): AgentPresetsService | undefined;
   get(name: 'workspaceRegistry'): WorkspaceRegistry | undefined;
   get(name: 'sessionTitle'): SessionTitleService | undefined;
-  get(name: 'sessions'): SessionsLookup | undefined;
-  get(name: 'webServer'): WebServerLike | undefined;
   get(name: string): unknown;
   /** 需要某个服务时才装配（取不到就不装）：插件在无 web 的部署里照常工作。 */
   inject?(names: string[], run: (ctx: PluginContext) => void): void;
@@ -132,18 +139,6 @@ export interface PluginContext {
   tools: ToolsService;
   systemPrompt?: SystemPromptService | null;
 }
-
-/** 会话服务的最小面：端点要按 sessionId 找到那个会话的工作区根。 */
-export interface SessionsLookup {
-  get(sessionId: string): { header?: { cwd?: unknown } } | undefined;
-}
-
-/** 宿主 web 服务的最小面：注册一条同源 HTTP 端点（界面的机械操作走它）。 */
-export interface WebServerLike {
-  register(route: { kind: 'exact' | 'prefix'; path: string; handler: PanelHandler }): () => void;
-}
-
-import type { PanelHandler } from './endpoint.ts';
 
 // ── 2. agent 与会话表面 ──────────────────────────────────────────────────────
 

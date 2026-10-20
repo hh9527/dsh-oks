@@ -1,24 +1,6 @@
-# 工作区知识与回答源码的宿主桥接。
-# va_ask 提供词汇线索，oks_knowledge 只读投影和检索知识图。
-# work_* 编辑 .work/ 下的 DARI；oks_run_answer 执行完整 pipeline，
-# query/exec_query/data/context/time_windows/jq/render_figure/render_html 在文档中表达。
-# oks_data 只读取已有 binding/debug/failures 或产物；产出页签管理持久化报告。
-#
-# 这一行不需要知道任何模型：领域、model、dataFile 全部来自工作区根目录的 oks.json
-# （{"domain":"<领域名>","model":"<相对 oks.json 的 .wasm 路径>",
-#   "dataFile":"<相对 oks.json 的 .sqlite 路径>"}），config 留空即可。
-#
-# 需要覆盖工作区声明时才写 config（优先级：config > oks.json > 默认值）：
-#   domain / model / dataFile / requestTimeoutMs / retryAcceptedSubset /
-#   queryTimeoutMs / queryMaxRows
-#   （时区来自请求上下文；工作区来自会话头 cwd；运行时取不到就报错）
-#
-# 宿主是 Node 自带的进程内 wasm worker，直接导入产物里的 telora.snapshot 段——
-# 当前只支持快照产物。查询由另一个 worker 用 node:sqlite **只读**执行；查询和中间结果由会话运行器管理；
-# 回复图表写 .oks/figures/，持久化报表写 artifacts/，大值通过只读引用查看。
-#
-# 这一行只有 node 半边（工具），所以写进 agent preset 的 plugins 即可：工具面只在该 preset 的
-# 作用域内生效，profile 顶层不必多一行。图在服务端画成 SVG 落进工作区，由 agent 引用进回答。
+# 知识、只读查询、DARI 分析与宿主附件交付。
+# domain/model/dataFile 来自工作区根目录 oks.json；时区来自会话。
+# oks_run_answer 保留运行，oks_data 读取结果，oks_show 导出 SVG/HTML 附件。
 - insert:
     - id: oks
       name: '@local/dsh-oks'

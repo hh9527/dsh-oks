@@ -8,7 +8,6 @@ import {createJaqEngine,JaqCompileError} from './src/jaq.ts';
 import {createKtools} from './src/ktools.ts';
 import {builtinKtoolsSource,builtinCode} from './src/knowledge-programs.ts';
 import {KTOOLS_FILE,KTOOLS_INITIAL_SOURCE} from './src/ktools-path.ts';
-import {collectWork} from './src/state.ts';
 const hooks=registerHooks({load(url,context,next){return url.endsWith('.md')?{format:'module',source:`export default ${JSON.stringify(readFileSync(new URL(url),'utf8'))}`,shortCircuit:true}:next(url,context);}});
 const {createTools}=await import('./src/tools.ts');hooks.deregister();
 const root=mkdtempSync(join(tmpdir(),'oks-ktools-'));
@@ -56,7 +55,7 @@ try {
  assert.ok((await call('oks_list',{})).files.some(f=>f.name===KTOOLS_FILE));
  mkdirSync(join(root,'.work'));writeFileSync(join(root,'.work/stale.jq'),'.');
  const oldTime=new Date('2020-01-01');utimesSync(join(root,LIBRARY_PATH),oldTime,oldTime);utimesSync(join(root,'.work/stale.jq'),oldTime,oldTime);
- collectWork(root,1);assert.equal(existsSync(join(root,'.work/stale.jq')),false);assert.equal(existsSync(join(root,LIBRARY_PATH)),true);
+ await call('oks_delete',{path:'oks://work/stale.jq'});assert.equal(existsSync(join(root,'.work/stale.jq')),false);assert.equal(existsSync(join(root,LIBRARY_PATH)),true);
  tools.dispose();tools=makeTools();
  assert.deepEqual((await call('oks_data',{input:'oks://knowledge',method:KTOOLS_FILE+'#echo',args:{n:3}})).data,{"中文":{changed:{n:3}}},'new session reads persistent methods');
  await assert.rejects(createKtools(engine.checkLibrary,engine.run).program(root,KTOOLS_FILE+'#missing'),/exactly one/);

@@ -67,7 +67,7 @@ let spec=${JSON.stringify(Object.fromEntries(Object.entries(example.spec).filter
  }
  const runtime=new FixtureRuntime(backend);const result=await runtime.run(presentationExample);
  assert.equal(result.status,'complete',result.error);
- const html=runtime.read('answer',presentationExample).value.sources[0].delivery!.html;
+ const html=runtime.read('reports.answer',presentationExample).value.sources[0].delivery!.html;
  assert.match(html,/>3<\/span>/);assert.match(html,/>major<\/span>/);
  assert.match(html,/>告警级别<\/th>/);assert.match(html,/>数量<\/th>/);
  const invalid=presentationExample.replace('columns:["告警级别","数量"]','columns:[{key:"level",label:"告警级别"}]');

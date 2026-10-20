@@ -45,19 +45,16 @@ console.log('✓ 查询 limit 允许 1..500，501 及非法值被拒绝');
 for (const code of ['evaluation_truncated', 'payload_too_large']) {
   const error = { ok: false, error: { code, tool: 'oks_data', limitBytes: 1024, actualBytes: null },
     shape: { type: 'array', size: 100000 } };
-  for (const args of [{}, { save: { name: 'large', motivation: '回归测试' } }]) {
+  for (const args of [{}]) {
     assert.deepEqual(JSON.parse((renderJqResult(args, error)[0] as { text: string }).text), error);
   }
 }
 for (const value of [null, undefined, {}, { error: { code: 'failure' } }]) {
-  const text = (renderJqResult({ save: {} }, value)[0] as { text: string }).text;
+  const text = (renderJqResult({}, value)[0] as { text: string }).text;
   assert.doesNotMatch(text, /asset:.*0\.0 KB/);
 }
-const saved = (renderJqResult({ save: {} }, { asset: '.oks/data/sample.tr.json', bytes: 1024,
-  execution: { method: 'jq', src: '.work/sample.jq' } })[0] as { text: string }).text;
-assert.match(saved, /asset:  \.oks\/data\/sample.tr.json · 1\.0 KB/);
-assert.match(saved, /execution: jq · \.work\/sample.jq/);
-console.log('✓ oks_data 查看与保存的错误和 shape 完整可见，保存成功显示落点与执行方式');
+
+console.log('✓ oks_data 读取错误与 shape 完整可见');
 
 // 读回结构是注释摘要，最终报告的正文另由渲染路径完整保留。
 const summaryOf = (content: string, attributes = 'data-oks-shrink=""') => {

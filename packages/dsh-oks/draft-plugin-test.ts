@@ -1,3 +1,4 @@
+import {testAttachments} from './test-attachments.ts';
 import { asDari } from './test-markdown.ts';
 // Run against a standalone bundle + colocated Wasm, not the source module graph.
 import assert from 'node:assert/strict';
@@ -9,18 +10,20 @@ const [bundle, model, database] = process.argv.slice(2);
 assert.ok(bundle && model && database, '需要 bundle、模型和只读 SQLite 路径');
 const root = mkdtempSync(join(tmpdir(), 'oks-draft-plugin-'));
 writeFileSync(join(root,'oks.json'),JSON.stringify({version:1,domain:'ic',model,dataFile:database}));
+const attachmentModule=process.env.OKS_ATTACHMENTS_MODULE;
+const attachments=attachmentModule?Object.assign(Object.create((await import(pathToFileURL(attachmentModule).href)).LocalAttachmentStore.prototype),{root:join(root,'attachments','v1')}):testAttachments(root);
 const { apply } = await import(pathToFileURL(bundle).href);
 const registered = new Map<string, any>();
 const dispose: (()=>void)[] = [];
 const listeners: any[] = [];
 const logs: string[] = [];
 const skills: any[] = [];
-apply({logger:{info:(message:string)=>logs.push(message)},get:(name:string)=>name==='skills'?{register:(skill:unknown)=>{skills.push(skill);return ()=>{};}}:undefined,
+apply({logger:{info:(message:string)=>logs.push(message)},get:(name:string)=>name==='attachments'?attachments:name==='skills'?{register:(skill:unknown)=>{skills.push(skill);return ()=>{};}}:undefined,
   tools:{register:(tool:any)=>{registered.set(tool.name,tool);return ()=>registered.delete(tool.name);}},
   effect:(fn:()=>unknown)=>{const result=fn();if(typeof result==='function')dispose.push(result as ()=>void);},
   on:(_name:string,listener:unknown)=>{listeners.push(listener);return ()=>{};},
 });
-const expected=['oks_read','oks_write','oks_edit','oks_list','oks_delete','va_ask','oks_artifacts','oks_run_answer','renew_context','oks_data'];
+const expected=['oks_read','oks_write','oks_edit','oks_list','oks_delete','va_ask','oks_run_answer','oks_show','renew_context','oks_data'];
 assert.deepEqual([...registered.keys()].sort(),expected.sort());
 const session={id:'draft-plugin-test',header:{cwd:root}};
 const exec={agent:{session}};
@@ -53,22 +56,20 @@ try {
   await call('oks_write',{path:'oks://work/draft.dari',content:asDari(source)});
   let result=await call('oks_run_answer',{src:'oks://work/draft.dari'});
   assert.equal(result.value.delivery.status,'ready',result.text);
-  assert.equal(result.value.delivery.mode,'reply');
-  assert.match(result.text,/当前告警数/);
+  assert.equal(result.value.delivery.mode,'retained');
   assert.equal(result.value.outputs.find((item:any)=>item.name==='facts').truncated,false);
   assert.deepEqual(result.value.outputs.find((item:any)=>item.name==='facts').columns,[{name:'a_count',type:'Int',nullable:false}]);
   assert.deepEqual((await call('oks_data',{input:'oks://work/draft.dari#facts',pointer:'/columns'})).value.data,[{name:'a_count',type:'Int',nullable:false}]);
   const firstBatch=result.value.batch;
   const count=(await call('oks_data',{input:'oks://work/draft.dari#total'})).value.data;
   assert.ok(typeof count==='number' && count>0);
-  result=await call('oks_run_answer',{src:'oks://work/draft.dari',delivery:'artifact'});
+  result=await call('oks_run_answer',{src:'oks://work/draft.dari'});
   assert.equal(result.value.batch,firstBatch);
   assert.equal(result.value.counts.executed,0);
   assert.equal(result.value.delivery.status,'ready',result.text);
-  assert.ok(existsSync(join(root,result.value.delivery.asset)));
-  const asset=result.value.delivery.asset;
-  result=await call('oks_data',{input:asset});
-  assert.equal(result.value.data.items.value_1,count);
+  const shownReport=await call('oks_show',{input:'oks://work/draft.dari#answer'});
+  assert.match(shownReport.value.path,/\.report\.html$/);
+  assert.match(readFileSync(shownReport.value.path,'utf8'),new RegExp(String(count)));
   result=await call('oks_data',{input:'oks://knowledge',method:'oks://builtin/tools/ktools.lib.jq#search',args:{query:'current_alarm',take:2}});
   assert.ok(result.value.data.total>0);
   const sourceLibrary=(await call('oks_read',{path:'oks://builtin/tools/ktools.lib.jq'})).value;
@@ -87,8 +88,6 @@ try {
   const topics=(await call('oks_data',{input:'oks://help/query'})).value.data.topics;
   assert.ok(topics.includes('graph/filter'));
   assert.equal(typeof (await call('oks_data',{input:'oks://help/query',pointer:'/graph~1filter'})).value.data.text,'string');
-  const artifacts=await call('oks_artifacts',{});
-  assert.match(artifacts.text,/告警概览/);
   await call('oks_edit',{path:'oks://work/draft.dari',old_string:'当前告警数：',new_string:'当前告警总数：'});
   result=await call('oks_data',{input:'oks://work/draft.dari#total'});
   assert.equal(result.value.stale,true);
@@ -106,11 +105,24 @@ try {
   await call('oks_write',{path:'oks://work/example.dari',content:asDari(example)});
   result=await call('oks_run_answer',{src:'oks://work/example.dari'});
   assert.equal(result.value.delivery.status,'ready',result.text);
-  assert.match(result.value.reply,/合计 5/);
-  assert.match(result.value.reply,/!\[/,'checked-in example delivers an SVG in reply');
-  result=await call('oks_run_answer',{src:'oks://work/example.dari',delivery:'artifact'});
+  assert.equal(result.value.delivery.input,'oks://work/example.dari#reports.conclusion');
+  if(attachments){
+    const shown=await call('oks_show',{input:'oks://work/example.dari#figures.comparison'});
+    assert.match(shown.value.attachment.attachmentId,/^sha256:/);assert.match(shown.value.path,/attachments\/v1\//);
+    assert.match(shown.value.markdown,/^!\[/);assert.match(readFileSync(shown.value.path,'utf8'),/<svg/);
+    const blocks=registered.get('oks_show').output.render({},shown.value);
+    assert.equal(blocks[1].type,'file');assert.deepEqual(blocks[1].attachment,shown.value.attachment);
+    assert.ok(!shown.text.includes('<svg'));assert.ok(Buffer.byteLength(shown.text)<2000);
+    assert.deepEqual((await call('oks_show',{input:'oks://work/example.dari#figures.comparison'})).value.attachment,shown.value.attachment);
+    const report=await call('oks_show',{input:'oks://work/example.dari#reports.conclusion'});
+    assert.match(readFileSync(report.value.path,'utf8'),/合计/);assert.equal(report.value.markdown,undefined);assert.deepEqual(report.value.present,{files:[{path:report.value.path,description:report.value.title}]});
+    await call('oks_delete',{path:'oks://work/example.dari'});
+    assert.match(readFileSync(shown.value.path,'utf8'),/<svg/,'attachment survives source deletion');
+    await call('oks_write',{path:'oks://work/example.dari',content:example});
+  }
+  result=await call('oks_run_answer',{src:'oks://work/example.dari'});
   assert.equal(result.value.delivery.status,'ready',result.text);
-  const exampleReport=(await call('oks_data',{input:result.value.delivery.asset})).value.data;
+  const exampleReport=(await call('oks_data',{input:'oks://work/example.dari#reports.conclusion'})).value.data;
   assert.equal(exampleReport.items.value_1,2);assert.equal(exampleReport.items.value_2,5);
   const columnSource=['## pipeline','```js',
     'let epoch=exec_query(query({op:"Graph",root:"x",nodes:[{id:"x",entity:"device"}],edges:[],select:[{node:"x",dimension:"device_create_ms"}],limit:1}));',
@@ -132,5 +144,11 @@ try {
   assert.equal((await call('oks_data',{input:'oks://work/columns.dari#debug/1'})).value.data[0].type,'EpochMillis');
   await call('oks_data',{input:'oks://work/columns.dari#debug'});
   await call('oks_data',{input:'oks://work/columns.dari#epoch',meta:true});
+  await call('oks_write',{path:'oks://work/validation.dari',content:'<Dari><Pipeline>let rows=missing;</Pipeline><Asset language="jq" name="one.jq">missing_one</Asset><Asset language="jq" name="two.jq">missing_two</Asset><Figures><ColumnChart name="bad" data={rows}/></Figures><Report name="bad"><article onclick="bad"><p>invalid</p></article></Report></Dari>'});
+  const invalid=await call('oks_run_answer',{src:'oks://work/validation.dari'});assert.equal(invalid.value.status,'invalid');assert.equal(invalid.value.counts.executed,0);
+  const validationDiagnostics=(await call('oks_data',{input:invalid.value.diagnosticsInput,offset:0,limit:100})).value;
+  assert.ok(validationDiagnostics.data.some((d:any)=>d.stage==='pipeline'));
+  for(const asset of ['one.jq','two.jq','figures.bad','reports.bad'])assert.ok(validationDiagnostics.data.some((d:any)=>d.asset===asset),asset);
+  assert.equal(existsSync(join(root,'.oks')),false,'query/render/export must not create internal disk storage');
   console.log(JSON.stringify({ok:true,tools:[...registered.keys()],businessCount:count,standaloneBundle:true,sourceDatabaseReadOnly:true}));
 } finally {for(const fn of dispose.reverse())fn();rmSync(root,{recursive:true,force:true});}

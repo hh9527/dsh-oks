@@ -1,0 +1,68 @@
+import assert from 'node:assert/strict';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {createHash} from 'node:crypto';
+import {join} from 'node:path';
+import {createDraftTools} from './src/draft/tools.ts';
+import {createDraftBackend} from './src/draft/backend.ts';
+import {createJaqEngine} from './src/jaq.ts';
+import {readReportPage} from './src/report/page.ts';
+import {parseDraft} from './src/draft/document.ts';
+import type {Knowledge,WorkspaceEntry} from './src/knowledge.ts';
+import type {TimeContext} from './src/time-context.ts';
+const root=mkdtempSync(join(tmpdir(),'oks-figures-'));mkdirSync(join(root,'.work'));
+const file='oks://work/analysis.dari',physical=join(root,'.work/analysis.dari');
+const jq=createJaqEngine(process.argv[2]??'lib/oks-wti.wasm');
+let queries=0,renders=0;let failSave=false;
+const attachments={async saveFile({data,name}:{data:Uint8Array;name:string}){
+ if(failSave)throw new Error('attachment store failed');
+ const digest=createHash('sha256').update(data).digest('hex');const dir=join(root,'attachments',digest);mkdirSync(dir,{recursive:true});writeFileSync(join(dir,name),data);return {attachmentId:'sha256:'+digest,name,bytes:data.byteLength};
+},fileHostPath(ref:{attachmentId:string;name:string}){return join(root,'attachments',ref.attachmentId.slice(7),ref.name);}};
+const entry={root,settings:{workspaceRoot:root}} as WorkspaceEntry;
+const knowledge={ensureWorkspace:()=>entry,executorFor(){queries++;throw new Error('No SQL allowed');}} as unknown as Knowledge;
+const drafts=createDraftTools({knowledge,attachments:()=>attachments,timeContext:{zones:new Map()} as TimeContext,backend:(entry,file,contextZone)=>{
+ const backend=createDraftBackend({knowledge,entry,file,contextZone,jq});return {...backend,execute(ctx){if(ctx.operator==='render_figure')renders++;return backend.execute(ctx);}};
+}});
+const caller={agent:{session:{id:'figures'}}};
+const call=async(name:string,args:unknown,exec=caller)=>{const tool=drafts.tools.find(t=>t.name===name)!;const result=await (tool.execute as Function)(args,exec);assert.deepEqual(result,JSON.parse(JSON.stringify(result)));return result;};
+const base=`<Dari title="告警分析"><Pipeline>
+let rows=data([{level:"major",n:3},{level:"minor",n:2}]);
+let spec={x:"level",value:"n",title:"级别分布"};let table={columns:["level","n"]};
+</Pipeline><Figures><PieChart name="severity" spec={spec} data={rows} /><Table name="details" spec={table} data={rows} /></Figures>`;
+const report=(name:string,body:string)=>`<Report name="${name}"><article>${body}</article></Report>`;
+const fig=(name:string)=>`<figure><Figure ref="${name}"/><figcaption>说明</figcaption></figure>`;
+const write=(s:string)=>writeFileSync(physical,s);
+try{
+ await assert.rejects(call('oks_run_answer',{src:file,delivery:'artifact'}),/Expected only/);
+ write(base+'</Dari>');let run=await call('oks_run_answer',{src:file});assert.equal(run.delivery.status,'exploring');assert.equal(run.ok,true);
+ assert.deepEqual((await call('oks_data',{input:file+'#figures.severity',pointer:'/rows'})).data,[{level:'major',n:3},{level:'minor',n:2}]);
+ const first=await call('oks_show',{input:file+'#figures.severity'});assert.equal(first.kind,'chart');assert.match(readFileSync(first.path,'utf8'),/<svg/);assert.equal(first.stale,false);assert.equal(first.present,undefined);
+ const show=drafts.tools.find(t=>t.name==='oks_show')!;
+ assert.ok((show.output.render as Function)({},first)[0].text.length<1000);assert.ok(!(show.output.render as Function)({},first)[0].text.includes('<svg'));
+ assert.deepEqual((show.output.presentationMeta as Function)({},first),{attachment:first.attachment});
+ assert.deepEqual((show.output.render as Function)({},first)[1],{type:'file',attachment:first.attachment});assert.match(first.markdown,/^!\[级别分布\]\(/);
+ assert.deepEqual((await call('oks_show',{input:file+'#figures.severity'})).attachment,first.attachment,'unchanged bytes reuse content-addressed attachment');
+ failSave=true;await assert.rejects(call('oks_show',{input:file+'#figures.severity'}),/attachment store failed/);failSave=false;
+ const original=readFileSync(first.path,'utf8');
+ const source=base+report('overview','<p>见 <FigureRef ref="severity"/>。</p>'+fig('severity')+fig('details')+fig('severity'))+report('tables',fig('details')+fig('severity'))+'</Dari>';
+ write(source);run=await call('oks_run_answer',{src:file});assert.equal(run.delivery.status,'selection_required');assert.deepEqual(run.delivery.candidates,['reports.overview','reports.tables']);assert.equal(renders,2,'reports reuse already rendered figures');
+ const shown=await call('oks_show',{input:file+'#reports.overview'});assert.match(shown.path,/\.report\.html$/);assert.equal(shown.markdown,undefined);assert.deepEqual(shown.present,{files:[{path:shown.path,description:shown.title}]});assert.match(readFileSync(shown.path,'utf8'),/见 <span>图 1<\/span>/);
+ assert.equal((readFileSync(shown.path,'utf8').match(/图 1：/g)??[]).length,2);assert.match(readFileSync(shown.path,'utf8'),/表 1：/);assert.doesNotMatch(readFileSync(shown.path,'utf8'),/图 2：/);
+ assert.match(readFileSync((await call('oks_show',{input:file+'#reports.tables'})).path,'utf8'),/图 1：/);
+ const tableShown=await call('oks_show',{input:file+'#figures.details'});assert.match(readFileSync(tableShown.path,'utf8'),/<table/);assert.deepEqual(tableShown.present,{files:[{path:tableShown.path,description:tableShown.title}]});assert.equal(tableShown.markdown,undefined);
+ const archived=readFileSync(shown.path,'utf8');const reportData=readReportPage(archived);assert.ok(!('error' in reportData));assert.ok(Object.keys(reportData.items).length>0);assert.equal(typeof reportData.assets,'object');
+ assert.deepEqual((await call('oks_show',{input:file+'#reports.overview'})).attachment,shown.attachment);
+ write(source.replace('说明','修改说明'));assert.equal((await call('oks_show',{input:file+'#reports.overview'})).stale,true);
+ await assert.rejects(call('oks_show',{input:file+'#figures.severity'},{agent:{session:{id:'other'}}}),/No retained/);
+ await assert.rejects(call('oks_show',{input:file+'#rows'}),/presentation/);
+ assert.throws(()=>parseDraft(base.replace('name="details"','name="severity"')+'</Dari>'),/Duplicate figure/);
+ assert.throws(()=>parseDraft(base+report('broken',fig('unknown'))+'</Dari>'),/Unknown figure/);
+ assert.throws(()=>parseDraft(base+report('broken','<p><FigureRef ref="severity"/></p>')+'</Dari>'),/requires a Figure/);
+ write(base.replace('"level","n"','"missing"')+report('broken',fig('details'))+'</Dari>');run=await call('oks_run_answer',{src:file});assert.equal(run.failures[0].name,'figures.details');assert.equal(run.failures[0].component,'Table');assert.equal(run.failures[1].name,'reports.broken');
+ await assert.rejects(call('oks_show',{input:file+'#figures.details'}),/failed/);
+ await call('renew_context',{src:file});await assert.rejects(call('oks_show',{input:file+'#figures.severity'}),/No retained/);
+ rmSync(physical);assert.equal(readFileSync(first.path,'utf8'),original,'history snapshot survives work deletion and renewal');
+ assert.equal(readFileSync(shown.path,'utf8'),archived,'report attachment survives source deletion and renewal');
+ assert.equal(queries,0);assert.equal(existsSync(join(root,'artifacts')),false);assert.equal(existsSync(join(root,'.oks')),false);
+ console.log('DARI Figures/Report: independent figures, selectors, crossrefs, numbering, render reuse, read-only display snapshots and diagnostics passed');
+}finally{drafts.dispose();jq.dispose();rmSync(root,{recursive:true,force:true});}

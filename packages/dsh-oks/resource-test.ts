@@ -6,7 +6,6 @@ import {registerHooks} from 'node:module';
 import {createKtools} from './src/ktools.ts';
 import {createJaqEngine} from './src/jaq.ts';
 import {LIBRARY_URI,LIBRARY_PATH,BUILTIN_LIBRARY_URI} from './src/resource-path.ts';
-import {saveInputData,saveArtifact} from './src/results.ts';
 import {createDraftBackend} from './src/draft/backend.ts';
 import {createDraftTools} from './src/draft/tools.ts';
 const hook=registerHooks({load(url,context,next){return url.endsWith('.md')?{format:'module',source:`export default ${JSON.stringify(readFileSync(new URL(url),'utf8'))}`,shortCircuit:true}:next(url,context);}});
@@ -22,7 +21,7 @@ const timeContext={zones:new Map(),install(){}} as any;
 const tools=createTools({knowledge,ktools,config:undefined,va:{} as any,timeContext,log(){}});
 const exec={agent:{session:{id:'resource-test'}}} as any;
 const call=async(name:string,args:unknown)=>{const value=await tools.find(t=>t.name===name)!.execute(args as never,exec);assert.deepEqual(value,JSON.parse(JSON.stringify(value)));return value as any;};
-const drafts=createDraftTools({knowledge,ktools,timeContext,save:(entry,options)=>saveArtifact({root:entry.root,...options}),readResource(){throw new Error('unused');},backend:(entry,file,contextZone)=>createDraftBackend({knowledge,entry,file,contextZone,jq:engine})});
+const drafts=createDraftTools({knowledge,ktools,timeContext,backend:(entry,file,contextZone)=>createDraftBackend({knowledge,entry,file,contextZone,jq:engine})});
 const draftCall=async(name:string,args:unknown)=>await drafts.tools.find(t=>t.name===name)!.execute(args as never,exec) as any;
 try {
  assert.ok(!tools.some(t=>t.name==='oks_knowledge'||t.name.startsWith('work_')));
@@ -34,12 +33,9 @@ try {
  await call('oks_write',{path:LIBRARY_URI,content:'def first($args): .rows[0].n + $args.add; def graph_names($args): .datasets | keys; def keys_of($args): keys;'});
  assert.ok(existsSync(join(root,LIBRARY_PATH)));
  assert.deepEqual((await call('oks_data',{input:'oks://knowledge',method:LIBRARY_URI+'#graph_names'})).data,['one']);
- const stored=saveInputData({root,name:'resource',motivation:'fixture',data:{rows:[{n:4}],columns:[{name:'n',type:'Int',nullable:false}]}});
- assert.equal((await call('oks_data',{input:stored.asset,method:LIBRARY_URI+'#first',args:{add:3}})).data,7);
- assert.deepEqual((await call('oks_data',{input:stored.asset,project:{rows:['Map',{n:'Value'}]}})).data,{rows:[{n:4}]});
  const before=modelMethods;
  assert.deepEqual((await call('oks_data',{input:'oks://help/query',method:LIBRARY_URI+'#keys_of'})).data.includes('graph/filter'),true);assert.equal(modelMethods,before,'pure data methods do not use the model or SQL');
- for(const extra of [{project:'Shape',pointer:''},{method:LIBRARY_URI+'#first',offset:0},{method:LIBRARY_URI+'#first',project:'Value'},{args:{}}])await assert.rejects(call('oks_data',{input:stored.asset,...extra}),/Choose exactly one|args requires method/);
+ for(const extra of [{project:'Shape',pointer:''},{method:LIBRARY_URI+'#first',offset:0},{method:LIBRARY_URI+'#first',project:'Value'},{args:{}}])await assert.rejects(call('oks_data',{input:'oks://knowledge',...extra}),/Choose exactly one|args requires method/);
  for(const path of ['oks://work/../oks.json','oks://work//bad','oks://work/a#b','oks://memory/other.lib.jq','oks://builtin/tools/ktools.lib.jq','memory/oks/tools/ktools.lib.jq'])await assert.rejects(call('oks_write',{path,content:'null'}));
  const file='oks://work/report.dari';
  const source='<Dari><Pipeline>let facts=data({rows:[{n:9}]}); debug(facts);</Pipeline></Dari>';
@@ -51,10 +47,11 @@ try {
  assert.equal((await call('oks_list',{path:'oks://builtin/tools/'})).files[0].name,BUILTIN_LIBRARY_URI);
  const result=await draftCall('oks_run_answer',{src:file});assert.equal(result.ok,true,JSON.stringify(result));
  assert.equal((await draftCall('oks_data',{input:file+'#facts',method:LIBRARY_URI+'#first',args:{add:1}})).data,10);
+ assert.deepEqual((await draftCall('oks_data',{input:file+'#facts',project:{rows:['Map',{n:'Value'}]}})).data,{rows:[{n:9}]});
  assert.equal((await draftCall('oks_data',{input:file+'#debug'})).data[0].input,file+'#debug/1');
  await call('oks_edit',{path:file,old_string:'{n:9}',new_string:'{n:10}'});
  assert.equal((await draftCall('oks_data',{input:file+'#facts'})).stale,true);
  await draftCall('renew_context',{src:file});await assert.rejects(draftCall('oks_data',{input:file+'#facts'}));
  await call('oks_delete',{path:file});assert.equal(existsSync(join(root,'.work/report.dari')),false);
- console.log('OKS resources: URI boundaries, readonly builtin, help without model, direct method inputs, graph/artifact/draft views, selector exclusivity and logical source lifecycle passed');
+ console.log('OKS resources: URI boundaries, readonly builtin, help without model, direct method inputs, graph/draft views, selector exclusivity and logical source lifecycle passed');
 }finally{drafts.dispose();tools.dispose();engine.dispose();rmSync(root,{recursive:true,force:true});}

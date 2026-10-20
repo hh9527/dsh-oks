@@ -1,65 +1,14 @@
 import { sourcePath, LIBRARY_PATH } from './resource-path.ts';
 import { KTOOLS_FILE, KTOOLS_INITIAL_SOURCE } from './ktools-path.ts';
 import { createHash } from 'node:crypto';
-import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync,
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync,
   writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { errorText, isRecord } from './host.ts';
 import { capLine } from './text.ts';
-import { CHART_KINDS } from './chart/shared.ts';
 
-// 查询结果与产物的落盘与读取（见 rfc/0001 的「查询结果保存」，封装与来源链见 rfc/0005）。
-// 一份**文件**是 { meta, origin, data }：meta 说这是什么，origin 是产生这份数据的操作及它的
-// **完整上游来源链**，data 就是那次操作的结果本身（jq 的默认输入）。来源链整份以**节点表**写在
-// 文件里（每次物化是一条记录：操作 + 它产出的内容，算一个节点；共享祖先只存一份，引用是文件内的
-// 节点 ID）——于是文件离开工作区也能解释自己的来路。
-// 图与报告已经有原生自述元素（`<metadata>`、`<meta>`），meta 就写在那里，材料块里只有 origin 与 data；
-// 其余文件三段一起写在 JSON 里。
-// 每个成功 Intent 一个 JSON 文件、每张图与每份报告各一个文件，名字统一是
-// <时间>-<名字>[-<内容哈希>].<类别><扩展名>（见 artifactName）。
-// 结果文件里带着完整数据行与列信息——于是数据行可以只被「引用」，不必默认进入模型上下文。
-
-/** 结果文件所在的目录（相对工作区根）。 */
-export const ARTIFACT_DIR = 'artifacts';
-
-// 内部材料与交付物分开放（rfc/0005 决策 1，命名见 rfc/0007）：
-//   - 查询、加工与自填的**封装数据** → `.oks/data/`（可回收的内部材料）
-//   - **图表件**（图 `<名>.<图元>.svg`、表 `<名>.table.md`）→ `.oks/figures/`（报表的组成材料）
-//   - **报表** → `artifacts/`（交付物：按保活清理，可显式保留）
-export const DATA_DIR = '.oks/data';
-export const FIGURE_DIR = '.oks/figures';
-/** agent 的**代码**工作区：jq 程序这类"内容"放这里，工具按引用读——见 readCodeFile。 */
+// DARI 运行数据类型、来源链、附件内容编码与源码文件管理。
 export const WORK_DIR = '.work';
-
-/** 一类产物落在哪个目录。图与表同住图表件目录；加工结果与查询结果同属数据材料。 */
-export const dirForKind = (kind: ArtifactKind): string =>
-  kind === 'chart' || kind === 'table' ? FIGURE_DIR
-    : kind === 'report' ? ARTIFACT_DIR : DATA_DIR;
-
-/** 可以被引用与读取的目录（校验按它来；其余路径一律拒绝）。 */
-export const READABLE_DIRS = [DATA_DIR, FIGURE_DIR, ARTIFACT_DIR];
-
-/** 落盘时写在名字中间的那个"文件类别"：材料取短名，**图直接写图元**（`pie.svg` 而不是
- *  `chart.svg`）——文件名自己说清是什么图（rfc/0007）。 */
-export const fileKindOf = (kind: ArtifactKind, chartKind?: string): string => {
-  if (kind === 'query') return 'qres';
-  if (kind === 'transform') return 'tr';
-  if (kind === 'data') return 'def';
-  if (kind === 'context') return 'ctx';
-  if (kind === 'chart') return chartKind ?? 'chart';
-  return kind;   // table / report 原样
-};
-
-/** 文件名里的类别 → 语义类别：读路径反过来认（账本、清单与来源链仍按语义类别）。 */
-export const kindOfFile = (fileKind: string): ArtifactKind | undefined => {
-  if (fileKind === 'qres') return 'query';
-  if (fileKind === 'tr') return 'transform';
-  if (fileKind === 'def') return 'data';
-  if (fileKind === 'ctx') return 'context';
-  if (fileKind === 'table') return 'table';
-  if (fileKind === 'report') return 'report';
-  return (CHART_KINDS as readonly string[]).includes(fileKind) ? 'chart' : undefined;
-};
 
 /** 模型声明的结果列：逻辑类型和可空性来自静态投影，与实际返回行无关。 */
 export const RESULT_TYPES = ['Int', 'Float', 'Bool', 'String', 'DatetimeUtc', 'EpochMillis', 'LocalDateTime'] as const;
@@ -80,13 +29,6 @@ export interface ColumnInfo {
   /** 观察到的值类型；没有任何数据行时记为 unknown。 */
   types: string[];
   nullable: boolean;
-}
-
-/** 落盘成功后的回执信息。 */
-export interface SavedResult {
-  asset: string;
-  columns: ColumnInfo[];
-  rowCount: number;
 }
 
 /** 来源链里的一个节点：一次操作的记录。查询与加工各用其中一部分字段。 */
@@ -152,68 +94,22 @@ export interface DataOrigin {
   nodes: Record<string, OriginNode>;
 }
 
-/** 一份文件开头的那段自述：它是什么、叫什么、什么时候落的。
- *  它就是图与报告那个原生自述元素里的内容（`<metadata id="dsh-oks-artifact">` /
- *  `<meta name="dsh-oks-artifact">`）——清单、页签与转发出去的单文件都靠它认出自己是什么。 */
-export interface EnvelopeMeta {
-  kind: ArtifactKind;
-  /** 文件名里的名字段（标识，不是标题）。 */
-  name: string;
-  /** 落盘时刻，UTC；与文件名最前面那一段逐字相同。 */
-  at: string;
-  /** 给人看的标题。图、表、报告里永不为空；数据材料没有标题。 */
-  title?: string;
-  /** 更精确的分类（周报、月报、即时分析…）。大类由 `kind` 表达、用图标呈现，这一项是文字。 */
-  category?: string;
-}
-
-/** 一份文件的完整形态：自述 + 来源链 + 数据。三段各回答一件事——
- *  `meta`：这是什么；`origin`：这些数据从哪来；`data`：数据本身（jq 的默认输入就是它）。
- *
- *  已经有原生自述元素的那两种产物（图、报告）把 `meta` 写在那个元素里——那个位置读文件开头几个
- *  字节就够，材料块里于是只有 `origin` 与 `data`（见 `EnvelopeParts`）；其余文件三段一起写。
- *  形状靠结构认，**没有版本号**：认不出的结构直接报错，不猜。 */
-export interface Envelope<T = unknown> {
-  meta: EnvelopeMeta;
+/** 附件中随内容携带的来源链与数据。 */
+export interface EnvelopeParts<T = unknown> {
   origin: DataOrigin;
   data: T;
 }
 
-/** 自述写在原生元素里的那两种产物（图、报告）的材料块：只剩来源与数据。 */
-export type EnvelopeParts<T = unknown> = Pick<Envelope<T>, 'origin' | 'data'>;
-
 /** 封装数据区的点路径，供图表与报告绑定使用。 */
 export const DEFAULT_ROOT = '.data';
-
-/** 查询结果的 data：行与列一起表达——"有哪些列"是这份数据的一部分，不是它的同级描述。 */
-export interface RowsData {
-  rows: Array<Record<string, unknown>>;
-  columns: ColumnInfo[];
-}
-
-export type ResultFile = Envelope<RowsData>;
-
-/** 单份封装的大小上限（字节）。超限时明确失败，让调用方先收窄 snip——
- *  写出一份读不动的封装，比当场报错更糟。 */
-export const ENVELOPE_MAX_BYTES = 8 * 1024 * 1024;
 
 /** at：该项成功执行结束的 UTC 时间，格式 YYYYMMDDTHHmmssZ（到秒）。它是文件名最前面那一段；
  *  图与报告的自述里也带着同一个值，于是名字和文件内容对得起来（结果文件没有自述那一层）。 */
 export const resultStamp = (when: Date = new Date()): string =>
   when.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
 
-/** artifacts/ 里的产物类别。它进文件名，与扩展名各管一件事。
- *  query / transform / data 都是数据材料（落在 .oks/data/），只有图与报告在文件里自述。 */
-export type ArtifactKind = 'query' | 'transform' | 'data' | 'context' | 'chart' | 'table' | 'report';
-
 /** 在文件里带自述的类别：图与报告各用一种原生写法，数据材料没有自述那一层。 */
 export type SelfDescribingKind = 'chart' | 'report';
-
-/** 类别的中文名，只用在报错里。 */
-const KIND_LABEL: Record<ArtifactKind, string> = {
-  query: '结果', transform: '加工结果', data: '输入数据',
-  context: '上下文材料', chart: '图表', table: '表格', report: '报告',
-};
 
 /** 名字的长度上限（字符）。字符集限定为 ASCII，所以字符数就是字节数。 */
 export const NAME_MAX = 60;
@@ -367,8 +263,7 @@ export const artifactName = (options: {
   return `${options.at}-${shortName(options.name)}${hash}.${options.kind}${options.extension}`;
 };
 
-/** 产物自述：写进文件里的一份元数据。清单、页签与转发出去的单文件都靠它认出自己是什么。
- *  它和图的材料块是同一份 `Envelope` 的自述那一段（见 `EnvelopeMeta`），只是这两处写成原生元素。 */
+/** 图表与报告的自述元数据，以原生元素嵌入内容。 */
 export interface ArtifactMeta {
   /** 文件名里的名字段（标识）。 */
   name: string;
@@ -467,53 +362,6 @@ export function readChartInput(content: string): ChartInput | null {
   }
 }
 
-/** 独占写一个产物文件。
- *
- *  名字里带着内容哈希时，"撞名"就是**同样的内容**，直接当去重（返回同一个路径）是安全的；
- *  查询结果那段是文件名前缀而不是内容哈希，所以撞名必须读出来核一遍——一致才认作同一份，
- *  不一致就报错。两条路都不覆盖任何已有的文件。 */
-const writeExclusive = (target: string, content: string, kind: ArtifactKind): void => {
-  const problem = (cause: unknown): Error => new Error(`保存${KIND_LABEL[kind]}失败：${errorText(cause)}`);
-  const sameContent = (): boolean => {
-    try {
-      return contentHash(readFileSync(target, 'utf8')) === contentHash(content);
-    } catch {
-      return false;   // 读不到（正好被删掉）就不认作同一份
-    }
-  };
-  // 先写成同目录下的**临时文件**，再用 link 原子地认领目标名：读者要么看到完整的旧文件、
-  // 要么看到完整的新文件，不会看到半份（报告几 MB，直接写目标文件会留下一段可读的残片）。
-  // link 在目标已存在时失败，正好就是"不覆盖任何已有文件"那条规则。
-  const temp = `${target}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.part`;
-  try {
-    try {
-      writeFileSync(temp, content, { flag: 'wx' });
-    } catch (cause) {
-      throw problem(cause);
-    }
-    try {
-      linkSync(temp, target);
-      return;
-    } catch (cause) {
-      const code = (cause as NodeJS.ErrnoException).code;
-      if (code === 'EEXIST') {
-        if (!sameContent()) throw new Error(`保存${KIND_LABEL[kind]}失败：${target} 已存在且内容不同`);
-        return;
-      }
-      if (code !== 'EPERM' && code !== 'EOPNOTSUPP' && code !== 'ENOSYS') throw problem(cause);
-    }
-    // 文件系统不支持硬链接：退回独占创建（语义一样，只是少了"半份不可见"这一层）。
-    try {
-      writeFileSync(target, content, { flag: 'wx' });
-    } catch (cause) {
-      if ((cause as NodeJS.ErrnoException).code === 'EEXIST' && sameContent()) return;
-      throw problem(cause);
-    }
-  } finally {
-    try { unlinkSync(temp); } catch { /* 已经不在就算了 */ }
-  }
-};
-
 /** 值编码：大整数转十进制字符串、二进制转 base64，并给出观察到的类型标签。 */
 function encodeCell(value: unknown): { value: unknown; type: string } {
   if (value === null || value === undefined) return { value: null, type: 'null' };
@@ -557,264 +405,6 @@ export function describeRows(
     nullable: seen.nullable,
   }));
   return { columns, rows: encoded };
-}
-
-/** 落盘一个 Intent 的结果，返回相对工作区根的 asset。
- *  目标重名或写入失败都抛错，并且不留下半个文件。 */
-export function saveResult(options: {
-  root: string;
-  name: string;
-  intent: unknown;
-  rows: readonly Record<string, unknown>[];
-  sqlColumns: readonly string[];
-  /** 这次查询的动机（可缺）。 */
-  motivation?: string;
-  /** 执行时实际用的数据来源（可缺；只写观察到的，未知就不写）。 */
-  source?: unknown;
-}): SavedResult {
-  const problem = nameProblem(options.name);
-  if (problem !== null) throw new Error(`结果文件名不合法：${problem}`);
-  const directory = join(options.root, DATA_DIR);
-  mkdirSync(directory, { recursive: true });
-  const at = resultStamp();
-  const { columns, rows } = describeRows(options.sqlColumns, options.rows);
-  const data: RowsData = { rows, columns };
-  const payload: ResultFile = {
-    meta: { kind: 'query', name: options.name, at },
-    origin: originOf({
-      kind: 'query',
-      intent: options.intent,
-      ...(options.motivation === undefined || options.motivation.trim() === ''
-        ? {} : { motivation: options.motivation.trim() }),
-      ...(options.source === undefined ? {} : { source: options.source }),
-    }, data),
-    data,
-  };
-  const body = `${JSON.stringify(payload, null, 2)}\n`;
-  const fileName = artifactName({ at, name: options.name, kind: 'qres', extension: '.json', content: body });
-  writeExclusive(join(directory, fileName), body, 'query');
-  return { asset: `${DATA_DIR}/${fileName}`, columns, rowCount: rows.length };
-}
-
-/** 物化一次加工：来源链由这一层组装——合并各输入的链、加入本次操作、把根指向它。
- *  `node` 是本次操作的记录（snip、动机、输出个数、各输入名指向的根节点 ID），
- *  身份由它与产出内容共同决定。
- *  与查询结果同一套命名、独占创建与"不留半个文件"的规则；超过上限时报错，不落半份。 */
-export function saveTransform(options: {
-  root: string;
-  name: string;
-  node: OriginNode;
-  inputs: readonly DataOrigin[];
-  data: unknown;
-}): { asset: string; bytes: number; origin: DataOrigin } {
-  const problem = nameProblem(options.name);
-  if (problem !== null) throw new Error(`加工结果名不合法：${problem}`);
-  const at = resultStamp();
-  const origin = appendNode(options.inputs, options.node, options.data);
-  const payload: Envelope = {
-    meta: { kind: 'transform', name: options.name, at },
-    origin,
-    data: options.data,
-  };
-  const body = `${JSON.stringify(payload, null, 2)}\n`;
-  const bytes = Buffer.byteLength(body);
-  if (bytes > ENVELOPE_MAX_BYTES) {
-    throw new Error(`这份加工结果 ${(bytes / 1024 / 1024).toFixed(1)} MB，超过单份封装的上限 `
-      + `${ENVELOPE_MAX_BYTES / 1024 / 1024} MB：先在 snip 里聚合或投影，再物化。`);
-  }
-  const directory = join(options.root, DATA_DIR);
-  mkdirSync(directory, { recursive: true });
-  const fileName = artifactName({ at, name: options.name, kind: 'tr', extension: '.json', content: body });
-  writeExclusive(join(directory, fileName), body, 'transform');
-  return { asset: `${DATA_DIR}/${fileName}`, bytes, origin };
-}
-
-/** 把 agent 自己给的一份数据落成封装：这是"给定数据"进入工作区的唯一入口。
- *  它和查询结果、加工结果平级——同样的独占创建、同样的上限，于是图与后续加工都能引用它，
- *  而它就带着自己的动机与"这份数据是给定的"这条事实。 */
-export function saveInputData(options: {
-  root: string;
-  name: string;
-  motivation: string;
-  data: unknown;
-  /** `data` 是 `create_data` 那份"给定的数据"；`context` 是"读到的当轮会话上下文"。 */
-  kind?: 'data' | 'context';
-}): { asset: string; bytes: number } {
-  const problem = nameProblem(options.name);
-  if (problem !== null) throw new Error(`输入数据名不合法：${problem}`);
-  const kind = options.kind ?? 'data';
-  const at = resultStamp();
-  // 给定数据与读到的上下文都不是"可重算"的，所以内容随链走：链就是配方，产物因此能自我重放。
-  const payload: Envelope = {
-    meta: { kind, name: options.name, at },
-    origin: originOf({
-      kind: kind === 'context' ? 'context' : 'input',
-      motivation: options.motivation,
-      data: options.data,
-    }, options.data),
-    data: options.data,
-  };
-  const body = `${JSON.stringify(payload, null, 2)}\n`;
-  const bytes = Buffer.byteLength(body);
-  if (bytes > ENVELOPE_MAX_BYTES) {
-    throw new Error(`这份数据 ${(bytes / 1024 / 1024).toFixed(1)} MB，超过单份封装的上限 `
-      + `${ENVELOPE_MAX_BYTES / 1024 / 1024} MB：先缩小范围，再落成封装。`);
-  }
-  const directory = join(options.root, DATA_DIR);
-  mkdirSync(directory, { recursive: true });
-  const fileName = artifactName({ at, name: options.name, kind: fileKindOf(kind), extension: '.json', content: body });
-  writeExclusive(join(directory, fileName), body, kind);
-  return { asset: `${DATA_DIR}/${fileName}`, bytes };
-}
-
-/** 表展示件里的材料：来源链 + 展示数据（与它自己的自述一起）。表没有原生自述元素，
- *  于是自述也写在这个文件头的注释里——形状和 `.oks/data/` 里那些封装完全一样。 */
-export type ViewMaterial = Envelope<DisplayData>;
-
-/** 材料在 markdown 文件里的写法：文件最前面的一个 HTML 注释（markdown 渲染时不可见）。 */
-const VIEW_MARKER = 'dsh-oks-table-input';
-
-/** 把材料写成 markdown 文件头的那一行注释。 */
-const viewComment = (material: ViewMaterial): string =>
-  `<!-- ${VIEW_MARKER} ${JSON.stringify(material)} -->\n`;
-
-/** 读一份表展示件：材料（从注释里抓）与 markdown 本体（注释之后的部分）。
- *  注释不在，说明这不是我们写的表——报 null，让调用方明确失败。 */
-export function readTableView(content: string): { material: ViewMaterial; embedded: string } | null {
-  const match = new RegExp(`^<!-- ${VIEW_MARKER} (.*?) -->\n`).exec(content);
-  if (match === null) return null;
-  try {
-    const material = JSON.parse(match[1]) as ViewMaterial;
-    if (material?.origin === undefined || material?.data === undefined) return null;
-    return { material, embedded: content.slice(match[0].length) };
-  } catch {
-    return null;
-  }
-}
-
-/** 落一份表展示件：`markdown` 是表本体（人在工作区里直接读得懂），材料与自述附在文件头。 */
-export function saveTableView(options: {
-  root: string;
-  name: string;
-  /** 给人看的表注；给了就写进自述。 */
-  title?: string;
-  origin: DataOrigin;
-  data: DisplayData;
-  embedded: string;
-}): { asset: string; bytes: number } {
-  const problem = nameProblem(options.name);
-  if (problem !== null) throw new Error(`表格名不合法：${problem}`);
-  const at = resultStamp();
-  const material: ViewMaterial = {
-    meta: {
-      kind: 'table',
-      name: options.name,
-      at,
-      ...(options.title === undefined || options.title === '' ? {} : { title: options.title }),
-    },
-    origin: options.origin,
-    data: options.data,
-  };
-  const body = `${viewComment(material)}${options.embedded}`;
-  const bytes = Buffer.byteLength(body);
-  if (bytes > ENVELOPE_MAX_BYTES) {
-    throw new Error(`这张表 ${(bytes / 1024 / 1024).toFixed(1)} MB，超过单份展示件上限 `
-      + `${ENVELOPE_MAX_BYTES / 1024 / 1024} MB：先把数据聚合或投影，再出表。`);
-  }
-  const directory = join(options.root, FIGURE_DIR);
-  mkdirSync(directory, { recursive: true });
-  const fileName = artifactName({ at, name: options.name, kind: 'table', extension: '.md', content: body });
-  writeExclusive(join(directory, fileName), body, 'table');
-  return { asset: `${FIGURE_DIR}/${fileName}`, bytes };
-}
-
-/** 把一份产物（图、报告）写成文件：与结果文件同一套命名与独占创建规则。
- *  返回的 asset 是相对工作区根的路径，交给 agent 粘进回答引用。 */
-export interface SaveArtifactOptions {
-  root: string;
-  name: string;
-  content: string;
-  extension: string;
-  kind: SelfDescribingKind;
-  /** 文件名中间那个类别；不写就用语义类别。图传它的图元（`pie` → `<名>.pie.svg`）。 */
-  fileKind?: string;
-  /** 给人看的标题。**永不为空**：调用方在 agent 没给时负责造一个，这里只守门。 */
-  title: string;
-  /** 更精确的分类（周报、月报、即时分析…）；没给就不写这一项。 */
-  category?: string;
-  /** 落盘时刻；不写就用当前时刻。报告要把同一个时刻嵌进页面，所以由调用方先定。 */
-  at?: string;
-  /** 内容里已经嵌好自述（报告页面在写入自校验时就在里面了），保存这一层不再插一次。 */
-  contentHasMeta?: boolean;
-}
-
-export function saveArtifact(options: SaveArtifactOptions): { asset: string; at: string; meta: ArtifactMeta } {
-  const problem = nameProblem(options.name);
-  if (problem !== null) {
-    throw new Error(`${KIND_LABEL[options.kind]}名不合法（${JSON.stringify(options.name)}）：${problem}`);
-  }
-  if (typeof options.title !== 'string' || options.title.trim() === '') {
-    throw new Error(`${KIND_LABEL[options.kind]}的标题不能为空：产物自述里那一行永远有值，`
-      + 'agent 没给标题时由工具按维度与度量造一个。');
-  }
-  const at = options.at ?? resultStamp();
-  const meta: ArtifactMeta = {
-    name: options.name,
-    kind: options.kind,
-    at,
-    title: options.title,
-    ...(options.category === undefined ? {} : { category: options.category }),
-  };
-  // 先嵌自述、再算名字：文件名里的内容哈希必须等于**最终字节**的哈希。
-  const content = options.contentHasMeta === true ? options.content : embedArtifactMeta(options.content, meta);
-  const directory = dirForKind(options.kind);
-  mkdirSync(join(options.root, directory), { recursive: true });
-  const fileName = artifactName({
-    at,
-    name: options.name,
-    kind: options.fileKind ?? options.kind,
-    extension: options.extension,
-    content,
-  });
-  writeExclusive(join(options.root, directory, fileName), content, options.kind);
-  // 把**同一个 meta 对象**交回调用方去记账：产出方手里本来就有它，不必再从文件里读回来
-  // （读回来还要解一遍 XML 转义、还要赌文件形状，而这两件事都会以"清单里少一条"收场）。
-  return { asset: `${directory}/${fileName}`, at, meta };
-}
-
-/** 定位一个引用：它必须落在某个可读目录里（内部材料或交付物），并返回那个目录。
- *  越界与"不在任何目录里"是同一类错误：修法都是换一个引用。 */
-function locate(root: string, asset: unknown): { directory: string; target: string } {
-  if (typeof asset !== 'string' || asset.length === 0) {
-    throw new Error('需要一个 asset（工具回执里给的那个相对路径）');
-  }
-  const target = workspaceFilePath(root, asset);
-  for (const directory of READABLE_DIRS) {
-    const base = resolve(root, directory);
-    const inside = relative(base, target);
-    if (inside.length > 0 && !inside.startsWith('..') && !isAbsolute(inside)) {
-      return { directory, target };
-    }
-  }
-  throw new Error(`引用只能指向工作区里的 ${READABLE_DIRS.join(' / ')}：${JSON.stringify(asset)}`);
-}
-
-/** 把一个 artifacts/ 里的产物定位到真实路径：先按前缀收窄，再用真实路径复核（挡住符号链接逃逸）。
- *  "找不到"与"越界"要分开报——这两种错，修法完全不同。 */
-function artifactPath(root: string, asset: unknown): string {
-  const { directory, target } = locate(root, asset);
-  let real: string;
-  try {
-    real = realpathSync(target);
-  } catch {
-    throw new Error(`找不到 ${JSON.stringify(asset)}`);
-  }
-  const realDirectory = realpathSync(resolve(root, directory));
-  const inside = relative(realDirectory, real);
-  if (inside.length === 0 || inside.startsWith('..') || isAbsolute(inside)) {
-    throw new Error(`引用指向的路径不在工作区 ${directory}/ 里：${JSON.stringify(asset)}`);
-  }
-  return real;
 }
 
 /** 单份代码文件的字节上限：它是**能被 `jq.src` 引用为程序**的上限——一份这么大的程序说明该拆开。 */
@@ -1077,88 +667,14 @@ export function readCodeFile(root: string, raw: unknown): { text: string; file: 
   return { text, file: rel };
 }
 
-/** 文件名的三段：时间、类别、名字。它与 `artifactName` 互为反函数——
- *  自述缺失时（老文件、外部写下的文件）自述就从名字里现造一份，于是读的人不必面对"没有自述"。 */
-export function nameParts(asset: unknown): { at: string; name: string; kind: ArtifactKind } {
-  const file = String(asset).split('/').pop() ?? '';
-  const at = /^\d{8}T\d{6}Z/.exec(file)?.[0] ?? '';
-  const rest = at === '' ? file : file.slice(at.length + 1);
-  const fileKind = /\.([a-z_]+)\.[a-z]+$/.exec(rest)?.[1] ?? '';
-  const name = rest.replace(/\.([a-z_]+)\.[a-z]+$/, '').replace(/-[0-9a-f]{8}$/, '');
-  return {
-    at: at === '' ? resultStamp() : at,
-    name: name === '' ? 'unnamed' : name,
-    // 老名字（query / transform / data / chart）这一版之后不再认：认不出来的一律当数据材料，
-    // 与"认不出文件名就不是我们的东西"这条口径一致（rfc/0007）。
-    kind: kindOfFile(fileKind) ?? 'data',
-  };
-}
-
-/** 自述的读取归一：写着的就用写着的，没写（老文件）就按文件名现造一份。
- *  形状对不上时报错而不是猜——认不出的结构说明这不是本插件写下的文件。 */
-export function envelopeMetaOf(raw: unknown, asset: unknown): EnvelopeMeta {
-  if (raw === undefined || raw === null) return nameParts(asset);
-  if (!isRecord(raw) || typeof raw.name !== 'string' || typeof raw.at !== 'string') {
-    throw new Error(`自述结构不完整（要 { kind, name, at }）：${JSON.stringify(asset)}`);
-  }
-  return raw as unknown as EnvelopeMeta;
-}
-
-/** 来源链的读取校验：根节点、节点形状，以及**引用必须在文件内闭合**。
- *  早期写下的文件里 origin 是平面的（没有节点表），这里归一成单节点链：
- *  它们是可回收的内部材料，清理时自然消失，不专门迁移。 */
-function normalizeOrigin(raw: unknown, data: unknown, asset: unknown): DataOrigin {
-  if (!isRecord(raw)) throw new Error(`封装里没有来源信息（origin）：${JSON.stringify(asset)}`);
-  // 平面形状（早期写下的）：一个操作，直接当单节点链——身份按同一套规则现算。
-  if (typeof raw.kind === 'string') return originOf(raw as unknown as OriginNode, data);
-  if (!isRecord(raw.nodes) || typeof raw.root !== 'string') {
-    throw new Error(`来源链结构不完整（要 { root, nodes }）：${JSON.stringify(asset)}`);
-  }
-  const nodes = raw.nodes as Record<string, OriginNode>;
-  for (const [id, node] of Object.entries(nodes)) {
-    const kinds = ['knowledge', 'query', 'transform', 'input', 'context', 'display', 'extract', 'derive', 'report'];
-    if (!isRecord(node) || !kinds.includes(String(node.kind))) {
-      throw new Error(`来源链里的节点不是一次操作（${id}）：${JSON.stringify(asset)}`);
-    }
-    for (const [name, upstream] of Object.entries(node.inputs ?? {})) {
-      if (typeof upstream !== 'string' || !(upstream in nodes)) {
-        throw new Error(`来源链里 ${id} 的输入 ${name} 指向的节点不在这个文件里（${String(upstream)}）：`
-          + `引用必须在文件内闭合，${JSON.stringify(asset)} 已经缺了上游`);
-      }
-    }
-  }
-  if (!(raw.root in nodes)) throw new Error(`来源链的根节点不在节点表里（${raw.root}）：${JSON.stringify(asset)}`);
-  return { root: raw.root, nodes };
-}
-
-/** 读一份封装（`.oks/data/` 里的那些 JSON）：校验 `{ meta, origin, data }` 并归一化来源链。
- *  data 的形状不在这里约束——那是消费者入口的事。 */
-export function readEnvelope(root: string, asset: unknown): Envelope {
-  return parseEnvelope(readFileSync(artifactPath(root, asset), 'utf8'), asset);
-}
-
-/** 与 `readEnvelope` 同一套校验，只是内容已经读进来了（调用方负责路径约束与读文件）。
- *  图、表、报告的读取层拿到的是文件内容，所以校验与读取分在两处。 */
-export function parseEnvelope(content: string, asset: unknown): Envelope {
-  const parsed: unknown = JSON.parse(content);
-  if (!isRecord(parsed) || !('data' in parsed)) {
-    throw new Error(`封装结构不完整（要 { meta, origin, data }）：${JSON.stringify(asset)}`);
-  }
-  return {
-    meta: envelopeMetaOf(parsed.meta, asset),
-    origin: normalizeOrigin(parsed.origin, parsed.data, asset),
-    data: parsed.data,
-  };
-}
-
 /** 从一份 data 里取行对象数组：`{ rows, … }` 与"data 直接就是数组"两种形状都认。
- *  标量、对象、嵌套是加工结果的常态，读它们用 readEnvelope；这里明确拒绝，
+ *  标量、对象、嵌套是加工结果的常态，直接读取绑定值；这里明确拒绝，
  *  免得形状不对的数据一路走到绘图那层才报出一句看不懂的错。 */
 export function rowsOf(data: unknown, asset: unknown): Array<Record<string, unknown>> {
   const rows = isRecord(data) ? data.rows : data;
   if (!Array.isArray(rows)) {
     throw new Error(`这份数据的 data 不是行对象数组：${JSON.stringify(asset)}。`
-      + '要画图就先把它加工成行对象数组再保存。');
+      + '要画图就先在稿件中把它加工成行对象数组。');
   }
   if (isRecord(data) && data.columns !== undefined) {
     if (!Array.isArray(data.columns)) throw new Error('data.columns 需要列声明数组。');
@@ -1171,17 +687,4 @@ export function rowsOf(data: unknown, asset: unknown): Array<Record<string, unkn
     }
   }
   return rows as Array<Record<string, unknown>>;
-}
-
-/** 把一个 asset 解析成 artifacts/ 里的**文件名**（越界与不存在都在这里报错）。
- *  状态层只记文件名——路径是工作区属性，换个工作区（同一份产物被拷过去）就该重新解析。 */
-export function artifactFileName(root: string, asset: unknown): string {
-  const real = artifactPath(root, asset);
-  return real.slice(real.lastIndexOf(sep) + 1);
-}
-
-/** 读一份已经落盘的产物（报告里引用的图）：路径约束与结果文件相同，另加一条扩展名核对。 */
-export function readArtifact(root: string, asset: string, extension: string): string {
-  if (!asset.endsWith(extension)) throw new Error(`只认 ${extension} 产物：${JSON.stringify(asset)}`);
-  return readFileSync(artifactPath(root, asset), "utf8");
 }

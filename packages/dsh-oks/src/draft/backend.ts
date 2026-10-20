@@ -192,7 +192,7 @@ export function createDraftBackend(options: {
         diagnostics.push({file,stage:'template',asset:asset.name,message:error.message,span:map(offset,offset)});
       }
       if(!diagnostics.length)diagnostics.push({file,stage:asset.language==='jq'?'jq':'template',asset:asset.name,message:checked.error.slice(0,1000),span:asset.span});
-      throw new DraftSyntaxError(diagnostics[0].message,diagnostics[0].span,diagnostics.slice(0,16));
+      throw new DraftSyntaxError(diagnostics[0].message,diagnostics[0].span,diagnostics);
     }
   };
   const windowCode = (raw: unknown) => {
@@ -207,12 +207,10 @@ export function createDraftBackend(options: {
     return parsed;
   };
   const preflight = async (document: DraftDocument, signal?: AbortSignal) => {
-    const diagnostics:SourceDiagnostic[]=[];
-    for(const asset of document.assets.values()){
-      try{await checkAsset(asset,signal);}catch(error){if(error instanceof DraftSyntaxError)diagnostics.push(...error.diagnostics);else throw error;}
-      if(diagnostics.length>=16)break;
-    }
-    if(diagnostics.length)throw new DraftSyntaxError(diagnostics[0].message,diagnostics[0].span,diagnostics.slice(0,16));
+    const diagnostics:SourceDiagnostic[]=[...document.diagnostics??[]];
+    const assets=[...document.assets.values()];
+    const assetChecks=Promise.allSettled(assets.map(asset=>checkAsset(asset,signal)));
+    const plannedQueries:{intent:unknown;span:Span}[]=[];
     const constants = new Map<string, unknown>();
     const visit = async (expr: Expr): Promise<void> => {
       if (expr.kind === 'array') { for (const value of expr.values) await visit(value); }
@@ -226,14 +224,15 @@ export function createDraftBackend(options: {
           if (['jq', 'render_figure', 'render_html'].includes(expr.operator) && second !== UNKNOWN && !isRecord(second)) throw new Error(`${expr.operator} inputs must be a named object`);
           if (expr.operator === 'render_figure' && second !== UNKNOWN && isRecord(second) && (!Object.hasOwn(second, 'data') || Object.keys(second).some(key => key !== 'data' && key !== 'nodes'))) throw new Error('render_figure inputs must be {data,nodes?}');
           if (expr.operator === 'time_windows' && second !== UNKNOWN) windowCode(second);
-          if (expr.operator === 'query' && first !== UNKNOWN) await lower(first, signal);
+          if (expr.operator === 'query' && first !== UNKNOWN) plannedQueries.push({intent:first,span:expr.span});
           if (expr.operator === 'render_figure' && first !== UNKNOWN){try{validateFigure(componentSpec(first,expr.figureKind));}catch(error){fail(error instanceof Error?error.message:String(error),expr.args[0].span);}}
           if (expr.operator === 'data' && expr.args[1]) {
             const nature = constant(expr.args[1], constants);
             if (nature !== UNKNOWN) dataNature(nature);
           }
           if (expr.operator === 'render_html' && (expr.args[1].kind === 'object' || (second !== UNKNOWN && isRecord(second)))) {
-            const asset = document.assets.get(first as string)!;
+            const asset = document.assets.get(first as string);
+            if(!asset)return;
             const refs = new Set(checkAuthorXhtml(asset.source).refs);
             const keys = expr.args[1].kind === 'object' ? expr.args[1].entries.map(entry => entry.key) : Object.keys(second as Record<string, unknown>);
             const missing = [...refs].filter(ref => !keys.includes(ref));
@@ -248,12 +247,30 @@ export function createDraftBackend(options: {
       }
     };
     for (const { statement } of document.nodes) {
-      await visit(statement.value);
-      if (statement.kind === 'binding') {
-        const value = constant(statement.value, constants);
-        if (value !== UNKNOWN) constants.set(statement.name, value);
+      try {
+        await visit(statement.value);
+        if (statement.kind === 'binding') {
+          const value = constant(statement.value, constants);
+          if (value !== UNKNOWN) constants.set(statement.name, value);
+        }
+      } catch(error) {
+        if(signal?.aborted) {await assetChecks;throw error;}
+        if(!(error instanceof DraftSyntaxError)){await assetChecks;throw error;}
+        const figure=statement.kind==='binding'&&statement.value.kind==='call'&&statement.value.operator==='render_figure';
+        diagnostics.push(...(error.diagnostics.length?error.diagnostics:[{file,stage:figure?'figure':'validation',message:error.message,span:error.span}]).map(d=>({...d,...(statement.kind==='binding'?{asset:statement.name}:{})})));
       }
     }
+    for(const [index,outcome] of (await assetChecks).entries())if(outcome.status==='rejected'){
+      if(signal?.aborted)throw outcome.reason;
+      if(outcome.reason instanceof DraftSyntaxError)diagnostics.push(...outcome.reason.diagnostics);
+      else diagnostics.push({file,stage:assets[index].language==='jq'?'jq':'template',asset:assets[index].name,message:outcome.reason instanceof Error?outcome.reason.message:String(outcome.reason),span:assets[index].span});
+    }
+    // Model-dependent checks need a locally valid document; they never execute business SQL.
+    if(!diagnostics.length)for(const query of plannedQueries){
+      try{await lower(query.intent,signal);}catch(error){if(signal?.aborted)throw error;diagnostics.push({file,stage:'validation',message:error instanceof Error?error.message:String(error),span:query.span});}
+    }
+    diagnostics.sort((a,b)=>a.span.start.offset-b.span.start.offset);
+    if(diagnostics.length)throw new DraftSyntaxError(diagnostics[0].message,diagnostics[0].span,diagnostics);
   };
   const execute = async (ctx: CallContext): Promise<Computed> => {
     if (ctx.operator === 'data') {
