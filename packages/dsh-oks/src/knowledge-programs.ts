@@ -68,26 +68,25 @@ export const knowledgePrograms: Record<string, {description:string;args:string[]
   },
 };
 export const knowledgeHelp = {
-  resource:{envelope:'{meta,origin,data}',data:'knowledge:// unwraps data as {datasets,types,relations,items}. Dictionaries use original business IDs; items is [{key,names,doc}].',
+  resource:{data:'oks_knowledge project sees {datasets,types,relations,items}; jq sees {knowledge:<graph>}. Dictionaries use original business IDs; items is [{key,names,doc}].',
     address:'Independent node: datasets/<encoded-id>, types/<encoded-id>, relations/<encoded-id>. Member: node#fields/<encoded-id>, #dimensions/<id>, #measures/<id>, #time_roles/<id>, #business_links/<id>, or types/<id>#values/<id>. Each ID is URI-component encoded exactly once in addresses; use returned keys verbatim. Dictionary keys are original IDs.',
-    metadata:'knowledge://#meta is compact revision and counts. knowledge://#contract explicitly reads the model engineering discovery contract.',
     navigation:'Datasets own fields/dimensions/measures/time_roles/business_links dictionaries. Types own values dictionaries and categorized references such as fields/dimensions. The tool derives reverse references from ownership and forward facts; member navigation is bidirectional; related/traversable retain their category and referenced_by provides reverse navigation. Reference arrays contain addresses; owned dictionaries contain facts. References preserve associations and never grant query authorization.',
     typeFields:'types.<id>.fields includes fields exposed through dimensions declaring that value type. This is navigation, not a claim about raw field storage. Dimensions use type for their declared value-domain ID and input_kinds for accepted literal kinds.',
     projections:'Selecting a branch reads only that branch: .knowledge.types.Severity.values does not include fields. Names and prose live in items; read.jq pairs a fact slice with its descriptions. facts retain business constraints (including nulls, ordering, scope, time encoding and deterministic Latest selection).'},
   examples:{
-    overview:{load:{catalog:'knowledge://#meta'}},
-    shape:{load:{knowledge:'knowledge://'},project:{knowledge:{datasets:'Shape',types:'Shape',relations:'Shape',items:'Shape'}}},
-    search:{load:{knowledge:'knowledge://'},jq:{src:'builtin://knowledge/search.jq',args:{query:'<word returned by va_ask>',take:10}}},
-    read:{load:{knowledge:'knowledge://'},jq:{src:'builtin://knowledge/read.jq',args:{key:'<returned address>'}}},
-    dimensions:{load:{knowledge:'knowledge://'},jq:{src:'builtin://knowledge/members.jq',args:{key:'datasets/<returned encoded ID>',link:'dimensions',take:10}}},
-    valuesOnly:{load:{knowledge:'knowledge://'},project:{knowledge:{types:{'<original type ID>':{values:'Value'}}}}},
-    references:{load:{knowledge:'knowledge://'},jq:{src:'builtin://knowledge/references.jq',args:{key:'<returned address>'}}},
-    fieldDescriptions:{load:{knowledge:'knowledge://'},jq:{src:'builtin://knowledge/read.jq',args:{key:'datasets/<returned encoded ID>#fields'}}},
+    overview:{project:'Shape'},
+    shape:{project:{datasets:'Shape',types:'Shape',relations:'Shape',items:'Shape'}},
+    search:{jq:{src:'builtin://knowledge/search.jq',args:{query:'<word returned by va_ask>',take:10}}},
+    read:{jq:{src:'builtin://knowledge/read.jq',args:{key:'<returned address>'}}},
+    dimensions:{jq:{src:'builtin://knowledge/members.jq',args:{key:'datasets/<returned encoded ID>',link:'dimensions',take:10}}},
+    valuesOnly:{project:{types:{'<original type ID>':{values:'Value'}}}},
+    references:{jq:{src:'builtin://knowledge/references.jq',args:{key:'<returned address>'}}},
+    fieldDescriptions:{jq:{src:'builtin://knowledge/read.jq',args:{key:'datasets/<returned encoded ID>#fields'}}},
     customSource:'.knowledge.datasets | to_entries | map({id:.key,dimensions:(.value.dimensions|keys)})',
   },
   programs:Object.fromEntries(Object.entries(knowledgePrograms).map(([name,p])=>[name,{src:`builtin://knowledge/${name}.jq`,description:p.description,args:p.args}])),
-  paging:'Search/members/references defaults: input=knowledge, skip=0, take=10 (1..50). Use next as skip. read args are input and key. All run in the same Wasm jq engine as .work programs; builtin source is readable as a resource. Final output is limited to 16 KiB; narrow a branch or save larger results.',
-  query:'Read oks://help/query by topic for Intent grammar. Vocabulary normalization is va_ask; verify its leads through search and facts.',
+  paging:'Search/members/references defaults: input=knowledge, skip=0, take=10 (1..50). Use next as skip. read args are input and key. All run in the same Wasm jq engine as .work programs; builtin source is readable as a resource. Final output is limited to 16 KiB; narrow a branch or use builtin pagination.',
+  query:'Use oks_knowledge help=oks://help/query and topic for Intent grammar. Vocabulary normalization is va_ask; verify its leads through search and facts.',
 };
 export function toolResource(src:string):unknown {
   if(src==='oks://help/time')return timeHelp;

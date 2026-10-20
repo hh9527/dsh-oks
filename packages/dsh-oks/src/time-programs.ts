@@ -1,6 +1,6 @@
 // 工具侧的日历方法：与自定义程序共用 Wasm 引擎，计算正文及参数进入来源链。
 export const timeWindows = {
-  description: 'Calendar windows from a saved current context. Returns oldest first; every window is [start,end), with label, zone, epochMillis and RFC3339 boundaries.',
+  description: 'Calendar windows from an explicit context() value. Returns oldest first; every window is [start,end), with label, zone, epochMillis and RFC3339 boundaries.',
   args: ['input', 'unit', 'count', 'mode'],
   source: `
     .[$args.input] as $ctx
@@ -27,7 +27,7 @@ export const timeWindows = {
 };
 
 export const timeHelp = {
-  input: 'Load the data from create_current_ctx_data as ctx. The helper consumes utc.epochMillis and tz.client.id; no conversion or fixed-offset arithmetic is needed.',
+  input: 'Define let ctx = context(); then let windows = time_windows(ctx, {unit,count,mode}); in the draft. The helper consumes utc.epochMillis and tz.client.id; no conversion or fixed-offset arithmetic is needed.',
   program: {src:'builtin://time/windows.jq', args:{input:'ctx (default)',unit:'year | quarter | month | week | day',count:'integer 1..50',mode:'required: complete | current | rolling'}},
   semantics: {
     complete: 'Last N completed calendar periods. Excludes the current period.',
@@ -36,13 +36,13 @@ export const timeHelp = {
     boundaries: 'Every interval is [start,end); ordered oldest first. Week begins Monday. Time-zone rules apply separately at each boundary, including DST. label uses YYYY-MM, YYYY-Qn, YYYY or the start date; rolling labels use the start RFC3339.',
   },
   examples: {
-    completeMonths: {load:{ctx:'<context asset>'},jq:{src:'builtin://time/windows.jq',args:{unit:'month',count:3,mode:'complete'}}},
-    includingThisMonth: {load:{ctx:'<context asset>'},jq:{src:'builtin://time/windows.jq',args:{unit:'month',count:3,mode:'current'}}},
-    completeWeeks: {load:{ctx:'<context asset>'},jq:{src:'builtin://time/windows.jq',args:{unit:'week',count:4,mode:'complete'}}},
-    rollingMonth: {load:{ctx:'<context asset>'},jq:{src:'builtin://time/windows.jq',args:{unit:'month',count:1,mode:'rolling'}}},
+    completeMonths: 'let ctx = context(); let months = time_windows(ctx, {unit:"month",count:3,mode:"complete"}); debug(months);',
+    includingThisMonth: 'let months = time_windows(ctx, {unit:"month",count:3,mode:"current"});',
+    completeWeeks: 'let weeks = time_windows(ctx, {unit:"week",count:4,mode:"complete"});',
+    rollingMonth: 'let months = time_windows(ctx, {unit:"month",count:1,mode:"rolling"});',
   },
   primitives: {
-    input: 'All primitive time functions take epoch seconds. Convert context milliseconds with / 1000.',
+    input: 'All primitive time functions take epoch seconds. Use context utc.epochSeconds, or convert epochMillis with / 1000.',
     floor: 'tzfloor(unit; zone) returns the first instant of the containing calendar period. Units: day/week/month/quarter/year.',
     ceil: 'tzceil(unit; zone) returns the first instant of the NEXT calendar period, including when input is already on a boundary. Same units as tzfloor.',
     add: 'tzadd(unit; amount; zone): calendar units year/quarter/month/week/day; duration units hour/minute/second.',

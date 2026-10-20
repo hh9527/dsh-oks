@@ -1,0 +1,83 @@
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createDraftTools, readRange } from './src/draft/tools.ts';
+import { createDraftBackend } from './src/draft/backend.ts';
+import { createJaqEngine } from './src/jaq.ts';
+import type { Knowledge, WorkspaceEntry } from './src/knowledge.ts';
+import type { ToolExec } from './src/host.ts';
+import type { TimeContext } from './src/time-context.ts';
+import { checkWellFormed } from './src/report/xhtml.ts';
+
+assert.deepEqual(readRange({rows:[{n:1},{n:2}]}, {pointer:'/rows',offset:1,limit:1}), {data:[{n:2}],range:{offset:1,limit:1,total:2,next:null}});
+assert.equal(readRange({'a/b': {'~':3}}, {pointer:'/a~1b/~0'}).data, 3);
+assert.throws(() => readRange([], {pointer:'/toString'}), /Missing/);
+assert.throws(() => readRange([1], {pointer:'/01'}), /Missing/);
+assert.throws(() => readRange({}, {pointer:'/bad~2'}), /escape/);
+assert.throws(() => readRange([], {limit:0}), /Range/);
+const root = mkdtempSync(join(tmpdir(), 'oks-draft-tools-'));
+mkdirSync(join(root,'.work'));
+const wasm=process.argv[2]; assert.ok(wasm);
+const jq=createJaqEngine(wasm);
+let queries=0; let writes=0;
+const entry={root,modelHash:'test',settings:{workspaceRoot:root,domain:'test',dataFile:undefined,queryMaxRows:200},runner:{async send(){return {ok:{accepted:true,queries:[{sql:'select 1',bindings:[]}]}};}}} as unknown as WorkspaceEntry;
+const knowledge={ensureWorkspace:()=>entry,executorFor:()=>({manifest:null,executor:{async send(){queries++;return {rows:[{n:7}],columns:['n'],truncated:false};},dispose(){}}})} as unknown as Knowledge;
+const caller={agent:{session:{id:'A'}}} as unknown as ToolExec;
+const other={agent:{session:{id:'B'}}} as unknown as ToolExec;
+const timeContext={zones:new Map(),install(){}} as TimeContext;
+const drafts=createDraftTools({knowledge,timeContext,
+  save(_entry,options){writes++;const asset=`output-${writes}${options.extension}`;writeFileSync(join(root,asset),options.content);return {asset,at:'test'};},
+  readResource(){return {value:{saved:true}};},
+  backend:(entry,file,contextZone)=>createDraftBackend({knowledge,entry,file,contextZone,jq}),
+});
+const call=(name:string,args:unknown,exec=caller)=>(drafts.tools.find(tool=>tool.name===name)!.execute as unknown as (args:unknown,exec:ToolExec)=>Promise<any>)(args,exec);
+const file='.work/draft.md';
+const source=['# Answer title','## pipeline','```js','let facts=query({limit:5});','let total=jq("total.jq",{facts});','debug(total);','let answer=render_html("answer.xhtml",{total});','```','## assets','```jq name="total.jq"','.facts.rows[0].n','```','```xhtml name="answer.xhtml"','<article><p>Total: <span data-oks-ref="total" /></p></article>','```'].join('\n');
+const write=(value:string)=>writeFileSync(join(root,file),value);
+try {
+  const helpIndex = await call('oks_knowledge', {help:'oks://help/query'});
+  assert.ok(helpIndex.data.topics.includes('graph/filter'));
+  assert.equal(helpIndex.data.graph, undefined);
+  const filterHelp = await call('oks_knowledge', {help:'oks://help/query',topic:'graph/filter'});
+  assert.equal(typeof filterHelp.data.text, 'string');
+  assert.ok(Buffer.byteLength(JSON.stringify(filterHelp)) < 16384);
+  await assert.rejects(call('oks_knowledge', {help:'oks://help/query',topic:'toString'}), /Unknown help topic/);
+  await assert.rejects(call('oks_knowledge', {project:{},topic:'graph'}), /topic requires help/);
+  write(source);
+  let result=await call('oks_run_answer',{src:file});
+  assert.equal(result.delivery.status,'ready');assert.equal(result.delivery.mode,'reply');assert.match(result.reply,/Total: 7/);assert.equal(writes,0);assert.equal(queries,1);
+  assert.equal(result.outputs.find((item:any)=>item.name==='facts').rowCount,1);
+  assert.equal(result.acquisitions[0].reason,'no-retained-acquisition');assert.equal(result.omittedAcquisitions,0);
+  result=await call('oks_data',{input:file+'#total'});assert.equal(result.data,7);assert.equal(result.stale,false);assert.equal(writes,0);assert.equal(queries,1);
+  result=await call('oks_data',{input:file+'#facts',pointer:'/rows',offset:0,limit:1});assert.deepEqual(result.data,[{n:7}]);assert.equal(result.range.total,1);
+  result=await call('oks_data',{input:file+'#debug'});assert.equal(result.data[0].name,'debug/1');assert.equal(result.data[0].input,file+'#debug/1');
+  assert.equal((await call('oks_data',{input:file+'#debug/1'})).data,7);
+  await assert.rejects(call('oks_data',{input:file+'#total'},other),/No retained run/);
+  await assert.rejects(call('oks_data',{input:file+'#total',save:{name:'escape'}}),/Expected only/);
+  write(source+'\n');assert.equal((await call('oks_data',{input:file+'#total'})).stale,true);assert.equal(queries,1);
+  write(source);
+  result=await call('oks_run_answer',{src:file,delivery:'artifact'});assert.equal(result.delivery.status,'ready');assert.equal(writes,1);assert.equal(queries,1);
+  await call('oks_run_answer',{src:file,delivery:'artifact'});assert.equal(writes,1,'重复交付相同证据不重复落盘');
+  result=await call('oks_data',{input:'output-1.html'});assert.equal(result.data.saved,true);assert.equal(writes,1);
+  write(source.replace('let total=jq("total.jq",{facts});','let total=jq("total.jq",{facts}); let second=render_html("answer.xhtml",{total});'));
+  result=await call('oks_run_answer',{src:file});assert.equal(result.delivery.status,'selection_required');
+  result=await call('oks_run_answer',{src:file,answer:'second'});assert.equal(result.delivery.status,'ready');
+  write(source.replace('.facts.rows[0].n','error("bad")'));
+  result=await call('oks_run_answer',{src:file});assert.equal(result.counts.failed,1);assert.equal(result.delivery.status,'unavailable');
+  await assert.rejects(call('oks_data',{input:file+'#total'}),/failed/);
+  write(source.replace('debug(total);', 'debug(jq("failure.jq",{}));')+'\n```jq name="failure.jq"\nerror("independent")\n```');
+  result=await call('oks_run_answer',{src:file});assert.equal(result.computation,'partial');assert.equal(result.delivery.status,'ready');
+  write(source.replace('let total=','const total='));
+  result=await call('oks_run_answer',{src:file});assert.equal(result.status,'invalid');
+  await assert.rejects(call('oks_data',{input:file+'#total'}),/invalid/);
+  write('## pipeline\n```js\nlet sample=data([1,2]); debug(sample);\n```');
+  result=await call('oks_run_answer',{src:file});assert.equal(result.delivery.status,'exploring');assert.equal(result.outputs[1].data.length,2);
+  await assert.rejects(call('oks_data',{input:file+'#total'}),/not defined/);
+  assert.equal(queries,1,'所有读取和改稿都没有隐式刷新查询');
+  const blocks=drafts.tools[0].output.render as unknown as (args:unknown,value:unknown)=>{text:string}[];
+  assert.ok(Buffer.byteLength(blocks({},result)[0].text)<16384);
+  const saved=await import('node:fs').then(fs=>fs.readFileSync(join(root,'output-1.html'),'utf8'));
+  assert.equal(checkWellFormed(saved).length,0);
+  console.log('draft tools: readonly pagination, session isolation, delivery, debug and failed/removed-output lifecycle passed');
+} finally {drafts.dispose();jq.dispose();rmSync(root,{recursive:true,force:true});}

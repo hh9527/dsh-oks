@@ -1,61 +1,15 @@
-// dsh-oks —— DSH 能力扩展：把"某个领域的知识服务（OKS）"接成原生工具。
-// 插件不认识任何模型：开放哪个模型、模型在哪，由**会话所在工作区**根目录的 oks.json 声明
-// （{"domain":"...","model":"...wasm","dataFile":"...sqlite"}）。
-// 工作区是会话属性，所以一份插件能服务任意多工作区。
-//
-// 知识与材料统一由 oks_data 访问：load 指定资源，project 或 jq.src 指定加工；
-// save 物化结果并保留完整来源链。knowledge:// 是常驻知识图，文件默认数据视图、#meta 为描述和来源。
-// 查询经 oks_check_query_intent 校验后由 oks_exec_query_intent 只读执行；
-// create_data 与 create_current_ctx_data 创建给定材料和上下文材料。
-// 图表与报告由 oks_render_figure / oks_render_report 生成，oks_check_report 校验 XHTML 正文。
-// work_* 工具只操作 .work/，所有文件参数使用完整工作区相对路径；.work/ 是目录列表入口。
-// va_ask 规整词汇，oks_data 投影知识和执行内置检索 jq；oks_artifacts 列出交付物。
-// 内部材料的回收由写路径自己保活，要立刻腾地方则用右侧栏「产出」页签的清理按钮（走插件自己的端点）；
-// 窗口分 auto/manual 两套，配置在工作区 oks.json 的 retention 里。
-//
-// **保留（pin）不在工具面里**：那是用户在右侧栏「产出」页签里点一下的动作（走插件自己的端点），
-// agent 不需要知道这件事，也就不会被诱导"出完顺手钉一下"。
+// Workspace-scoped ontology tools. oks.json declares the model and readonly data file.
+// work_* edits Markdown drafts; oks_run_answer evaluates them; oks_data reads retained outputs.
+// oks_knowledge discovers facts and declared capabilities; va_ask normalizes vocabulary.
+// Reports archive evidence and code; the artifacts panel manages retention and pinning.
 
-// 出图的 lowering 与渲染层也在这里导出：插件入口是单文件打包，导出它们便于单独测试，
-// 对宿主没有影响（宿主只认 apply 与 inject）。
 export { createProjector } from './project.ts';
 export type { JsonValue, ProjectRule, Projector } from './project.ts';
 export { buildOption, CHART_WIDTH, plotHeight } from './chart/option.ts';
-// 产物的命名规则也导出：它是对外可核对的约定（名字里那段 = 文件内容的 sha256 前 8 位），
-// 冒烟按它断言，别的工具按它解析。
 export { artifactName, NAME_MAX, resultStamp } from './results.ts';
-// 产物自述的读写也导出：它是"产物自己说得清自己是什么"这条契约的实现，冒烟直接按它断言。
 export { embedArtifactMeta, readArtifactMeta, saveArtifact } from './results.ts';
 export { renderEchartsSvg } from './chart/echarts.ts';
 export { renderMarkdown } from './chart/markdown.ts';
-// 外加一个与模型无关的上下文工具：create_current_ctx_data —— 把当轮会话上下文（时刻与时区）
-// **读一次**并落成 .oks/data/ 下的材料。服务不读时钟，求值器里也没有时钟：相对时间的绝对边界
-// 只能由这份材料在 jq 里算出来（tzadd / tzfloor / tzceil），于是一组问题共用一个时间基准。
-// va_ask：咨询一个**词汇助手**——插件自己建（顶层 agent，同工作区、同 preset）、
-// 自己喂（**把整份词表渲染成一条提示词**，加上角色与回答方法）、自己收（每次拿到回答后把问答
-// 从模型可见表面收回到标记点）；助手没有任何工具，每轮只看到「词汇 + 方法 + 标记 + 当前这个问题」，
-// 会话日志保持 append-only。
-//
-// 词汇表与引用图：第一次用到检索时（三个检索出口都用这一份），插件按服务声明的**发现契约**
-// （`<domain>/discovery` 声明 revision、入口 roots、每类 key 的 key 模式，以及哪些 kind 进
-// 词汇表、每类词条的归属字段与必须非空的字段；沿 `info` 的引用图走完，再在本地派生）在内存里
-// 建好词汇表与反向引用索引，之后整个进程按模型内容的 sha256 复用。知识图保留完整节点，
-// 由 oks_data 按需读取；词汇表与引用索引用于检索。完整知识不进模型上下文。
-//
-// **查询与加工的结果都落在内部材料目录**：查询写 `<时间>-<名字>-<内容哈希>.qres.json`，
-// 加工写 `<时间>-<名字>-<内容哈希>.tr.json`，agent 自填的输入数据写 `.def.json`——
-// 数据只在这里，默认不进模型上下文，
-// 要看形状或取数由 oks_data 用表达式选，要留作下一步的输入就给它一个 save（物化成新的封装数据）。
-// 每份封装自带 `{ origin, data }`：origin 是产生它的操作及完整上游来源链（节点表）。除此之外没有计划文件、没有缓存产物；
-// 每次执行的 SQL、bindings、行数与耗时写进宿主日志（ctx.logger）。
-//
-// **代码里不写任何"地图长什么样"的假设**（有哪些种类、入口、字段、格式、路由、分页）：
-// 那些是服务自己的声明，由 agent 按 key 自主探索。唯一的例外是服务自己声明的消费契约
-// ——发现契约（入口、key 模式、词汇表）；检索层照它派生，对不上时直接报错，不静默降级。
-//
-// node 半边零依赖：直接注册原始工具定义，因此装在 profile 里或从工作区加载都不会有模块解析问题；
-// 查询用 Node 自带的 node:sqlite（只读打开）。parameters 只用受支持的 JSON Schema
-// 关键字子集，批次形状 / 名字校验与 key 比对放在 execute 里。
 
 import { createKnowledge } from './knowledge.ts';
 import { disposeJaqEngine } from './jaq.ts';
@@ -99,6 +53,7 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
   const va = createVaRuntime({ ctx, log, config, knowledge });
 
   const definitions = createTools({ knowledge, va, timeContext, log, config });
+  ctx.effect(() => definitions.dispose);
   for (const definition of definitions) {
     const dispose = ctx.tools.register(withOutputLimit(definition));
     if (typeof dispose === 'function') ctx.effect(() => dispose);

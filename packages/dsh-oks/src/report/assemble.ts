@@ -5,7 +5,7 @@
  *  图与表各自按正文出现顺序编号；被引用的每一项都进来源链（含只出现一次的数值）。
  */
 import { appendNode } from '../results.ts';
-import type { ArtifactMeta, DataOrigin } from '../results.ts';
+import type { ArtifactMeta, DataOrigin, OriginNode } from '../results.ts';
 import { cleanChartSvg } from '../chart/report.ts';
 import { escapeHtml, renderMarkdown } from '../chart/markdown.ts';
 import { buildReportPage, extractAssets, outlineOf, renderStructure } from './page.ts';
@@ -24,6 +24,8 @@ export interface ReportBinding {
 }
 
 export interface AssembleInput {
+  draft?: OriginNode['draft'];
+  motivation?: string;
   name: string;
   title: string;
   subtitle: string | null;
@@ -67,7 +69,7 @@ export function assembleReport(input: AssembleInput): AssembleResult {
   }
   const unused = Object.keys(input.bindings).filter((key) => !used.has(key));
   if (unused.length > 0) {
-    return { error: `spec.inputs 里这些绑定没有被正文引用：${unused.join('、')}；去掉它们，或在正文里引用。` };
+    return { error: `render_html 输入里这些绑定没有被正文引用：${unused.join('、')}；去掉它们，或在正文里引用。` };
   }
   // 取值先行：形状不对的绑定在这里就报出来，渲染层只负责填字。
   const values = new Map<string, string>();
@@ -78,18 +80,18 @@ export function assembleReport(input: AssembleInput): AssembleResult {
   }
   const outline = outlineOf(checked.headings);
   // figure 引用的是**完整展示件**：绑到普通数据材料会画出空图，绑到切片会与 items 不一致，
-  // 两种都在这里挡下（想换切片就先用 oks_render_figure 出一件新的）。
+  // 两种都在这里挡下（想换切片就先用 render_figure 出一件新的）。
   for (const ref of checked.figures) {
     const binding = input.bindings[ref];
     if (binding === undefined) continue;
     if (binding.display === undefined) {
       return {
-        error: `figure 引用的 ${ref} 不是图或表展示件：先用 oks_render_figure 画一张图或出一张表，再把它绑给这一项。`,
+        error: `figure 引用的 ${ref} 不是图或表展示件：先用 render_figure 画一张图或出一张表，再把它绑给这一项。`,
       };
     }
     if (binding.root !== '.data') {
       return {
-        error: `figure 引用的 ${ref} 只能整件展示：它的 root 保持默认 "."；要取切片就用 span 的 data-oks-pick。`,
+        error: `figure 引用的 ${ref} 只能整件展示：将 render_figure 的完整结果绑定到 figure；要取标量就用 span 的 data-oks-pick。`,
       };
     }
   }
@@ -131,6 +133,9 @@ export function assembleReport(input: AssembleInput): AssembleResult {
     keys.map((key) => input.bindings[key]!.origin),
     {
       kind: 'report',
+      spec: { xhtml: input.xhtml },
+      ...(input.draft ? { draft: input.draft } : {}),
+      ...(input.motivation ? { motivation: input.motivation } : {}),
       inputs: Object.fromEntries(keys.map((key) => [key, input.bindings[key]!.origin.root])),
       inputPaths: Object.fromEntries(keys.map((key) => [key, input.bindings[key]!.root])),
     },

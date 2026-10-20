@@ -31,6 +31,12 @@ export interface JaqOptions {
   inputName?: string;
 }
 
+export class JaqCompileError extends Error {
+  constructor(message: string) { super(message); this.name = 'JaqCompileError'; }
+}
+
+export type JaqCheckOptions = Pick<JaqOptions, 'timeoutMs' | 'signal' | 'programFile'>;
+
 /** 引擎的位置：与 `index.mjs` 同目录（profile 里是 `link:` 装的，运行时就是这个 `lib/`）。 */
 const enginePath = (): string => join(dirname(fileURLToPath(import.meta.url)), 'oks-wti.wasm');
 
@@ -98,7 +104,7 @@ export function createJaqEngine(wasmPath = enginePath()) {
     worker = created;
     return created;
   };
-  const send = (target: Worker, message: Record<string, unknown>, options: JaqOptions): Promise<EngineReply> =>
+  const send = (target: Worker, message: Record<string, unknown>, options: JaqCheckOptions): Promise<EngineReply> =>
     new Promise((resolve, reject) => {
       if (options.signal?.aborted === true) { reject(new Error('aborted')); return; }
       if (worker !== target) { reject(new Error('jaq 实例已失效，请重新调用')); return; }
@@ -129,6 +135,21 @@ export function createJaqEngine(wasmPath = enginePath()) {
       ...program(query, options), input: JSON.stringify(options.input ?? null),
     }, options));
   };
+  /** Compiles using the exact runtime whitelist, without evaluating an arbitrary test input. */
+  const check = async (query: string, options: JaqCheckOptions): Promise<{ cached: boolean }> => {
+    if (options.signal?.aborted === true) throw new Error('aborted');
+    const target = worker ?? spawn();
+    const reply = await send(target, {
+      kind: 'check', program: query, path: options.programFile ?? '',
+    }, options);
+    if (reply.status === 1) throw new JaqCompileError(reply.message);
+    const result = outcome(reply);
+    if (!result.ok || !result.data || typeof result.data !== 'object' ||
+        typeof (result.data as { cached?: unknown }).cached !== 'boolean') {
+      throw new Error('jaq 编译检查未返回有效状态');
+    }
+    return result.data as { cached: boolean };
+  };
   // 每个知识执行器只绑定一份文档。Promise 成功后保留，失败移除，随实例失效。
   const runDocument = async (query: string, document: unknown, options: JaqOptions): Promise<JaqOutcome> => {
     if (options.signal?.aborted === true) throw new Error('aborted');
@@ -154,10 +175,11 @@ export function createJaqEngine(wasmPath = enginePath()) {
   const dispose = (): void => {
     if (worker !== null) discard(worker, new Error('jaq 引擎已释放'));
   };
-  return { run, runDocument, dispose };
+  return { run, runDocument, check, dispose };
 }
 
 const calculator = createJaqEngine();
 /** 程序正文由调用方读取一次，programFile 仅用于诊断定位。 */
 export const runJaq = calculator.run;
+export const checkJaq = calculator.check;
 export const disposeJaqEngine = calculator.dispose;

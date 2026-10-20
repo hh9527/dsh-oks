@@ -5,7 +5,7 @@
 //!   - `defs()` 是语言层的定义（`map`/`select`/…）；
 //!   - 其余能力一律**不组装**——于是它们在语义上不存在，而不是"被拦住"。
 //!
-//! C ABI：`alloc` / `dealloc` / `run` / `load_document` / `run_document`。
+//! C ABI：`alloc` / `dealloc` / `run` / `check_program` / `load_document` / `run_document`。
 //! `run` 的返回缓冲：`[status u8][len u32 LE][payload]`，status 0 = 单值 JSON，1 = 错误文本，2 = 超限值的形状 JSON。
 
 mod diagnostic;
@@ -21,9 +21,16 @@ use jaq_core::load::{import, Arena, File, Import, Loader};
 use jaq_core::{Ctx, Vars};
 use jaq_json::{read, Val};
 use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::rc::Rc;
+
+type Compiled = jaq_core::Filter<jaq_core::data::JustLut<Val>>;
+const MAX_PROGRAMS: usize = 32;
+const MAX_PROGRAM_SOURCE_BYTES: usize = 256 * 1024;
 
 thread_local! {
     // 文档随实例存续；Val 的 clone 共享底层值，jq 更新产生新的值。
+    static PROGRAMS: RefCell<VecDeque<(String, Rc<Compiled>)>> = const { RefCell::new(VecDeque::new()) };
     static DOCUMENTS: RefCell<Vec<Val>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -37,7 +44,7 @@ fn render(reports: Vec<FileReports<String>>) -> String {
     out.trim_end().to_string()
 }
 
-/// 跑一次：解析输入 → 组装 std → 装载（`include` / `import` 在这里被拒）→ 编译 → 求值。
+/// 跑一次：解析输入 → 取得或编译程序（`include` / `import` 在装载时被拒）→ 求值。
 ///
 /// 程序必须恰好输出一个 JSON 值；返回完整 JSON 或超限值的形状摘要。
 /// `max_bytes` 为序列化字节预算（0 = 不限），第二个返回值标记超限。
@@ -46,7 +53,35 @@ fn evaluate(program: &str, path: &str, input: &str, max_bytes: usize) -> Result<
     evaluate_value(program, path, input, max_bytes)
 }
 
-fn evaluate_value(program: &str, path: &str, input: Val, max_bytes: usize) -> Result<(String, bool), String> {
+/// The successful compiler product owns its graph; no arena or source lifetime escapes.
+/// Cache identity excludes the diagnostic path so moving/renaming an asset can reuse it.
+fn compiled(program: &str, path: &str) -> Result<(Rc<Compiled>, bool), String> {
+    if let Some(filter) = PROGRAMS.with(|programs| {
+        let mut programs = programs.borrow_mut();
+        let index = programs.iter().position(|(source, _)| source == program)?;
+        let entry = programs.remove(index)?;
+        let filter = entry.1.clone();
+        programs.push_back(entry);
+        Some(filter)
+    }) {
+        return Ok((filter, true));
+    }
+    let filter = Rc::new(compile_program(program, path)?);
+    if program.len() <= MAX_PROGRAM_SOURCE_BYTES {
+        PROGRAMS.with(|programs| {
+            let mut programs = programs.borrow_mut();
+            while programs.len() >= MAX_PROGRAMS
+                || programs.iter().map(|(source, _)| source.len()).sum::<usize>() + program.len() > MAX_PROGRAM_SOURCE_BYTES
+            {
+                programs.pop_front();
+            }
+            programs.push_back((program.to_string(), filter.clone()));
+        });
+    }
+    Ok((filter, false))
+}
+
+fn compile_program(program: &str, path: &str) -> Result<Compiled, String> {
     let defs = jaq_core::defs()
         .chain(jaq_std::defs())
         .chain(jaq_json::defs());
@@ -76,10 +111,14 @@ fn evaluate_value(program: &str, path: &str, input: Val, max_bytes: usize) -> Re
         ))
     })
         .map_err(|errs| render(load_errors(errs)))?;
-    let filter = jaq_core::Compiler::default()
+    jaq_core::Compiler::default()
         .with_funs(funs)
         .compile(modules)
-        .map_err(|errs| render(compile_errors(errs)))?;
+        .map_err(|errs| render(compile_errors(errs)))
+}
+
+fn evaluate_value(program: &str, path: &str, input: Val, max_bytes: usize) -> Result<(String, bool), String> {
+    let (filter, _) = compiled(program, path)?;
     let ctx = Ctx::<jaq_core::data::JustLut<Val>>::new(&filter.lut, Vars::new([]));
     let mut values = filter.id.run((ctx, input));
     let first = values.next().ok_or("jq 程序必须恰好输出一个值：当前无输出；空结果请输出 [] 或 null。")?;
@@ -147,6 +186,22 @@ fn reply(status: u8, payload: String) -> *mut u8 {
     out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
     out.extend_from_slice(&bytes);
     boxed(out)
+}
+
+/// Parse and compile without evaluating any input. Success reports compiler-cache reuse.
+#[no_mangle]
+pub extern "C" fn check_program(
+    program_ptr: *const u8,
+    program_len: usize,
+    path_ptr: *const u8,
+    path_len: usize,
+) -> *mut u8 {
+    let program = unsafe { core::slice::from_raw_parts(program_ptr, program_len) };
+    let path = unsafe { core::slice::from_raw_parts(path_ptr, path_len) };
+    match compiled(&String::from_utf8_lossy(program), &String::from_utf8_lossy(path)) {
+        Ok((_, cached)) => reply(0, format!("{{\"cached\":{cached}}}")),
+        Err(error) => reply(1, error),
+    }
 }
 
 /// 解析并常驻一份 JSON，成功时返回 JSON 数字 `handle`，文档与实例同生命周期。

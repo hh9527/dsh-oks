@@ -1,4 +1,4 @@
 {
   "title": "知识服务查询 (OKS)",
-  "description": "连接会话工作区声明的领域知识与只读数据。oks_data 通过资源引用、JSON 投影或 jq 文件统一探索知识和加工数据；保存结果保留完整来源链。查询意图经校验后执行，图表与 XHTML 报告按引用使用材料，报告内联展示数据、加工依据与来源链。work_* 工具管理 .work/ 中的代码和正文，所有文件参数使用完整工作区相对路径。create_current_ctx_data 提供时间与时区材料，va_ask 提供词汇线索；交付物可在侧栏查看、保留和清理。模型、领域和数据文件由工作区 oks.json 声明。"
+  "description": "通过 va_ask 规整词汇，以 oks_knowledge 发现知识，在 .work/ 中编辑 Markdown 回答源码。oks_run_answer 执行查询、加工、调试与渲染，oks_data 只读已有输出；报告保存数据与完整来源。模型、领域和只读数据源由工作区 oks.json 声明。"
 }

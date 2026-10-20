@@ -7,7 +7,7 @@ import type { LogFn, PluginContext, SkillsService } from './host.ts';
 /** rank 250：工作区自己的 skill(100/200) 能覆盖它，用户级(400/500) 不能。 */
 export const SKILL = {
   name: 'oks-query',
-  description: 'Use when answering a business question from the data this workspace declares: when to read the knowledge, construct data, draw a figure, assemble a report, go back a step, or ask the user.',
+  description: 'Use when answering a business question from the data this workspace declares: discover capabilities, edit and run a Markdown analysis draft, inspect readonly outputs and deliver an evidence-based answer or report.',
   source: 'runtime',
 };
 

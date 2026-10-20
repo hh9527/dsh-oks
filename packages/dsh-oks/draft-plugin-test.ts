@@ -1,0 +1,79 @@
+// Run against a standalone bundle + colocated Wasm, not the source module graph.
+import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
+const [bundle, model, database] = process.argv.slice(2);
+assert.ok(bundle && model && database, '需要 bundle、模型和只读 SQLite 路径');
+const root = mkdtempSync(join(tmpdir(), 'oks-draft-plugin-'));
+writeFileSync(join(root,'oks.json'),JSON.stringify({version:1,domain:'ic',model,dataFile:database}));
+const { apply } = await import(pathToFileURL(bundle).href);
+const registered = new Map<string, any>();
+const dispose: (()=>void)[] = [];
+const listeners: any[] = [];
+const logs: string[] = [];
+const skills: any[] = [];
+apply({logger:{info:(message:string)=>logs.push(message)},get:(name:string)=>name==='skills'?{register:(skill:unknown)=>{skills.push(skill);return ()=>{};}}:undefined,
+  tools:{register:(tool:any)=>{registered.set(tool.name,tool);return ()=>registered.delete(tool.name);}},
+  effect:(fn:()=>unknown)=>{const result=fn();if(typeof result==='function')dispose.push(result as ()=>void);},
+  on:(_name:string,listener:unknown)=>{listeners.push(listener);return ()=>{};},
+});
+const expected=['work_read','work_write','work_edit','work_list','work_delete','va_ask','oks_artifacts','oks_run_answer','oks_data','oks_knowledge'];
+assert.deepEqual([...registered.keys()].sort(),expected.sort());
+const session={id:'draft-plugin-test',header:{cwd:root}};
+const exec={agent:{session}};
+for(const listener of listeners)await listener({agent:exec.agent,messages:[{source:{kind:'user',rpcId:'test',clientTimeZone:'Asia/Shanghai'}}]},async()=>undefined);
+const call=async(name:string,args:unknown)=>{const tool=registered.get(name);const value=await tool.execute(args,exec);const text=tool.output.render(args,value).map((block:any)=>block.text??'').join('');assert.ok(Buffer.byteLength(text)<=16384,`${name} payload limit`);return {value,text};};
+const source=['# 告警概览','## pipeline','```js','let ctx=context();','let months=time_windows(ctx,{unit:"month",count:2,mode:"complete"});','let facts=query({op:"Graph",root:"a",nodes:[{id:"a",entity:"current_alarm"}],edges:[],select:[],count:"a",limit:5});','let total=jq("total.jq",{facts});','debug(total);','let answer=render_html("answer.xhtml",{total});','```','## assets','```jq name="total.jq"','.facts.rows[0] | to_entries[0].value','```','```xhtml name="answer.xhtml"','<article><p>当前告警数：<span data-oks-ref="total" /></p></article>','```'].join('\n');
+try {
+  assert.equal(skills.length,1);
+  await call('work_write',{file_path:'.work/draft.md',content:source});
+  let result=await call('oks_run_answer',{src:'.work/draft.md'});
+  assert.equal(result.value.delivery.status,'ready',result.text);
+  assert.equal(result.value.delivery.mode,'reply');
+  assert.match(result.text,/当前告警数/);
+  const firstBatch=result.value.batch;
+  const count=(await call('oks_data',{input:'.work/draft.md#total'})).value.data;
+  assert.ok(typeof count==='number' && count>0);
+  result=await call('oks_run_answer',{src:'.work/draft.md',delivery:'artifact'});
+  assert.equal(result.value.batch,firstBatch);
+  assert.equal(result.value.counts.executed,0);
+  assert.equal(result.value.delivery.status,'ready',result.text);
+  assert.ok(existsSync(join(root,result.value.delivery.asset)));
+  const asset=result.value.delivery.asset;
+  result=await call('oks_data',{input:asset});
+  assert.equal(result.value.data.items.total,count);
+  result=await call('oks_knowledge',{jq:{src:'builtin://knowledge/search.jq',args:{query:'current_alarm',take:2}}});
+  assert.ok(result.value.data.total>0);
+  result=await call('oks_knowledge',{project:{datasets:{current_alarm:{fields:'Shape'}}}});
+  assert.equal(result.value.data.datasets.current_alarm.fields.type,'object');
+  const months=(await call('oks_data',{input:'.work/draft.md#months'})).value.data;
+  assert.equal(months.length,2);
+  assert.match(months[1].end.rfc3339,/T00:00:00\+08:00$/);
+  const topics=(await call('oks_knowledge',{help:'oks://help/query'})).value.data.topics;
+  assert.ok(topics.includes('graph/filter'));
+  assert.equal(typeof (await call('oks_knowledge',{help:'oks://help/query',topic:'graph/filter'})).value.data.text,'string');
+  const artifacts=await call('oks_artifacts',{});
+  assert.match(artifacts.text,/告警概览/);
+  await call('work_edit',{file_path:'.work/draft.md',old_string:'当前告警数：',new_string:'当前告警总数：'});
+  result=await call('oks_data',{input:'.work/draft.md#total'});
+  assert.equal(result.value.stale,true);
+  result=await call('oks_run_answer',{src:'.work/draft.md'});
+  assert.equal(result.value.delivery.status,'ready',result.text);
+  assert.equal(result.value.counts.executed,1,'仅模板修改重新处理 render_html');
+  result=await call('oks_run_answer',{src:'.work/draft.md',refresh:true});
+  assert.notEqual(result.value.batch,firstBatch);
+  assert.equal(result.value.delivery.status,'ready',result.text);
+  const example=readFileSync(new URL('./examples/answer.md',import.meta.url),'utf8');
+  await call('work_write',{file_path:'.work/example.md',content:example});
+  result=await call('oks_run_answer',{src:'.work/example.md'});
+  assert.equal(result.value.delivery.status,'ready',result.text);
+  assert.match(result.value.reply,/合计 5/);
+  assert.match(result.value.reply,/!\[/,'checked-in example delivers an SVG in reply');
+  result=await call('oks_run_answer',{src:'.work/example.md',delivery:'artifact'});
+  assert.equal(result.value.delivery.status,'ready',result.text);
+  const exampleReport=(await call('oks_data',{input:result.value.delivery.asset})).value.data;
+  assert.deepEqual(exampleReport.items.summary,{total:5,rows:2});
+  console.log(JSON.stringify({ok:true,tools:[...registered.keys()],businessCount:count,standaloneBundle:true,sourceDatabaseReadOnly:true}));
+} finally {for(const fn of dispose.reverse())fn();rmSync(root,{recursive:true,force:true});}

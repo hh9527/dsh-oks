@@ -76,6 +76,12 @@ export interface SavedResult {
 
 /** 来源链里的一个节点：一次操作的记录。查询与加工各用其中一部分字段。 */
 export interface OriginNode {
+  /** Draft source snapshot associated with this operation; retained code does not depend on that file surviving. */
+  draft?: { file: string; hash: string; line: number; column: number; asset?: string };
+  nature?: 'given' | 'parameter' | 'assumption' | 'example';
+  /** Constructor routing: input identity, original upstream path, and destination within the constructed value. */
+  construction?: Array<{ input: string; path: (string | number)[]; at: (string | number)[] }>;
+
   /** 产生这份数据的操作：查询、加工、agent 给定、读到的当轮上下文、把若干材料合成一份展示件、
    *  组装报告，或（早期版本的）派生视图。`extract` 与 `derive` 都已经不再产生，读取时仍认——
    *  旧文件是可回收的内部材料，随保活消失。 */

@@ -22,7 +22,7 @@
 # 怎么调用 dsh：优先 $DSH_CMD（可以是一整串，例如 DSH_CMD='pnpm dlx @deepseek-ai/dsh'），
 # 其次 PATH 里的 dsh，最后退回 `pnpm dlx @deepseek-ai/dsh`——部署里常常没有全局 dsh。
 #
-# 注册的是 preset：oks_* / time_* / va_ask 只在这个 preset 的作用域里。脚本不把本包写进
+# 注册的是 preset：oks_* / work_* / va_ask 只在这个 preset 的作用域里。脚本不把本包写进
 # profile 的 dsh.profile.bundles：bundles 里的包会连它自己的 cordis.patch.yml 一起应用，
 # 那多出一行全局工具注册。bundles 里已经有本包时，结尾给一条提示（脚本不改 bundles）。
 #
@@ -230,14 +230,14 @@ else
   rm -f "$tmp"
   cat >> "$PATCH_FILE" <<'YAML'
 
-# agent preset：OKS 问数 —— 工具只有知识服务（oks_*）+ 时间（time_*）+ 追问。
+# agent preset：OKS 问数 —— 知识发现、Markdown 回答源码和只读输出工具 + 追问。
 - insert:
     - id: preset-oks
       name: "@deepseek-ai/dsh-agent-preset"
       config:
         id: oks
         name: OKS 问数
-        description: 业务问句 → 查询结果：术语检索、引用反查、知识发现、Intent 校验、只读查询、追问澄清。
+        description: 业务问句 → 查询结果：词汇规整、知识发现、Markdown 分析、只读查询与答案交付。
         order: 5
         plugins:
           - id: persona
