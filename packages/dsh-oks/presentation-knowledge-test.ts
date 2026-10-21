@@ -29,7 +29,7 @@ try {
  assert.ok(overview.tools.render_figure['kinds:keys'].includes('column'));
 
  for(const item of graph.items)assert.ok(resolveFact(graph,item.key),item.key);
- for(const word of ['图表','表头','XHTML','stack','series','data-oks-pick'])assert.ok((await run('search',{query:word})).total>0,word);
+ for(const word of ['图表','表头','DARI','stack','series','Value'])assert.ok((await run('search',{query:word})).total>0,word);
  const members=await run('members',{key:'tools/render_figure',link:'kinds',take:10});
  assert.equal(members.total,14);assert.equal(members.next,10);
  assert.equal((await run('members',{key:'tools/render_figure',link:'kinds',skip:10})).items.length,4);
@@ -73,5 +73,5 @@ spec <-${JSON.stringify(Object.fromEntries(Object.entries(example.spec).filter((
  const failed=await new FixtureRuntime(backend).run(invalid);
  assert.equal(failed.status,'invalid');assert.match(failed.error!,/rename data keys in jq/);
  for(const columns of [[{key:'level',label:'告警级别'}],[],['n','n'],[''],42])assert.throws(()=>parseTableSpec({kind:'table',columns}),/columns/);
- console.log('presentation knowledge: paged discovery/navigation, exact slices, 14 executable figure examples, renderer matrix, table headers and XHTML bindings passed');
+ console.log('presentation knowledge: paged discovery/navigation, exact slices, 14 executable figure examples, renderer matrix, table headers and DARI bindings passed');
 }finally{engine.dispose();}

@@ -6,8 +6,7 @@ import type { ArtifactMeta, DataOrigin, OriginNode } from '../results.ts';
 import { REPORT_STYLE } from '../chart/report.ts';
 import { escapeHtml } from '../chart/markdown.ts';
 import { errorText, isRecord } from '../host.ts';
-import { checkWellFormed, escapeAttribute, rewriteXml } from './xhtml.ts';
-import type { ElementPolicy } from './xhtml.ts';
+import {escapeAttribute,escapeText,attributeText,type ReportNode,type ReportProgram} from './structure.ts';
 
 /** 元数据区在页面里的 id。 */
 export const REPORT_METADATA_ID = 'oks-metadata';
@@ -26,9 +25,7 @@ function metadataRange(html:string):{start:number;end:number}|undefined {
 /** 报告内联资源的引用前缀：工作区路径解析器明确拒绝它，隔离由协议保证。 */
 export const ASSET_SCHEME = 'src://';
 
-/** 元数据区的 JSON。XML 里 `<script>` 是普通文本，所以 `<`、`&` 与 `>` 都写成 JSON 的 \uXXXX 转义：
- *  一个 `</script>`、一个 `&`、或文本里出现 `]]>`（XML 明文里非法）都会让整页不再是良构 XML。
- *  三者都转义之后，数据与源码里出现什么字符都不会影响页面。 */
+/** 转义 HTML 敏感字符，确保源码中的结束标签不会截断元数据。 */
 export const metadataJson = (payload: Record<string,unknown> | ReportArchive): string =>
   JSON.stringify(payload)
     .replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
@@ -94,69 +91,33 @@ export const outlineOf = (
     id: heading.id ?? `section-${at + 1}`,
   }));
 
-export function renderStructure(input: {
-  xhtml: string;
-  figurePlacement?: 'before-caption';
-  /** 章节锚点，按 `outlineOf` 的顺序与之一一对应。 */
-  outline: ReadonlyArray<{ level: number; text: string; id: string }>;
-  /** 取一个引用项的值（`pick` 是作者写的点路径，可能未给）；返回值会被当纯文本转义。 */
-  valueOf: (ref: string, pick: string | undefined) => string;
-  /** 引用项的内联内容与编号；返回 undefined 表示这项不进正文（例如只作数据引用）。 */
-  inlineOf: (ref: string) => { html: string; label: string; table?: boolean } | undefined;
-}): { article: string; errors: ReturnType<typeof checkWellFormed> } {
-  // 当前打开的 figure 栈：`figcaption` 要据此知道自己属于哪一项，好在图注前放编号。
-  const figures: Array<string | undefined> = [];
-  let heading = 0;
-  const rendered = rewriteXml(input.xhtml, {
-    // 目录锚点与表格样式由渲染层补：作者写内容，工具管版面。
-    attributes: (tag) => {
-      if (tag.name === 'h1' || tag.name === 'h2' || tag.name === 'h3') {
-        const entry = input.outline[heading];
-        heading += 1;
-        return entry === undefined || tag.attributes['id'] !== undefined
-          ? undefined
-          : { ...tag.attributes, id: entry.id };
-      }
-      if (tag.name === 'figure') {
-        const ref = tag.attributes['data-oks-ref'];
-        const inline = ref === undefined ? undefined : input.inlineOf(ref);
-        return inline?.table === true ? { ...tag.attributes, class: [tag.attributes.class,'table-block'].filter(Boolean).join(' ') } : undefined;
-      }
-      // 有来源的数字带一句悬停提示：引用键 + 取值路径。只放机器值，也只在作者没写 title 时补。
-      if (tag.name === 'span') {
-        const ref = tag.attributes['data-oks-ref'];
-        if (ref === undefined || tag.attributes['title'] !== undefined) return undefined;
-        const pick = tag.attributes['data-oks-pick'];
-        return { ...tag.attributes, title: pick === undefined || pick === '.' ? ref : `${ref}${pick}` };
-      }
-      return undefined;
-    },
-    policy: (tag): ElementPolicy | undefined => {
-      const ref = tag.attributes['data-oks-ref'];
-      if (tag.name === 'figure') figures.push(ref);
-      // 图注自己不带引用，要按"当前打开的 figure"决定它属于哪一项，所以先判它。
-      if (tag.name === 'figcaption') {
-        const owner = figures[figures.length - 1];
-        const inline = owner === undefined ? undefined : input.inlineOf(owner);
-        return inline === undefined
-          ? undefined
-          : { kind: 'keep', prepend: `<span class="item-no">${escapeHtml(inline.label)}${input.figurePlacement?'：':''}</span>` };
-      }
-      if (ref === undefined) return undefined;
-      if (tag.name === 'span') {
-        return { kind: 'replace', text: input.valueOf(ref, tag.attributes['data-oks-pick']) };
-      }
-      if (tag.name === 'figure') {
-        const inline = input.inlineOf(ref);
-        return { kind: 'keep', ...(inline === undefined ? {} : (input.figurePlacement?{prepend:inline.html}:{append:inline.html})) };
-      }
-      return undefined;
-    },
-    close: (name) => {
-      if (name === 'figure') figures.pop();
-    },
-  });
-  return { article: rendered.xml, errors: rendered.errors };
+/** 直接遍历编译结构。图表内容已由本工具生成，不解析或重写 SVG。 */
+export function renderStructure(input:{
+  program:ReportProgram;
+  figurePlacement?:'before-caption';
+  outline:ReadonlyArray<{level:number;text:string;id:string}>;
+  valueOf:(ref:string,pick:string|undefined)=>string;
+  inlineOf:(ref:string)=>{html:string;label:string;table?:boolean}|undefined;
+}):{article:string} {
+  let heading=0;
+  const render=(node:ReportNode,figure?:ReturnType<typeof input.inlineOf>):string=>{
+    if(node.kind==='text')return escapeText(node.text);
+    if(node.kind==='comment')return `<!--${node.text}-->`;
+    const {name}=node,attrs={...node.attrs};
+    const ref=attrs['data-oks-ref'];
+    const inline=name==='figure'&&ref!==undefined?input.inlineOf(ref):undefined;
+    if(['h1','h2','h3'].includes(name)){const entry=input.outline[heading++];if(entry&&attrs.id===undefined)attrs.id=entry.id;}
+    if(inline?.table)attrs.class=[attrs.class,'table-block'].filter(Boolean).join(' ');
+    if(name==='span'&&ref!==undefined&&attrs.title===undefined)attrs.title=ref+(attrs['data-oks-pick']&&attrs['data-oks-pick']!=='.'?attrs['data-oks-pick']:'');
+    const open=`<${name}${attributeText(attrs)}`;
+    if(['br','hr'].includes(name))return open+' />';
+    const body=name==='span'&&ref!==undefined?escapeText(input.valueOf(ref,attrs['data-oks-pick'])):node.children.map(child=>render(child,name==='figure'?inline:figure)).join('');
+    const caption=name==='figcaption'&&figure?`<span class="item-no">${escapeText(figure.label)}${input.figurePlacement?'：':''}</span>`:'';
+    const before=inline&&input.figurePlacement?inline.html:'';
+    const after=inline&&!input.figurePlacement?inline.html:'';
+    return open+'>'+before+caption+body+after+`</${name}>`;
+  };
+  return {article:render(input.program.root)};
 }
 
 export interface ReportPageInput {
@@ -171,7 +132,7 @@ export interface ReportPageInput {
   outline: Array<{ level: number; text: string; id: string }>;
 }
 
-/** 拼出一份自足的报告页面；写完立刻自校验，不良构就当场失败（不留半个交付物）。 */
+/** 从已编译结构拼出自足报告；作者约束在 DARI 编译阶段完成检查。 */
 export function buildReportPage(input: ReportPageInput): string {
   const title = input.meta.title ?? input.meta.name;
   const nav = input.outline
@@ -202,11 +163,6 @@ ${input.article}
 </html>
 `;
   const named = embedArtifactMeta(page, input.meta);
-  const errors = checkWellFormed(named);
-  if (errors.length > 0) {
-    const first = errors[0]!;
-    throw new Error(`报告页面不是良构 XML：${first.message}（第 ${first.line} 行第 ${first.column} 列）`);
-  }
   return named;
 }
 

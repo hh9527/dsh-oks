@@ -2,7 +2,7 @@
 
 ## 发现图表能力
 
-知识图的 tools.render_figure.kinds 按图表类型保存必填映射、series 含义、专属开关与可运行示例。tools.render_html.topics 保存报告引用、XHTML 和附件交付规则。
+知识图的 tools.render_figure.kinds 按图表类型保存必填映射、series 含义、专属开关与可运行示例。tools.report.topics 保存报告引用、正文和附件交付规则。
 
 用 oks_project 查看类型目录：
 
@@ -52,9 +52,9 @@ Figures 独立定义具名图表；Report 用 <Figure ref="comparison" /> 引用
 
 标量用 <Value data={summary.total} />。Report 正文根为 article，元素和属性遵守白名单；文本中的 & 与 < 使用实体。pipeline 与 jq 原样书写，无需 XML 转义。
 
-业务数字从绑定取值，正文中的字面数字用 <span data-oks-lit="">…</span> 声明。data-oks-shrink 标记解读或评价文字，读取结构时可缩短预览。DARI 中这两个标记属性可省略 =""；显式 XHTML 资产的属性值仍使用引号。
+业务数字从绑定取值，正文中的字面数字用 <span data-oks-lit="">…</span> 声明。data-oks-shrink 标记解读或评价文字。这两个标记属性可省略 =""。
 
-引用与正文规则见 tools/render_html#topics/references、tools/render_html#topics/xhtml。
+引用与正文规则见 tools/report#topics/references、tools/report#topics/body。
 
 ## 完整分析稿示例
 
@@ -87,7 +87,7 @@ Figures 可以独立于 Report 运行。已有图表数据位于 #figures.<name>
 
 报告或 Table 导出 HTML 附件；收到 present 字段后，用该对象调用宿主 present 工具，展示原生文件卡片。报告 .report.html 自带数据、来源和分析源码。附件按内容寻址，工作区清理不影响已导出内容；stale 表示已有输出对应的源码已修改。
 
-更多交付信息见 tools/render_html#topics/delivery。
+更多交付信息见 tools/report#topics/delivery。
 
 ## 报告归档与复用
 

@@ -110,7 +110,7 @@ try {
   assert.equal(result.value.stale,true);
   result=await call('oks_run_answer',{src:'oks://work/draft.dari'});
   assert.equal(result.value.delivery.status,'ready',result.text);
-  assert.equal(result.value.counts.executed,1,'仅模板修改重新处理 render_html');
+  assert.equal(result.value.counts.executed,1,'仅模板修改重新渲染 Report');
   result=await call('oks_run_answer',{src:'oks://work/draft.dari',refresh:true});
   assert.notEqual(result.value.batch,firstBatch);
   assert.equal(result.value.delivery.status,'ready',result.text);

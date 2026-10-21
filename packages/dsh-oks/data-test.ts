@@ -43,12 +43,9 @@ const draftCall=(name:string,args:unknown)=>drafts.tools.find(tool=>tool.name===
 const file='.work/report.dari';
 const write=(content:string)=>call('oks_write',{path:file,content:asDari(content)});
 const payload={rowCount:1,rows:[{name:'A',count:7}]};
-const source=(binding:string,body:string,extra='')=>[
-  '# 负荷视图','## pipeline','```js',
-  `fact <-data(${JSON.stringify(payload)});`,binding,extra,
-  'answer <-render_html("answer.xhtml",{selected});','```','## assets',
-  '```xhtml name="answer.xhtml"',body,'```',
-].join('\n');
+const source=(binding:string,body:string,extra='')=>`<Dari title="负荷视图"><Pipeline>
+fact <-data(${JSON.stringify(payload)}); ${binding} ${extra}
+</Pipeline><Template name="answer">${body}</Template></Dari>`;
 try {
   mkdirSync(join(root,'.work'));
   assert.deepEqual(tools.map(tool=>tool.name).sort(),['oks_project','oks_run_answer','oks_show','renew_context','va_ask','oks_delete','oks_edit','oks_list','oks_read','oks_write'].sort());
@@ -85,7 +82,7 @@ try {
     ['selected <-fact.rows;',payload.rows,'.0.count'],
     ['selected <-fact.rows[0].count;',7,''],
   ] as const){
-    const body=`<article><p>数量 <span data-oks-ref="selected"${pick?` data-oks-pick="${pick}"`:''} /></p></article>`;
+    const body=`<article><p>数量 <Value data={selected${pick==='.0.count'?'[0].count':pick}} /></p></article>`;
     await write(source(binding,body));
     const result=await draftCall('oks_run_answer',{src:file});
     assert.equal(result.delivery.status,'ready',JSON.stringify(result));
@@ -97,8 +94,8 @@ try {
     assert.equal(report.origin,undefined);
   }
   const conclusion='这是完整保留在最终报告中的结论内容，用于确认读取视图仅保留摘要而页面完整展示。';
-  await write(source('selected <-jq("select.jq",{fact});',`<article><p><span data-oks-ref="selected" /></p><div data-oks-shrink=""><p>${conclusion}</p><p>下一条结论。</p></div></article>`)
-    +'\n```jq name="select.jq"\n.fact.rows[0].count\n```');
+  await write(source('selected <-jq("select.jq",{fact});',`<article><p><Value data={selected} /></p><div data-oks-shrink=""><p>${conclusion}</p><p>下一条结论。</p></div></article>`)
+    .replace('</Dari>','<Asset name="select.jq" language="jq">.fact.rows[0].count</Asset></Dari>'));
   const result=await draftCall('oks_run_answer',{src:file});
   assert.equal(result.delivery.status,'ready');
   const html=readFileSync((await draftCall('oks_show',{input:file+'#answer'})).path,'utf8');assert.ok(html.includes(conclusion));

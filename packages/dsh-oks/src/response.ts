@@ -1,5 +1,5 @@
 import {formatRead,type ReadResult} from './read.ts';
-import type { XhtmlError } from './report/xhtml.ts';
+import type { ReportError } from './report/structure.ts';
 import { basename } from 'node:path';
 import { capLine } from './text.ts';
 import { DEFAULT_ROOT } from './results.ts';
@@ -263,7 +263,7 @@ export function renderValue(_args: unknown, value: unknown): RenderBlock[] {
 }
 
 /** 同类报表错误集中展示，保留每个出错元素的位置。 */
-export function renderReportCheck(_args: unknown, value: { errors: XhtmlError[]; [key: string]: unknown }): RenderBlock[] {
+export function renderReportCheck(_args: unknown, value: { errors: ReportError[]; [key: string]: unknown }): RenderBlock[] {
   const groups = new Map<string, { code: string; message: string; locations: Array<{ line: number; column: number; element: string | null }> }>();
   for (const { code, message, line, column, element } of value.errors) {
     const key = JSON.stringify([code, message]);

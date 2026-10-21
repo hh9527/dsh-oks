@@ -148,7 +148,7 @@ export function createDraftTools(options: {
       async execute(args: { src?: unknown; answer?: unknown; refresh?: unknown }, exec: ToolExec) {
         assertKeys(args, ['src', 'answer', 'refresh']);
         if (typeof args.src !== 'string' || !args.src.endsWith('.dari')) throw new Error('src must be a oks://work/*.dari report path; migrate Markdown explicitly');
-        if (args.answer !== undefined && typeof args.answer !== 'string') throw new Error('answer must be reports.name or a render_html binding name');
+        if (args.answer !== undefined && typeof args.answer !== 'string') throw new Error('answer must be reports.name or a Report binding name');
         if (args.refresh !== undefined && typeof args.refresh !== 'boolean') throw new Error('refresh must be boolean');
         const entry = options.knowledge.ensureWorkspace(exec);
         const read = readWorkText(entry.root, args.src, 'oks_run_answer');
@@ -177,7 +177,7 @@ export function createDraftTools(options: {
           if (!selected) return { ...base, delivery: { status: 'exploring' } };
           const [name, value] = selected;
           const source = value.sources.length === 1 ? value.sources[0] : undefined;
-          if (!source?.delivery || source.at.length || source.path.length) return { ...base, delivery: { status: 'unavailable', error: 'Selected output is not a complete render_html answer' } };
+          if (!source?.delivery || source.at.length || source.path.length) return { ...base, delivery: { status: 'unavailable', error: 'Selected output is not a complete Report' } };
           return {...base,delivery:{status:'ready',mode:'retained',answer:name,input:`${args.src}#${name}`,show:'oks_show'}};
         } finally {
           record.active = false;

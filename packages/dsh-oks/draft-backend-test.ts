@@ -7,7 +7,6 @@ import { DraftRuntime } from './src/draft/runtime.ts';
 class FixtureRuntime extends DraftRuntime { constructor(backend:ConstructorParameters<typeof DraftRuntime>[0], options:ConstructorParameters<typeof DraftRuntime>[1]={}) { super(backend,{...options,parse:(source,file)=>source.trimStart().startsWith('<Dari')?parseDraft(source,file):parseMarkdownFixture(source)}); } }
 import type { WorkspaceEntry } from './src/knowledge.ts';
 import type { ContextTimeZone } from './src/time.ts';
-import { checkWellFormed } from './src/report/xhtml.ts';
 
 const wasm = process.argv[2];
 assert.ok(wasm, '需要隔离引擎路径');
@@ -24,17 +23,14 @@ const backend = createDraftBackend({ entry, file: '.work/draft.md', contextZone:
   jq: { run: jq.run, check: async (...args) => { checks++; return jq.check(...args); } },
 });
 const runtime = new FixtureRuntime(backend);
-const source = [
-  '# Example', '## pipeline', '```js',
-  'facts <- exec_query(query({op: "Graph", limit: 5}));',
-  'summary <- jq("summary.jq", { facts });',
-  'chart <- render_figure({kind: "column", x: "label", value: "n"}, {data: summary.rows});',
-  'table <- render_figure({kind: "table", columns: ["label", "n"]}, {data: summary.rows});',
-  'peek <- summary;',
-  'answer <- render_html("answer.xhtml", {summary, chart, table});', '```',
-  '## assets', '```jq name="summary.jq"', '{rows: [.facts.rows[] | {label: "observed", n}], total: (.facts.rows | map(.n) | add)}', '```',
-  '```xhtml name="answer.xhtml"', '<article><h1>Observed</h1><p>Total: <span data-oks-ref="summary" data-oks-pick=".total" /></p><figure data-oks-ref="chart"><figcaption>Values</figcaption></figure><figure data-oks-ref="table"><figcaption>Rows</figcaption></figure></article>', '```',
-].join('\n');
+const source=`<Dari title="Example"><Pipeline>
+ facts <-exec_query(query({op:"Graph",limit:5}));
+ summary <-jq("summary.jq",{facts});
+ spec <-{x:"label",value:"n"}; tableSpec <-{columns:["label","n"]};
+ peek <-summary;
+ </Pipeline><Asset language="jq" name="summary.jq">{rows: [.facts.rows[] | {label: "observed", n}], total: (.facts.rows | map(.n) | add)}</Asset>
+ <Figures><ColumnChart name="chart" spec={spec} data={summary.rows}/><Table name="table" spec={tableSpec} data={summary.rows}/></Figures>
+ <Template name="answer"><article><h1>Observed</h1><p>Total: <Value data={summary.total}/></p><figure><Figure ref="chart"/><figcaption>Values</figcaption></figure><figure><Figure ref="table"/><figcaption>Rows</figcaption></figure></article></Template></Dari>`;
 try {
   let run = await runtime.run(source);
   assert.equal(run.status, 'complete', run.error);
@@ -51,9 +47,9 @@ try {
   assert.match(html, /<svg/);
   assert.match(html, /<table>/);
   assert.ok(Object.values(answer.sources[0].origin.nodes).some(node=>node.snipFile?.endsWith('#summary.jq')));
-  assert.equal(checkWellFormed(html).length, 0);
+
   const node = answer.sources[0].origin.nodes[answer.sources[0].origin.root];
-  assert.equal((node.spec as { xhtml: string }).xhtml.includes('<article>'), true);
+  assert.equal((node.spec as { report: string }).report.includes('<article>'), true);
   assert.equal(node.draft!.hash, run.sourceHash);
   const summary = runtime.read('summary', source).value;
   const jqNode = summary.sources[0].origin.nodes[summary.sources[0].origin.root];
@@ -83,14 +79,14 @@ try {
   assert.equal(checks, beforeInvalidCheck, '确定性错误缓存');
   assert.ok(run.errorSpan!.start.line > 2, '错误关联本轮原始 Markdown');
   assert.throws(() => runtime.read('summary', invalid), /invalid/);
-  run = await runtime.run(source.replace('{summary, chart, table}', '{summary, chart}'));
+  run = await runtime.run(source.replace('summary.total','unknown.total'));
   assert.equal(run.status, 'invalid');
-  assert.match(run.error!, /bindings mismatch/);
+  assert.match(run.error!, /Undefined pipeline binding/);
   assert.equal(executions, previousExec);
-  run = await runtime.run(source.replace('kind: "column"', 'kind: "unknown"'));
+  run = await runtime.run(source.replace('ColumnChart','UnknownChart'));
   assert.equal(run.status, 'invalid');
   assert.equal(executions, previousExec);
-  run = await runtime.run(source.replace('jq("summary.jq", { facts })', 'jq("summary.jq", [])'));
+  run = await runtime.run(source.replace('jq("summary.jq",{facts})', 'jq("summary.jq", [])'));
   assert.equal(run.status, 'invalid');
   assert.equal(executions, previousExec, '静态算子输入类型错误在新查询前返回');
   const timeSource = '## pipeline\n```js\nctx <- context(); peek <- ctx.utc.epochSeconds;\n```';
@@ -121,8 +117,8 @@ try {
   run = await runtime.run(windowsSource);
   assert.equal(run.outputs.get('months')!.status, 'cached');
   const beforeInvalidWindows = executions;
-  run = await runtime.run(source.replace('peek <- summary;', 'bad <-time_windows({}, {unit:"month",count:0,mode:"complete"});'), {refresh:true});
+  run = await runtime.run(source.replace('peek <-summary;', 'bad <-time_windows({}, {unit:"month",count:0,mode:"complete"});'), {refresh:true});
   assert.equal(run.status, 'invalid');
   assert.equal(executions, beforeInvalidWindows, '非法静态窗口参数阻止新查询');
-  console.log('draft backend: real jq, figures, XHTML, static gating, cache and provenance passed');
+  console.log('draft backend: real jq, figures, DARI reports, static gating, cache and provenance passed');
 } finally { runtime.dispose(); jq.dispose(); }

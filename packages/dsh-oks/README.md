@@ -46,17 +46,10 @@ pipeline 是独立的进程内语言模块；jq 使用真实 Wasm 引擎独立�
 图元自闭合，spec 省略 kind，由标签决定类型；仅 NetworkGraph 接受 nodes。
 每个 figure 放一个 Figure 引用和可选的尾部 figcaption；图和表各自按首次展示顺序编号，每份报告重新开始，重复引用复用编号。
 花括号只接受 pipeline 绑定和静态投影；对象构造在 pipeline，运算在 jq。
-普通正文元素遵守 XHTML 白名单，属性为静态字符串，文本中的 & 与 < 使用实体。
+普通正文元素遵守 DARI 正文白名单，属性为静态字符串，文本中的 & 与 < 使用实体。
 Notes 为静态原文，以 `</Notes>` 为保留结束标记；不参与计算。
 
-执行入口为 `.dari`。已有 Markdown 文件保留为文本，显式转换命令（目标须尚不存在）：
-
-```sh
-node scripts/migrate-draft.ts old.md new.dari
-```
-
-转换保留说明、pipeline 和具名 jq/XHTML；可随后把显式 render_html 改写为 Value/具体图元模板。
-运行时直接编译 DARI 为统一执行图，不通过 Markdown 转译。
+执行入口为 `.dari`。具名 Asset 只包含 jq；Report 与 Figures 是稿件原生结构，直接编译成执行图。
 
 ```js
 params <- data({threshold: 10}, {kind: "parameter"});
@@ -80,7 +73,6 @@ summary <- jq("summary.jq", {facts, params});
 | `exec_query(plan)` | 执行完整计划，结果 `{rows,columns,truncated}`；同批相同计划复用首次成功采集 |
 | `jq("a.jq",{...})` | 当前文档具名 asset，恰好输出一个 JSON 值，完整源码随来源保存 |
 | `render_figure(spec,{data,nodes?})` | 图/表展示件；table 选 columns，图使用 x/value/series 等列映射 |
-| `render_html("a.xhtml",{...})` | 以当前绑定及来源组装答案 |
 
 绑定传递 `.data` 值，来源带外携带。紧邻语句前的独立 // 行注释记录该步业务说明。
 资产语法、静态 Intent 和可提前判断的规格先检查，再开始新业务计算；动态 Intent 就绪后校验。
@@ -148,12 +140,12 @@ LocalDateTime 是不带时区或偏移量的日期与钟表时间。旧模型未
 单个 Report 自动选择；多个时用 answer:"reports.name" 指定。计算和交付状态分开报告。
 `#figures.name` 与 `#reports.name` 通过 oks_project 读取结构数据。
 `oks_show({input:"oks://work/analysis.dari#figures.severity"})` 将已有 SVG（含证据）写入 ctx.attachments，返回 FileAttachmentRef、只读 path 与 markdown；将 markdown 原样嵌入回答即可在对话展示。报告输出 `.report.html`、Table 输出 `.html` 附件；收到 `present` 字段后，用它作为宿主 `present` 工具的参数，显示原生文件卡片。此调用读取已保留结果。附件按内容寻址，不受工作区清理影响；宿主通过 file 内容块保留持久引用，模型仅接收简短回执。
-报告附件为自包含 HTML，带全部引用数据、来源与 jq/XHTML，删除工作源码后仍可解释。
+报告附件为自包含 HTML，带全部引用数据、来源与 jq/DARI，删除工作源码后仍可解释。
 存储、呈现和生命周期统一由宿主附件服务管理。
 相同证据/源码重复交付复用仍存在的文件。最终工具反馈限制为 16 KiB。
 
-XHTML 使用 `<article>` 根、严格元素/属性子集、显式自闭合空元素。
-标量使用 data-oks-ref/data-oks-pick，图使用 figure 引用，绑定与正文双向核对。
+Report 使用 `<article>` 根、受支持的元素/属性、显式自闭合空元素。
+标量使用 Value，图表使用 Figure 引用。DARI 编译器直接校验作者结构，渲染器遍历编译结构生成 HTML。
 正文业务数字通过引用填入；文字数字用 span 的 data-oks-lit 声明，解释段用 data-oks-shrink 标记。
 报告读模型为 `{version,context,dari}`，图表数据在 dari.figures，正文引用值在 dari.values，报告正文源码在 dari.reports。
 
@@ -213,7 +205,7 @@ bin/telora -C <模型目录> build <模型名> --snapshot \
 
 
 TypeScript 在 src/，纯 jq Wasm 引擎在 crates/oks-wti。产物仅为 lib/index.mjs 与同目录 oks-wti.wasm。
-XHTML 和 echarts 依赖及技能源码在构建期打包，运行不依赖源码或 node_modules。
+echarts 依赖及技能源码在构建期打包，运行不依赖源码或 node_modules。
 Node 按 URL 缓存 ESM，link 安装需要重建并重启 profile 才加载新模块。
 
 ```sh
@@ -225,7 +217,7 @@ pnpm run check
 
 build/prepare/pretest 直接更新 lib，运行中的 link 安装需先暂停服务，验收通过后重启。
 Rust 需要 wasm32-unknown-unknown target；求值器没有时钟、环境或文件系统，超时/取消可强制终止 worker。
-源码解析、依赖/缓存/来源、只读生命周期、图表/XHTML、知识索引与原生引擎各有独立测试。
+源码解析、依赖/缓存/来源、只读生命周期、图表/DARI 报告、知识索引与原生引擎各有独立测试。
 真实模型/只读 SQLite 的工具集成使用 draft-plugin-test.ts，可对只含两份产物的独立目录验收。
 
 源码格式见 [RFC 0015](../../rfc/0015-report-template-syntax.md)；执行与来源协议见 [RFC 0013](../../rfc/0013-answer-source.md)。
@@ -235,7 +227,7 @@ Rust 需要 wasm32-unknown-unknown target；求值器没有时钟、环境或文
 工具初始化时将领域无关的呈现用法挂载到 `tools`，与模型事实共享搜索、导航与投影。
 `tools/render_figure#kinds/<kind>` 提供必填列映射、series 语义、专属开关和可执行示例；
 `tools/render_figure#topics/table_headers` 说明字符串列名与 jq 表头重命名；
-`tools/render_html#topics/references` 说明 XHTML 绑定和点分路径。
+`tools/report#topics/references` 说明 Value、Figure 引用与静态投影。
 使用 `oks_read({path:"oks://help/figures.md"})` 查看入口，或用知识搜索查“图表”“表头”“data-oks-pick”。
 每个主题可单独读取；`#topics/draft` 提供完整可运行 DARI 示例。
 

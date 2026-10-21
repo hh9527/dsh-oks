@@ -31,7 +31,7 @@ dataset 或 type 是独立节点，其 fields、dimensions、values 等是节点
     }
   },
   "relations": {"alarm_belongs_to_tenant": {"from_dataset": "current_alarm", "to_dataset": "tenant"}},
-  "tools": {"render_figure": {"kinds": {}, "topics": {}}, "render_html": {"topics": {}}},
+  "tools": {"render_figure": {"kinds": {}, "topics": {}}, "report": {"topics": {}}},
   "items": [{"key": "datasets/current_alarm", "names": ["当前告警"], "doc": "业务口径与约束"}]
 }
 ```
@@ -58,7 +58,7 @@ oks_project 以 oks://knowledge 为输入时看到 {datasets,types,relations,too
 
 ### 工具知识
 
-tools.render_figure 包含 kinds 与 topics，tools.render_html 包含 topics。工具知识由插件注入，描述渲染和 XHTML 用法，与模型事实共用 search/read/members/references 导航。可以独立读取图表类型或主题，示例包含可执行的示例数据。
+tools.render_figure 包含 kinds 与 topics，tools.report 包含 topics。工具知识由插件注入，描述渲染和 Report 用法，与模型事实共用 search/read/members/references 导航。可以独立读取图表类型或主题，示例包含可执行的示例数据。
 
 ### 分类导航
 

@@ -17,11 +17,9 @@ import { tableMarkdown } from '../view/table.ts';
 import { buildOption, CHART_WIDTH } from '../chart/option.ts';
 import { renderEchartsSvg } from '../chart/echarts.ts';
 import { applyInferredXType, chartTitle, missingColumns, parseChartSpec, parseTableSpec, shapeProblem } from '../chart/spec.ts';
-import { checkAuthorXhtml } from '../report/xhtml.ts';
 import { assembleReport } from '../report/assemble.ts';
 import type { ReportBinding } from '../report/assemble.ts';
 import { restoreAssets } from '../report/page.ts';
-import { SourceFile } from './source.ts';
 import { DraftSyntaxError } from './pipeline.ts';
 import type { Expr, Operator, Span, SourceDiagnostic } from './pipeline.ts';
 import type { DraftAsset, DraftDocument } from './document.ts';
@@ -32,7 +30,7 @@ const digest = (value: unknown) => createHash('sha256').update(canonicalJson(val
 const jsonPath = (path: (string | number)[]) => '.data' + path.map(key => `[${JSON.stringify(key)}]`).join('');
 const fail = (message: string, span: Span): never => { throw new DraftSyntaxError(message, span); };
 
-type CachedCheck = { error?:string;result?:unknown;jqErrors?:JaqDiagnostic[];xhtmlErrors?:{line:number;column:number;message:string}[] };
+type CachedCheck = { error?:string;result?:unknown;jqErrors?:JaqDiagnostic[] };
 /** Per-source validation cache. Only deterministic completed checks are admitted. */
 class Checks {
   private entries = new Map<string, CachedCheck>();
@@ -79,7 +77,7 @@ export function draftValueOrigin(value: DraftValue): DataOrigin {
 }
 
 function bindingsOf(input: DraftValue): Record<string, ReportBinding> {
-  if (!isRecord(input.data)) throw new Error('render_html inputs must be an object');
+  if (!isRecord(input.data)) throw new Error('Report inputs must be an object');
   return Object.fromEntries(Object.entries(input.data).map(([key, data]) => {
     const selected: DraftValue = { data, sources: input.sources.flatMap(source => source.at.length === 0
       ? [{ ...source, path: [...source.path, key] }]
@@ -159,7 +157,8 @@ export function createDraftBackend(options: {
     return result;
   };
   const checkAsset = async (asset: DraftAsset, signal?: AbortSignal) => {
-    const key = digest({ language: asset.language, source: asset.source, checker: 2 });
+    if(asset.language==='report')return;
+    const key = digest({ language: asset.language, source: asset.source, checker: 3 });
     let checked = checks.get(key);
     if (!checked) {
       if (asset.language === 'jq') {
@@ -170,28 +169,19 @@ export function createDraftBackend(options: {
           if (!(error instanceof JaqCompileError)) throw error;
           checked = { error: error.message,jqErrors:error.diagnostics };
         }
-      } else {
-        const result = asset.checkedXhtml??checkAuthorXhtml(asset.source);
-        checked = { result, ...(result.errors.length ? { error:result.errors[0].message,xhtmlErrors:result.errors } : {}) };
       }
+      checked??={};
       checks.set(key, checked);
     }
-    if(asset.language==='xhtml'&&checked.result)asset.checkedXhtml=checked.result as ReturnType<typeof checkAuthorXhtml>;
     if(checked.error){
       const diagnostics:SourceDiagnostic[]=[];
       const map=(start:number,end:number,unit:'utf16'|'utf8'='utf16'):Span=>{
-        if(asset.sourceMap)return asset.sourceMap.find(m=>m.start<=start&&start<m.end)?.original??asset.span;
         return asset.fragment?.locate(start,end,unit).span??{start:asset.body,end:asset.body};
       };
       for(const error of checked.jqErrors??[]) {
         const location=error.path==='<draft-asset>'?map(error.start,error.end,'utf8'):asset.span;
         diagnostics.push({file,stage:'jq',asset:asset.name,message:error.message,span:location,
           related:error.path==='<draft-asset>'?error.related.map(r=>({message:'related location',span:map(r.start,r.end,'utf8')})):[]});
-      }
-      const generated=new SourceFile('xhtml',asset.source);
-      for(const error of checked.xhtmlErrors??[]){
-        const offset=Math.min(asset.source.length,generated.scalarOffset(error.line,error.column));
-        diagnostics.push({file,stage:'template',asset:asset.name,message:error.message,span:map(offset,offset)});
       }
       if(!diagnostics.length)diagnostics.push({file,stage:asset.language==='jq'?'jq':'template',asset:asset.name,message:checked.error.slice(0,1000),span:asset.span});
       throw new DraftSyntaxError(diagnostics[0].message,diagnostics[0].span,diagnostics);
@@ -223,7 +213,7 @@ export function createDraftBackend(options: {
         try {
           const first = expr.args[0] ? constant(expr.args[0], constants) : UNKNOWN;
           const second = expr.args[1] ? constant(expr.args[1], constants) : UNKNOWN;
-          if (['jq', 'render_figure', 'render_html'].includes(expr.operator) && second !== UNKNOWN && !isRecord(second)) throw new Error(`${expr.operator} inputs must be a named object`);
+          if (['jq', 'render_figure', 'render_report'].includes(expr.operator) && second !== UNKNOWN && !isRecord(second)) throw new Error(`${expr.operator} inputs must be a named object`);
           if (expr.operator === 'render_figure' && second !== UNKNOWN && isRecord(second) && (!Object.hasOwn(second, 'data') || Object.keys(second).some(key => key !== 'data' && key !== 'nodes'))) throw new Error('render_figure inputs must be {data,nodes?}');
           if (expr.operator === 'time_windows' && second !== UNKNOWN) windowCode(second);
           if (expr.operator === 'query' && first !== UNKNOWN) plannedQueries.push({intent:first,span:expr.span});
@@ -232,10 +222,10 @@ export function createDraftBackend(options: {
             const nature = constant(expr.args[1], constants);
             if (nature !== UNKNOWN) dataNature(nature);
           }
-          if (expr.operator === 'render_html' && (expr.args[1].kind === 'object' || (second !== UNKNOWN && isRecord(second)))) {
+          if (expr.operator === 'render_report' && (expr.args[1].kind === 'object' || (second !== UNKNOWN && isRecord(second)))) {
             const asset = document.assets.get(first as string);
             if(!asset)return;
-            const refs = new Set(checkAuthorXhtml(asset.source).refs);
+            const refs = new Set(asset.program!.refs);
             const keys = expr.args[1].kind === 'object' ? expr.args[1].entries.map(entry => entry.key) : Object.keys(second as Record<string, unknown>);
             const missing = [...refs].filter(ref => !keys.includes(ref));
             const unused = keys.filter(key => !refs.has(key));
@@ -359,8 +349,8 @@ export function createDraftBackend(options: {
       const svg = renderEchartsSvg(option, CHART_WIDTH, height);
       return { data: { rows, spec: parsed.spec, ...(nodeRows ? { nodeRows } : {}) }, evidence: { title: chartTitle(parsed.spec), display: { kind: 'chart', content: svg } } };
     }
-    if (ctx.operator === 'render_html') {
-      if (!isRecord(ctx.args[1].data)) throw new Error('render_html inputs must be a named object');
+    if (ctx.operator === 'render_report') {
+      if (!isRecord(ctx.args[1].data)) throw new Error('Report inputs must be a named object');
       for(const [name,ref]of Object.entries(ctx.asset!.references??{}))if(ref.kind==='value'){
         const value=ctx.args[1].data[name];
         if(value!==null&&!['string','number','boolean'].includes(typeof value))fail('Value.data must select a scalar; construct a summary in pipeline/jq',ref.span);
@@ -388,17 +378,15 @@ export function createDraftBackend(options: {
       ...(ctx.operator === 'render_figure' ? { spec: (computed.data as {spec:unknown}).spec } : {}),
     };
     let origin = appendNode(parents, node, computed.data);
-    if (ctx.operator === 'render_html') {
+    if (ctx.operator === 'render_report') {
       const bindings = bindingsOf(ctx.args[1]);
-      const title = ctx.title ?? ctx.asset!.name.replace(/\.xhtml$/, '');
-      const report = assembleReport({ name: 'answer', title, subtitle: null, category: '即时分析', at: resultStamp(), draft: node.draft, motivation: node.motivation, xhtml: ctx.asset!.source, checked:ctx.asset!.checkedXhtml, figurePlacement:ctx.asset!.figurePlacement, bindings,
+      const title = ctx.title ?? ctx.asset!.name.replace(/^@report\//,'');
+      const report = assembleReport({ name: 'answer', title, subtitle: null, category: '即时分析', at: resultStamp(), draft: node.draft, motivation: node.motivation, program:ctx.asset!.program!, figurePlacement:ctx.asset!.figurePlacement, bindings,
         valueOf: (ref, pick) => pickScalar(bindings[ref]?.value, pick),
       });
       if ('error' in report) throw new Error(report.error);
       origin = restoreAssets(report.origin, report.assets);
-      const picks=ctx.asset!.references
-        ?Object.entries(ctx.asset!.references).filter(([,reference])=>reference.kind==='value').map(([ref])=>({ref,pick:undefined as string|undefined}))
-        :(ctx.asset!.checkedXhtml??checkAuthorXhtml(ctx.asset!.source)).picks;
+      const picks=Object.entries(ctx.asset!.references!).filter(([,reference])=>reference.kind==='value').map(([ref])=>({ref,pick:undefined as string|undefined}));
       const reportValues=Object.fromEntries(picks.map(({ref,pick})=>{
         let value=bindings[ref].value;
         if(pick&&pick!=='.')for(const key of pick.slice(1).split('.'))value=(value as Record<string,unknown>)[key];

@@ -6,13 +6,12 @@ import { SourceFile } from './source.ts';
 import type { SourceFragment } from './source.ts';
 import { DraftSyntaxError, parsePipeline } from './pipeline.ts';
 import type { Expr, PipelineNode, Position, Span, SourceDiagnostic } from './pipeline.ts';
-import { checkAuthorXhtml } from '../report/xhtml.ts';
+import { compileReport,element as reportElement,serializeReport,decodeAuthorText,type ReportNode,type ReportProgram } from '../report/structure.ts';
 
 type Reference = { source:string; binding:string; path:(string|number)[]; span:Span };
-type Attribute = { kind:'text'; value:string; span:Span } | ({kind:'reference'} & Reference);
+type Attribute = { kind:'text'; value:string; span:Span; valueStart?:number } | ({kind:'reference'} & Reference);
 type Element = { selfClosing:boolean;name:string; attrs:Map<string,Attribute>; children:(Element|string)[]; span:Span };
-export type SourceMapping = {start:number;end:number;original:Span};
-export type DraftAsset = { checkedXhtml?:ReturnType<typeof checkAuthorXhtml>;figurePlacement?:'before-caption';name:string;language:'jq'|'xhtml';source:string;span:Span;body:Position;fragment?:SourceFragment;sourceMap?:SourceMapping[];references?:Record<string,{kind:'value'|'figure';span:Span;code?:string}> };
+export type DraftAsset = { program?:ReportProgram;figurePlacement?:'before-caption';name:string;language:'jq'|'report';source:string;span:Span;body:Position;fragment?:SourceFragment;references?:Record<string,{kind:'value'|'figure';span:Span;code?:string}> };
 export type DraftDocument = {authoring?:DariAuthoring;title?:string;notes?:string;nodes:PipelineNode[];assets:Map<string,DraftAsset>;pipeline:Span;answers:string[];file:string;diagnostics?:SourceDiagnostic[]};
 
 export function parseDraft(source:string,file='draft.dari'):DraftDocument {
@@ -29,7 +28,7 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
   const collect=(run:()=>void)=>{try{run();}catch(error){if(!(error instanceof DraftSyntaxError))throw error;diagnostics.push(...(error.diagnostics.length?error.diagnostics:[{file,stage,message:error.message,span:error.span}]).map(d=>({...d,stage:d.stage==='container'?stage:d.stage,...(unit?{asset:unit}:{})})));}};
   const original=new SourceFile(file,source);
   const pos=(offset:number):Position=>original.position(offset);
-  const fragments:SourceFragment[]=[];
+  const childSpans=new WeakMap<Element,Map<number,Span>>();
   let at=0;
   const span=(start:number,end=at):Span=>({start:pos(start),end:pos(end)});
   const fail=(message:string,start=at,end=Math.min(source.length,at+1)):never=>{const location=span(start,end);throw new DraftSyntaxError(message,location,[{file,stage:'container',message,span:location}]);};
@@ -83,7 +82,7 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
       else{
         expect('"');const begin=at;while(at<source.length&&source[at]!=='"'&&source[at]!=='\n')at++;
         if(source[at]!=='"')fail('Unterminated attribute string',begin-1);const value=source.slice(begin,at);at++;
-        attrs.set(key,{kind:'text',value,span:span(keyStart)});
+        attrs.set(key,{kind:'text',value,span:span(keyStart),valueStart:begin});
       }
     }
   };
@@ -131,20 +130,20 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
     if(depth>128)fail('Template nesting exceeds 128');const header=open();
     if(++elementCount>2048)fail('Report exceeds 2048 template elements',header.start);
     if(['Asset','Pipeline','Template','Report','Figures','Dari','Notes'].includes(header.tag))fail(`Unexpected template element ${header.tag}`,header.start);
-    const children:(Element|string)[]=[];
+    const children:(Element|string)[]=[];const locations=new Map<number,Span>();
     if(!header.selfClosing){
       while(!source.startsWith('</',at)){
         if(at>=source.length)fail(`Missing </${header.tag}>`,header.start);
         if(source.startsWith('<!--',at)){
-          const begin=at;const end=source.indexOf('-->',at+4);if(end<0)fail('Unterminated comment',begin);at=end+3;children.push(source.slice(begin,at));
+          const begin=at;const end=source.indexOf('-->',at+4);if(end<0)fail('Unterminated comment',begin);at=end+3;locations.set(children.length,span(begin,at));children.push(source.slice(begin,at));
         }else if(source[at]==='<')children.push(element(depth+1));
-        else{const begin=at;while(at<source.length&&source[at]!=='<'){if(source[at]==='{')fail('Place pipeline references in Value/chart component attributes');at++;}children.push(source.slice(begin,at));}
+        else{const begin=at;while(at<source.length&&source[at]!=='<'){if(source[at]==='{')fail('Place pipeline references in Value/chart component attributes');at++;}locations.set(children.length,span(begin,at));children.push(source.slice(begin,at));}
       }
       close(header.tag);
     }
-    return {selfClosing:header.selfClosing,name:header.tag,attrs:header.attrs,children,span:span(header.start)};
+    const result={selfClosing:header.selfClosing,name:header.tag,attrs:header.attrs,children,span:span(header.start)};childSpans.set(result,locations);return result;
   };
-  whitespace();const root=open();if(root.tag!=='Dari'||root.selfClosing)fail('Expected a Dari root',root.start);only(root.attrs,['title']);const title=literal(root.attrs,'title',false)??'Report';
+  whitespace();const root=open();if(root.tag!=='Dari'||root.selfClosing)fail('Expected a Dari root',root.start);only(root.attrs,['title']);const title=decodeAuthorText(literal(root.attrs,'title',false)??'Report',(message,offset)=>fail(message,((root.attrs.get('title') as {valueStart?:number}|undefined)?.valueStart??0)+offset));
   let pipeline:{body:string;begin:number}|undefined;let notes:string|undefined;
   const figures=new Map<string,Element>();let hasFigures=false;
   const assets=new Map<string,DraftAsset>();const templates:{legacy?:boolean;name:string;element:Element;span:Span}[]=[];
@@ -157,9 +156,9 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
     }else if(header.tag==='Notes'){
       only(header.attrs,[]);if(notes!==undefined)fail('Duplicate notes',header.start);notes=raw('Notes','text').body;
     }else if(header.tag==='Asset'){
-      only(header.attrs,['language','name']);const language=literal(header.attrs,'language');if(language!=='jq'&&language!=='xhtml')fail('Asset language must be jq or xhtml',header.start);
+      only(header.attrs,['language','name']);const language=literal(header.attrs,'language');if(language!=='jq')fail('Asset language must be jq',header.start);
       const asset=literal(header.attrs,'name')!;if(!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(asset)||!asset.endsWith(`.${language}`))fail('Asset name must be a single filename matching its language',header.start);
-      if(assets.has(asset))fail(`Duplicate asset ${asset}`,header.start);const fragment=raw('Asset',language);const located=original.fragment(asset,language as 'jq'|'xhtml',fragment.begin,fragment.begin+fragment.body.length);assets.set(asset,{name:asset,language:language as 'jq'|'xhtml',source:fragment.body,span:span(header.start),body:pos(fragment.begin),fragment:located});if(located)fragments.push(located);
+      if(assets.has(asset))fail(`Duplicate asset ${asset}`,header.start);const fragment=raw('Asset',language);const located=original.fragment(asset,language as 'jq',fragment.begin,fragment.begin+fragment.body.length);assets.set(asset,{name:asset,language:language as 'jq',source:fragment.body,span:span(header.start),body:pos(fragment.begin),fragment:located});
     }else if(header.tag==='Figures'){
       stage='figure';unit='Figures';collect(()=>{only(header.attrs,[]);if(hasFigures)fail('Duplicate Figures',header.start);});hasFigures=true;
       while(true){
@@ -192,7 +191,6 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
   const missingPipeline=!pipeline;
   if(missingPipeline){collect(()=>fail('Missing pipeline',root.start));pipeline={body:'',begin:source.length};}
   const pipelineFragment=original.fragment('pipeline','pipeline',pipeline!.begin,pipeline!.begin+pipeline!.body.length);
-  fragments.push(pipelineFragment);
   let nodes:PipelineNode[];
   const beforePipeline=diagnostics.length;
   nodes=[];stage='pipeline';collect(()=>{nodes=parsePipeline(pipelineFragment.text,original.position(pipelineFragment.start));});
@@ -213,7 +211,7 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
   };
   let internal=0;
   const answers:string[]=[];
-  for(const node of nodes)if(node.statement.kind==='binding'&&node.statement.value.kind==='call'&&node.statement.value.operator==='render_html')answers.push(node.statement.name);
+  for(const node of nodes)if(node.statement.kind==='binding'&&node.statement.value.kind==='call'&&node.statement.value.operator==='render_report')answers.push(node.statement.name);
   const authoring:DariAuthoring={source,title,notes:notes??'',pipeline:pipeline!.body,
     assets:Object.fromEntries([...assets].map(([name,asset])=>[name,asset.source])),
     reports:Object.fromEntries(templates.map(template=>[template.name,source.slice(template.element.span.start.offset,template.element.span.end.offset)])),
@@ -238,8 +236,7 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
     if(template.legacy&&names.has(template.name))fail(`Template name conflicts with binding ${template.name}`,template.span.start.offset);
     names.add(template.name);answers.push(template.legacy?template.name:`reports.${template.name}`);
     const inputs:{key:string;value:Expr}[]=[];const bindings=new Set<string>();
-    const refs:NonNullable<DraftAsset['references']>={};const mappings:SourceMapping[]=[];let xhtml='';
-    const emit=(text:string,original:Span)=>{mappings.push({start:xhtml.length,end:xhtml.length+text.length,original});xhtml+=text;};
+    const refs:NonNullable<DraftAsset['references']>={};
     const figureAliases=new Map<string,string>();const figureNumbers=new Map<string,string>();
     let chartNumber=0,tableNumber=0;
     const scan=(el:Element):void=>{
@@ -258,31 +255,41 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
         inputs.push({key:alias,value:{kind:'ref',name,span:location}});bindings.add(name);refs[alias]={kind:'figure',span:location};}
       return alias;
     };
-    const render=(el:Element):void=>{
+    const decoded=(value:string,location:Span)=>decodeAuthorText(value,(message,offset)=>fail(message,Math.min(location.start.offset+offset,source.length)));
+    const attrsOf=(el:Element)=>Object.fromEntries([...el.attrs].map(([key,attr])=>{
+      if(attr.kind!=='text')fail('Ordinary report attributes must be static strings',attr.span.start.offset,attr.span.end.offset);
+      return [key,decoded((attr as Extract<Attribute,{kind:'text'}>).value,span((attr as Extract<Attribute,{kind:'text'}>).valueStart??attr.span.start.offset))];
+    }));
+    const textNode=(raw:string,location:Span):ReportNode=>{
+      if(raw.startsWith('<!--')){
+        const text=raw.slice(4,-3);if(text.includes('--')||text.endsWith('-'))fail('Invalid report comment',location.start.offset);
+        return {kind:'comment',text,span:location};
+      }
+      return {kind:'text',text:decoded(raw,location),span:location};
+    };
+    const childrenOf=(el:Element):ReportNode[]=>el.children.map((child,i)=>typeof child==='string'?textNode(child,childSpans.get(el)?.get(i)??el.span):lower(child));
+    const lower=(el:Element):ReportNode=>{
       if(el.name==='FigureRef'){
         only(el.attrs,['ref']);if(!el.selfClosing)fail('FigureRef must be self-closing',el.span.start.offset);
         const key=literal(el.attrs,'ref')!;const number=figureNumbers.get(key);
         if(!number)fail(`FigureRef ${key} requires a Figure in this Report`,el.span.start.offset);
-        emit(`<span>${number}</span>`,el.span);return;
+        return reportElement('span',{},[{kind:'text',text:number!,span:el.span}],el.span);
       }
-
       if(el.name==='Value'){
         only(el.attrs,['data']);if(el.children.some(child=>typeof child!=='string'||child.trim()!==''))fail('Value must be empty',el.span.start.offset);
         const ref=requiredRef(el,'data');const alias=`value_${inputs.length+1}`;
         inputs.push({key:alias,value:refExpr(ref)});bindings.add(ref.binding);refs[alias]={kind:'value',span:ref.span,code:projectionCode(ref.binding,ref.path)};
-        emit(`<span data-oks-ref="${alias}" />`,el.span);return;
+        return reportElement('span',{'data-oks-ref':alias},[],el.span);
       }
       if(el.name==='figure'){
         const children=el.children.filter(child=>typeof child!=='string'||child.trim()!=='');
+        only(el.attrs,['id','class','title','lang']);const attrs=attrsOf(el);
         if(children[0]&&typeof children[0]!=='string'&&children[0].name==='Figure'){
-          const chart=children[0];only(el.attrs,['id','class','title','lang']);
+          const chart=children[0];only(chart.attrs,['ref']);
           if(children.length>2||children.length===2&&(typeof children[1]==='string'||children[1].name!=='figcaption'))fail('figure contains Figure followed by optional figcaption',el.span.start.offset);
           const key=literal(chart.attrs,'ref')!;const alias=figureInput(key,chart.span);
-          emit('<figure',el.span);
-          for(const [key,attr]of el.attrs){if(attr.kind!=='text')fail('figure attributes must be static strings',attr.span.start.offset);emit(` ${key}="${(attr as Extract<Attribute,{kind:'text'}>).value}"`,attr.span);}
-          emit(` data-oks-ref="${alias}">`,el.span);
-          if(children[1]&&typeof children[1]!=='string')render(children[1]);else emit('<figcaption></figcaption>',el.span);
-          emit('</figure>',el.span);return;
+          const caption=children[1]&&typeof children[1]!=='string'?lower(children[1]):reportElement('figcaption',{},[],el.span);
+          return reportElement('figure',{...attrs,'data-oks-ref':alias},[caption],el.span);
         }
         if(!template.legacy)fail('Report figures reference named Figures with <Figure ref="name" />',el.span.start.offset);
         const charts=children.filter((child):child is Element=>typeof child!=='string'&&componentKind(child.name)!==undefined);
@@ -296,44 +303,27 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
         const name=`@figure/${++internal}`;const location=chart.span;
         const entries=[{key:'data',value:refExpr(data)},...nodeRef?[{key:'nodes',value:refExpr(nodeRef)}]:[]];
         const value:Expr={kind:'call',operator:'render_figure',figureKind:kind,args:[refExpr(spec),objectExpr(entries,location)],span:location};
-        const id=el.attrs.get('id');
-        const figureId=id?.kind==='text'?id.value:undefined;
-        const display={template:template.name,component:chart.name,...(figureId?{figureId}:{}),
-          label:`${template.name}${figureId?'#'+figureId:':'+location.start.line+':'+location.start.column}（${chart.name}）`};
+        const figureId=attrs.id;
+        const display={template:template.name,component:chart.name,...(figureId?{figureId}:{}),label:`${template.name}${figureId?'#'+figureId:':'+location.start.line+':'+location.start.column}（${chart.name}）`};
         nodes.push({internal:true,display,statement:{kind:'binding',name,value,span:location,motivation:''},bindings:[...new Set([spec.binding,data.binding,...nodeRef?[nodeRef.binding]:[]])],assets:[]});
         const alias=`figure_${internal}`;inputs.push({key:alias,value:{kind:'ref',name,span:location}});bindings.add(name);refs[alias]={kind:'figure',span:location};
-        only(el.attrs,['id','class','title','lang']);
-        emit('<figure',el.span);
-        for(const [key,attr]of el.attrs){if(attr.kind!=='text')fail('figure attributes must be static strings',attr.span.start.offset,attr.span.end.offset);emit(` ${key}="${(attr as Extract<Attribute,{kind:'text'}>).value}"`,attr.span);}
-        emit(` data-oks-ref="${alias}">`,location);
-        if(children[1]&&typeof children[1]!=='string')render(children[1]);
-        emit('</figure>',el.span);return;
+        const caption=children[1]&&typeof children[1]!=='string'?lower(children[1]):reportElement('figcaption',{},[],el.span);
+        return reportElement('figure',{...attrs,'data-oks-ref':alias},[caption],el.span);
       }
       if(el.name==='Figure')fail('Figure must be a direct child of figure',el.span.start.offset);
       if(componentKind(el.name)!==undefined)fail(`${el.name} must be a direct child of figure`,el.span.start.offset,el.span.end.offset);
       if(/^[A-Z]/.test(el.name))fail(`Unknown DARI component ${el.name}`,el.span.start.offset,el.span.end.offset);
-      emit(`<${el.name}`,el.span);
-      for(const [key,attr]of el.attrs){
-        if(attr.kind!=='text')fail('Ordinary XHTML attributes must be static strings',attr.span.start.offset,attr.span.end.offset);
-        emit(` ${key}="${(attr as Extract<Attribute,{kind:'text'}>).value}"`,attr.span);
-      }
-      if(['br','hr'].includes(el.name)){if(el.children.length)fail(`${el.name} must be empty`,el.span.start.offset);emit(' />',el.span);return;}
-      emit('>',el.span);
-      for(const child of el.children)if(typeof child==='string')emit(child,el.span);else render(child);
-      emit(`</${el.name}>`,el.span);
+      if(['br','hr'].includes(el.name)&&!el.selfClosing)fail(`${el.name} must be self-closing`,el.span.start.offset);
+      return reportElement(el.name,attrsOf(el),childrenOf(el),el.span);
     };
-    render(template.element);
-    const checked=checkAuthorXhtml(xhtml);
-    if(checked.errors.length){
-      const generated=new SourceFile('template',xhtml);const error=checked.errors[0];
-      const offset=generated.scalarOffset(error.line,error.column);
-      const mapped=mappings.find(m=>m.start<=offset&&offset<m.end)?.original??template.span;
-      throw new DraftSyntaxError(error.message,mapped,[{file,stage:'template',message:error.message,span:mapped}]);
-    }
-    const name=`@template/${template.name}.xhtml`;
-    assets.set(name,{checkedXhtml:checked,figurePlacement:'before-caption',name,language:'xhtml',source:xhtml,span:template.span,body:template.span.start,sourceMap:mappings,references:refs});
-    const value:Expr={kind:'call',operator:'render_html',args:[literalExpr(name,template.span),objectExpr(inputs,template.span)],span:template.span};
-    nodes.push({statement:{kind:'binding',name:template.legacy?template.name:`reports.${template.name}`,value,span:template.span,motivation:''},bindings:[...bindings],assets:[{name,language:'xhtml',span:template.span}]});
+    const tree=lower(template.element);
+    if(tree.kind!=='element')fail('Report requires an article',template.span.start.offset);
+    const program=compileReport(tree as import('../report/structure.ts').ReportElement);
+    if(program.errors.length){const error=program.errors[0];const location=original.span(original.lines[error.line-1]+error.column-1,original.lines[error.line-1]+error.column-1);throw new DraftSyntaxError(error.message,location,[{file,stage:'template',message:error.message,span:location}]);}
+    const name=`@report/${template.name}`;
+    assets.set(name,{program,figurePlacement:'before-caption',name,language:'report',source:serializeReport(tree),span:template.span,body:template.span.start,references:refs});
+    const value:Expr={kind:'call',operator:'render_report',args:[literalExpr(name,template.span),objectExpr(inputs,template.span)],span:template.span};
+    nodes.push({statement:{kind:'binding',name:template.legacy?template.name:`reports.${template.name}`,value,span:template.span,motivation:''},bindings:[...bindings],assets:[]});
     });
   }
   unit=undefined;stage='container';

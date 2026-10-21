@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { limitProblem } from './src/intent-limit.ts';
 import { rowsOf } from './src/results.ts';
-import { checkAuthorXhtml, checkWellFormed, extractStructure, shrinkStructure } from './src/report/xhtml.ts';
+import { parseDraftForValidation } from './src/draft/document.ts';
 import { renderCheck, renderJqResult, renderReportCheck } from './src/response.ts';
 
 const rows = [{ tenant: 'A', count: 2 }];
@@ -15,15 +15,6 @@ assert.equal(rowsOf({ rows, columns: [
 for (const columns of [['tenant', 'count'], ['tenant:string'], [{ name: '' }], [{ name: 'count', types: 'number', nullable: false }], null]) {
   assert.throws(() => rowsOf({ rows, columns }, 'sample'), /data.columns/);
 }
-const valid = checkAuthorXhtml('<article><p><span data-oks-ref="fact" data-oks-pick=".rows.0.label" /></p></article>');
-assert.deepEqual(valid.errors, []);
-const invalid = checkAuthorXhtml('<article>\n<p><span data-oks-ref="fact" data-oks-pick=".rows[0].label" /></p>\n<p><span data-oks-ref="fact" data-oks-pick=".rows[0].label" /></p>\n</article>');
-assert.equal(invalid.errors.length, 2);
-assert.match(invalid.errors[0].message, /建议路径：.rows.0.label/);
-const grouped = JSON.parse((renderReportCheck({}, { valid: false, errors: invalid.errors })[0] as {text:string}).text);
-assert.equal(grouped.valid, false);
-assert.equal(grouped.errors.length, 1);
-assert.deepEqual(grouped.errors[0].locations.map((at: {line:number}) => at.line), [2, 3]);
 const check = renderCheck({}, { intents: [{name:'good',intent:{}},{name:'bad',intent:{}}], results: [
   { name: 'good', accepted: true, key: 'key', diagnostics: [] },
   { name: 'bad', accepted: false, key: null, diagnostics: [] },
@@ -55,38 +46,3 @@ for (const value of [null, undefined, {}, { error: { code: 'failure' } }]) {
 }
 
 console.log('✓ oks_project 读取错误与 shape 完整可见');
-
-// 读回结构是注释摘要，最终报告的正文另由渲染路径完整保留。
-const summaryOf = (content: string, attributes = 'data-oks-shrink=""') => {
-  const result = shrinkStructure(`<article><div ${attributes}>${content}</div></article>`);
-  assert.deepEqual(result.errors, []);
-  assert.deepEqual(checkWellFormed(result.xml), []);
-  assert.equal(shrinkStructure(result.xml).xml, result.xml, '重复读取摘要稳定');
-  return result.xml;
-};
-assert.match(summaryOf('甲'.repeat(30)), /<!-- 甲{30} -->/);
-assert.match(summaryOf('甲'.repeat(31)), /<!-- 甲{30}\.\.\. -->/);
-assert.match(summaryOf('😀'.repeat(31)), /<!-- 😀{30}\.\.\. -->/u);
-assert.match(summaryOf('<p>第一<strong>条</strong></p><p>第二条</p>'), /<!-- 第一条 第二条 -->/);
-assert.match(summaryOf('a &lt; b &amp; c <![CDATA[<d>]]>'), /<!-- a < b & c <d> -->/);
-assert.match(summaryOf('a--b-'), /<!-- a- -b- -->/);
-summaryOf('-'.repeat(30));
-assert.match(summaryOf('-'.repeat(31)), /\.\.\. -->/);
-summaryOf('前'.repeat(29) + ' 后');
-assert.match(summaryOf('甲'.repeat(30) + '  '), /<!-- 甲{30} -->/);
-assert.match(summaryOf('甲'.repeat(31), 'data-oks-shrink="" data-oks-ref="x"'), /<!-- 甲{30}\.\.\. -->/);
-assert.match(summaryOf(''), /<!--  -->/);
-assert.match(summaryOf('<figure data-oks-ref="chart"><svg><text>图表文字</text></svg></figure>结论'), /<!-- 结论 -->/);
-assert.match(summaryOf('<span data-oks-ref="x">87.5%</span> 结论'), /<!-- 87.5% 结论 -->/);
-const span = shrinkStructure('<article><span data-oks-ref="kpi" data-oks-pick=".rate">87.5%</span></article>');
-assert.equal(span.xml, '<article><span data-oks-ref="kpi" data-oks-pick=".rate"><!-- 87.5% --></span></article>');
-assert.equal(shrinkStructure(span.xml).xml, span.xml);
-const longSpan = shrinkStructure(`<article><span data-oks-ref="x">${'值'.repeat(40)}</span></article>`).xml;
-assert.ok(longSpan.includes(`<!-- ${'值'.repeat(40)} -->`), '引用值完整保留');
-assert.equal(shrinkStructure('<article><span data-oks-ref="x" /><p data-oks-shrink="" /></article>').xml,
-  '<article><span data-oks-ref="x"><!--  --></span><p data-oks-shrink=""><!--  --></p></article>');
-const readBody = '<article><!-- 结构意图 --><p data-oks-shrink="">结论</p><figure data-oks-ref="f"><svg /></figure></article>';
-assert.equal(extractStructure(`<html><body>${readBody}</body></html>`, false).xml, readBody);
-assert.equal(extractStructure(`<html><body>${readBody}</body></html>`, true).xml,
-  '<article><!-- 结构意图 --><p data-oks-shrink=""><!-- 结论 --></p><figure data-oks-ref="f"><!-- omitted --></figure></article>');
-console.log('✓ 报告读回以注释保留引用值和 30 字摘要，截断、省略、Unicode、XML 安全及重复读取');

@@ -1,5 +1,5 @@
 import {testAttachments} from './test-attachments.ts';
-import { asDari } from './test-markdown.ts';
+import { COMPONENT_KINDS } from './src/draft/components.ts';
 // Retained visual regression assertions now execute Markdown render_figure pipelines.
 import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
@@ -31,13 +31,16 @@ const ok=(label:string,condition:unknown)=>{assert.ok(condition,label);passed++;
 // This is a test fixture writer, not an adapter for the removed write tools.
 const chart=async({spec,data,nodes}:any)=>{
  const file='.work/chart.dari';
- const source=['# 图表回归','## pipeline','```js',
-  `rows <-data(${JSON.stringify(data)},{kind:"example"});`,
-  ...(nodes?[`nodes <-data(${JSON.stringify(nodes)},{kind:"example"});`]:[]),
-  `figure <-render_figure(${JSON.stringify(spec)},{data:rows${nodes?',nodes':''}});`,
-  'answer <-render_html("answer.xhtml",{figure});','```','## assets',
-  '```xhtml name="answer.xhtml"','<article><figure data-oks-ref="figure" /></article>','```'].join('\n');
- writeFileSync(join(DEV_ROOT,file),asDari(source));
+ const {kind,...mapping}=spec;
+ const component=Object.keys(COMPONENT_KINDS).find(key=>COMPONENT_KINDS[key as keyof typeof COMPONENT_KINDS]===kind)!;
+ const source=`<Dari title="图表回归"><Pipeline>
+ rows <-data(${JSON.stringify(data)},{kind:"example"});
+ ${nodes?`nodes <-data(${JSON.stringify(nodes)},{kind:"example"});`:''}
+ chartSpec <-${JSON.stringify(mapping)};
+ figure <-render_figure(${JSON.stringify(spec)},{data:rows${nodes?',nodes':''}});
+ </Pipeline><Figures><${component} name="rendered" spec={chartSpec} data={rows}${nodes?' nodes={nodes}':''}/></Figures>
+ <Template name="answer"><article><figure><Figure ref="rendered"/></figure></article></Template></Dari>`;
+ writeFileSync(join(DEV_ROOT,file),source);
  const result=await call('oks_run_answer',{src:file});
  if(result.delivery.status!=='ready')throw new Error(JSON.stringify(result));
  const shown=await call('oks_show',{input:file+'#figure'});
@@ -619,8 +622,8 @@ try {
   assert.equal(archived.delivery.status,'ready');
   const graphReport=readReportPage(readFileSync((await call('oks_show',{input:'.work/chart.dari#answer'})).path,'utf8'));
   assert.ok(!('error' in graphReport));
-  assert.deepEqual((graphReport.dari.figures["binding:figure"].data as any).nodeRows,graphNodes);
-  assert.deepEqual((graphReport.dari.figures["binding:figure"].data as any).rows,graphEdges);
+  assert.deepEqual((graphReport.dari.figures.rendered.data as any).nodeRows,graphNodes);
+  assert.deepEqual((graphReport.dari.figures.rendered.data as any).rows,graphEdges);
   const minimalSpec: Record<string, Record<string, unknown>> = {
     bar: { x: 'k', value: 'w' },
     line: { x: 'k', value: 'w' },

@@ -18,7 +18,7 @@ try {
  assert.equal(parseDraft(sample,file).answers[0],'answer');
  const bareMarkers=document('facts <-data({n:3});','<article><p data-oks-shrink>解释文字</p><ul data-oks-shrink class="notes"><li>说明</li></ul><p><span data-oks-lit>备注</span></p></article>');
  const explicitMarkers=bareMarkers.replaceAll('data-oks-shrink','data-oks-shrink=""').replace('data-oks-lit','data-oks-lit=""');
- assert.equal(parseDraft(bareMarkers,file).assets.get('@template/answer.xhtml')?.source,parseDraft(explicitMarkers,file).assets.get('@template/answer.xhtml')?.source);
+ assert.equal(parseDraft(bareMarkers,file).assets.get('@report/answer')?.source,parseDraft(explicitMarkers,file).assets.get('@report/answer')?.source);
  const markerRun=await runtime().run(bareMarkers);
  assert.equal(markerRun.outputs.get('answer')?.status,'executed',markerRun.outputs.get('answer')?.error??markerRun.error);
  for(const attr of ['data-oks-shrink data-oks-shrink=""','class','data-oks-ref','data-oks-pick']){

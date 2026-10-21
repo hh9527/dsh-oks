@@ -658,24 +658,22 @@ export const presentationFacts = {
             "分析稿",
             "pipeline"
           ],
-          "doc": "可运行 DARI：示例数据、jq 表头转换、柱图、表格与 XHTML 答案。",
+          "doc": "可运行 DARI：示例数据、jq 表头转换、柱图、表格与 DARI 报告。",
           "facts": {
             "dari": "<Dari title=\"呈现示例\">\n<Pipeline>\nfacts <- data({rows:[{level:\"major\",count:3}]},{kind:\"example\"});\nrows <- jq(\"headers.jq\",{facts});\nchartSpec <- data({x:\"告警级别\",value:\"数量\"});\ntableSpec <- data({columns:[\"告警级别\",\"数量\"]});\nsummary <- jq(\"summary.jq\",{facts});\n</Pipeline>\n<Asset language=\"jq\" name=\"headers.jq\">\n.facts.rows | map({\"告警级别\":.level,\"数量\":.count})\n</Asset>\n<Asset language=\"jq\" name=\"summary.jq\">\n{total:(.facts.rows | map(.count) | add),rows:.facts.rows}\n</Asset>\n<Figures><ColumnChart name=\"comparison\" spec={chartSpec} data={rows} /><Table name=\"details\" spec={tableSpec} data={rows} /></Figures>\n<Report name=\"answer\">\n<article><h1>示例结果</h1><p>数量：<Value data={summary.total} /></p><p>首项：<Value data={summary.rows[0].level} /></p><figure><Figure ref=\"comparison\" /><figcaption>类别比较</figcaption></figure><figure><Figure ref=\"details\" /><figcaption>明细</figcaption></figure></article>\n</Report></Dari>"
           }
         }
       }
     },
-    "render_html": {
+    "report": {
       "names": [
-        "答案模板",
-        "XHTML",
         "报告",
-        "render_html"
+        "Report",
+        "DARI 正文"
       ],
-      "doc": "使用严格 XHTML 绑定标量和图表，生成答案。topics 提供引用、路径、数值声明、交付和完整示例。",
+      "doc": "通过 DARI Report 绑定标量和具名图表，直接从编译结构生成报告。topics 提供引用、正文规则、交付和完整示例。",
       "facts": {
-        "signature": "<Report name=\"answer\"><article>...</article></Report>",
-        "pipelineSignature": "render_html(\"answer.xhtml\",{binding:value,...})"
+        "signature": "<Report name=\"answer\"><article>...</article></Report>"
       },
       "kinds": {},
       "topics": {
@@ -683,8 +681,6 @@ export const presentationFacts = {
           "names": [
             "引用",
             "绑定",
-            "data-oks-ref",
-            "data-oks-pick",
             "路径",
             "DARI",
             "Value",
@@ -699,23 +695,7 @@ export const presentationFacts = {
             "figure": "<figure><Figure ref=\"comparison\" /><figcaption>说明</figcaption></figure>",
             "bindings": "<Report name=\"answer\"><article>...</article></Report>",
             "spec": "组件 spec 省略 kind，标签决定图表类型；只有 NetworkGraph 接受 nodes，组件使用自闭合标签。",
-            "structure": "Figures 包含具名、自闭合图表组件。Report 的 figure 内先放 Figure ref，再放可选 figcaption。FigureRef ref 显示本报告的编号，目标须在同一 Report 中展示。id/class/title/lang 放在 figure 上；图和表在每份答案中按文档顺序分别编号，图注位于图表之后。",
-            "lowLevel": "显式 Asset language=\"xhtml\" 资源可使用 render_html 和 data-oks-ref/data-oks-pick；主要分析稿格式为 .dari。"
-          }
-        },
-        "xhtml": {
-          "names": [
-            "XHTML 语法",
-            "元素",
-            "属性",
-            "data-oks-lit",
-            "data-oks-shrink"
-          ],
-          "doc": "正文根为 article；XML 良构、属性加引号、空元素显式闭合；转义 & 与 <。业务数字通过引用进入正文。",
-          "facts": {
-            "numbers": "正文中的字面数字使用 <span data-oks-lit=\"\">…</span> 声明；观测得到的业务数字从绑定取值。",
-            "dariMarkers": "DARI Report 中 data-oks-shrink 和 data-oks-lit 可省略 =\"\"，编译为空字符串属性；其他属性须显式赋值。XHTML 资产的属性值使用引号。",
-            "shrink": "data-oks-shrink=\"\" 标记解读或评价文字，读取报告结构时可缩短预览；属性存在即启用。"
+            "structure": "Figures 包含具名、自闭合图表组件。Report 的 figure 内先放 Figure ref，再放可选 figcaption。FigureRef ref 显示本报告的编号，目标须在同一 Report 中展示。id/class/title/lang 放在 figure 上；图和表在每份答案中按文档顺序分别编号，图注位于图表之后。"
           }
         },
         "delivery": {
@@ -732,12 +712,27 @@ export const presentationFacts = {
         },
         "draft": {
           "names": [
-            "XHTML 完整示例",
-            "答案示例"
+            "DARI 完整示例",
+            "报告示例"
           ],
           "doc": "可运行 DARI：精确绑定标量、数组元素、图表与表格。",
           "facts": {
             "dari": "<Dari title=\"呈现示例\">\n<Pipeline>\nfacts <- data({rows:[{level:\"major\",count:3}]},{kind:\"example\"});\nrows <- jq(\"headers.jq\",{facts});\nchartSpec <- data({x:\"告警级别\",value:\"数量\"});\ntableSpec <- data({columns:[\"告警级别\",\"数量\"]});\nsummary <- jq(\"summary.jq\",{facts});\n</Pipeline>\n<Asset language=\"jq\" name=\"headers.jq\">\n.facts.rows | map({\"告警级别\":.level,\"数量\":.count})\n</Asset>\n<Asset language=\"jq\" name=\"summary.jq\">\n{total:(.facts.rows | map(.count) | add),rows:.facts.rows}\n</Asset>\n<Figures><ColumnChart name=\"comparison\" spec={chartSpec} data={rows} /><Table name=\"details\" spec={tableSpec} data={rows} /></Figures>\n<Report name=\"answer\">\n<article><h1>示例结果</h1><p>数量：<Value data={summary.total} /></p><p>首项：<Value data={summary.rows[0].level} /></p><figure><Figure ref=\"comparison\" /><figcaption>类别比较</figcaption></figure><figure><Figure ref=\"details\" /><figcaption>明细</figcaption></figure></article>\n</Report></Dari>"
+          }
+        },
+        "body": {
+          "names": [
+            "正文语法",
+            "元素",
+            "属性",
+            "data-oks-lit",
+            "data-oks-shrink"
+          ],
+          "doc": "Report 正文根为 article，元素与属性由 DARI 编译器检查，属性使用静态字符串，空元素显式自闭合；文本中的 & 与 < 使用实体。业务数字通过 Value 引用填入。",
+          "facts": {
+            "numbers": "正文中的字面数字使用 <span data-oks-lit=\"\">…</span> 声明；观测得到的业务数字从绑定取值。",
+            "dariMarkers": "data-oks-shrink 和 data-oks-lit 可以省略 =\"\"；其他属性显式赋值。",
+            "shrink": "data-oks-shrink 标记解读或评价文字，完整内容保存在报告及作者源码中。"
           }
         }
       }

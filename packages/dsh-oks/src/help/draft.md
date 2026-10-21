@@ -30,7 +30,7 @@ summary <- jq("summary.jq", {facts});
 
 ## 绑定、投影与算子
 
-pipeline 用 `name <- expression;` 声明不可变绑定，禁止重复名称与 shadow。名字先定义后引用；可选的末尾对象声明展示输出，例如 `{facts, columns: plan.columns}`，末尾对象可带分号。支持 JSON 字面量/数组/对象、静态字段或下标，以及固定算子 query/exec_query/context/data/time_windows/jq/render_figure/render_html。筛选、遍历、运算和聚合写在 jq。
+pipeline 用 `name <- expression;` 声明不可变绑定，禁止重复名称与 shadow。名字先定义后引用；可选的末尾对象声明展示输出，例如 `{facts, columns: plan.columns}`，末尾对象可带分号。支持 JSON 字面量/数组/对象、静态字段或下标，以及固定算子 query/exec_query/context/data/time_windows/jq/render_figure。筛选、遍历、运算和聚合写在 jq。
 
 所有 assets、Pipeline、Figures 和 Report 先编译校验，汇总诊断，通过后才开始执行。节点按引用组成 DAG，依赖就绪即可执行，独立分支逻辑并行；源码顺序只约束引用，不串行化执行。失败只阻塞其下游。
 
@@ -78,7 +78,7 @@ oks://help/time.md
 
 图表规格在 Pipeline 定义：`spec <- {x:"level",value:"count"};`；图表独立定义为 `<Figures><ColumnChart name="severity" spec={spec} data={facts.rows} /></Figures>`。报告引用 `<figure><Figure ref="severity"/><figcaption>说明</figcaption></figure>`；文字交叉引用用 `<FigureRef ref="severity"/>`，目标必须在本 Report 出现。每份 Report 按首次展示顺序分别编图号、表号，重复引用复用编号。id/class/title/lang 写在 figure。
 
-标量写 `<Value data={summary.total} />`；普通正文元素和属性静态书写。正文遵守 XHTML 元素/属性白名单，文本中的 & 与 < 使用实体；pipeline 与 jq 无需 XML 转义。
+标量写 `<Value data={summary.total} />`；普通正文元素和属性静态书写。正文遵守 报告正文元素/属性白名单，文本中的 & 与 < 使用实体；pipeline 与 jq 无需 XML 转义。
 
 业务数字从引用和计算进入正文；文字中的数字用 `<span data-oks-lit="">…</span>` 声明。结论和评价用 data-oks-shrink 标记。
 
@@ -92,7 +92,7 @@ oks://help/figures.md
 
 运行后用 `oks_show({input:"oks://work/分析.dari#figures.severity"})` 将已有图表保存为宿主持久附件；将返回的 markdown 原样嵌入回答，SVG 在对话中展示。`#reports.answer` 与 Table 导出 HTML 附件；收到 `present` 字段后，立即以该对象为参数调用宿主 `present` 工具，显示文件卡片。此调用读取已运行的结果；回执的 stale 标明源码是否已编辑。附件按内容寻址，工作区清理不影响已导出内容。独立图表用标题，不添加报告编号。
 
-运行返回选中的报告地址 `delivery.input`；用 `oks_show({input:"oks://work/分析.dari#reports.answer"})` 导出 `.report.html` 附件，随后调用 `present(返回值.present)`，将报告作为文件卡片交付。最终回答说明结论即可。报告自带展示数据、来源及 jq/XHTML。
+运行返回选中的报告地址 `delivery.input`；用 `oks_show({input:"oks://work/分析.dari#reports.answer"})` 导出 `.report.html` 附件，随后调用 `present(返回值.present)`，将报告作为文件卡片交付。最终回答说明结论即可。报告自带展示数据、来源及 jq/DARI。
 
 计算状态和交付状态分别检查；独立分支失败不代表答案依赖失败。回复超过预算或呈现形式不受支持时，改稿或选择报告交付。
 

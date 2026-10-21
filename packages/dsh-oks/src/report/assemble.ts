@@ -6,10 +6,9 @@
  */
 import { appendNode } from '../results.ts';
 import type { ArtifactMeta, DataOrigin, OriginNode } from '../results.ts';
-import { cleanChartSvg } from '../chart/report.ts';
 import { escapeHtml, renderMarkdown } from '../chart/markdown.ts';
 import { buildReportPage, extractAssets, outlineOf, renderStructure } from './page.ts';
-import { checkAuthorXhtml, stripChartMetadata } from './xhtml.ts';
+import {serializeReport,type ReportProgram} from './structure.ts';
 
 /** 正文里一个绑定项：取哪份材料、切了哪一段、切出来的值，以及它在正文里的展示形态。 */
 export interface ReportBinding {
@@ -31,9 +30,7 @@ export interface AssembleInput {
   subtitle: string | null;
   category: string;
   at: string;
-  xhtml: string;
-  /** DARI 编译与预检阶段已经校验的作者结构。 */
-  checked?:ReturnType<typeof checkAuthorXhtml>;
+  program:ReportProgram;
   figurePlacement?: 'before-caption';
   bindings: Record<string, ReportBinding>;
   /** 取一个 span 的值：超范围的形状（对象、数组）在这里明确报错，不留给渲染层。 */
@@ -59,7 +56,7 @@ const tableScroll = (embedded: string): string =>
   `<div class="table-scroll">${renderMarkdown(embedded, (_info, text) => `<pre><code>${escapeHtml(text)}</code></pre>`)}</div>`;
 
 export function assembleReport(input: AssembleInput): AssembleResult {
-  const checked = input.checked??checkAuthorXhtml(input.xhtml);
+  const checked = input.program;
   if (checked.errors.length > 0) {
     const lines = checked.errors.slice(0, 12)
       .map((error) => `第 ${error.line} 行第 ${error.column} 列：${error.message}`);
@@ -68,11 +65,11 @@ export function assembleReport(input: AssembleInput): AssembleResult {
   const used = new Set(checked.refs);
   const missing = [...used].filter((ref) => input.bindings[ref] === undefined);
   if (missing.length > 0) {
-    return { error: `正文引用了没有绑定的项：${missing.join('、')}；在 spec.inputs 里给它们各自的 src。` };
+    return { error: `正文引用了没有绑定的项：${missing.join('、')}；检查 Report 中的 Value 与 Figure 引用。` };
   }
   const unused = Object.keys(input.bindings).filter((key) => !used.has(key));
   if (unused.length > 0) {
-    return { error: `render_html 输入里这些绑定没有被正文引用：${unused.join('、')}；去掉它们，或在正文里引用。` };
+    return { error: `Report 输入里这些绑定没有被正文引用：${unused.join('、')}；去掉它们，或在正文里引用。` };
   }
   // 取值先行：形状不对的绑定在这里就报出来，渲染层只负责填字。
   const values = new Map<string, string>();
@@ -114,7 +111,7 @@ export function assembleReport(input: AssembleInput): AssembleResult {
     }
   }
   const rendered = renderStructure({
-    xhtml: input.xhtml,
+    program: input.program,
     figurePlacement: input.figurePlacement,
     outline,
     valueOf: (ref, pick) => values.get(`${ref}\u0000${pick ?? ''}`) ?? '',
@@ -123,21 +120,17 @@ export function assembleReport(input: AssembleInput): AssembleResult {
       const label = numbers.get(ref);
       if (binding?.display === undefined || label === undefined) return undefined;
       return binding.display.kind === 'chart'
-        ? { html: stripChartMetadata(cleanChartSvg(binding.display.content)).xml, label }
+        ? { html: binding.display.content, label }
         : { html: tableScroll(binding.display.content), label, table: true };
     },
   });
-  if (rendered.errors.length > 0) {
-    const first = rendered.errors[0]!;
-    return { error: `渲染正文时出错：${first.message}（第 ${first.line} 行第 ${first.column} 列）` };
-  }
   // 报告自己也是一个操作：根指向"组装这份报告"，inputs 是各绑定的根节点，inputPaths 是选取路径。
   const keys = Object.keys(input.bindings);
   const assembled = appendNode(
     keys.map((key) => input.bindings[key]!.origin),
     {
       kind: 'report',
-      spec: { xhtml: input.xhtml, ...(input.figurePlacement?{figurePlacement:input.figurePlacement}:{}) },
+      spec: { report: serializeReport(input.program.root), ...(input.figurePlacement?{figurePlacement:input.figurePlacement}:{}) },
       ...(input.draft ? { draft: input.draft } : {}),
       ...(input.motivation ? { motivation: input.motivation } : {}),
       inputs: Object.fromEntries(keys.map((key) => [key, input.bindings[key]!.origin.root])),

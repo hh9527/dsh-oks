@@ -2,7 +2,7 @@ import { fromMarkdown } from 'mdast-util-from-markdown';
 import { DraftSyntaxError, parsePipeline } from '../src/draft/pipeline.ts';
 import type { PipelineNode, Position, Span } from '../src/draft/pipeline.ts';
 
-export type DraftAsset = { name: string; language: 'jq' | 'xhtml'; source: string; span: Span; body: Position };
+export type DraftAsset = { name: string; language: 'jq'; source: string; span: Span; body: Position };
 export type DraftDocument = { title?: string; nodes: PipelineNode[]; assets: Map<string, DraftAsset>; pipeline: Span;answers:string[];file:string };
 const MAX_SOURCE_BYTES = 256 * 1024;
 
@@ -56,11 +56,11 @@ export function parseMarkdownDraft(source: string): DraftDocument {
       pipeline = bodyOf(span);
     } else if (block.meta) {
       const match = /^name="([A-Za-z0-9_-][A-Za-z0-9_.-]*)"$/.exec(block.meta);
-      if (!match) fail('Asset attributes must be name="single-file.jq" or name="single-file.xhtml"', span);
+      if (!match) fail('Asset attributes must be name="single-file.jq"', span);
       const name = match![1];
       if (assets.has(name)) fail(`Duplicate asset ${name}`, span);
-      if ((block.lang !== 'jq' && block.lang !== 'xhtml') || !name.endsWith(`.${block.lang}`)) fail('Asset language and extension must match jq or xhtml', span);
-      assets.set(name, { ...bodyOf(span), name, language: block.lang as 'jq' | 'xhtml' });
+      if (block.lang !== 'jq' || !name.endsWith(`.${block.lang}`)) fail('Asset language and extension must match jq', span);
+      assets.set(name, { ...bodyOf(span), name, language: block.lang as 'jq' });
     }
   }
   if (!pipeline) return fail('A pipeline section with exactly one js block is required');
@@ -72,6 +72,6 @@ export function parseMarkdownDraft(source: string): DraftDocument {
   }
   const heading = tree.children.find(block => block.type === 'heading' && block.depth === 1);
   const title = heading?.type === 'heading' ? heading.children.map(child => 'value' in child ? child.value : '').join('').trim() : undefined;
-  return { title: title || undefined,nodes,assets,pipeline:pipeline.span,answers:nodes.flatMap(n=>n.statement.kind==='binding'&&n.statement.value.kind==='call'&&n.statement.value.operator==='render_html'?[n.statement.name]:[]),file:'fixture.dari' };
+  return { title: title || undefined,nodes,assets,pipeline:pipeline.span,answers:[],file:'fixture.dari' };
 }
 

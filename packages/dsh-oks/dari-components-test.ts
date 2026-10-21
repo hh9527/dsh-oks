@@ -5,8 +5,6 @@ import { DraftRuntime } from './src/draft/runtime.ts';
 import { parseDraft } from './src/draft/document.ts';
 import { COMPONENT_KINDS } from './src/draft/components.ts';
 import { CHART_KINDS } from './src/chart/shared.ts';
-import { renderDraftReply } from './src/draft/reply.ts';
-import { extractStructure } from './src/report/xhtml.ts';
 import type { WorkspaceEntry } from './src/knowledge.ts';
 const file='.work/components.dari';
 const engine=createJaqEngine(process.argv[2]??'lib/oks-wti.wasm');
@@ -26,7 +24,7 @@ try{
  assert.ok([...run.outputs.values()].every(output=>output.value));
  assert.equal(renders,3,'different tags must not share a cached chart; identical tags may reuse it');
  const html=runtime.read('answer',text).value.sources[0].delivery!.html;
- const article=extractStructure(html,false).xml;
+ const article=html.slice(html.indexOf('<article'),html.lastIndexOf('</article>')+10);
  assert.match(article,/<figure id="one" class="authored"[^>]*><svg/);
  assert.match(article,/<figcaption><span class="item-no">图 1：<\/span>类别比较/);
  assert.match(article,/<figcaption><span class="item-no">表 1：<\/span>统计明细/);
@@ -35,7 +33,6 @@ try{
  assert.match(article,/<figure id="table" class="authored table-block"/);
  assert.equal((article.match(/<figure\b/g)??[]).length,4,'no extra nested figure wrapper');
  assert.ok(article.indexOf('<svg')<article.indexOf('<figcaption>'));
- const reply=renderDraftReply(html,(_svg,ref)=>`internal://${ref}.svg`);assert.match(reply,/图 1：类别比较/);assert.match(reply,/表 1：统计明细/);
  const next=text.replace('类别比较','业务比较');run=await runtime.run(next);assert.equal(renders,3,'caption edits reuse charts');
  assert.match(runtime.read('answer',next).value.sources[0].delivery!.html,/图 1：<\/span>业务比较/);
  const multi=text.replace('</Dari>','<Template name="second"><article>'+figure('ColumnChart','four','第二答案')+'</article></Template></Dari>');

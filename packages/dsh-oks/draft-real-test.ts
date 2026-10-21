@@ -26,19 +26,16 @@ const jq = createJaqEngine(wasm);
 const entry: WorkspaceEntry = { root, from: 'test', settings, runner, index: null, modelHash: createHash('sha256').update(modelBytes).digest('hex') };
 let queries = 0;
 let checks = 0;
-const backend = createDraftBackend({ entry, file: '.work/real.md', contextZone: () => ({ kind: 'resolved', timeZone: 'Asia/Shanghai' }), jq,
+const backend = createDraftBackend({ entry, file: '.work/real.dari', contextZone: () => ({ kind: 'resolved', timeZone: 'Asia/Shanghai' }), jq,
   knowledge: { executorFor: () => ({ manifest: null, executor: { dispose() {}, async send(...args) { queries++; return executor.send(...args); } } }) },
 });
 const runtime = new FixtureRuntime({ ...backend, preflight: async (...args) => { checks++; return backend.preflight(...args); } });
-const source = [
-  '# Current alarm count', '## pipeline', '```js',
-  'ctx <- context();',
-  'facts <- exec_query(query({op: "Graph", root: "a", nodes: [{id:"a", entity:"current_alarm"}], edges:[], select:[], count:"a", limit:5}));',
-  'total <- jq("total.jq", {facts});', 'peek <- total;',
-  'answer <- render_html("answer.xhtml", {total});', '```',
-  '## assets', '```jq name="total.jq"', '.facts.rows[0] | to_entries[0].value', '```',
-  '```xhtml name="answer.xhtml"', '<article><p>当前告警数：<span data-oks-ref="total" /></p></article>', '```',
-].join('\n');
+const source = `<Dari title="Current alarm count"><Pipeline>
+ctx <-context();
+facts <-exec_query(query({op:"Graph",root:"a",nodes:[{id:"a",entity:"current_alarm"}],edges:[],select:[],count:"a",limit:5}));
+total <-jq("total.jq",{facts}); peek <-total;
+</Pipeline><Asset name="total.jq" language="jq">.facts.rows[0] | to_entries[0].value</Asset>
+<Template name="answer"><article><p>当前告警数：<Value data={total}/></p></article></Template></Dari>`;
 try {
   const planOnly='<Dari><Pipeline>plan <-query({op:"Graph",root:"a",nodes:[{id:"a",entity:"current_alarm"}],edges:[],select:[],count:"a",limit:5}); peek <- plan.columns;</Pipeline></Dari>';
   let run=await runtime.run(planOnly);

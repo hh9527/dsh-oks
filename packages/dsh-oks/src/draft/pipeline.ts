@@ -2,7 +2,7 @@ import type { FigureKind } from './components.ts';
 /** The draft language is parsed as data. Source text is never evaluated as JavaScript. */
 export type Position = { offset: number; line: number; column: number };
 export type Span = { start: Position; end: Position };
-export type Operator = 'data' | 'query' | 'exec_query' | 'jq' | 'context' | 'render_figure' | 'render_html' | 'time_windows';
+export type Operator = 'data' | 'query' | 'exec_query' | 'jq' | 'context' | 'render_figure' | 'render_report' | 'time_windows';
 export type Expr = (
   | { kind: 'literal'; value: string | number | boolean | null }
   | { kind: 'array'; values: Expr[] }
@@ -15,7 +15,7 @@ export type Statement = (
   | { kind: 'binding'; name: string; value: Expr }
   | { kind: 'output'; value: Expr }
 ) & { span: Span; motivation: string };
-export type AssetDependency = { name: string; language: 'jq' | 'xhtml'; span: Span };
+export type AssetDependency = { name: string; language: 'jq'; span: Span };
 export type PipelineNode = {
   internal?: boolean;
   display?: { label: string; template: string; figureId?: string; component: string };
@@ -36,7 +36,7 @@ export class DraftSyntaxError extends Error {
 }
 
 type Token = { text: string; value?: string | number; kind: 'id' | 'string' | 'number' | 'symbol' | 'eof'; span: Span; comments: string[] };
-const OPERATORS = new Set<string>(['data', 'query', 'exec_query', 'jq', 'context', 'render_figure', 'render_html', 'time_windows']);
+const OPERATORS = new Set<string>(['data', 'query', 'exec_query', 'jq', 'context', 'render_figure', 'time_windows']);
 const RESERVED = new Set(['let', 'debug', 'output', 'true', 'false', 'null', ...OPERATORS]);
 const MAX_DEPTH = 128;
 
@@ -250,9 +250,9 @@ export function parsePipeline(source: string, base: Position = { offset: 0, line
         const count = expr.args.length;
         const arity = expr.operator === 'context' ? [0, 0] : ['query','exec_query'].includes(expr.operator) ? [1, 1] : ['data', 'jq'].includes(expr.operator) ? [1, 2] : [2, 2];
         if (count < arity[0] || count > arity[1]) throw new DraftSyntaxError(`Invalid argument count for ${expr.operator}`, expr.span);
-        if (expr.operator === 'jq' || expr.operator === 'render_html') {
+        if (expr.operator === 'jq') {
           const asset = expr.args[0];
-          const language = expr.operator === 'jq' ? 'jq' : 'xhtml';
+          const language = 'jq';
           if (asset.kind !== 'literal' || typeof asset.value !== 'string' || !/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(asset.value) || !asset.value.endsWith(`.${language}`)) {
             throw new DraftSyntaxError(`${expr.operator} requires a literal single-file .${language} asset name`, asset.span);
           }

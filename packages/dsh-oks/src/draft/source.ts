@@ -13,26 +13,18 @@ export class SourceFile {
     while(lo+1<hi){const mid=(lo+hi)>>1;if(this.lines[mid]<=offset)lo=mid;else hi=mid;}
     return {offset,line:lo+1,column:offset-this.lines[lo]+1};
   }
-  /** Saxes counts Unicode scalars; public offsets/columns count UTF-16 code units. */
-  scalarOffset(line:number,column:number):number {
-    const start=this.lines[line-1]??this.text.length;
-    const end=this.lines[line]??this.text.length;
-    let offset=start;
-    for(let index=1;index<column&&offset<end;index++)offset+=this.text.codePointAt(offset)!>0xffff?2:1;
-    return offset;
-  }
   span(start:number,end:number):Span {
     if(end<start)throw new Error('Invalid original source range');
     return {start:this.position(start),end:this.position(end)};
   }
-  fragment(name:string,language:'jq'|'pipeline'|'xhtml',start:number,end:number):SourceFragment {
+  fragment(name:string,language:'jq'|'pipeline',start:number,end:number):SourceFragment {
     this.span(start,end);return new SourceFragment(this,name,language,start,end);
   }
 }
 export class SourceFragment {
   readonly text:string;
-  readonly file:SourceFile; readonly name:string; readonly language:'jq'|'pipeline'|'xhtml'; readonly start:number; readonly end:number;
-  constructor(file:SourceFile,name:string,language:'jq'|'pipeline'|'xhtml',start:number,end:number){
+  readonly file:SourceFile; readonly name:string; readonly language:'jq'|'pipeline'; readonly start:number; readonly end:number;
+  constructor(file:SourceFile,name:string,language:'jq'|'pipeline',start:number,end:number){
     this.file=file;this.name=name;this.language=language;this.start=start;this.end=end;
     this.text=file.text.slice(start,end);
   }

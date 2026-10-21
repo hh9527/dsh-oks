@@ -10,7 +10,6 @@ import { createJaqEngine } from './src/jaq.ts';
 import type { Knowledge, WorkspaceEntry } from './src/knowledge.ts';
 import type { ToolExec } from './src/host.ts';
 import type { TimeContext } from './src/time-context.ts';
-import { checkWellFormed } from './src/report/xhtml.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'oks-draft-tools-'));
 mkdirSync(join(root,'.work'));
@@ -32,7 +31,7 @@ const call=async(name:string,args:unknown,exec=caller)=>{
   return value;
 };
 const file='.work/draft.dari';
-const source=['# Answer title','## pipeline','```js','facts <-exec_query(query({limit:5}));','total <-jq("total.jq",{facts});','answer <-render_html("answer.xhtml",{total});','{total}','```','## assets','```jq name="total.jq"','.facts.rows[0].n','```','```xhtml name="answer.xhtml"','<article><p>Total: <span data-oks-ref="total" /></p></article>','```'].join('\n');
+const source='<Dari title="Answer title"><Pipeline>facts <-exec_query(query({limit:5})); total <-jq("total.jq",{facts}); {total}</Pipeline><Asset name="total.jq" language="jq">.facts.rows[0].n</Asset><Template name="answer"><article><p>Total: <Value data={total} /></p></article></Template></Dari>';
 const write=(value:string)=>writeFileSync(join(root,file),asDari(value));
 try {
   await assert.rejects(call('oks_project',{input:'oks://help/query.md'}), /Unknown structured resource/);
@@ -59,7 +58,7 @@ try {
   result=await call('oks_run_answer',{src:file});assert.equal(result.delivery.status,'ready');assert.equal(writes,0);assert.equal(queries,1);
   const shown=await call('oks_show',{input:file+'#answer'});savedPath=shown.path;assert.deepEqual((await call('oks_show',{input:file+'#answer'})).attachment,shown.attachment);
   await assert.rejects(call('oks_project',{input:'output-1.html'}),/Unknown structured resource/);
-  write(source.replace('total <-jq("total.jq",{facts});','total <-jq("total.jq",{facts}); second <-render_html("answer.xhtml",{total});'));
+  write(source.replace('</Dari>','<Template name="second"><article><Value data={total}/></article></Template></Dari>'));
   result=await call('oks_run_answer',{src:file});assert.equal(result.delivery.status,'selection_required');
   result=await call('oks_run_answer',{src:file,answer:'second'});assert.equal(result.delivery.status,'ready');
   write(source.replace('.facts.rows[0].n','error("bad")'));
@@ -70,7 +69,7 @@ try {
   assert.match(result.failures[0].error,/bad/);
   assert.ok(result.failures[0].at.line>0);
   assert.equal((await call('oks_project',{input:file+'#failures'})).data[0].context.asset,'total.jq');
-  write(source.replace('{total}\n```','peek <- jq("failure.jq",{}); {total}\n```')+'\n```jq name="failure.jq"\nerror("independent")\n```');
+  write(source.replace('{total}</Pipeline>','peek <-jq("failure.jq",{}); {total}</Pipeline>').replace('</Dari>','<Asset name="failure.jq" language="jq">error("independent")</Asset></Dari>'));
   result=await call('oks_run_answer',{src:file});assert.equal(result.computation,'partial');assert.equal(result.delivery.status,'ready');
   write(source.replace('total <-','const total='));
   result=await call('oks_run_answer',{src:file});assert.equal(result.status,'invalid');
@@ -82,7 +81,7 @@ try {
   const blocks=drafts.tools[0].output.render as unknown as (args:unknown,value:unknown)=>{text:string}[];
   assert.ok(Buffer.byteLength(blocks({},result)[0].text)<16384);
   const saved=await import('node:fs').then(fs=>fs.readFileSync(savedPath,'utf8'));
-  assert.equal(checkWellFormed(saved).length,0);
+  assert.ok(saved.includes('<script type="json" id="oks-metadata">'));
   const wideColumns=Array.from({length:30},(_,index)=>({name:'column_'+index,type:'String',nullable:true}));
   write('## pipeline\n```js\nwide <-data('+JSON.stringify({rows:[],columns:wideColumns})+');\n```');
   result=await call('oks_run_answer',{src:file});

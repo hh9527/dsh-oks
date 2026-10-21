@@ -4,7 +4,6 @@ import {createDraftBackend} from './src/draft/backend.ts';
 import {DraftRuntime} from './src/draft/runtime.ts';
 import {parseDraft} from './src/draft/document.ts';
 import {readReportPage,withReportArchive,REPORT_METADATA_OPEN} from './src/report/page.ts';
-import {checkWellFormed} from './src/report/xhtml.ts';
 import {createSelector} from './src/select.ts';
 import type {Knowledge,WorkspaceEntry} from './src/knowledge.ts';
 const jq=createJaqEngine(process.argv[2]??'lib/oks-wti.wasm');
@@ -48,7 +47,7 @@ try{
  assert.equal(data.dari.figures.unused.code,'<ColumnChart name="unused" spec={spec} data={rows} />');
  assert.deepEqual(data.dari.figures.unused.data.rows,[{label:'甲',n:3}]);
  assert.equal(data.dari.figures.bad.status,'failed');assert.match(data.dari.figures.bad.error,/missing/);assert.equal(data.dari.figures.bad.data,undefined);
- const page=retained.value.sources[0].delivery!.html,parsed=readReportPage(page);assert.deepEqual(checkWellFormed(page),[]);assert.ok(!('error' in parsed));
+ const page=retained.value.sources[0].delivery!.html,parsed=readReportPage(page);assert.ok(!('error' in parsed));
  assert.deepEqual(parsed.dari,data.dari);assert.deepEqual(parsed.context,data.context);
  assert.deepEqual(parseDraft(parsed.dari!.source).authoring,parseDraft(source).authoring);
  assert.equal(queries,0);assert.equal(contexts,before);assert.equal(read().value.sources[0].delivery!.html,page);
