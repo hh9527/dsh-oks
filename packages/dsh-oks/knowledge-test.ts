@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { createJaqEngine } from './src/jaq.ts';
 import { buildRetrievalIndex } from './src/retrieval.ts';
 import { buildSemanticGraph, encodePart, refPath, resolveFact } from './src/knowledge-graph.ts';
-import { builtinCode, knowledgeHelp, knowledgePrograms, toolResource } from './src/knowledge-programs.ts';
+import { builtinCode, knowledgePrograms, toolResource } from './src/knowledge-programs.ts';
 
 const dataset='a/b#%中文';const encoded=encodePart(dataset);
 const role:Record<string,string>={Dataset:'datasets',Field:'fields',Dimension:'dimensions',Measure:'measures',Ty:'types',Value:'values',Relation:'relations',TimeRole:'time_roles',BusinessLink:'business_links'};
@@ -66,7 +66,6 @@ try {
  for(const name of Object.keys(knowledgePrograms))assert.ok(toolResource(`builtin://knowledge/${name}.jq`));
  for(const args of [{take:0},{take:51},{skip:-1},{query:1},{unknown:true}])assert.throws(()=>builtinCode('builtin://knowledge/search.jq',args));
  assert.throws(()=>builtinCode('builtin://knowledge/read.jq',{key:ds,take:1}));
- assert.ok(knowledgeHelp.examples.valuesOnly);
  // 原型名称也是业务 ID，不会成为对象原型或丢失。
  const proto=buildSemanticGraph([n('Dataset/proto','Dataset',{id:'__proto__'},{node:'datasets/__proto__',member:null})]).graph;
  assert.ok(Object.hasOwn(proto.datasets,'__proto__'));assert.equal(Object.getPrototypeOf(proto.datasets),Object.prototype);

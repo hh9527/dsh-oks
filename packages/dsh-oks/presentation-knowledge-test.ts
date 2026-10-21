@@ -12,7 +12,6 @@ import { CHART_KINDS, EXPRESSION_SUPPORT } from './src/chart/shared.ts';
 import { parseChartSpec, parseTableSpec } from './src/chart/spec.ts';
 import { createSelector } from './src/select.ts';
 import type { JsonValue } from './src/project.ts';
-import { presentationHelp } from './src/presentation-knowledge.ts';
 import { builtinCode } from './src/knowledge-programs.ts';
 import type { WorkspaceEntry } from './src/knowledge.ts';
 const engine=createJaqEngine(process.argv[2] ?? './lib/oks-wti.wasm');
@@ -25,7 +24,7 @@ try {
   const result=await engine.run(code.text,{input:{knowledge:graph},timeoutMs:5000,maxBytes:16384});
   assert.equal(result.ok,true);return (result as any).data;
  };
- const overview=createSelector(presentationHelp.kinds.select)(graph as unknown as JsonValue) as any;
+ const overview=createSelector('tools.render_figure.kinds:keys')(graph as unknown as JsonValue) as any;
  assert.equal(overview.tools.render_figure['kinds:keys'].length,14);
  assert.ok(overview.tools.render_figure['kinds:keys'].includes('column'));
 

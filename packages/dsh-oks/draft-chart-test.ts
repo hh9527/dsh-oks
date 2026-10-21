@@ -619,8 +619,8 @@ try {
   assert.equal(archived.delivery.status,'ready');
   const graphReport=readReportPage(readFileSync((await call('oks_show',{input:'.work/chart.dari#answer'})).path,'utf8'));
   assert.ok(!('error' in graphReport));
-  assert.deepEqual((graphReport.items.figure as any).nodeRows,graphNodes);
-  assert.deepEqual((graphReport.items.figure as any).rows,graphEdges);
+  assert.deepEqual((graphReport.dari.figures["binding:figure"].data as any).nodeRows,graphNodes);
+  assert.deepEqual((graphReport.dari.figures["binding:figure"].data as any).rows,graphEdges);
   const minimalSpec: Record<string, Record<string, unknown>> = {
     bar: { x: 'k', value: 'w' },
     line: { x: 'k', value: 'w' },

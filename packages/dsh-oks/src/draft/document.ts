@@ -1,3 +1,5 @@
+import { projectionCode } from './projection.ts';
+import type { DariAuthoring } from './archive.ts';
 import { componentKind } from './components.ts';
 /** DARI container and template compiler. Pipeline and jq remain independent languages. */
 import { SourceFile } from './source.ts';
@@ -10,8 +12,8 @@ type Reference = { source:string; binding:string; path:(string|number)[]; span:S
 type Attribute = { kind:'text'; value:string; span:Span } | ({kind:'reference'} & Reference);
 type Element = { selfClosing:boolean;name:string; attrs:Map<string,Attribute>; children:(Element|string)[]; span:Span };
 export type SourceMapping = {start:number;end:number;original:Span};
-export type DraftAsset = { figurePlacement?:'before-caption';name:string;language:'jq'|'xhtml';source:string;span:Span;body:Position;fragment?:SourceFragment;sourceMap?:SourceMapping[];references?:Record<string,{kind:'value'|'figure';span:Span}> };
-export type DraftDocument = {title?:string;notes?:string;nodes:PipelineNode[];assets:Map<string,DraftAsset>;pipeline:Span;answers:string[];file:string;diagnostics?:SourceDiagnostic[]};
+export type DraftAsset = { checkedXhtml?:ReturnType<typeof checkAuthorXhtml>;figurePlacement?:'before-caption';name:string;language:'jq'|'xhtml';source:string;span:Span;body:Position;fragment?:SourceFragment;sourceMap?:SourceMapping[];references?:Record<string,{kind:'value'|'figure';span:Span;code?:string}> };
+export type DraftDocument = {authoring?:DariAuthoring;title?:string;notes?:string;nodes:PipelineNode[];assets:Map<string,DraftAsset>;pipeline:Span;answers:string[];file:string;diagnostics?:SourceDiagnostic[]};
 
 export function parseDraft(source:string,file='draft.dari'):DraftDocument {
   const document=parseDraftForValidation(source,file);
@@ -212,6 +214,11 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
   let internal=0;
   const answers:string[]=[];
   for(const node of nodes)if(node.statement.kind==='binding'&&node.statement.value.kind==='call'&&node.statement.value.operator==='render_html')answers.push(node.statement.name);
+  const authoring:DariAuthoring={source,title,notes:notes??'',pipeline:pipeline!.body,
+    assets:Object.fromEntries([...assets].map(([name,asset])=>[name,asset.source])),
+    reports:Object.fromEntries(templates.map(template=>[template.name,source.slice(template.element.span.start.offset,template.element.span.end.offset)])),
+    figures:Object.fromEntries([...figures].map(([name,chart])=>[name,{binding:`figures.${name}`,code:source.slice(chart.span.start.offset,chart.span.end.offset)}])),
+  };
   stage='figure';
   for(const [key,chart]of figures){
     unit=`figures.${key}`;collect(()=>{
@@ -262,7 +269,7 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
       if(el.name==='Value'){
         only(el.attrs,['data']);if(el.children.some(child=>typeof child!=='string'||child.trim()!==''))fail('Value must be empty',el.span.start.offset);
         const ref=requiredRef(el,'data');const alias=`value_${inputs.length+1}`;
-        inputs.push({key:alias,value:refExpr(ref)});bindings.add(ref.binding);refs[alias]={kind:'value',span:ref.span};
+        inputs.push({key:alias,value:refExpr(ref)});bindings.add(ref.binding);refs[alias]={kind:'value',span:ref.span,code:projectionCode(ref.binding,ref.path)};
         emit(`<span data-oks-ref="${alias}" />`,el.span);return;
       }
       if(el.name==='figure'){
@@ -324,12 +331,12 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
       throw new DraftSyntaxError(error.message,mapped,[{file,stage:'template',message:error.message,span:mapped}]);
     }
     const name=`@template/${template.name}.xhtml`;
-    assets.set(name,{figurePlacement:'before-caption',name,language:'xhtml',source:xhtml,span:template.span,body:template.span.start,sourceMap:mappings,references:refs});
+    assets.set(name,{checkedXhtml:checked,figurePlacement:'before-caption',name,language:'xhtml',source:xhtml,span:template.span,body:template.span.start,sourceMap:mappings,references:refs});
     const value:Expr={kind:'call',operator:'render_html',args:[literalExpr(name,template.span),objectExpr(inputs,template.span)],span:template.span};
     nodes.push({statement:{kind:'binding',name:template.legacy?template.name:`reports.${template.name}`,value,span:template.span,motivation:''},bindings:[...bindings],assets:[{name,language:'xhtml',span:template.span}]});
     });
   }
   unit=undefined;stage='container';
   if(nodes.length>1024||assets.size>128)fail('DARI exceeds node or asset budget',0);
-  return {title,notes,nodes,assets,pipeline:original.span(pipelineFragment.start,pipelineFragment.end),answers,file,...(diagnostics.length?{diagnostics}:{})};
+  return {authoring,title,notes,nodes,assets,pipeline:original.span(pipelineFragment.start,pipelineFragment.end),answers,file,...(diagnostics.length?{diagnostics}:{})};
 }

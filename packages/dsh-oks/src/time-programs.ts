@@ -1,11 +1,8 @@
 import timeWindowsSource from './builtin/time-windows.jq';
-import timeHelpSource from './help/time.md';
-import { readHelpMarkdown } from './help.ts';
-export const timeHelp = readHelpMarkdown(timeHelpSource);
 
 // 工具侧的日历方法：与自定义程序共用 Wasm 引擎，计算正文及参数进入来源链。
 export const timeWindows = {
-  description: timeHelp.description,
+  description: '根据显式时间上下文生成日历窗口，返回从早到晚排列的 label、zone 及毫秒/RFC3339 半开边界。',
   args: ['input', 'unit', 'count', 'mode'],
   source: timeWindowsSource,
 };

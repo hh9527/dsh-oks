@@ -1,18 +1,12 @@
 # oks_project：直读、jq 处理与规则投影
 
-## overview
-
-### title
-
-input → transform（可选）→ select（可选）
-
-### text
+## input → transform（可选）→ select（可选）
 
 oks_project({input}) 直接读取结构化资源。transform 用 {lib,name,args} 指定 jq 方法，select 用字符串表达投影规则；两者可以同时提供，固定先处理、再投影。select 作用于 transform 的完整结果；没有 transform 时作用于输入资源。返回负荷统一在 .data 中。
 
 oks://knowledge 视为一个完整的大 JSON 文件。结构化输入包括该知识图、已运行的 oks://work/分析.dari#binding、#figures.name、#reports.name 等。读取、处理和投影都不会执行 SQL、运行分析稿、刷新采集或保存文件。
 
-### examples
+### 示例
 
 ```json
 {
@@ -23,19 +17,13 @@ oks://knowledge 视为一个完整的大 JSON 文件。结构化输入包括该�
 }
 ```
 
-## paths
-
-### title
-
-路径、引号键与组合
-
-### text
+## 路径、引号键与组合
 
 a.b 保留层级，得到 {a:{b:input.a.b}}。字段名有空格、点、冒号、斜线等标点时，用单引号包围，例如 a.'hello world'。引号内用反斜线转义单引号或反斜线；字典键使用原始业务 ID，不使用知识地址中的 URI 编码。
 
 a.{b,c} 同时选择两个字段；a.{b,c.{x,y}} 可以嵌套。a.b,a.c 与 a.{b,c} 等价，结果递归合并。完整值与其局部投影发生输出冲突时明确报错。缺失字段会报出路径；已有字段为 null 时正常保留。未知结构先查看 :keys。
 
-### examples
+### 示例
 
 ```json
 {
@@ -45,13 +33,7 @@ a.{b,c} 同时选择两个字段；a.{b,c.{x,y}} 可以嵌套。a.b,a.c 与 a.{b
 }
 ```
 
-## operators
-
-### title
-
-链式调用与输出键名
-
-### text
+## 链式调用与输出键名
 
 x:ff 等效于 ff(x)，x:ff:gg 等效于 gg(ff(x))。内置算子为 len、keys。后缀从左到右处理当前值，最后包装投影结果。字段路径保留层级；该字段的算子和切片记录在输出键名中。
 
@@ -61,7 +43,7 @@ len 对数组返回 length，对 object 返回键数量，对标量（含字符�
 
 没有字段前缀的 :keys、:len 直接作用于根值并返回结果，不额外包装字段。
 
-### examples
+### 示例
 
 ```json
 {
@@ -71,13 +53,7 @@ len 对数组返回 length，对 object 返回键数量，对标量（含字符�
 }
 ```
 
-## slices
-
-### title
-
-切片与取样
-
-### text
+## 切片与取样
 
 x[0..100] 等效于 slice(x,0,100)，采用包含 start、不包含 end 的区间。边界是安全整数，负数从末尾计数。支持数组与字符串，行为与 JavaScript slice 相同；object 先用 :keys 取得排序键数组再切片。
 
@@ -85,7 +61,7 @@ a[1..10] 返回 {"a[1..10]":input.a.slice(1,10)}。a:keys[0..10]:len 返回 {"a:
 
 切片不会替你判断业务结果是否完整；查询结果中的 truncated 和业务统计口径应单独核实。
 
-### examples
+### 示例
 
 ```json
 {
@@ -95,23 +71,11 @@ a[1..10] 返回 {"a[1..10]":input.a.slice(1,10)}。a:keys[0..10]:len 返回 {"a:
 }
 ```
 
-## overflow
-
-### title
-
-超限摘要
-
-### text
+## 超限摘要
 
 公共返回预算为 16 KiB。超过预算时返回 {error:"payload_too_large",repr,reprLength,len}。repr 是 JSON.stringify(data) 的前 4096 个字符；reprLength 是该完整 JSON 字符串的长度，按 JavaScript string.length 计算，不是 UTF-8 字节数。len 对数组和字符串为 length，对对象为 Object.keys(data).length，对其他值为 null。repr 是预览，可能不是完整、可解析的 JSON；用更精确的 select 或 transform 取得所需数据。
 
-## transform
-
-### title
-
-利用 jq 方法检索、计算和加工
-
-### text
+## 利用 jq 方法检索、计算和加工
 
 transform.lib 是完整库地址，transform.name 是方法名，transform.args 是直接传递的 JSON 对象，省略时为 {}。方法接收资源的完整值，并恰好输出一个 JSON 值。内置方法库为 oks://builtin/tools/ktools.lib.jq，自定义持久库为 oks://memory/tools/ktools.lib.jq；用 oks_read 阅读源码。同名方法不会覆盖或自动回退。
 
@@ -119,13 +83,7 @@ transform.lib 是完整库地址，transform.name 是方法名，transform.args 
 
 transform 的内部输出预算是 8 MiB、执行时间预算是 5 秒。随后应用 select，最后由公共出口检查 16 KiB 返回预算。大中间结果可以经 select 缩小；内部预算超限则需要收窄 transform。公共返回超限时提供上述摘要；原始数据保持完整，可重新投影读取。
 
-## resources
-
-### title
-
-帮助主题与来源
-
-### text
+## 帮助主题与来源
 
 oks:// 是虚拟文件系统。oks://help/*.md 是只读 Markdown 文本文件，用 oks_read({path:"oks://help/project.md"}) 阅读，offset/limit 按行分页；用 oks_list({path:"oks://help/"}) 列出文件。文本帮助不作为 oks_project 的结构化输入。
 

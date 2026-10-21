@@ -32,6 +32,8 @@ export interface AssembleInput {
   category: string;
   at: string;
   xhtml: string;
+  /** DARI 编译与预检阶段已经校验的作者结构。 */
+  checked?:ReturnType<typeof checkAuthorXhtml>;
   figurePlacement?: 'before-caption';
   bindings: Record<string, ReportBinding>;
   /** 取一个 span 的值：超范围的形状（对象、数组）在这里明确报错，不留给渲染层。 */
@@ -57,7 +59,7 @@ const tableScroll = (embedded: string): string =>
   `<div class="table-scroll">${renderMarkdown(embedded, (_info, text) => `<pre><code>${escapeHtml(text)}</code></pre>`)}</div>`;
 
 export function assembleReport(input: AssembleInput): AssembleResult {
-  const checked = checkAuthorXhtml(input.xhtml);
+  const checked = input.checked??checkAuthorXhtml(input.xhtml);
   if (checked.errors.length > 0) {
     const lines = checked.errors.slice(0, 12)
       .map((error) => `第 ${error.line} 行第 ${error.column} 列：${error.message}`);
@@ -154,9 +156,6 @@ export function assembleReport(input: AssembleInput): AssembleResult {
     subtitle: input.subtitle,
     generatedAt: input.at,
     article: rendered.article,
-    origin: archived.origin,
-    assets: archived.assets,
-    items,
     outline,
   });
   return { page, origin: archived.origin, assets: archived.assets, items, figureCount, tableCount,

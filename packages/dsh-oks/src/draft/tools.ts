@@ -188,7 +188,7 @@ export function createDraftTools(options: {
     },
     {
       name: 'oks_show',
-      description: 'Publish an existing DARI figure or report as a durable host attachment and return its reference and presentation instructions. input is oks://work/analysis.dari#figures.name or #reports.name. Reads the latest retained output in this session; never executes SQL, runs a draft, refreshes context or saves a business report. Include the returned markdown verbatim in the answer to show SVG inline; for reports and tables call the host present tool with the returned present object to show a native file card. Bytes stay outside model context. Edited sources are marked stale.',
+      description: 'Publish an existing DARI figure or report as a durable host attachment and return its reference and presentation instructions. input is oks://work/analysis.dari#figures.name or #reports.name. Reads the latest retained output in this session; never executes SQL, runs a draft, refreshes context or saves a business report. Include the returned markdown verbatim in the answer to show SVG inline; for reports and tables call the host present tool with the returned present object to show a native file card. Report HTML includes the complete DARI source structure and retained execution context; these are available under the report output dari/context fields through oks_project. Bytes stay outside model context. Edited sources are marked stale.',
       parameters: {type:'object',properties:{input:{type:'string'}},required:['input'],additionalProperties:false},
       output: {
         schema: OBJECT,

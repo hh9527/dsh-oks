@@ -1,12 +1,6 @@
 # 知识图的形状与导航
 
-## overview
-
-### title
-
-先理解知识图的整体形状
-
-### text
+## 先理解知识图的整体形状
 
 oks://knowledge 可以看成一个完整的大 JSON 文件，用 oks_project 读取、处理和投影，根为 {datasets,types,relations,tools,items}。前四项是按 ID 索引的字典，保存事实和分类关系；items 是说明条目数组，保存 {key,names,doc}。名称和说明与事实分开存放，内置 read 方法可以配对读取。
 
@@ -16,439 +10,283 @@ dataset 或 type 是独立节点，其 fields、dimensions、values 等是节点
 
 知识图的事实来自领域模型，tools 中的用法知识由工具初始化时挂载。下面是结构示意，不代表当前领域实际存在这些 ID，也不授予任何查询能力。
 
-### shape
-
-#### datasets
-
-##### current_alarm
+### 结构示意
 
 ```json
 {
-  "fields": {
-    "severity": {
-      "nullable": false
+  "datasets": {
+    "current_alarm": {
+      "fields": {"severity": {"nullable": false}},
+      "dimensions": {"alarm_severity": {"type": "Severity", "fields": ["datasets/current_alarm#fields/severity"]}},
+      "measures": {},
+      "time_roles": {},
+      "relations": ["relations/alarm_belongs_to_tenant"]
     }
   },
-  "dimensions": {
-    "alarm_severity": {
-      "type": "Severity",
-      "fields": [
-        "datasets/current_alarm#fields/severity"
-      ]
+  "types": {
+    "Severity": {
+      "values": {"major": {}},
+      "fields": ["datasets/current_alarm#fields/severity"],
+      "dimensions": ["datasets/current_alarm#dimensions/alarm_severity"]
     }
   },
-  "measures": {},
-  "time_roles": {},
-  "business_links": {},
-  "relations": [
-    "relations/alarm_belongs_to_tenant"
-  ]
+  "relations": {"alarm_belongs_to_tenant": {"from_dataset": "current_alarm", "to_dataset": "tenant"}},
+  "tools": {"render_figure": {"kinds": {}, "topics": {}}, "render_html": {"topics": {}}},
+  "items": [{"key": "datasets/current_alarm", "names": ["当前告警"], "doc": "业务口径与约束"}]
 }
 ```
 
-#### types
-
-##### Severity
-
-```json
-{
-  "values": {
-    "major": {}
-  },
-  "fields": [
-    "datasets/current_alarm#fields/severity"
-  ],
-  "dimensions": [
-    "datasets/current_alarm#dimensions/alarm_severity"
-  ]
-}
-```
-
-#### relations
-
-##### alarm_belongs_to_tenant
-
-```json
-{
-  "from_dataset": "current_alarm",
-  "to_dataset": "tenant"
-}
-```
-
-#### tools
-
-##### render_figure
-
-```json
-{
-  "kinds": {},
-  "topics": {}
-}
-```
-
-##### render_html
-
-```json
-{
-  "topics": {}
-}
-```
-
-#### items
-
-```json
-[
-  {
-    "key": "datasets/current_alarm",
-    "names": [
-      "当前告警"
-    ],
-    "doc": "数据集的业务口径与约束"
-  },
-  {
-    "key": "types/Severity",
-    "names": [
-      "告警级别"
-    ],
-    "doc": "级别的含义与约束"
-  }
-]
-```
-
-## understanding
-
-### title
-
-从概览逐层理解事实与关系
-
-### text
+## 从概览逐层理解事实与关系
 
 先查看各分支的 keys 和 len，了解有哪些节点及规模。再选择相关 dataset 或 type，读取自身事实、所需成员和对应说明。字段、维度、度量与时间角色各有用途；业务可用能力以实际声明为准。沿分类引用查相关节点时，只展开需要的类别。
 
 不必读取整个大节点：可以同时选择 grain、scope 等自身事实，并将 fields、dimensions、measures 等分支投影为 keys 或 len。需要值域时只选 values。需要名称和说明时，使用 read 配对读取小分支，或用 search、members 和 references 导航。
 
-### example
+```json
+{"input":"oks://knowledge","select":"datasets:keys[0..10],types:keys,relations:keys,tools:keys"}
+```
 
-#### input
+## 地址与事实
 
-oks://knowledge
-
-#### select
-
-datasets:keys[0..10],types:keys,relations:keys,tools:keys
-
-## resource
-
-### data
+### 数据根
 
 oks_project 以 oks://knowledge 为输入时看到 {datasets,types,relations,tools,items}；方法直接接收知识图根对象。字典键使用原始业务 ID，items 为 [{key,names,doc}]。
 
-### address
+### 语义地址
 
 独立节点地址为 datasets/<编码后的ID>、types/<编码后的ID>、relations/<编码后的ID>、tools/<工具名>。工具成员为 #kinds/<类型>、#topics/<主题>；节点成员为 node#fields/<编码后的ID>、#dimensions/<ID>、#measures/<ID>、#time_roles/<ID>、#business_links/<ID> 或 types/<ID>#values/<ID>。地址中的每个 ID 恰好进行一次 URI 组件编码，返回的 key 应原样使用；字典键保持原始 ID。
 
-### toolKnowledge
+### 工具知识
 
 tools.render_figure 包含 kinds 与 topics，tools.render_html 包含 topics。工具知识由插件注入，描述渲染和 XHTML 用法，与模型事实共用 search/read/members/references 导航。可以独立读取图表类型或主题，示例包含可执行的示例数据。
 
-### navigation
+### 分类导航
 
 dataset 拥有 fields/dimensions/measures/time_roles/business_links 字典；type 拥有 values 字典以及 fields/dimensions 等分类引用。工具根据归属和正向事实派生反向引用，成员可双向导航；related/traversable 保留关系类别，referenced_by 提供反向导航。引用数组保存地址，自有字典保存事实；引用表达关联，查询权限以模型声明为准。
 
-### typeFields
+### 类型的字段引用
 
 types.<id>.fields 包含通过声明该值类型的维度暴露的字段。这是导航信息，不表示原始存储字段的类型。维度的 type 为声明的值域 ID，input_kinds 为可接受的字面量类型。
 
-### projections
+### 分支投影
 
 选择分支只读取该分支，例如 .types.Severity.values 不包含 fields。名称与说明位于 items，read 将事实片段与说明配对。事实保留业务约束，包括空值、顺序、范围、时间编码与确定性的 Latest 选择规则。
 
-## examples
+## 调用示例
 
-### overview
-
-#### input
-
-oks://knowledge
-
-#### select
-
-:keys
-
-### shape
-
-#### input
-
-oks://knowledge
-
-#### select
-
-datasets:keys,types:keys,relations:keys,tools:keys,items:keys
-
-### search
-
-#### input
-
-oks://knowledge
-
-#### transform
-
-##### lib
-
-oks://builtin/tools/ktools.lib.jq
-
-##### name
-
-search
-
-##### args
+### 根目录
 
 ```json
 {
-  "query": "<va_ask 返回的词汇>",
-  "take": 10
+  "input": "oks://knowledge",
+  "select": ":keys"
 }
 ```
 
-### read
-
-#### input
-
-oks://knowledge
-
-#### transform
-
-##### lib
-
-oks://builtin/tools/ktools.lib.jq
-
-##### name
-
-read
-
-##### args
+### 分支目录
 
 ```json
 {
-  "key": "<返回的地址>"
+  "input": "oks://knowledge",
+  "select": "datasets:keys,types:keys,relations:keys,tools:keys,items:keys"
 }
 ```
 
-### dimensions
-
-#### input
-
-oks://knowledge
-
-#### transform
-
-##### lib
-
-oks://builtin/tools/ktools.lib.jq
-
-##### name
-
-members
-
-##### args
+### 检索
 
 ```json
 {
-  "key": "datasets/<返回的编码ID>",
-  "link": "dimensions",
-  "take": 10
+  "input": "oks://knowledge",
+  "transform": {
+    "lib": "oks://builtin/tools/ktools.lib.jq",
+    "name": "search",
+    "args": {
+      "query": "<va_ask 返回的词汇>",
+      "take": 10
+    }
+  }
 }
 ```
 
-### valuesOnly
-
-#### input
-
-oks://knowledge
-
-#### select
-
-types.'<原始类型ID>'.values
-
-### references
-
-#### input
-
-oks://knowledge
-
-#### transform
-
-##### lib
-
-oks://builtin/tools/ktools.lib.jq
-
-##### name
-
-references
-
-##### args
+### 读取事实与说明
 
 ```json
 {
-  "key": "<返回的地址>"
+  "input": "oks://knowledge",
+  "transform": {
+    "lib": "oks://builtin/tools/ktools.lib.jq",
+    "name": "read",
+    "args": {
+      "key": "<返回的地址>"
+    }
+  }
 }
 ```
 
-### fieldDescriptions
-
-#### input
-
-oks://knowledge
-
-#### transform
-
-##### lib
-
-oks://builtin/tools/ktools.lib.jq
-
-##### name
-
-read
-
-##### args
+### 维度成员
 
 ```json
 {
-  "key": "datasets/<返回的编码ID>#fields"
+  "input": "oks://knowledge",
+  "transform": {
+    "lib": "oks://builtin/tools/ktools.lib.jq",
+    "name": "members",
+    "args": {
+      "key": "datasets/<返回的编码ID>",
+      "link": "dimensions",
+      "take": 10
+    }
+  }
 }
 ```
 
-### datasetOverview
-
-#### input
-
-oks://knowledge
-
-#### transform
-
-##### lib
-
-oks://builtin/tools/ktools.lib.jq
-
-##### name
-
-overview
-
-##### args
+### 只读值域
 
 ```json
-{"take": 10}
+{
+  "input": "oks://knowledge",
+  "select": "types.'<原始类型ID>'.values"
+}
 ```
 
-### datasetCard
-
-#### input
-
-oks://knowledge
-
-#### transform
-
-##### lib
-
-oks://builtin/tools/ktools.lib.jq
-
-##### name
-
-card
-
-##### args
+### 反向引用
 
 ```json
-{"id": "<原始数据集ID>", "section": "dimensions", "docs": true, "take": 10}
+{
+  "input": "oks://knowledge",
+  "transform": {
+    "lib": "oks://builtin/tools/ktools.lib.jq",
+    "name": "references",
+    "args": {
+      "key": "<返回的地址>"
+    }
+  }
+}
 ```
 
-### batchNodes
-
-#### input
-
-oks://knowledge
-
-#### transform
-
-##### lib
-
-oks://builtin/tools/ktools.lib.jq
-
-##### name
-
-nodes
-
-##### args
+### 字段说明
 
 ```json
-{"keys": ["<返回的地址>"], "mode": "both", "take": 8}
+{
+  "input": "oks://knowledge",
+  "transform": {
+    "lib": "oks://builtin/tools/ktools.lib.jq",
+    "name": "read",
+    "args": {
+      "key": "datasets/<返回的编码ID>#fields"
+    }
+  }
+}
 ```
 
-### connectionRoutes
-
-#### input
-
-oks://knowledge
-
-#### transform
-
-##### lib
-
-oks://builtin/tools/ktools.lib.jq
-
-##### name
-
-routes
-
-##### args
+### 数据集概览
 
 ```json
-{"nodes": ["<返回的起点地址>", "<返回的终点地址>"], "max_depth": 3, "max_paths": 5, "budget": 1000}
+{
+  "input": "oks://knowledge",
+  "transform": {
+    "lib": "oks://builtin/tools/ktools.lib.jq",
+    "name": "overview",
+    "args": {
+      "take": 10
+    }
+  }
+}
 ```
 
-### customSource
+### 数据集卡片
 
+```json
+{
+  "input": "oks://knowledge",
+  "transform": {
+    "lib": "oks://builtin/tools/ktools.lib.jq",
+    "name": "card",
+    "args": {
+      "id": "<原始数据集ID>",
+      "section": "dimensions",
+      "docs": true,
+      "take": 10
+    }
+  }
+}
+```
+
+### 批量读取节点
+
+```json
+{
+  "input": "oks://knowledge",
+  "transform": {
+    "lib": "oks://builtin/tools/ktools.lib.jq",
+    "name": "nodes",
+    "args": {
+      "keys": [
+        "<返回的地址>"
+      ],
+      "mode": "both",
+      "take": 8
+    }
+  }
+}
+```
+
+### 探索连接
+
+```json
+{
+  "input": "oks://knowledge",
+  "transform": {
+    "lib": "oks://builtin/tools/ktools.lib.jq",
+    "name": "routes",
+    "args": {
+      "nodes": [
+        "<返回的起点地址>",
+        "<返回的终点地址>"
+      ],
+      "max_depth": 3,
+      "max_paths": 5,
+      "budget": 1000
+    }
+  }
+}
+```
+
+### 自定义方法
+
+```jq
 def dataset_dimensions($args): .datasets | to_entries | map({id:.key,dimensions:(.value.dimensions|keys)});
+```
 
-## paging
+## 分页与预算
 
 search/members/references 默认 skip=0、take=10（范围 1..50），用 next 作为下一页的 skip；read 必须提供 key。其他方法的分页与上限见下方说明。方法在 Wasm jq 引擎中运行。用 oks_read 阅读 oks://builtin/tools/ktools.lib.jq；自定义 def name($args): ...; 方法保存在 oks://memory/tools/ktools.lib.jq，跨会话及工作区清理保留。库只包含定义和注释，保存前先编译，通过后替换有效文件。最终返回限 16 KiB，可缩小分支或使用内置分页。
 
-## projection
-
-### title
-
-按需查看知识分支
-
-### text
+## 按需查看知识分支
 
 用 oks_project 的 select 字符串精确选择知识分支。选择路径保留原有层级，未选择的兄弟分支不会自动展开；例如 types.Severity.values 不会同时带上 fields。先用 datasets:keys 或 datasets:len 看目录，再选择实际节点。通用规则见 oks://help/project.md，示例 ID 仅为示意。
 
-### help
+投影语法见 `oks://help/project.md`。
 
-#### input
+## 方法库
 
-oks://help/project.md
-
-## libraries
-
-### builtin
+### 内置方法库
 
 阅读 oks://builtin/tools/ktools.lib.jq，理解知识图形状与基本方法。该库只读。
 
-### memory
+### 持久方法库
 
 oks://memory/tools/ktools.lib.jq 保存已积累的自定义方法。通过完整库地址选择方法，同名方法互不覆盖。
 
-### authoring
+### 编写方法
 
 持久库只保存注释和 def name($args): ...; 定义。保存前先编译，内容无效时保留上次有效源码。该库跨会话及工作区清理保留。
 
-## query
+## 查询帮助
 
 用 oks_read({path:"oks://help/query.md"}) 阅读查询帮助。领域词汇用 va_ask 寻找线索，再通过检索和事实核实。
 
-## methodDescriptions
+## 内置方法说明
 
 ### search
 

@@ -847,7 +847,7 @@ ok('重复运行复用全部计算',secondRun.value.counts.executed===0);
 const shownReport=await call('oks_show',{input:draftFile+'#answer'});
 ok('报告附件落盘',existsSync(shownReport.value.path));
 const reportView=readReportPage(readFileSync(shownReport.value.path,'utf8'));
-ok('报告携带实际数据和 jq 代码',reportView.items.value_1===total && Object.values(reportView.assets).some(code=>String(code).includes('to_entries')));
+ok('报告携带实际数据和 jq 代码',reportView.dari.values.total===total && Object.values(reportView.dari.assets).some(code=>String(code).includes('to_entries')));
 await call('oks_edit',{path:draftFile,old_string:'总数 ',new_string:'查询总数 '});
 ok('改稿读取标记旧运行', (await call('oks_project',{input:draftFile+'#total'})).value.stale===true);
 const edited=await call('oks_run_answer',{src:draftFile});
@@ -1166,33 +1166,26 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     rendered.article.includes('<figcaption><span class="item-no">图 1</span>趋势</figcaption>')
     && rendered.article.includes('<div class="inline">图</div></figure>'));
 
+  const archive={version:1 as const,context:{run:'fixture',batch:'fixture',sourceHash:'fixture',startedAt:'2026-01-01T00:00:00Z',model:null,captures:[],acquisitions:[]},
+    dari:{source:'<Dari/>',title:'演示',notes:'a < b & c',pipeline:'',assets:{'p.jq':'x'},reports:{answer:'<article>趋势</article>'},figures:{},values:{'summary.growth':'12%'}}};
   const page = buildReportPage({
+    archive,
     meta: { kind: 'report', name: 'demo', at: '20260101T000000Z', title: '演示' },
     subtitle: '当月',
     generatedAt: '2026-01-01T00:00:00Z',
     article: rendered.article,
-    origin: archived.origin,
-    assets: archived.assets,
-    items: { summary: { growth: '12%' }, note: 'a < b & c' },
     outline: [{ level: 2, text: '趋势', id: 'section-1' }],
   });
   ok('页面：元数据区在页面里，JSON 里的 < 与 & 已转义',
-    page.includes(`<script type="application/json" id="${REPORT_METADATA_ID}">`)
+    page.includes(`<script type="json" id="${REPORT_METADATA_ID}">`)
     && page.includes('\\u003c') && page.includes('\\u0026'));
   ok('页面：写入自校验为良构 XML（含样式表、目录与中文）', checkWellFormed(page).length === 0);
   ok('页面：有来源的数字带浅绿背景样式，并带引用键的悬停提示',
     page.includes('span[data-oks-ref]') && page.includes('title="summary.growth"'));
 
   const back = readReportPage(page);
-  ok('读回：拿到 origin/assets/items 与缩水后的结构区',
-    !('error' in back) && Object.keys(back.assets).length === 1
-    && back.structure.includes('<!-- summary.growth --></span>') && back.items.summary.growth === '12%'
-    && back.structure.includes('<figure data-oks-ref="trend"><!-- omitted --></figure>'));
-  ok('读回：外壳、目录与页脚都不进结构区',
-    !('error' in back) && !back.structure.includes('<header>')
-    && !back.structure.includes('<nav>') && !back.structure.includes('<footer>'));
-  ok('读回：范围外的正文与目录锚点都保留',
-    !('error' in back) && back.structure.includes('<h2 id="section-1">趋势</h2>'));
+  ok('读回：元数据与归档一致',!('error' in back)&&JSON.stringify(back)===JSON.stringify(archive));
+  ok('读回：不附加正文结构或旧元数据',!('error' in back)&&JSON.stringify(Object.keys(back).sort())===JSON.stringify(['context','dari','version']));
   // 组装（纯函数）：校验 → 绑定过滤 → 编号 → 渲染 → 归档 → 页面。
   const makeBinding = (value, display) => ({
     src: 'oks://work/analysis.dari#x',
@@ -1220,7 +1213,7 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
   });
   ok('组装：产出页面、来源与资源（源码以 src:// 引用）',
     !('error' in assembled) && assembled.page.includes(`id="${REPORT_METADATA_ID}"`)
-    && assembled.page.includes('src://') && Object.keys(assembled.assets).length === 1);
+    && JSON.stringify(assembled.origin).includes('src://') && Object.keys(assembled.assets).length === 1);
   ok('组装：图按出现顺序编号并戴上 chip',
     !('error' in assembled) && assembled.page.includes('图 1</span>趋势'));
   ok('组装：内联的图剥掉了它自己的材料块',
@@ -1255,11 +1248,10 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
   ok('组装：正文不合规时连行列一起报出来',
     'error' in badBody && badBody.error.includes('第 1 行') && badBody.error.includes('要改'));
 
-  const metaRaw = new RegExp(`<script type="application/json" id="${REPORT_METADATA_ID}">([\\s\\S]*?)</script>`)
+  const metaRaw = new RegExp(`<script type="json" id="${REPORT_METADATA_ID}">([\\s\\S]*?)</script>`)
     .exec(page)?.[1] ?? '';
-  ok('元数据区只序列化 { origin, assets, items }，不夹带正文',
-    JSON.stringify(Object.keys(JSON.parse(metaRaw)).sort()) === JSON.stringify(['assets', 'items', 'origin'])
-    && !metaRaw.includes('<article'));
+  ok('元数据区只序列化 { version, context, dari }',
+    JSON.stringify(Object.keys(JSON.parse(metaRaw)).sort()) === JSON.stringify(['context', 'dari', 'version']));
 
   const chartBinding = () => makeBinding({ rows: [] }, {
     kind: 'chart',

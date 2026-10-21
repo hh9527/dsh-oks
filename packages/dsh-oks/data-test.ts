@@ -91,10 +91,10 @@ try {
     assert.equal(result.delivery.status,'ready',JSON.stringify(result));
     const html=readFileSync((await draftCall('oks_show',{input:file+'#answer'})).path,'utf8');
     const report=readReportPage(html);assert.ok(!('error' in report));
-    assert.deepEqual(report.items.selected,expected);
+    assert.deepEqual(report.dari.values['selected'+(pick==='.0.count'?'[0].count':pick)],pick==='.rowCount'?1:7);
     const visible={data:report};
-    assert.deepEqual(visible.data.items.selected,expected,'持久化读视图与报告归档负荷一致');
-    assert.ok(Object.values(report.origin.nodes).some(node=>node.kind==='input' && node.nature==='given'));
+    assert.deepEqual(visible.data.dari.values['selected'+(pick==='.0.count'?'[0].count':pick)],pick==='.rowCount'?1:7,'持久化读视图与报告归档负荷一致');
+    assert.equal(report.origin,undefined);
   }
   const conclusion='这是完整保留在最终报告中的结论内容，用于确认读取视图仅保留摘要而页面完整展示。';
   await write(source('selected <-jq("select.jq",{fact});',`<article><p><span data-oks-ref="selected" /></p><div data-oks-shrink=""><p>${conclusion}</p><p>下一条结论。</p></div></article>`)
@@ -103,11 +103,11 @@ try {
   assert.equal(result.delivery.status,'ready');
   const html=readFileSync((await draftCall('oks_show',{input:file+'#answer'})).path,'utf8');assert.ok(html.includes(conclusion));
   const view=readReportPage(html);
-  assert.equal(view.items.selected,7);assert.ok(!view.structure.includes('下一条结论。'));
+  assert.equal(view.dari.values.selected,7);assert.equal(Object.hasOwn(view,'structure'),false);
   const report=readReportPage(html);assert.ok(!('error' in report));
-  assert.ok(Object.values(report.assets).some(code=>code.trim()==='.fact.rows[0].count'));
-  assert.ok(Object.values(report.origin.nodes).some(node=>node.snipFile===file+'#select.jq'));
+  assert.ok(Object.values(report.dari.assets).some(code=>code.trim()==='.fact.rows[0].count'));
+  assert.ok(report.dari.pipeline.includes('select.jq'));
   await call('oks_delete',{path:file});
-  assert.equal(readReportPage(html).items.selected,7,'源码删除后自足报告仍可读取');
+  assert.equal(readReportPage(html).dari.values.selected,7,'源码删除后自足报告仍可读取');
   console.log('data boundary: readonly knowledge/data, budgets, pagination, projected report payloads and archived jq provenance passed');
 } finally {definitions.dispose();drafts.dispose();engine.dispose();rmSync(root,{recursive:true,force:true});}

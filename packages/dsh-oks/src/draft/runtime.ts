@@ -1,3 +1,5 @@
+import {buildReportArchive,type ReportArchive,type ExecutionContext} from './archive.ts';
+import {withReportArchive} from '../report/page.ts';
 import { COMPONENT_KINDS, type FigureKind } from './components.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { canonicalJson } from '../key.ts';
@@ -12,7 +14,7 @@ import type { DataOrigin, ResultColumn } from '../results.ts';
 export type ValueSource = { display?: { kind: 'chart' | 'table'; content: string }; delivery?: { html: string; title: string }; origin: DataOrigin; at: (string | number)[]; path: (string | number)[] };
 /** Internal plan payload; carried by a whole value reference, never by JSON construction/projection. */
 export type QueryPlan = { environment: string; intent: unknown; sql: string; bindings: unknown[]; columns: ResultColumn[]; limit_slot: number };
-export type DraftValue = { data: unknown; sources: ValueSource[]; plan?: QueryPlan };
+export type DraftValue = { data: unknown; sources: ValueSource[]; plan?: QueryPlan; reportValues?: Record<string,unknown> };
 export type Computed = { data: unknown; evidence?: unknown };
 export type CallContext = {
   operator: Operator;
@@ -28,6 +30,8 @@ export type CallContext = {
   signal?: AbortSignal;
 };
 export interface DraftBackend {
+  /** 仅记录执行所需的模型标识，不复制宿主配置。 */
+  executionContext?(): ExecutionContext['model'];
   /** Deterministic checks must complete before execute is called for any node. */
   preflight(document: DraftDocument, signal?: AbortSignal): Promise<void>;
   /** Include the actual compiler/model/source/renderer environment affecting this operator. */
@@ -56,6 +60,7 @@ export type Acquisition = {
   fromBatch: string;
 };
 export type DraftRun = {
+  archive?: ReportArchive;
   id: string;
   sourceHash: string;
   batch: string;
@@ -170,6 +175,8 @@ export class DraftRuntime {
       const jobs=new Map<string,Promise<void>>();
       const pending=new Map<string,Promise<Computed>>();
       const captures=new Map<string,Capture>();
+      const contextCaptures:ExecutionContext['captures']=[];
+      const model=structuredClone(this.backend.executionContext?.()??null);
       let outputBytes = 0;
       const executeNode=async(node:PipelineNode) => {
         const statement = node.statement;
@@ -264,6 +271,7 @@ export class DraftRuntime {
             if (this.acquisitionHistory.size >= 128) this.acquisitionHistory.delete(this.acquisitionHistory.keys().next().value!);
             this.acquisitionHistory.set(identity, { environment: environmentHash, batch: run.batch });
           }
+          if(expr.operator==='context')contextCaptures.push({binding:name,at:{line:expr.span.start.line,column:expr.span.start.column},value:structuredClone(value.data)});
           if(acquisition) this.captured.add(key);
           if (!hit) { if(cacheable)this.store(key, result, acquisition, capture); executed = true; }
           return value;
@@ -294,6 +302,16 @@ export class DraftRuntime {
       // Completion order does not change the public source order.
       run.outputs=new Map([...jobs.keys()].flatMap(name=>run.outputs.has(name)?[[name,run.outputs.get(name)!] as const]:[]));
       run.acquisitions.sort((a,b)=>a.at.line-b.at.line||a.at.column-b.at.column);
+      if(document.authoring&&[...run.outputs.values()].some(state=>state.value?.sources.some(source=>source.delivery))){
+        const archive=buildReportArchive(document.authoring,run,{
+          run:run.id,batch:run.batch,sourceHash:run.sourceHash,startedAt:new Date(run.at).toISOString(),model,
+          captures:contextCaptures.sort((a,b)=>a.at.line-b.at.line||a.at.column-b.at.column),acquisitions:run.acquisitions,
+        });
+        if(outputBytes+Buffer.byteLength(canonicalJson(archive))>this.maxOutputBytes){
+          for(const [name,state]of run.outputs)if(state.value?.sources.some(source=>source.delivery))
+            run.outputs.set(name,{...state,status:'failed',value:undefined,error:'Report archive storage budget exceeded; narrow figure inputs or draft outputs'});
+        }else run.archive=archive;
+      }
       run.status = options.signal?.aborted ? 'cancelled' : 'complete';
     } catch (error) {
       run.status = options.signal?.aborted ? 'cancelled' : 'invalid';
@@ -319,7 +337,13 @@ export class DraftRuntime {
     if (!output) throw new Error(`Output ${name} is not defined in the latest run`);
     if(output.internal)throw new Error('Internal template nodes are not public bindings');
     if (!output.value) throw new Error(`Output ${name} is ${output.status}: ${output.error ?? ''}`);
-    return { run: run.id, sourceHash: run.sourceHash, stale: hash(currentSource) !== run.sourceHash, value: structuredClone(output.value) };
+    const value=structuredClone(output.value);
+    const source=value.sources.length===1?value.sources[0]:undefined;
+    if(run.archive&&source?.delivery&&source.at.length===0&&source.path.length===0){
+      source.delivery.html=withReportArchive(source.delivery.html,run.archive);
+      value.data=structuredClone(run.archive);
+    }
+    return { run: run.id, sourceHash: run.sourceHash, stale: hash(currentSource) !== run.sourceHash, value };
   }
 
   describe(currentSource: string) {

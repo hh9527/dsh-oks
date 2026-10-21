@@ -1,17 +1,14 @@
-import source from './help/figures.md';
-import { readHelpMarkdown } from './help.ts';
+import { presentationFacts as authored } from './presentation-facts.ts';
 import { COMPONENT_KINDS } from './draft/components.ts';
 import { CHART_KINDS, EXPRESSION_SUPPORT } from './chart/shared.ts';
 import { AUTHOR_ATTRIBUTES, AUTHOR_ELEMENTS } from './report/xhtml.ts';
 import { resolveFact } from './knowledge-graph.ts';
 import type { SemanticGraph } from './knowledge-graph.ts';
 
-const authored = readHelpMarkdown(source);
 export const tableHeaderExample = authored.examples.tableHeaders;
 export const presentationExample: string = authored.examples.report;
-export const presentationHelp = authored.overview;
 
-/** 手写内容来自 Markdown；组件、能力矩阵、白名单与反向引用由当前实现生成。 */
+/** 直接挂载结构化事实；组件、能力矩阵、白名单与反向引用由当前实现生成。 */
 export function mountPresentationKnowledge(graph: SemanticGraph): void {
   graph.tools = {};
   for (const [owner, raw] of Object.entries(authored.roots)) {

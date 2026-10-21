@@ -1,3 +1,4 @@
+import { projectionCode } from './projection.ts';
 import { componentSpec } from './components.ts';
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
@@ -170,11 +171,12 @@ export function createDraftBackend(options: {
           checked = { error: error.message,jqErrors:error.diagnostics };
         }
       } else {
-        const result = checkAuthorXhtml(asset.source);
+        const result = asset.checkedXhtml??checkAuthorXhtml(asset.source);
         checked = { result, ...(result.errors.length ? { error:result.errors[0].message,xhtmlErrors:result.errors } : {}) };
       }
       checks.set(key, checked);
     }
+    if(asset.language==='xhtml'&&checked.result)asset.checkedXhtml=checked.result as ReturnType<typeof checkAuthorXhtml>;
     if(checked.error){
       const diagnostics:SourceDiagnostic[]=[];
       const map=(start:number,end:number,unit:'utf16'|'utf8'='utf16'):Span=>{
@@ -389,16 +391,26 @@ export function createDraftBackend(options: {
     if (ctx.operator === 'render_html') {
       const bindings = bindingsOf(ctx.args[1]);
       const title = ctx.title ?? ctx.asset!.name.replace(/\.xhtml$/, '');
-      const report = assembleReport({ name: 'answer', title, subtitle: null, category: '即时分析', at: resultStamp(), draft: node.draft, motivation: node.motivation, xhtml: ctx.asset!.source, figurePlacement:ctx.asset!.figurePlacement, bindings,
+      const report = assembleReport({ name: 'answer', title, subtitle: null, category: '即时分析', at: resultStamp(), draft: node.draft, motivation: node.motivation, xhtml: ctx.asset!.source, checked:ctx.asset!.checkedXhtml, figurePlacement:ctx.asset!.figurePlacement, bindings,
         valueOf: (ref, pick) => pickScalar(bindings[ref]?.value, pick),
       });
       if ('error' in report) throw new Error(report.error);
       origin = restoreAssets(report.origin, report.assets);
-      return { data: { assets: report.assets, items: report.items }, sources: [{ origin, at: [], path: [], delivery: { html: report.page, title } }] };
+      const picks=ctx.asset!.references
+        ?Object.entries(ctx.asset!.references).filter(([,reference])=>reference.kind==='value').map(([ref])=>({ref,pick:undefined as string|undefined}))
+        :(ctx.asset!.checkedXhtml??checkAuthorXhtml(ctx.asset!.source)).picks;
+      const reportValues=Object.fromEntries(picks.map(({ref,pick})=>{
+        let value=bindings[ref].value;
+        if(pick&&pick!=='.')for(const key of pick.slice(1).split('.'))value=(value as Record<string,unknown>)[key];
+        const path=pick&&pick!=='.'?pick.slice(1).split('.').map(key=>/^\d+$/.test(key)?Number(key):key):[];
+        const code=ctx.asset!.references?.[ref]?.code??projectionCode(ref,path);
+        return [code,value];
+      }));
+      return { data: { assets: report.assets, items: report.items }, reportValues, sources: [{ origin, at: [], path: [], delivery: { html: report.page, title } }] };
     }
     const evidence = computed.evidence as { display?: { kind: 'chart' | 'table'; content: string } } | undefined;
     return { data: computed.data, sources: [{ origin, at: [], path: [], ...(evidence?.display ? { display: evidence.display } : {}) }],
       ...(ctx.operator==='query'?{plan:(computed.evidence as {plan:QueryPlan}).plan}:{}) };
   };
-  return { preflight, environment, execute, assemble };
+  return { preflight, environment, execute, assemble, executionContext:()=>({hash:entry.modelHash??null,domain:entry.settings?.domain??null}) };
 }

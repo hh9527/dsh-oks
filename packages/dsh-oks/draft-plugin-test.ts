@@ -1,3 +1,4 @@
+import {readReportPage} from './src/report/page.ts';
 import {testAttachments} from './test-attachments.ts';
 import { asDari } from './test-markdown.ts';
 // Run against a standalone bundle + colocated Wasm, not the source module graph.
@@ -71,6 +72,11 @@ try {
   const shownReport=await call('oks_show',{input:'oks://work/draft.dari#answer'});
   assert.match(shownReport.value.path,/\.report\.html$/);
   assert.match(readFileSync(shownReport.value.path,'utf8'),new RegExp(String(count)));
+  const archive=readReportPage(readFileSync(shownReport.value.path,'utf8'));
+  assert.ok(!('error' in archive));assert.equal(archive.version,1);assert.equal(archive.dari!.source,asDari(source));
+  assert.equal(archive.context!.batch,firstBatch);assert.equal(typeof archive.context!.model!.domain,'string');
+  assert.ok(archive.context!.captures.length>0);
+  assert.equal((await call('oks_project',{input:'oks://work/draft.dari#answer',select:'dari.source,context.batch'})).value.data.dari.source,asDari(source));
   result=await call('oks_project',{input:'oks://knowledge',transform:{lib:'oks://builtin/tools/ktools.lib.jq',name:'search',args:{query:'current_alarm',take:2}}});
   assert.ok(result.value.data.total>0);
   const explore=async(name:string,args:unknown)=>(await call('oks_project',{input:'oks://knowledge',transform:{lib:'oks://builtin/tools/ktools.lib.jq',name,args}})).value.data;
@@ -134,7 +140,7 @@ try {
   result=await call('oks_run_answer',{src:'oks://work/example.dari'});
   assert.equal(result.value.delivery.status,'ready',result.text);
   const exampleReport=(await call('oks_project',{input:'oks://work/example.dari#reports.conclusion'})).value.data;
-  assert.equal(exampleReport.items.value_1,2);assert.equal(exampleReport.items.value_2,5);
+  assert.equal(exampleReport.dari.values["summary.rows"],2);assert.equal(exampleReport.dari.values["summary.total"],5);
   const columnSource=['## pipeline','```js',
     'epoch <-exec_query(query({op:"Graph",root:"x",nodes:[{id:"x",entity:"device"}],edges:[],select:[{node:"x",dimension:"device_create_ms"}],limit:1}));',
     'utc <-exec_query(query({op:"Graph",root:"x",nodes:[{id:"x",entity:"device_kpi"}],edges:[],select:[{node:"x",dimension:"device_kpi_ts_raw"}],limit:1}));',

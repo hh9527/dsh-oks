@@ -1,20 +1,27 @@
-/** 报告页面：元数据区 + 结构区，写出来与读回来都走这里。
- *
- *  页面由我们生成，因此**写入时自校验为良构 XML**（`checkWellFormed`），读回按严格 XML 解析——
- *  不需要宽容的 HTML 解析路径。元数据区是来源链、展示项与源码资源唯一的家；结构区只写人读的东西，
- *  靠 `data-oks-ref` 引用元数据里的项。
- */
+import type { ReportArchive } from '../draft/archive.ts';
+/** 报告页面由工具生成；元数据使用固定标记定位，回读只解析 JSON。 */
 import { createHash } from 'node:crypto';
 import { embedArtifactMeta } from '../results.ts';
 import type { ArtifactMeta, DataOrigin, OriginNode } from '../results.ts';
 import { REPORT_STYLE } from '../chart/report.ts';
 import { escapeHtml } from '../chart/markdown.ts';
-import { errorText } from '../host.ts';
-import { checkWellFormed, escapeAttribute, extractStructure, readElementText, rewriteXml } from './xhtml.ts';
+import { errorText, isRecord } from '../host.ts';
+import { checkWellFormed, escapeAttribute, rewriteXml } from './xhtml.ts';
 import type { ElementPolicy } from './xhtml.ts';
 
 /** 元数据区在页面里的 id。 */
 export const REPORT_METADATA_ID = 'oks-metadata';
+export const REPORT_METADATA_OPEN = `<script type="json" id="${REPORT_METADATA_ID}">`;
+const REPORT_METADATA_CLOSE = '</script>';
+
+/** JSON 正文会转义所有 <，因此结束标记不会与数据或作者源码混淆。 */
+function metadataRange(html:string):{start:number;end:number}|undefined {
+  const open=html.indexOf(REPORT_METADATA_OPEN);
+  if(open<0)return undefined;
+  const start=open+REPORT_METADATA_OPEN.length;
+  const end=html.indexOf(REPORT_METADATA_CLOSE,start);
+  return end<0?undefined:{start,end};
+}
 
 /** 报告内联资源的引用前缀：工作区路径解析器明确拒绝它，隔离由协议保证。 */
 export const ASSET_SCHEME = 'src://';
@@ -22,7 +29,7 @@ export const ASSET_SCHEME = 'src://';
 /** 元数据区的 JSON。XML 里 `<script>` 是普通文本，所以 `<`、`&` 与 `>` 都写成 JSON 的 \uXXXX 转义：
  *  一个 `</script>`、一个 `&`、或文本里出现 `]]>`（XML 明文里非法）都会让整页不再是良构 XML。
  *  三者都转义之后，数据与源码里出现什么字符都不会影响页面。 */
-export const metadataJson = (payload: { origin: unknown; assets: unknown; items: unknown }): string =>
+export const metadataJson = (payload: Record<string,unknown> | ReportArchive): string =>
   JSON.stringify(payload)
     .replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
 
@@ -158,9 +165,8 @@ export interface ReportPageInput {
   generatedAt: string;
   /** 渲染好的结构区（`renderStructure` 的产物）。 */
   article: string;
-  origin: DataOrigin;
-  assets: Record<string, string>;
-  items: Record<string, unknown>;
+  /** DAG 结束后注入完整归档；组装页面时允许先留空元数据。 */
+  archive?: ReportArchive;
   /** 章节标题（取自结构区的 h1–h3），用于目录。 */
   outline: Array<{ level: number; text: string; id: string }>;
 }
@@ -181,7 +187,7 @@ export function buildReportPage(input: ReportPageInput): string {
 <style>
 ${REPORT_STYLE}
 </style>
-<script type="application/json" id="${REPORT_METADATA_ID}">${metadataJson({ origin: input.origin, assets: input.assets, items: input.items })}</script>
+${REPORT_METADATA_OPEN}${metadataJson(input.archive??{})}${REPORT_METADATA_CLOSE}
 </head>
 <body>
 <header>
@@ -191,7 +197,7 @@ ${input.subtitle === null ? '' : `<p class="subtitle">${escapeHtml(input.subtitl
 </header>
 ${nav === '' ? '' : `<nav><span class="nav-title">目录</span>${nav}</nav>`}
 ${input.article}
-<footer>本报告由 oks 插件生成 · 单文件自足；引用项的最终数据、来源链与源码资源都在页面里（${REPORT_METADATA_ID}）</footer>
+<footer>本报告由 oks 插件生成 · 单文件自足；DARI 源码、展示数据与执行上下文都在页面里（${REPORT_METADATA_ID}）</footer>
 </body>
 </html>
 `;
@@ -204,41 +210,32 @@ ${input.article}
   return named;
 }
 
-export interface ReportPageParts {
-  origin: DataOrigin;
-  assets: Record<string, string>;
-  items: Record<string, unknown>;
-  /** 阅读摘要结构区：引用值与限长正文摘要放在注释中，图表内容省略。 */
-  structure: string;
+/** 回读工具生成的报告：只读取固定标记内的 JSON，不解析 HTML 正文。 */
+export function readReportPage(html:string):ReportArchive|{error:string} {
+  const range=metadataRange(html);
+  if(!range)return {error:'报告缺少完整的 oks-metadata JSON 元数据区。'};
+  let parsed:ReportArchive;
+  try {
+    parsed=JSON.parse(html.slice(range.start,range.end));
+  }catch(cause){
+    return {error:`报告元数据区不是 JSON：${errorText(cause)}`};
+  }
+  if(!isRecord(parsed))return {error:'报告元数据区必须是对象。'};
+  if(parsed.version!==1)return {error:'不支持的报告归档版本。'};
+  const c=parsed.context,d=parsed.dari;
+  if(!isRecord(c)||!isRecord(d)||typeof d.source!=='string'||typeof d.pipeline!=='string'||typeof d.title!=='string'||typeof d.notes!=='string'
+    ||!isRecord(d.assets)||!Object.values(d.assets).every(value=>typeof value==='string')
+    ||!isRecord(d.reports)||!Object.values(d.reports).every(value=>typeof value==='string')||!isRecord(d.figures)
+    ||!Object.values(d.figures).every(value=>isRecord(value)&&typeof value.code==='string'&&typeof value.binding==='string'&&typeof value.status==='string')
+    ||typeof c.run!=='string'||typeof c.batch!=='string'||typeof c.sourceHash!=='string'||typeof c.startedAt!=='string'
+    ||!isRecord(d.values)||!Object.values(d.values).every(value=>value===null||['string','number','boolean'].includes(typeof value))
+    ||!Array.isArray(c.captures)||!Array.isArray(c.acquisitions))return {error:'报告 DARI 归档或执行上下文不完整。'};
+  return {version:parsed.version,context:parsed.context,dari:parsed.dari};
 }
 
-/** 读回页面：元数据区 + 结构区（顺带缩水）。 */
-export function readReportPage(html: string): ReportPageParts | { error: string } {
-  const raw = readElementText(
-    html,
-    (tag) => tag.name === 'script' && tag.attributes['id'] === REPORT_METADATA_ID,
-  );
-  if (raw === null) return { error: '这份报告里没有元数据区（不是本插件生成的？）' };
-  let parsed: { origin?: DataOrigin; assets?: Record<string, string>; items?: Record<string, unknown> };
-  try {
-    parsed = JSON.parse(raw) as typeof parsed;
-  } catch (cause) {
-    return { error: `报告元数据区不是 JSON：${errorText(cause)}` };
-  }
-  const { origin, assets, items } = parsed;
-  if (origin === undefined || assets === undefined || items === undefined) {
-    return { error: '报告元数据区缺少 origin / assets / items 中的某一段。' };
-  }
-  for (const [id, node] of Object.entries(origin.nodes)) {
-    const ref = node.byFile;
-    if (ref !== undefined && ref.startsWith(ASSET_SCHEME) && assets[ref.slice(ASSET_SCHEME.length)] === undefined) {
-      return { error: `来源节点 ${id} 引用的资源 ${ref} 不在报告里：报告被改坏了？` };
-    }
-  }
-  const structure = extractStructure(html, true);
-  if (structure.errors.length > 0) {
-    const first = structure.errors[0]!;
-    return { error: `报告结构区不是良构 XML：${first.message}（第 ${first.line} 行第 ${first.column} 列）` };
-  }
-  return { origin, assets, items, structure: structure.xml };
+/** 用字符串切片写入已结束运行的快照；不解析页面、不获取时钟、不重新计算。 */
+export function withReportArchive(html:string,archive:ReportArchive):string {
+  const range=metadataRange(html);
+  if(!range)throw new Error('报告缺少完整的 oks-metadata JSON 元数据区，无法嵌入 DARI 归档');
+  return html.slice(0,range.start)+metadataJson(archive)+html.slice(range.end);
 }

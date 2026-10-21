@@ -50,7 +50,7 @@ try {
   assert.match(html, />42<\/span>/);
   assert.match(html, /<svg/);
   assert.match(html, /<table>/);
-  assert.match(html, /summary\.jq/);
+  assert.ok(Object.values(answer.sources[0].origin.nodes).some(node=>node.snipFile?.endsWith('#summary.jq')));
   assert.equal(checkWellFormed(html).length, 0);
   const node = answer.sources[0].origin.nodes[answer.sources[0].origin.root];
   assert.equal((node.spec as { xhtml: string }).xhtml.includes('<article>'), true);

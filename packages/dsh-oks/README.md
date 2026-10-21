@@ -155,7 +155,7 @@ LocalDateTime 是不带时区或偏移量的日期与钟表时间。旧模型未
 XHTML 使用 `<article>` 根、严格元素/属性子集、显式自闭合空元素。
 标量使用 data-oks-ref/data-oks-pick，图使用 figure 引用，绑定与正文双向核对。
 正文业务数字通过引用填入；文字数字用 span 的 data-oks-lit 声明，解释段用 data-oks-shrink 标记。
-报告读模型为 `{assets,items,structure}`，structure 是有界阅读摘要，完整引用数据在 items。
+报告读模型为 `{version,context,dari}`，图表数据在 dari.figures，正文引用值在 dari.values，报告正文源码在 dari.reports。
 
 ## 工作区与运行配置
 
@@ -209,6 +209,9 @@ bin/telora -C <模型目录> build <模型名> --snapshot \
 
 ## 开发与验收
 
+`mdast-util-from-markdown` 仅供旧 Markdown 草稿的迁移脚本与测试夹具使用，属于开发依赖，不进入插件运行产物。
+
+
 TypeScript 在 src/，纯 jq Wasm 引擎在 crates/oks-wti。产物仅为 lib/index.mjs 与同目录 oks-wti.wasm。
 XHTML 和 echarts 依赖及技能源码在构建期打包，运行不依赖源码或 node_modules。
 Node 按 URL 缓存 ESM，link 安装需要重建并重启 profile 才加载新模块。
@@ -261,8 +264,14 @@ node scripts/split-query.ts old.dari new.dari
 
 入口提示词保留任务和工作方法。工具帮助是 oks://help/*.md 只读文本文件，用 oks_list({path:"oks://help/"}) 列出，再用 oks_read({path:"oks://help/draft.md"}) 阅读，offset/limit 按行分页。knowledge.md 解释整体知识图，project.md 解释数据投影，draft.md、query.md、time.md 和 figures.md 分别提供分析稿、查询、时间与呈现的方法。
 
-手写的工具帮助统一维护在 `src/help/*.md`，按 Markdown 标题层级组织知识字段；构建时内联。维护约定见 `src/help/README.md`。组件、能力矩阵和白名单由实现生成。
+工具帮助统一维护在 `src/help/*.md`，作为普通 Markdown 文本在构建时内联，不转换为结构化知识。图表和报告的结构化能力与示例直接维护在 `src/presentation-facts.ts`；组件、能力矩阵和白名单由实现生成。维护约定见 `src/help/README.md`。
 
 文本读取：`oks_read` 与标准 read 使用相同窗口规则：默认/最多 2000 行，单行保留 2000 字符并标注截断，正文上限 50 KiB，返回续读 offset；偏移越界报错。文件目录使用 `oks_list`。
 
 `oks_project` 超限返回 `{error:"payload_too_large",repr,reprLength,len}`；repr 为完整数据 JSON 编码的前 4096 个字符，reprLength 为完整编码的 string.length，len 为数组/字符串长度或对象键数（其他值为 null）。
+
+### 报告归档
+
+DARI 报告 HTML 在非执行元数据中保留 `{version:1,context,dari}`。context 是本次运行与实际采集的快照；dari 包含完整 source、title、notes、assets、pipeline、reports，以及所有图表的 code、binding、status 和成功时的实际 data。dari.values 以规范化投影 code 为键，保存正文实际引用的标量，例如 `{"summary.total":42}`；相同投影跨报告去重。归档只保存图表数据与正文引用值，不保存全部中间绑定。整稿源码可完整恢复，导出不会刷新时间或执行查询。
+
+用 `oks_project({input:"oks://work/分析.dari#reports.answer",select:"context,dari.pipeline"})` 按需查看。图表与报告无依赖的分支执行结束后也纳入归档；失败分支保留状态。归档受运行存储预算约束。

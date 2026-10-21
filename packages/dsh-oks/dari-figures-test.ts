@@ -50,7 +50,7 @@ try{
  assert.equal((readFileSync(shown.path,'utf8').match(/图 1：/g)??[]).length,2);assert.match(readFileSync(shown.path,'utf8'),/表 1：/);assert.doesNotMatch(readFileSync(shown.path,'utf8'),/图 2：/);
  assert.match(readFileSync((await call('oks_show',{input:file+'#reports.tables'})).path,'utf8'),/图 1：/);
  const tableShown=await call('oks_show',{input:file+'#figures.details'});assert.match(readFileSync(tableShown.path,'utf8'),/<table/);assert.deepEqual(tableShown.present,{files:[{path:tableShown.path,description:tableShown.title}]});assert.equal(tableShown.markdown,undefined);
- const archived=readFileSync(shown.path,'utf8');const reportData=readReportPage(archived);assert.ok(!('error' in reportData));assert.ok(Object.keys(reportData.items).length>0);assert.equal(typeof reportData.assets,'object');
+ const archived=readFileSync(shown.path,'utf8');const reportData=readReportPage(archived);assert.ok(!('error' in reportData));assert.ok(Object.keys(reportData.dari.figures).length>0);assert.equal(typeof reportData.dari.assets,'object');
  assert.deepEqual((await call('oks_show',{input:file+'#reports.overview'})).attachment,shown.attachment);
  write(source.replace('说明','修改说明'));assert.equal((await call('oks_show',{input:file+'#reports.overview'})).stale,true);
  await assert.rejects(call('oks_show',{input:file+'#figures.severity'},{agent:{session:{id:'other'}}}),/No retained/);

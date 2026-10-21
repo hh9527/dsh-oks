@@ -1,9 +1,17 @@
 import builtinKtoolsSource from './builtin/ktools.lib.jq';
-import knowledgeHelpSource from './help/knowledge.md';
-import { readHelpMarkdown } from './help.ts';
-import { timeHelp, timeWindows, timeWindowCode } from './time-programs.ts';
+import { timeWindows, timeWindowCode } from './time-programs.ts';
 
-const knowledgeDocs = readHelpMarkdown(knowledgeHelpSource);
+// 方法元数据直接描述接口；使用说明位于 Markdown 帮助和 jq 源码注释。
+const methodDescriptions:Record<string,string> = {
+  search:'检索 ID、名称和说明，返回语义地址与精简匹配结果。',
+  members:'读取分类出向引用或自有成员。',
+  references:'查找指向精确语义地址的入向引用。',
+  read:'配对读取事实分支与对应说明。',
+  overview:'分页列出数据集名称、粒度与能力数量。',
+  card:'分页读取数据集的维度、度量、时间角色、关系与值域。',
+  nodes:'批量读取节点的说明、提纲或精简事实。',
+  routes:'在深度、路径数与边检查预算内探索有向连接。',
+};
 
 // jq 实现在独立源码中；这里仅描述工具参数并执行入口校验。
 const methodArgs:Record<string,string[]> = {
@@ -26,13 +34,9 @@ const methodDefaults=(name:string):Record<string,unknown>=>({
 export {builtinKtoolsSource};
 export const knowledgePrograms:Record<string,{description:string;args:string[];source:string}> =
   Object.fromEntries(Object.entries(methodArgs).map(([name,args])=>[name,{
-    description:knowledgeDocs.methodDescriptions[name],args,source:`${builtinKtoolsSource}\n${name}($args)`,
+    description:methodDescriptions[name],args,source:`${builtinKtoolsSource}\n${name}($args)`,
   }]));
 
-export const knowledgeHelp = {
-  ...knowledgeDocs,
-  programs:Object.fromEntries(Object.entries(knowledgePrograms).map(([name,p])=>[name,{transform:{lib:'oks://builtin/tools/ktools.lib.jq',name},description:p.description,args:p.args.filter(key=>key!=='input')}])),
-};
 export function toolResource(src:string):unknown {
   if(src==='builtin://time/windows.jq')return timeWindows;
   if(src==='oks://builtin/tools/ktools.lib.jq')return {source:builtinKtoolsSource,readonly:true};
