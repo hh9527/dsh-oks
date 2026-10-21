@@ -23,9 +23,9 @@ export default defineConfig([
     minify: false,
     unbundle: false,
     deps: { alwaysBundle: [/^echarts/, /^zrender/, /^tslib$/, /^saxes$/, /^xmlchars$/, /^mdast-util-/, /^micromark/, /^unist-util-/, /^decode-named-character-reference$/, /^character-entities$/, /^devlop$/] },
-    // 提示词是源码（src/skill.md、src/va-prompt-tpl.md），由打包器在构建期内联成字符串常量——
+    // 提示词、帮助与 src/builtin/*.jq 由打包器在构建期内联成字符串常量——
     // 产物因此不需要任何旁文件。
-    loader: { '.md': 'text' },
+    loader: { '.md': 'text', '.jq': 'text' },
     outExtensions: () => ({ js: '.mjs' }),
   },
 ]);

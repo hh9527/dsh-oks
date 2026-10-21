@@ -2,11 +2,11 @@
 <Notes>下面的数值是演示数据，用于体验稿件执行、图表和交付。</Notes>
 <Pipeline>
 // 为演示提供两行数据，并明确标记其性质。
-let sample = data([{label:"A",value:2},{label:"B",value:3}],{kind:"example"});
-let summary = jq("summary.jq",{sample});
-debug(summary);
-let chartSpec = {x:"label",value:"value",title:"示例数值"};
-let tableSpec = {columns:["label","value"]};
+sample <- data([{label:"A",value:2},{label:"B",value:3}],{kind:"example"});
+summary <- jq("summary.jq",{sample});
+chartSpec <- {x:"label",value:"value",title:"示例数值"};
+tableSpec <- {columns:["label","value"]};
+{summary}
 </Pipeline>
 <Asset language="jq" name="summary.jq">
 {total:(.sample | map(.value) | add),rows:(.sample | length)}

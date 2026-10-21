@@ -26,8 +26,8 @@ const drafts=createDraftTools({knowledge,attachments:()=>attachments,timeContext
 const caller={agent:{session:{id:'figures'}}};
 const call=async(name:string,args:unknown,exec=caller)=>{const tool=drafts.tools.find(t=>t.name===name)!;const result=await (tool.execute as Function)(args,exec);assert.deepEqual(result,JSON.parse(JSON.stringify(result)));return result;};
 const base=`<Dari title="告警分析"><Pipeline>
-let rows=data([{level:"major",n:3},{level:"minor",n:2}]);
-let spec={x:"level",value:"n",title:"级别分布"};let table={columns:["level","n"]};
+rows <-data([{level:"major",n:3},{level:"minor",n:2}]);
+spec <-{x:"level",value:"n",title:"级别分布"};table <-{columns:["level","n"]};
 </Pipeline><Figures><PieChart name="severity" spec={spec} data={rows} /><Table name="details" spec={table} data={rows} /></Figures>`;
 const report=(name:string,body:string)=>`<Report name="${name}"><article>${body}</article></Report>`;
 const fig=(name:string)=>`<figure><Figure ref="${name}"/><figcaption>说明</figcaption></figure>`;
@@ -35,7 +35,7 @@ const write=(s:string)=>writeFileSync(physical,s);
 try{
  await assert.rejects(call('oks_run_answer',{src:file,delivery:'artifact'}),/Expected only/);
  write(base+'</Dari>');let run=await call('oks_run_answer',{src:file});assert.equal(run.delivery.status,'exploring');assert.equal(run.ok,true);
- assert.deepEqual((await call('oks_data',{input:file+'#figures.severity',pointer:'/rows'})).data,[{level:'major',n:3},{level:'minor',n:2}]);
+ assert.deepEqual((await call('oks_project',{input:file+'#figures.severity',select:"'rows'"})).data.rows,[{level:'major',n:3},{level:'minor',n:2}]);
  const first=await call('oks_show',{input:file+'#figures.severity'});assert.equal(first.kind,'chart');assert.match(readFileSync(first.path,'utf8'),/<svg/);assert.equal(first.stale,false);assert.equal(first.present,undefined);
  const show=drafts.tools.find(t=>t.name==='oks_show')!;
  assert.ok((show.output.render as Function)({},first)[0].text.length<1000);assert.ok(!(show.output.render as Function)({},first)[0].text.includes('<svg'));

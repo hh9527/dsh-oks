@@ -1,7 +1,8 @@
+import {readWindow,readArgs,READ_STREAM_MIN_SIZE} from './read.ts';
 import { sourcePath, LIBRARY_PATH } from './resource-path.ts';
 import { KTOOLS_FILE, KTOOLS_INITIAL_SOURCE } from './ktools-path.ts';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync,
+import { createReadStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync,
   writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { errorText, isRecord } from './host.ts';
@@ -592,7 +593,7 @@ function readWorkTextWhole(root: string, path: unknown, tool: string): { rel: st
     text = rel===KTOOLS_FILE&&!existsSync(full)?KTOOLS_INITIAL_SOURCE:readFileSync(full, 'utf8');
   } catch {
     throw new Error(`读不到 ${rel}`
-      + `。材料、图表件与报告不在 ${WORK_DIR}/ 下：要读它们用 oks_data（用 pointer、project 或 method 取一段）；`
+      + `。材料、图表件与报告不在 ${WORK_DIR}/ 下：要读它们用 oks_project（用 select 选择或 transform 处理）；`
       + `${WORK_DIR}/ 只装你自己写的文件。`);
   }
   const bytes = Buffer.byteLength(text, 'utf8');
@@ -602,31 +603,19 @@ function readWorkTextWhole(root: string, path: unknown, tool: string): { rel: st
   return { rel, text };
 }
 
-/** 读一份 `.work/` 下的文本文件：按行给（带行号），可以分页——这是"代码看得见"的那一半。 */
-export function readWorkFile(root: string, path: unknown, offset: unknown, limit: unknown, tool: string): {
-  file: string; lines: string[]; from: number; total: number; bytes: number;
-} {
-  const { rel, text } = readWorkTextWhole(root, path, tool);
-  return readTextLines(text,rel,offset,limit,tool);
+/** Bounded source read; large files stream while the full line count remains exact. */
+export async function readWorkFile(root:string,path:unknown,offset:unknown,limit:unknown,tool:string) {
+  readArgs(offset,limit);
+  const {rel,full}=workPath(root,path,tool);
+  if(rel===KTOOLS_FILE&&!existsSync(full))return readTextLines(KTOOLS_INITIAL_SOURCE,rel,offset,limit,tool);
+  const stat=statSync(full);
+  if(!stat.isFile())throw new Error(`Not a regular file: ${rel}`);
+  const chunks=stat.size>=READ_STREAM_MIN_SIZE?createReadStream(full,{encoding:'utf8'}):[readFileSync(full,'utf8')];
+  return readWindow(chunks,rel,offset,limit);
 }
 
-export function readTextLines(text:string,rel:string,offset:unknown,limit:unknown,tool:string) {
-  const all = text.replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n');
-  const from = offset === undefined ? 1 : offset;
-  if (typeof from !== 'number' || !Number.isInteger(from) || from < 1) {
-    throw new Error(`${tool} 的 offset 是起始行号（从 1 开始），收到 ${JSON.stringify(offset)}`);
-  }
-  const count = limit === undefined ? 400 : limit;
-  if (typeof count !== 'number' || !Number.isInteger(count) || count < 1 || count > 2000) {
-    throw new Error(`${tool} 的 limit 是一次给多少行（1..2000），收到 ${JSON.stringify(limit)}`);
-  }
-  return {
-    file: rel,
-    lines: all.slice(from - 1, from - 1 + count),
-    from,
-    total: all.length,
-    bytes: Buffer.byteLength(text),
-  };
+export function readTextLines(text:string,rel:string,offset:unknown,limit:unknown,_tool:string) {
+  return readWindow([text],rel,offset,limit);
 }
 
 /** `.work/` 里现有的代码文件（报错时列给 agent 看，免得它反复猜文件名）。 */
@@ -641,7 +630,7 @@ function codeFiles(root: string): string {
 
 export const isCodeFile = (name: string): boolean => name.endsWith('.jq');
 
-/** 读一份代码文件：`.work/` 下的 `.jq`，`oks_data` 的 `jq.src` 指向它。
+/** 读一份代码文件：`.work/` 下的 `.jq`，`oks_project` 的 `jq.src` 指向它。
  *
  *  为什么代码只走文件、不进参数：内层语言（jq）与外层序列化（JSON）的语法长得像，模型一进
  *  "代码模式"就会把 jq 的 `{a: b}` 直接写成 JSON 值（实测 13 次整轮失败里有 3 次是这样）。

@@ -32,15 +32,15 @@ const backend = createDraftBackend({ entry, file: '.work/real.md', contextZone: 
 const runtime = new FixtureRuntime({ ...backend, preflight: async (...args) => { checks++; return backend.preflight(...args); } });
 const source = [
   '# Current alarm count', '## pipeline', '```js',
-  'let ctx = context();',
-  'let facts = exec_query(query({op: "Graph", root: "a", nodes: [{id:"a", entity:"current_alarm"}], edges:[], select:[], count:"a", limit:5}));',
-  'let total = jq("total.jq", {facts});', 'debug(total);',
-  'let answer = render_html("answer.xhtml", {total});', '```',
+  'ctx <- context();',
+  'facts <- exec_query(query({op: "Graph", root: "a", nodes: [{id:"a", entity:"current_alarm"}], edges:[], select:[], count:"a", limit:5}));',
+  'total <- jq("total.jq", {facts});', 'peek <- total;',
+  'answer <- render_html("answer.xhtml", {total});', '```',
   '## assets', '```jq name="total.jq"', '.facts.rows[0] | to_entries[0].value', '```',
   '```xhtml name="answer.xhtml"', '<article><p>当前告警数：<span data-oks-ref="total" /></p></article>', '```',
 ].join('\n');
 try {
-  const planOnly='<Dari><Pipeline>let plan=query({op:"Graph",root:"a",nodes:[{id:"a",entity:"current_alarm"}],edges:[],select:[],count:"a",limit:5}); debug(plan.columns);</Pipeline></Dari>';
+  const planOnly='<Dari><Pipeline>plan <-query({op:"Graph",root:"a",nodes:[{id:"a",entity:"current_alarm"}],edges:[],select:[],count:"a",limit:5}); peek <- plan.columns;</Pipeline></Dari>';
   let run=await runtime.run(planOnly);
   assert.equal(run.status,'complete',run.error);
   assert.equal(queries,0,'real model plan validation must not access SQLite');

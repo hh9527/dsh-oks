@@ -30,37 +30,37 @@ try {
  }
  await engine.checkLibrary('def nested($a): def inner: "def x: ;"; inner; # tail',opts);
  const builtin=await call('oks_read',{path:'oks://builtin/tools/ktools.lib.jq'});
- assert.equal(builtin.lines.join('\n'),builtinKtoolsSource.replace(/\n$/,''));
- assert.match(builtin.lines.join('\n'),/def search\(\$args\)/);
- assert.deepEqual((await call('oks_read',{path:KTOOLS_FILE})).lines,KTOOLS_INITIAL_SOURCE.trimEnd().split('\n'));
+ assert.equal(builtin.lines.map((line:any)=>line.text).join('\n'),builtinKtoolsSource.replace(/\n$/,''));
+ assert.match(builtin.lines.map((line:any)=>line.text).join('\n'),/def search\(\$args\)/);
+ assert.deepEqual((await call('oks_read',{path:KTOOLS_FILE})).lines.map((line:any)=>line.text),KTOOLS_INITIAL_SOURCE.trimEnd().split('\n'));
  assert.equal(existsSync(join(root,'memory')),false,'reading starter is side-effect free');
  // The initial file is editable without creating a scratch program.
  await call('oks_edit',{path:KTOOLS_FILE,old_string:'def datasets($args): .datasets | keys;',new_string:good});
- assert.deepEqual((await call('oks_data',{input:'oks://knowledge',method:KTOOLS_FILE+'#echo',args:{query:'告警'}})).data,{"中文":{query:'告警'}});
+ assert.deepEqual((await call('oks_project',{input:'oks://knowledge',transform:{lib:KTOOLS_FILE,name:'echo',args:{query:'告警'}}})).data,{"中文":{query:'告警'}});
  const previous=readFileSync(join(root,LIBRARY_PATH),'utf8');
  for(const operation of [()=>call('oks_write',{path:KTOOLS_FILE,content:'def bad($a): missing;'}),()=>call('oks_edit',{path:KTOOLS_FILE,old_string:'helper($args)',new_string:'missing($args)'})]) {
   await assert.rejects(operation,/missing/);assert.equal(readFileSync(join(root,LIBRARY_PATH),'utf8'),previous,'invalid save preserves valid file');
  }
  await call('oks_edit',{path:KTOOLS_FILE,old_string:'helper($args)',new_string:'{changed:$args}'});
- assert.deepEqual((await call('oks_data',{input:'oks://knowledge',method:KTOOLS_FILE+'#echo',args:{n:2}})).data,{"中文":{changed:{n:2}}},'source edits invalidate cached execution');
+ assert.deepEqual((await call('oks_project',{input:'oks://knowledge',transform:{lib:KTOOLS_FILE,name:'echo',args:{n:2}}})).data,{"中文":{changed:{n:2}}},'source edits invalidate cached execution');
  for(const [name,args] of [['search',{query:'告警'}],['read',{key:'datasets/alarm'}],['members',{key:'datasets/alarm'}],['references',{key:'datasets/alarm#fields/severity'}]] as const) {
   const old=builtinCode(`builtin://knowledge/${name}.jq`,args);
   const expected=await engine.runDocument(old.text,graph,{input:null,inputName:'knowledge',timeoutMs:5000,maxBytes:16384});
   assert.ok(expected.ok);
-  assert.deepEqual((await call('oks_data',{input:'oks://knowledge',method:`oks://builtin/tools/ktools.lib.jq#${name}`,args})).data,expected.data);
+  assert.deepEqual((await call('oks_project',{input:'oks://knowledge',transform:{lib:'oks://builtin/tools/ktools.lib.jq',name,args:args}})).data,expected.data);
  }
- await assert.rejects(call('oks_data',{input:'oks://knowledge',method:'oks://builtin/tools/ktools.lib.jq#search',args:{take:51}}),/1\.\.50/);
- for(const address of ['../oks://memory/tools/ktools.lib.jq#echo','memory/oks/other.jql#echo','tools/ktools.jql#echo','.work/test.jq','oks://memory/tools/ktools.lib.jq#echo|error','oks://builtin/tools/ktools.lib.jq#not_here'])await assert.rejects(call('oks_data',{input:'oks://knowledge',method:address}));
+ await assert.rejects(call('oks_project',{input:'oks://knowledge',transform:{lib:'oks://builtin/tools/ktools.lib.jq',name:'search',args:{take:51}}}),/1\.\.50/);
+ for(const address of ['../oks://memory/tools/ktools.lib.jq#echo','memory/oks/other.jql#echo','tools/ktools.jql#echo','.work/test.jq','oks://memory/tools/ktools.lib.jq#echo|error','oks://builtin/tools/ktools.lib.jq#not_here'])await assert.rejects(call('oks_project',{input:'oks://knowledge',transform:{lib:(address).split('#')[0],name:(address).split('#')[1],args:{}}}));
  for(const path of ['tools/other.jql','oks://builtin/tools/ktools.lib.jq'])await assert.rejects(call('oks_write',{path,content:'def ok($a): 1;'}));
  assert.ok((await call('oks_list',{})).files.some(f=>f.name===KTOOLS_FILE));
  mkdirSync(join(root,'.work'));writeFileSync(join(root,'.work/stale.jq'),'.');
  const oldTime=new Date('2020-01-01');utimesSync(join(root,LIBRARY_PATH),oldTime,oldTime);utimesSync(join(root,'.work/stale.jq'),oldTime,oldTime);
  await call('oks_delete',{path:'oks://work/stale.jq'});assert.equal(existsSync(join(root,'.work/stale.jq')),false);assert.equal(existsSync(join(root,LIBRARY_PATH)),true);
  tools.dispose();tools=makeTools();
- assert.deepEqual((await call('oks_data',{input:'oks://knowledge',method:KTOOLS_FILE+'#echo',args:{n:3}})).data,{"中文":{changed:{n:3}}},'new session reads persistent methods');
+ assert.deepEqual((await call('oks_project',{input:'oks://knowledge',transform:{lib:KTOOLS_FILE,name:'echo',args:{n:3}}})).data,{"中文":{changed:{n:3}}},'new session reads persistent methods');
  await assert.rejects(createKtools(engine.checkLibrary,engine.run).program(root,KTOOLS_FILE+'#missing'),/exactly one/);
  const target=join(root,'protected');writeFileSync(target,'original');rmSync(join(root,LIBRARY_PATH));symlinkSync(target,join(root,LIBRARY_PATH));
- for(const [name,args] of [['oks_read',{path:KTOOLS_FILE}],['oks_write',{path:KTOOLS_FILE,content:good}],['oks_edit',{path:KTOOLS_FILE,old_string:'original',new_string:good}],['oks_delete',{path:KTOOLS_FILE}],['oks_data',{input:'oks://knowledge',method:KTOOLS_FILE+'#echo'}]] as const)await assert.rejects(call(name,args),/symlink/);
+ for(const [name,args] of [['oks_read',{path:KTOOLS_FILE}],['oks_write',{path:KTOOLS_FILE,content:good}],['oks_edit',{path:KTOOLS_FILE,old_string:'original',new_string:good}],['oks_delete',{path:KTOOLS_FILE}],['oks_project',{input:'oks://knowledge',transform:{lib:KTOOLS_FILE,name:'echo',args:{}}}]] as const)await assert.rejects(call(name,args),/symlink/);
  assert.equal(readFileSync(target,'utf8'),'original');
  rmSync(join(root,'memory'),{recursive:true});mkdirSync(join(root,'alias'));symlinkSync(join(root,'alias'),join(root,'memory'));
  await assert.rejects(call('oks_write',{path:KTOOLS_FILE,content:good}),/symlink/);

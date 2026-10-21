@@ -13,7 +13,7 @@ export type Expr = (
 ) & { span: Span };
 export type Statement = (
   | { kind: 'binding'; name: string; value: Expr }
-  | { kind: 'debug'; value: Expr }
+  | { kind: 'output'; value: Expr }
 ) & { span: Span; motivation: string };
 export type AssetDependency = { name: string; language: 'jq' | 'xhtml'; span: Span };
 export type PipelineNode = {
@@ -37,7 +37,7 @@ export class DraftSyntaxError extends Error {
 
 type Token = { text: string; value?: string | number; kind: 'id' | 'string' | 'number' | 'symbol' | 'eof'; span: Span; comments: string[] };
 const OPERATORS = new Set<string>(['data', 'query', 'exec_query', 'jq', 'context', 'render_figure', 'render_html', 'time_windows']);
-const RESERVED = new Set(['let', 'debug', 'true', 'false', 'null', ...OPERATORS]);
+const RESERVED = new Set(['let', 'debug', 'output', 'true', 'false', 'null', ...OPERATORS]);
 const MAX_DEPTH = 128;
 
 /** base is the location of the first code character in the original source file. */
@@ -111,6 +111,7 @@ export function parsePipeline(source: string, base: Position = { offset: 0, line
       try { value = JSON.parse(raw); } catch { return fail('Invalid JSON string', start); }
       return { kind: 'string', text: raw, value, span: { start, end: pos() }, comments };
     }
+    if (source.startsWith('<-',index)) { advance(); advance(); return {kind:'symbol',text:'<-',span:{start,end:pos()},comments}; }
     if (ch === '-' || /[0-9]/.test(ch)) {
       const match = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/.exec(source.slice(index));
       if (!match) fail('Expected a JSON number', start);
@@ -219,23 +220,23 @@ export function parsePipeline(source: string, base: Position = { offset: 0, line
   const names = new Set<string>();
   while (token.kind !== 'eof') {
     if (nodes.length >= 512) error('Pipeline is limited to 512 statements');
-    const head = take();
+    const head = token;
     let statement: Statement;
     const motivation = head.comments.join('\n');
-    if (head.text === 'let') {
-      const name = identifier();
-      if (RESERVED.has(name.text)) error(`Reserved binding name ${name.text}`, name);
-      if (names.has(name.text)) error(`Duplicate binding ${name.text}`, name);
-      expect('=');
-      const value = expression();
-      expect(';');
-      statement = { kind: 'binding', name: name.text, value, motivation, span: spanFrom(head.span.start) };
-    } else if (head.text === 'debug') {
-      expect('(');
-      const value = expression();
-      expect(')'); expect(';');
-      statement = { kind: 'debug', value, motivation, span: spanFrom(head.span.start) };
-    } else return error('Only let bindings and debug statements are allowed', head);
+    if (head.text === '{') {
+      const value=expression();
+      if(value.kind!=='object')error('Pipeline output must be an object',head);
+      if(is(';'))take();
+      if((token as Token).kind!=='eof')error('The output object must be the final pipeline statement');
+      statement={kind:'output',value,motivation,span:spanFrom(head.span.start)};
+    } else {
+      const name=identifier();
+      if(RESERVED.has(name.text))error(`Reserved binding name ${name.text}`,name);
+      if(names.has(name.text))error(`Duplicate binding ${name.text}`,name);
+      expect('<-');
+      const value=expression();expect(';');
+      statement={kind:'binding',name:name.text,value,motivation,span:spanFrom(head.span.start)};
+    }
     const bindings = new Set<string>();
     const assets: AssetDependency[] = [];
     const visit = (expr: Expr): void => {

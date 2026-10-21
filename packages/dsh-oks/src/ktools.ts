@@ -25,13 +25,13 @@ export function createKtools(check: (source:string, options:JaqCheckOptions)=>Pr
     if(extra.length||![KTOOLS_BUILTIN,KTOOLS_FILE].includes(file)||!name||!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
       throw new Error(`method must be ${KTOOLS_BUILTIN}#name or ${KTOOLS_FILE}#name`);
     if(!isRecord(args))throw new Error('args must be an object');
-    const source=file===KTOOLS_BUILTIN?builtinKtoolsSource:readWorkText(root,file,'oks_data').text;
+    const source=file===KTOOLS_BUILTIN?builtinKtoolsSource:readWorkText(root,file,'oks_project').text;
     const checked=await validate(source,file,signal);
     const signatures=checked.methods.filter(method=>method.name===name);
     if(signatures.length!==1||signatures[0].args.length!==1||!signatures[0].args[0].startsWith('$'))
       throw new Error(`${file}: method ${name} must have exactly one value parameter, e.g. def ${name}($args): ...;`);
     // Keep builtin argument diagnostics strict; defaults are also visible in source.
-    if(file===KTOOLS_BUILTIN&&Object.hasOwn(args,'input'))throw new Error('Select the resource with oks_data.input');
+    if(file===KTOOLS_BUILTIN&&Object.hasOwn(args,'input'))throw new Error('Select the resource with oks_project.input');
     if(file===KTOOLS_BUILTIN)builtinCode(`builtin://knowledge/${name}.jq`,args);
     return {file,text:source+'\n'+`${name}(${JSON.stringify(args)})`};
   }

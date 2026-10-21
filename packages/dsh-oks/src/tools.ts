@@ -1,3 +1,4 @@
+import {helpFiles,helpEntries} from './help-files.ts';
 import { WORK_URI, MEMORY_URI, sourceUri } from './resource-path.ts';
 import { createKtools, type Ktools } from './ktools.ts';
 import { KTOOLS_FILE, KTOOLS_BUILTIN } from './ktools-path.ts';
@@ -52,30 +53,31 @@ export function createTools({ knowledge, va, timeContext, log, attachments, ktoo
   const definitions: ToolDefinition[] = [
     {
       name: 'oks_read',
-      description: 'Read line-numbered source from oks://work/<file>, persistent oks://memory/tools/ktools.lib.jq, or readonly oks://builtin/tools/ktools.lib.jq. offset/limit page lines. A missing oks://memory/tools/ktools.lib.jq returns an editable starter. Use oks_list({path:"oks://work/"}) to list files.',
+      description: 'Read line-numbered source from oks://work/<file>, persistent oks://memory/tools/ktools.lib.jq, or readonly oks://builtin/tools/ktools.lib.jq and oks://help/<name>.md. offset/limit page lines (default/max 2000); lines longer than 2000 characters are marked and truncated; selected text is capped at 50 KiB with a continuation offset. A missing oks://memory/tools/ktools.lib.jq returns an editable starter. Use oks_list({path:"oks://work/"}) to list files.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Source path: oks://work/<file>, oks://memory/tools/ktools.lib.jq or oks://builtin/tools/ktools.lib.jq; oks://work/ lists files.' },
+          path: { type: 'string', description: 'Source path: oks://work/<file>, oks://memory/tools/ktools.lib.jq or oks://builtin/tools/ktools.lib.jq and oks://help/<name>.md. Use oks_list for directories.' },
           offset: { type: 'number', description: 'First line to return, 1-based. Default 1.' },
-          limit: { type: 'number', description: 'How many lines to return, 1..2000. Default 400.' },
+          limit: { type: 'number', description: 'How many lines to return, 1..2000. Default 2000.' },
         },
         required: ['path'],
         additionalProperties: false,
       },
       output: { schema: OBJECT_OUTPUT, render: renderWorkRead },
       async execute(args: WorkReadArgs, exec: ToolExec) {
-        if(args?.path===KTOOLS_BUILTIN)return {ok:true as const,...readTextLines(builtinKtoolsSource,KTOOLS_BUILTIN,args.offset,args.limit,'oks_read'),entries:[]};
+        if(typeof args?.path==='string'&&args.path.startsWith('oks://help/')){
+          if(!Object.hasOwn(helpFiles,args.path))throw new Error('Unknown readonly help file; use oks_list({path:"oks://help/"})');
+          return readTextLines(helpFiles[args.path],args.path,args.offset,args.limit,'oks_read');
+        }
+        if(args?.path===KTOOLS_BUILTIN)return readTextLines(builtinKtoolsSource,KTOOLS_BUILTIN,args.offset,args.limit,'oks_read');
         const entry = knowledge.ensureWorkspace(exec);
         const root = entry.settings.workspaceRoot;
         const given = args?.path;
-        if (given === WORK_URI) {
-          return { ok: true as const, file: WORK_URI, entries: listWorkFiles(root).filter(f=>f.name.startsWith('.work/')).map(f=>({...f,name:sourceUri(f.name)})), lines: [], from: 1, total: 0, bytes: 0 };
-        }
-        const read = readWorkFile(root, args?.path, args?.offset, args?.limit, 'oks_read');
-        log(`[oks] oks_read ${read.file} · 第 ${read.from} 行起 ${read.lines.length} 行`
-          + `（共 ${read.total} 行 · ${(read.bytes / 1024).toFixed(1)} KB）`);
-        return { ok: true as const, ...read, entries: [] };
+        if (given === WORK_URI) throw new Error('Not a regular file; use oks_list({path:"oks://work/"})');
+        const read = await readWorkFile(root, args?.path, args?.offset, args?.limit, 'oks_read');
+        log(`[oks] oks_read ${read.path} · 第 ${read.offset} 行起 ${read.lines.length} 行（共 ${read.totalLines} 行）`);
+        return read;
       },
     },
     {
@@ -128,12 +130,13 @@ export function createTools({ knowledge, va, timeContext, log, attachments, ktoo
     },
     {
       name: 'oks_list',
-      description: 'List oks://work/ scratch files and the existing persistent oks://memory/tools/ktools.lib.jq library: path, size and modification time.',
+      description: 'List readonly oks://help/ text files, oks://work/ scratch files and the existing persistent oks://memory/tools/ktools.lib.jq library: path, size and modification time.',
       parameters: { type: 'object', properties: {path:{type:'string'}}, additionalProperties: false },
       output: { schema: OBJECT_OUTPUT, render: renderValue },
       async execute(args:{path?:unknown}, exec: ToolExec) {
-        const entry = knowledge.ensureWorkspace(exec);
         const path=args?.path;
+        if(path==='oks://help/')return {ok:true as const,files:helpEntries(),count:helpEntries().length};
+        const entry = knowledge.ensureWorkspace(exec);
         const dirs=[WORK_URI,MEMORY_URI,MEMORY_URI+'tools/','oks://builtin/','oks://builtin/tools/'];
         if(path!==undefined&&!dirs.includes(path as string))throw new Error('path must be an OKS source directory');
         const all=listWorkFiles(entry.settings.workspaceRoot).map(file=>({...file,name:sourceUri(file.name)}));
@@ -163,7 +166,7 @@ export function createTools({ knowledge, va, timeContext, log, attachments, ktoo
     },
     {
       name: 'va_ask',
-      description: 'Consult this session\'s vocabulary helper and get its answer back: send one paraphrase — a word, a phrase or a sentence, any language — and you receive the vocabulary\'s own equivalent or near expressions, one per line and verbatim. The helper holds the whole vocabulary in its system prompt, so the first call sets it up and takes longer; each later call is one question. Treat what it returns as leads: look the strings up with oks_data input=oks://knowledge method oks://builtin/tools/ktools.lib.jq#search and read declarations with oks_data; read resolves the exact returned address and pairs facts with descriptions.',
+      description: 'Consult this session\'s vocabulary helper and get its answer back: send one paraphrase — a word, a phrase or a sentence, any language — and you receive the vocabulary\'s own equivalent or near expressions, one per line and verbatim. The helper holds the whole vocabulary in its system prompt, so the first call sets it up and takes longer; each later call is one question. Treat what it returns as leads: look the strings up with oks_project({input:"oks://knowledge",transform:{lib:"oks://builtin/tools/ktools.lib.jq",name:"search",args:{query:"returned word"}}}) and read declarations with its read method; read resolves the exact returned address and pairs facts with descriptions.',
       parameters: {
         type: 'object',
         properties: {

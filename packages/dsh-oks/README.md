@@ -8,15 +8,14 @@
 | 工具 | 职责 |
 | --- | --- |
 | `va_ask({query})` | 词汇规整，返回线索，随后核实事实 |
-| `oks_data({input,pointer?,offset?,limit?})` | 读取已有草稿输出、知识图或帮助；JSON Pointer 和范围选择 |
-| `oks_data({input,project})` / `({input,method,args})` | 精确投影或调用只读纯方法，返回 `.data` |
+| `oks_project({input,transform?,select?})` | 直读结构化资源，先用 jq 方法处理，再用字符串规则投影，返回 `.data` |
 | `oks_read/write/edit/list/delete` | 管理逻辑源码地址；read 支持内置源码，list 用 path 指定目录 |
 | `oks_run_answer({src,answer?,refresh?})` | 执行分析稿并保留结果 |
 | `oks_show({input})` | 将已有图表/报告写入宿主持久附件，返回引用及呈现指引 |
 | `renew_context({src})` | 重置稿件采集批次，下次运行重新采集 |
 
 
-业务计算定义在稿件内。`oks_data` 的普通读取视图是 `.data`；meta 显式查看追踪信息。
+业务计算定义在稿件内。`oks_project` 的普通读取视图是 `.data`；meta 显式查看追踪信息。
 
 ## 快速体验
 
@@ -24,8 +23,8 @@
 
 ```js
 oks_run_answer({src: "oks://work/draft.dari"})
-oks_data({input: "oks://work/draft.dari#summary"})
-oks_data({input: "oks://work/draft.dari#debug"})
+oks_project({input: "oks://work/draft.dari#summary"})
+oks_project({input: "oks://work/draft.dari#output"})
 oks_show({input: "oks://work/draft.dari#figures.comparison"})
 oks_show({input: "oks://work/draft.dari#reports.conclusion"})
 ```
@@ -60,15 +59,15 @@ node scripts/migrate-draft.ts old.md new.dari
 运行时直接编译 DARI 为统一执行图，不通过 Markdown 转译。
 
 ```js
-let params = data({threshold: 10}, {kind: "parameter"});
-let plan = query({op:"Graph",root:"d",nodes:[{id:"d",entity:"<发现的数据集ID>"}],edges:[],select:[],count:"d",limit:100});
-let facts = exec_query(plan);
-debug(facts.rows[0]);
-let summary = jq("summary.jq", {facts, params});
+params <- data({threshold: 10}, {kind: "parameter"});
+plan <- query({op:"Graph",root:"d",nodes:[{id:"d",entity:"<发现的数据集ID>"}],edges:[],select:[],count:"d",limit:100});
+facts <- exec_query(plan);
+summary <- jq("summary.jq", {facts, params});
+{summary, first:facts.rows[0]}
 ```
 
-语法支持 immutable let、debug、JSON 值/数组/对象、静态 project 和固定算子。
-语句必须有分号，变量先定义后引用；对象可简写 `{facts}`。注释支持 // 和 /* */。
+语法使用不可变 `name <- expression;` 绑定和可选的末尾输出对象，禁止 shadow，先定义后引用。全部 assets 先编译校验，执行按依赖 DAG 调度，独立分支逻辑并行。`_` 前缀绑定不跨运行缓存计算，本次运行内共享结果；采集批次仍由 refresh/renew_context 控制。支持 JSON 值/数组/对象、静态投影和固定算子。
+绑定语句必须有分号，末尾输出对象的分号可省略；变量先定义后引用，对象可简写 `{facts}`。注释支持 // 和 /* */。
 静态路径支持 `.field`、`["field"]`、`[0]`；不存在的字段、越界及类型错配明确报错。
 复杂筛选、遍历、算术与聚合写入 jq；输入文本按本语言解析，不执行任意 JS。
 
@@ -93,13 +92,13 @@ let summary = jq("summary.jq", {facts, params});
 ## 知识发现
 
 ```js
-oks_data({input:"oks://knowledge",project:{datasets:"Shape",types:"Shape"}})
-oks_data({input:"oks://knowledge",method:"oks://builtin/tools/ktools.lib.jq#search",args:{query:"候选词",take:10}})
-oks_data({input:"oks://knowledge",method:"oks://builtin/tools/ktools.lib.jq#read",args:{key:"返回的地址"}})
-oks_data({input:"oks://help/query",pointer:"/graph~1filter"})
+oks_project({input:"oks://knowledge",select:"datasets:keys,types:keys"})
+oks_project({input:"oks://knowledge",transform:{lib:"oks://builtin/tools/ktools.lib.jq",name:"search",args:{query:"候选词",take:10}}})
+oks_project({input:"oks://knowledge",transform:{lib:"oks://builtin/tools/ktools.lib.jq",name:"read",args:{key:"返回的地址"}}})
+oks_read({path:"oks://help/query.md"})
 ```
 
-project 直接作用于图根，jq 输入为所选资源的值（知识图直接为 `{datasets,types,relations,tools,items}`）。内置源码可用 `oks_read({path:"oks://builtin/tools/ktools.lib.jq"})` 阅读。自定义方法统一保存在 `oks://memory/tools/ktools.lib.jq`，只含注释及 `def name($args): ...;`，调用地址为 `oks://memory/tools/ktools.lib.jq#name`；保存前编译，错误保留原文件。文件跨会话持久保留，跨会话保留。
+select 直接作用于当前值，jq 输入为所选资源的值（知识图直接为 `{datasets,types,relations,tools,items}`）。内置源码可用 `oks_read({path:"oks://builtin/tools/ktools.lib.jq"})` 阅读。自定义方法统一保存在 `oks://memory/tools/ktools.lib.jq`，只含注释及 `def name($args): ...;`，使用 `transform:{lib:"oks://memory/tools/ktools.lib.jq",name:"name",args:{}}` 调用；保存前编译，错误保留原文件。文件跨会话持久保留。
 成员导航用 members，反向引用用 references；next 作为 skip 续页。
 独立地址形如 `datasets/<URI编码ID>`，成员形如 `datasets/<ID>#dimensions/<ID>`；返回地址原样使用。
 字典键是原始 ID。names/doc 与事实分开保存在 items；read 配对读取。
@@ -108,16 +107,16 @@ project 直接作用于图根，jq 输入为所选资源的值（知识图直接
 ## 时间与缓存
 
 ```js
-let ctx = context();
-let months = time_windows(ctx,{unit:"month",count:3,mode:"complete"});
-debug(months);
+ctx <- context();
+months <- time_windows(ctx,{unit:"month",count:3,mode:"complete"});
+{months}
 ```
 
 complete 为最近 N 个完整期间；current 含当前期间，末端可能在未来；rolling 以捕获时刻为末端按日历回移。
 unit 为 year/quarter/month/week/day，count 为 1..50。周从周一开始，边界分别适用时区/DST 规则。
-细节见 `oks_data({input:"oks://help/time"})`，jq 时间原语使用 epoch 秒。
+细节见 `oks_read({path:"oks://help/time.md"})`，jq 时间原语使用 epoch 秒。
 
-低成本验证时，稿内只写 `let plan=query(intent); debug(plan.columns);`，确认后加入 `let facts=exec_query(plan);`。计划身份保存在运行器内部，完整绑定可直接引用；JSON 构造、投影和 jq 重构不会生成可执行计划。
+低成本验证时，稿内只写 `plan <-query(intent); {columns:plan.columns}`，确认后加入 `facts <-exec_query(plan);`。计划身份保存在运行器内部，完整绑定可直接引用；JSON 构造、投影和 jq 重构不会生成可执行计划。
 
 反复提交完整源码默认复用本采集批次中相同计划的执行结果；输入计划变化只重采该查询，改 jq 或模板只影响其实际依赖。context 无输入，同批捕获的时间与时区固定。
 `refresh:true` 新建采集批次并立即运行；`renew_context({src:"oks://work/draft.dari"})` 只重置当前会话中指定稿件的批次，下次运行才采集，旧输出暂不可读。编译计划不因采集刷新而失效。批次不代表数据库事务快照，实际采集时间随证据保存。
@@ -131,23 +130,23 @@ unit 为 year/quarter/month/week/day，count 为 1..50。周从周一开始，�
 ## 只读查看与交付
 
 ```js
-oks_data({input:"oks://work/draft.dari#facts",pointer:"/rows",offset:0,limit:5})
-oks_data({input:"oks://work/draft.dari#debug/1"})
-oks_data({input:"oks://work/draft.dari#summary",meta:true})
+oks_project({input:"oks://work/draft.dari#facts",select:"rows[0..5]"})
+oks_project({input:"oks://work/draft.dari#output"})
+oks_project({input:"oks://work/draft.dari#meta.summary"})
 ```
 
-pointer 是 JSON Pointer，范围读取支持数组或对象成员，limit 1..100。
+select 保留字段层级；切片与算子进入输出键名。例如 rows[0..5] 的数据在 .data["rows[0..5]"] 中。根数组用 [0..5] 直接取样。
 读取对应当前会话该源码的最近一次运行；失败/移除/阻塞/回收不回退旧成功值。改稿后保留结果标 stale。
 查询的 `truncated` 表示是否还有未返回的行；rows 最多包含请求的 limit 行。
 查询的 `columns` 采用模型声明的 Int/Float/Bool/String/DatetimeUtc/EpochMillis/LocalDateTime，
 保留最终投影顺序与保守 nullable；空结果、全 NULL 不影响声明。运行回执有列预览，完整读取可用
-`oks_data({input:"oks://work/draft.dari#facts",pointer:"/columns"})`，稿内可写 `debug(facts.columns)`。
+`oks_project({input:"oks://work/draft.dari#facts",select:"columns"})`，稿内可写 `{columns:facts.columns}`。
 LocalDateTime 是不带时区或偏移量的日期与钟表时间。旧模型未提供 columns 时使用观察类型 `types`。
 
-新的计算、筛选或取样写回稿件再运行。debug 无需人为命名，回执关联原位置，小值直接返回，大值给引用。
+新的计算、筛选或取样写回稿件再运行。末尾对象声明展示输出，回执关联原位置，小值直接返回，大值给 #output 引用。
 
 单个 Report 自动选择；多个时用 answer:"reports.name" 指定。计算和交付状态分开报告。
-`#figures.name` 与 `#reports.name` 通过 oks_data 读取结构数据。
+`#figures.name` 与 `#reports.name` 通过 oks_project 读取结构数据。
 `oks_show({input:"oks://work/analysis.dari#figures.severity"})` 将已有 SVG（含证据）写入 ctx.attachments，返回 FileAttachmentRef、只读 path 与 markdown；将 markdown 原样嵌入回答即可在对话展示。报告输出 `.report.html`、Table 输出 `.html` 附件；收到 `present` 字段后，用它作为宿主 `present` 工具的参数，显示原生文件卡片。此调用读取已保留结果。附件按内容寻址，不受工作区清理影响；宿主通过 file 内容块保留持久引用，模型仅接收简短回执。
 报告附件为自包含 HTML，带全部引用数据、来源与 jq/XHTML，删除工作源码后仍可解释。
 存储、呈现和生命周期统一由宿主附件服务管理。
@@ -234,7 +233,7 @@ Rust 需要 wasm32-unknown-unknown target；求值器没有时钟、环境或文
 `tools/render_figure#kinds/<kind>` 提供必填列映射、series 语义、专属开关和可执行示例；
 `tools/render_figure#topics/table_headers` 说明字符串列名与 jq 表头重命名；
 `tools/render_html#topics/references` 说明 XHTML 绑定和点分路径。
-使用 `oks_data({input:"oks://help/render"})` 查看入口，或用知识搜索查“图表”“表头”“data-oks-pick”。
+使用 `oks_read({path:"oks://help/figures.md"})` 查看入口，或用知识搜索查“图表”“表头”“data-oks-pick”。
 每个主题可单独读取；`#topics/draft` 提供完整可运行 DARI 示例。
 
 已有稿件若使用 query 直接取数，可显式迁移并保留原稿：
@@ -252,8 +251,18 @@ node scripts/split-query.ts old.dari new.dari
 - `oks://builtin/tools/ktools.lib.jq`：插件内置方法库，只读。
 - 导出内容由宿主附件服务持久保存，回执返回 FileAttachmentRef、path 和 Markdown。
 
-知识发现前先 `oks_read({path:"oks://memory/tools/ktools.lib.jq"})`，复用已有方法，需要时再读内置源码。
+内置方法源码位于 `oks://builtin/tools/ktools.lib.jq`，自定义持久库位于 `oks://memory/tools/ktools.lib.jq`。
 `.lib.jq` 只含注释与 def 定义，保存前编译；方法入口为 `def name($args): ...;`，接收所选资源的值。
-`oks_data` 的 project、method+args、pointer/offset/limit 三种视图互斥。帮助主题通过 JSON Pointer 选择，例如 `/graph~1filter`。
+`oks_project` 按 input → transform（可选）→ select（可选）执行，两者可组合。oks://knowledge 是完整 JSON 数据源；oks://help/*.md 是文本文件，由 oks_read 阅读。
 
 工作区文件由 `oks://work/` 与 `oks://memory/` 管理；运行结果与缓存保留在内存，图表和报告导出至宿主附件。
+
+### 按需读取工具用法
+
+入口提示词保留任务和工作方法。工具帮助是 oks://help/*.md 只读文本文件，用 oks_list({path:"oks://help/"}) 列出，再用 oks_read({path:"oks://help/draft.md"}) 阅读，offset/limit 按行分页。knowledge.md 解释整体知识图，project.md 解释数据投影，draft.md、query.md、time.md 和 figures.md 分别提供分析稿、查询、时间与呈现的方法。
+
+手写的工具帮助统一维护在 `src/help/*.md`，按 Markdown 标题层级组织知识字段；构建时内联。维护约定见 `src/help/README.md`。组件、能力矩阵和白名单由实现生成。
+
+文本读取：`oks_read` 与标准 read 使用相同窗口规则：默认/最多 2000 行，单行保留 2000 字符并标注截断，正文上限 50 KiB，返回续读 offset；偏移越界报错。文件目录使用 `oks_list`。
+
+`oks_project` 超限返回 `{error:"payload_too_large",repr,reprLength,len}`；repr 为完整数据 JSON 编码的前 4096 个字符，reprLength 为完整编码的 string.length，len 为数组/字符串长度或对象键数（其他值为 null）。

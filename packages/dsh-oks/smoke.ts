@@ -93,7 +93,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['oks_read', 'oks_write', 'oks_edit', 'oks_list', 'oks_delete', 'oks_run_answer', 'oks_show', 'renew_context', 'oks_data',   'va_ask'];
+const EXPECTED_TOOLS = ['oks_read', 'oks_write', 'oks_edit', 'oks_list', 'oks_delete', 'oks_run_answer', 'oks_show', 'renew_context', 'oks_project',   'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -129,8 +129,8 @@ const call = async (name, args, cwd = DEV_ROOT) => {
   return { value, text, meta };
 };
 
-const builtin = (name, args = {}) => call('oks_data',{input:'oks://knowledge',
-  method: `oks://builtin/tools/ktools.lib.jq#${name}`, args,
+const builtin = (name, args = {}) => call('oks_project',{input:'oks://knowledge',
+  transform:{lib:'oks://builtin/tools/ktools.lib.jq',name,args:args},
 });
 
 // 程序夹具：工具现在**只认文件**（参数是 `jq.src`），所以测试也把 jq 程序写进 `.work/` 再引用。
@@ -827,12 +827,12 @@ const countIntent={op:'Graph',root:'x',nodes:[{id:'x',entity:member.id}],edges:[
 const draftFile='.work/smoke_answer.dari';
 const draftSource=`<Dari title="集成冒烟">
 <Pipeline>
-let ctx=context();
-let months=time_windows(ctx,{unit:"month",count:2,mode:"complete"});
-let plan=query(${JSON.stringify(countIntent)});
-let facts=exec_query(plan);
-let total=jq("total.jq",{facts});
-debug(total);
+ctx <-context();
+months <-time_windows(ctx,{unit:"month",count:2,mode:"complete"});
+plan <-query(${JSON.stringify(countIntent)});
+facts <-exec_query(plan);
+total <-jq("total.jq",{facts});
+{total}
 </Pipeline>
 <Asset language="jq" name="total.jq">.facts.rows[0] | to_entries[0].value</Asset>
 <Template name="answer"><article><p>总数 <Value data={total} /></p></article></Template>
@@ -840,7 +840,7 @@ debug(total);
 await call('oks_write',{path:draftFile,content:draftSource});
 const firstRun=await call('oks_run_answer',{src:draftFile});
 ok('真实查询与 jq 形成对话答案',firstRun.value.delivery.status==='ready' && firstRun.value.delivery.mode==='retained');
-const total=(await call('oks_data',{input:draftFile+'#total'})).value.data;
+const total=(await call('oks_project',{input:draftFile+'#total'})).value.data;
 ok('真实计数为非负数',typeof total==='number' && total>=0);
 const secondRun=await call('oks_run_answer',{src:draftFile});
 ok('重复运行复用全部计算',secondRun.value.counts.executed===0);
@@ -849,7 +849,7 @@ ok('报告附件落盘',existsSync(shownReport.value.path));
 const reportView=readReportPage(readFileSync(shownReport.value.path,'utf8'));
 ok('报告携带实际数据和 jq 代码',reportView.items.value_1===total && Object.values(reportView.assets).some(code=>String(code).includes('to_entries')));
 await call('oks_edit',{path:draftFile,old_string:'总数 ',new_string:'查询总数 '});
-ok('改稿读取标记旧运行', (await call('oks_data',{input:draftFile+'#total'})).value.stale===true);
+ok('改稿读取标记旧运行', (await call('oks_project',{input:draftFile+'#total'})).value.stale===true);
 const edited=await call('oks_run_answer',{src:draftFile});
 ok('仅模板变更复用查询',edited.value.counts.executed===1 && edited.value.batch===firstRun.value.batch);
 const refreshed=await call('oks_run_answer',{src:draftFile,refresh:true});
@@ -881,18 +881,18 @@ writeFileSync(join(nested,'oks.json'),JSON.stringify({...baseConfig,model:relati
 writeFileSync(join(nested,draftFile),draftSource);
 ok('模型与数据源相对 oks.json 解析',(await call('oks_run_answer',{src:draftFile},nested)).value.delivery.status==='ready');
 const bare=join(SCRATCH,'bare');mkdirSync(bare,{recursive:true});
-ok('缺工作区配置明确拒绝',!!await refusalOf(()=>call('oks_data',{input:'oks://knowledge',project:'Shape'},bare)));
+ok('缺工作区配置明确拒绝',!!await refusalOf(()=>call('oks_project',{input:'oks://knowledge',select:':keys'},bare)));
 const badModel=join(SCRATCH,'bad-model');mkdirSync(badModel,{recursive:true});
 writeFileSync(join(badModel,'empty.wasm'),Buffer.from([0,97,115,109,1,0,0,0]));
 writeFileSync(join(badModel,'oks.json'),JSON.stringify({...baseConfig,model:'empty.wasm',dataFile:settings.dataFile}));
-ok('缺快照模型明确拒绝',!!await refusalOf(()=>call('oks_data',{input:'oks://knowledge',project:'Shape'},badModel)));
-const help=(await call('oks_data',{input:'oks://help/query'})).value.data;
-ok('帮助使用主题索引',help.topics.includes('graph/filter'));
+ok('缺快照模型明确拒绝',!!await refusalOf(()=>call('oks_project',{input:'oks://knowledge',select:':keys'},badModel)));
+const help=(await call('oks_read',{path:'oks://help/query.md',limit:2000},bare)).value;
+ok('帮助是无需配置的文本文件',help.lines.map((line:any)=>line.text).join('\n').includes('ontology-intent-v1'));
 for(const args of [{load:{}},{input:draftFile+'#total',save:{}},{input:draftFile+'#total',jq:{src:'.work/nope.jq'}}])
- ok('只读入口拒绝加工与写入参数',!!await refusalOf(()=>call('oks_data',args)));
+ ok('只读入口拒绝加工与写入参数',!!await refusalOf(()=>call('oks_project',args)));
 if(process.env.OKS_TOOLS_MODULE){
  const host=await import(pathToFileURL(resolve(process.env.OKS_TOOLS_MODULE)).href);
- for(const name of ['oks_run_answer','oks_data']){
+ for(const name of ['oks_run_answer','oks_project']){
   host.assertSupportedJsonSchema(registered.get(name).parameters);
   ok(`${name} schema 属于宿主支持的子集`,true);
  }
@@ -1486,7 +1486,7 @@ try{
   ['oks_edit',{path:'.work/escape-test/protected.jq',old_string:'original',new_string:'changed'}],
   ['oks_delete',{path:'.work/escape-test/protected.jq'}],
   ['oks_write',{path:'.work/escape-test/new-dir/new.jq',content:'.'}],
-  ['oks_data',{input:'oks://knowledge',jq:{src:'.work/escape-test/protected.jq'}}],
+  ['oks_project',{input:'oks://knowledge',jq:{src:'.work/escape-test/protected.jq'}}],
   ['oks_run_answer',{src:'.work/escape-test/protected.jq'}],
  ])ok('文件与执行入口拒绝符号链接逃逸',!!await refusalOf(()=>call(name,args)));
  ok('拒绝后外部文件不变',readFileSync(join(outside,'protected.jq'),'utf8')==='original' && !existsSync(join(outside,'new-dir')));

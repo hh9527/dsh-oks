@@ -26,12 +26,12 @@ const backend = createDraftBackend({ entry, file: '.work/draft.md', contextZone:
 const runtime = new FixtureRuntime(backend);
 const source = [
   '# Example', '## pipeline', '```js',
-  'let facts = exec_query(query({op: "Graph", limit: 5}));',
-  'let summary = jq("summary.jq", { facts });',
-  'let chart = render_figure({kind: "column", x: "label", value: "n"}, {data: summary.rows});',
-  'let table = render_figure({kind: "table", columns: ["label", "n"]}, {data: summary.rows});',
-  'debug(summary);',
-  'let answer = render_html("answer.xhtml", {summary, chart, table});', '```',
+  'facts <- exec_query(query({op: "Graph", limit: 5}));',
+  'summary <- jq("summary.jq", { facts });',
+  'chart <- render_figure({kind: "column", x: "label", value: "n"}, {data: summary.rows});',
+  'table <- render_figure({kind: "table", columns: ["label", "n"]}, {data: summary.rows});',
+  'peek <- summary;',
+  'answer <- render_html("answer.xhtml", {summary, chart, table});', '```',
   '## assets', '```jq name="summary.jq"', '{rows: [.facts.rows[] | {label: "observed", n}], total: (.facts.rows | map(.n) | add)}', '```',
   '```xhtml name="answer.xhtml"', '<article><h1>Observed</h1><p>Total: <span data-oks-ref="summary" data-oks-pick=".total" /></p><figure data-oks-ref="chart"><figcaption>Values</figcaption></figure><figure data-oks-ref="table"><figcaption>Rows</figcaption></figure></article>', '```',
 ].join('\n');
@@ -93,7 +93,7 @@ try {
   run = await runtime.run(source.replace('jq("summary.jq", { facts })', 'jq("summary.jq", [])'));
   assert.equal(run.status, 'invalid');
   assert.equal(executions, previousExec, '静态算子输入类型错误在新查询前返回');
-  const timeSource = '## pipeline\n```js\nlet ctx = context(); debug(ctx.utc.epochSeconds);\n```';
+  const timeSource = '## pipeline\n```js\nctx <- context(); peek <- ctx.utc.epochSeconds;\n```';
   run = await runtime.run(timeSource);
   assert.equal(run.outputs.get('ctx')!.status, 'executed');
   const time = runtime.read('ctx', timeSource).value.data as {utc:{epochMillis:number;epochSeconds:number;rfc3339:string}};
@@ -103,7 +103,7 @@ try {
   assert.equal(run.outputs.get('ctx')!.status, 'cached');
   assert.deepEqual(runtime.read('ctx', timeSource).value.data, time);
   // Calendar boundaries use the explicit context, retain readable instants and provenance.
-  const windowsSource = '## pipeline\n```js\nlet ctx=data({utc:{epochMillis:1790854863000},tz:{client:{id:"Asia/Shanghai"}}}); let months=time_windows(ctx,{unit:"month",count:2,mode:"complete"}); debug(months);\n```';
+  const windowsSource = '## pipeline\n```js\nctx <-data({utc:{epochMillis:1790854863000},tz:{client:{id:"Asia/Shanghai"}}}); months <-time_windows(ctx,{unit:"month",count:2,mode:"complete"}); peek <- months;\n```';
   run = await runtime.run(windowsSource);
   assert.equal(run.status, 'complete', run.error);
   const windowsValue = runtime.read('months', windowsSource).value;
@@ -121,7 +121,7 @@ try {
   run = await runtime.run(windowsSource);
   assert.equal(run.outputs.get('months')!.status, 'cached');
   const beforeInvalidWindows = executions;
-  run = await runtime.run(source.replace('debug(summary);', 'let bad=time_windows({}, {unit:"month",count:0,mode:"complete"});'), {refresh:true});
+  run = await runtime.run(source.replace('peek <- summary;', 'bad <-time_windows({}, {unit:"month",count:0,mode:"complete"});'), {refresh:true});
   assert.equal(run.status, 'invalid');
   assert.equal(executions, beforeInvalidWindows, '非法静态窗口参数阻止新查询');
   console.log('draft backend: real jq, figures, XHTML, static gating, cache and provenance passed');

@@ -32,16 +32,16 @@ const ok=(label:string,condition:unknown)=>{assert.ok(condition,label);passed++;
 const chart=async({spec,data,nodes}:any)=>{
  const file='.work/chart.dari';
  const source=['# 图表回归','## pipeline','```js',
-  `let rows=data(${JSON.stringify(data)},{kind:"example"});`,
-  ...(nodes?[`let nodes=data(${JSON.stringify(nodes)},{kind:"example"});`]:[]),
-  `let figure=render_figure(${JSON.stringify(spec)},{data:rows${nodes?',nodes':''}});`,
-  'let answer=render_html("answer.xhtml",{figure});','```','## assets',
+  `rows <-data(${JSON.stringify(data)},{kind:"example"});`,
+  ...(nodes?[`nodes <-data(${JSON.stringify(nodes)},{kind:"example"});`]:[]),
+  `figure <-render_figure(${JSON.stringify(spec)},{data:rows${nodes?',nodes':''}});`,
+  'answer <-render_html("answer.xhtml",{figure});','```','## assets',
   '```xhtml name="answer.xhtml"','<article><figure data-oks-ref="figure" /></article>','```'].join('\n');
  writeFileSync(join(DEV_ROOT,file),asDari(source));
  const result=await call('oks_run_answer',{src:file});
  if(result.delivery.status!=='ready')throw new Error(JSON.stringify(result));
  const shown=await call('oks_show',{input:file+'#figure'});
- const figure=await call('oks_data',{input:file+'#figure'});
+ const figure=await call('oks_project',{input:file+'#figure'});
  return {value:{ok:true,asset:shown.path,rowCount:figure.data.rows.length,spec:figure.data.spec,title:shown.title},text:shown.markdown};
 };
 try {

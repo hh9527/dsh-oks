@@ -1,6 +1,6 @@
 # 知识、只读查询、DARI 分析与宿主附件交付。
 # domain/model/dataFile 来自工作区根目录 oks.json；时区来自会话。
-# oks_run_answer 保留运行，oks_data 读取结果，oks_show 导出 SVG/HTML 附件。
+# oks_run_answer 保留运行，oks_project 读取结果，oks_show 导出 SVG/HTML 附件。
 - insert:
     - id: oks
       name: '@local/dsh-oks'

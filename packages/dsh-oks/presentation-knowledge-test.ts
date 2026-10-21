@@ -10,10 +10,10 @@ import { buildSemanticGraph, resolveFact } from './src/knowledge-graph.ts';
 import { mountPresentationKnowledge, presentationExample } from './src/presentation-knowledge.ts';
 import { CHART_KINDS, EXPRESSION_SUPPORT } from './src/chart/shared.ts';
 import { parseChartSpec, parseTableSpec } from './src/chart/spec.ts';
-import { createProjector } from './src/project.ts';
+import { createSelector } from './src/select.ts';
 import type { JsonValue } from './src/project.ts';
 import { presentationHelp } from './src/presentation-knowledge.ts';
-import { toolResource, builtinCode } from './src/knowledge-programs.ts';
+import { builtinCode } from './src/knowledge-programs.ts';
 import type { WorkspaceEntry } from './src/knowledge.ts';
 const engine=createJaqEngine(process.argv[2] ?? './lib/oks-wti.wasm');
 const graph=buildSemanticGraph([]).graph;
@@ -25,10 +25,10 @@ try {
   const result=await engine.run(code.text,{input:{knowledge:graph},timeoutMs:5000,maxBytes:16384});
   assert.equal(result.ok,true);return (result as any).data;
  };
- const overview=createProjector(presentationHelp.kinds.project as any)(graph as unknown as JsonValue) as any;
- assert.equal(Object.keys(overview.tools.render_figure.kinds).length,14);
- assert.equal(overview.tools.render_figure.kinds.column.example,undefined);
- for(const alias of ['render','figure','answer','draft'])assert.deepEqual(toolResource(`oks://help/${alias}`),presentationHelp);
+ const overview=createSelector(presentationHelp.kinds.select)(graph as unknown as JsonValue) as any;
+ assert.equal(overview.tools.render_figure['kinds:keys'].length,14);
+ assert.ok(overview.tools.render_figure['kinds:keys'].includes('column'));
+
  for(const item of graph.items)assert.ok(resolveFact(graph,item.key),item.key);
  for(const word of ['图表','表头','XHTML','stack','series','data-oks-pick'])assert.ok((await run('search',{query:word})).total>0,word);
  const members=await run('members',{key:'tools/render_figure',link:'kinds',take:10});
@@ -56,9 +56,9 @@ try {
    for(const required of fact.required){const spec={kind,...example.spec};delete spec[required];assert.ok('error' in parseChartSpec(spec),`${kind} requires ${required}`);}
   }
   const source=`<Dari><Pipeline>
-let rows=data(${JSON.stringify(example.rows)},{kind:"example"});
-${example.nodes?`let nodes=data(${JSON.stringify(example.nodes)},{kind:"example"});`:''}
-let spec=${JSON.stringify(Object.fromEntries(Object.entries(example.spec).filter(([key])=>key!=="kind")))};
+rows <-data(${JSON.stringify(example.rows)},{kind:"example"});
+${example.nodes?`nodes <-data(${JSON.stringify(example.nodes)},{kind:"example"});`:''}
+spec <-${JSON.stringify(Object.fromEntries(Object.entries(example.spec).filter(([key])=>key!=="kind")))};
 </Pipeline><Template name="answer"><article><figure><${Object.entries(COMPONENT_KINDS).find(([,value])=>value===kind)![0]} spec={spec} data={rows}${example.nodes?' nodes={nodes}':''} /></figure></article></Template></Dari>`;
   const runtime=new FixtureRuntime(backend);const result=await runtime.run(source);
   assert.equal(result.status,'complete',`${kind}: ${result.error}`);

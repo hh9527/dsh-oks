@@ -5,12 +5,11 @@
 ## pipeline
 ```js
 // 为演示提供两行数据，并明确标记其性质。
-let sample = data([{label: "A", value: 2}, {label: "B", value: 3}], {kind: "example"});
-let summary = jq("summary.jq", {sample});
-debug(summary);
-let chart = render_figure({kind: "column", x: "label", value: "value", title: "示例数值"}, {data: sample});
-let table = render_figure({kind: "table", columns: ["label", "value"]}, {data: sample});
-let conclusion = render_html("answer.xhtml", {summary, chart, table});
+sample <- data([{label: "A", value: 2}, {label: "B", value: 3}], {kind: "example"});
+summary <- jq("summary.jq", {sample});
+chart <- render_figure({kind: "column", x: "label", value: "value", title: "示例数值"}, {data: sample});
+table <- render_figure({kind: "table", columns: ["label", "value"]}, {data: sample});
+conclusion <- render_html("answer.xhtml", {summary, chart, table});
 ```
 
 ## assets

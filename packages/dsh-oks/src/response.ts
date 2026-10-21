@@ -1,3 +1,4 @@
+import {formatRead,type ReadResult} from './read.ts';
 import type { XhtmlError } from './report/xhtml.ts';
 import { basename } from 'node:path';
 import { capLine } from './text.ts';
@@ -92,7 +93,7 @@ export function renderCurrentCtx(_args: unknown, value: CurrentCtxValue | null |
   const lines = [
     `asset:  ${value?.asset ?? ''}`,
     `这份时间上下文：${((value?.bytes ?? 0) / 1024).toFixed(1)} KB · ${value?.ms ?? 0} ms`,
-    '把它以 ctx 加载到 oks_data，用 builtin://time/windows.jq 计算带毫秒值与 RFC3339 的窗口；参数与示例见 oks://help/time。',
+    '把它以 ctx 加载到 oks_project，用 builtin://time/windows.jq 计算带毫秒值与 RFC3339 的窗口；参数与示例见 oks://help/time.md。',
     '',
     JSON.stringify(value?.data ?? null, null, 2),
   ];
@@ -147,40 +148,9 @@ export function renderView(_args: unknown, value: ViewValue | null | undefined):
 
 const textBlock = (lines: readonly string[]): RenderBlock[] => [{ type: 'text', text: `${lines.join('\n')}\n` }];
 
-/** oks_read：`.work/` 下的文件正文（带行号）或目录清单。
- *  分页是明说的：给出"共 N 行、这是第 from 行起"，不是悄悄截断。 */
-export interface WorkReadValue {
-  ok?: boolean;
-  file?: string;
-  entries?: ReadonlyArray<{ name: string; bytes: number; modifiedAt: string }>;
-  lines?: readonly string[];
-  from?: number;
-  total?: number;
-  bytes?: number;
-}
-
-export function renderWorkRead(_args: unknown, value: WorkReadValue | null | undefined): RenderBlock[] {
-  if (value?.ok !== true) return textBlock([JSON.stringify(value ?? { ok: false, error: { code: 'work_unreadable' } })]);
-  const entries = value.entries ?? [];
-  if (entries.length > 0 || (value.lines ?? []).length === 0) {
-    const lines = [`${value.file ?? ''}：${entries.length} 个文件`];
-    for (const entry of entries) lines.push(`  ${entry.name} · ${entry.bytes} B · ${entry.modifiedAt}`);
-    if (entries.length === 0) lines.push(`（${value.file ?? ''} 里还没有文件：用 oks_write 建一份。）`);
-    return textBlock(lines);
-  }
-  const from = value.from ?? 1;
-  const shown = value.lines ?? [];
-  const total = value.total ?? 0;
-  const width = String(from + shown.length - 1).length;
-  const lines = [
-    `${value.file ?? ''} · 共 ${total} 行 · ${((value.bytes ?? 0) / 1024).toFixed(1)} KB`
-    + `（这里是第 ${from}–${from + shown.length - 1} 行）`,
-    ...shown.map((line, at) => `${String(from + at).padStart(width, ' ')}  ${line}`),
-  ];
-  if (from + shown.length - 1 < total) {
-    lines.push(`…（还有 ${total - (from + shown.length - 1)} 行：用 offset 从第 ${from + shown.length} 行继续）`);
-  }
-  return textBlock(lines);
+/** Model-facing text envelope and continuation behavior match the host read tool. */
+export function renderWorkRead(args:{limit?:unknown},value:ReadResult):RenderBlock[] {
+  return [{type:'text',text:formatRead(value,args.limit)}];
 }
 
 /** oks_write / oks_edit：落点与尺寸。 */
@@ -363,7 +333,7 @@ export function renderCheck(_args: unknown, value: CheckValue | null | undefined
   const runnable = value?.queryCount ?? 0;
   lines.push('', results.length > 0 && accepted.length === results.length
     ? `校验结论：${results.length} 个 Intent 全部可用（${runnable} 个查询可执行）。用 oks_exec_query_intent 带同一批名字与各自的 key 提交就能拿到结果。`
-    : `校验结论：${accepted.length}/${results.length} 可用（${runnable} 个查询可执行）。用 oks_data 读取 input="oks://knowledge"，按返回的 key 核实声明再修；查询语法通过 oks://help/query 读取，保持业务含义不变。`);
+    : `校验结论：${accepted.length}/${results.length} 可用（${runnable} 个查询可执行）。用 oks_project 读取 input="oks://knowledge"，按返回的 key 核实声明再修；查询语法通过 oks://help/query.md 读取，保持业务含义不变。`);
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 
@@ -417,7 +387,7 @@ export function renderQuery(_args: unknown, value: QueryValue | null | undefined
         + `${result.truncated ? `（已到行数上限 ${value!.queryMaxRows}，结果还有更多）` : ''}`);
       lines.push(`asset:  ${result.asset}`);
       lines.push(`columns:  ${result.columns.map((column) => `${column.name}:${column.types.join('|')}`).join(', ')}`);
-      lines.push('（数据行与语句都不在回执里：数据按需用 oks_data 取，语句在执行记录里）');
+      lines.push('（数据行与语句都不在回执里：数据按需用 oks_project 取，语句在执行记录里）');
       if (result.rowCount === 0 && value?.window) {
         lines.push(`提示：这份数据的窗口是 [${value.window.start}, ${value.window.endExclusive})，被过滤掉的可能是时间落在窗口之外。`);
       }
@@ -524,7 +494,7 @@ export function renderJqTransform(args: unknown, value: TransformValue | null | 
   return renderValue(args, value);
 }
 
-/** oks_data：完整渲染结构化值，最终回执由工具预算约束。 */
+/** oks_project：完整渲染结构化值，最终回执由工具预算约束。 */
 export function renderJqResult(args: unknown, value: unknown): RenderBlock[] {
   return renderJqTransform(args,value as TransformValue);
 }

@@ -25,7 +25,7 @@ const runtime=new FixtureRuntime(createDraftBackend({entry,file:'.work/limit.md'
     assert.deepEqual(originals.get(limit),[limit,limit],'cached model bindings stay unchanged');
     return {rows:Array.from({length:Math.min(population,Number(bindings[1]))},(_,n)=>({n})),columns:['n'],truncated:overflow};
   },dispose(){}}})}}));
-const source=()=>`## pipeline\n\x60\x60\x60js\nlet facts=exec_query(query({limit:${limit}})); debug(facts.truncated);\n\x60\x60\x60`;
+const source=()=>`## pipeline\n\x60\x60\x60js\nfacts <-exec_query(query({limit:${limit}})); peek <- facts.truncated;\n\x60\x60\x60`;
 try {
   for(const cap of [1,3,500]) {
     limit=cap;
@@ -36,7 +36,7 @@ try {
       const facts=runtime.read('facts',text).value.data as {rows:{n:number}[];columns:unknown;truncated:boolean};
       assert.equal(facts.rows.length,Math.min(population,limit));
       assert.equal(facts.truncated,population>limit);
-      assert.equal(runtime.read('debug/1',text).value.data,population>limit);
+      assert.equal(runtime.read('peek',text).value.data,population>limit);
       assert.deepEqual(Object.keys(facts).sort(),['columns','rows','truncated']);
       const before=executions;
       await runtime.run(text);

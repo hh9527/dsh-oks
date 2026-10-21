@@ -43,7 +43,7 @@ assert.match(limitProblem(null)!, /Intent 必须是一个对象/);
 console.log('✓ 查询 limit 允许 1..500，501 及非法值被拒绝');
 
 for (const code of ['evaluation_truncated', 'payload_too_large']) {
-  const error = { ok: false, error: { code, tool: 'oks_data', limitBytes: 1024, actualBytes: null },
+  const error = { ok: false, error: { code, tool: 'oks_project', limitBytes: 1024, actualBytes: null },
     shape: { type: 'array', size: 100000 } };
   for (const args of [{}]) {
     assert.deepEqual(JSON.parse((renderJqResult(args, error)[0] as { text: string }).text), error);
@@ -54,7 +54,7 @@ for (const value of [null, undefined, {}, { error: { code: 'failure' } }]) {
   assert.doesNotMatch(text, /asset:.*0\.0 KB/);
 }
 
-console.log('✓ oks_data 读取错误与 shape 完整可见');
+console.log('✓ oks_project 读取错误与 shape 完整可见');
 
 // 读回结构是注释摘要，最终报告的正文另由渲染路径完整保留。
 const summaryOf = (content: string, attributes = 'data-oks-shrink=""') => {

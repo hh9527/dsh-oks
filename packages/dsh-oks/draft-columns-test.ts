@@ -19,7 +19,7 @@ const entry={modelHash:'columns',settings:{domain:'test',queryMaxRows:100},runne
 }}} as unknown as WorkspaceEntry;
 const runtime=new FixtureRuntime(createDraftBackend({entry,file:'.work/columns.md',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),
   knowledge:{executorFor:()=>({manifest:null,executor:{async send(){executions++;return {rows,columns:sqlColumns,truncated:false};},dispose(){}}})}}));
-const source='## pipeline\n```js\nlet facts=exec_query(query({limit:5})); debug(facts.columns); let table=render_figure({kind:"table"},{data:facts});\n```';
+const source='## pipeline\n```js\nfacts <-exec_query(query({limit:5})); peek <- facts.columns; table <-render_figure({kind:"table"},{data:facts});\n```';
 try {
   for(const population of [[{clock:1792454400000,value:3}],[],[{clock:null,value:null}]]) {
     rows=population;
@@ -29,7 +29,7 @@ try {
     const facts=runtime.read('facts',source).value.data as {rows:unknown[];columns:unknown};
     assert.deepEqual(facts.columns,declared);
     assert.deepEqual(facts.rows,rows);
-    assert.deepEqual(runtime.read('debug/1',source).value.data,declared);
+    assert.deepEqual(runtime.read('peek',source).value.data,declared);
     assert.deepEqual(rowsOf(facts,'fixture'),rows);
     // Empty tables are a presentation concern; the query schema stays usable.
     if(rows.length) assert.ok(run.outputs.get('table')?.value,run.outputs.get('table')?.error);

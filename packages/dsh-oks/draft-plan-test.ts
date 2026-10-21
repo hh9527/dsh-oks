@@ -14,14 +14,14 @@ const backend=createDraftBackend({entry,file:'.work/plan.dari',contextZone:()=>z
   knowledge:{executorFor(){return {manifest:null,executor:{async send(_sql:string,bindings:unknown[]){executions++;return {rows:[{n:Number(bindings[0])}],columns:['n'],truncated:false};},dispose(){}}};}}});
 const runtime=new DraftRuntime(backend);
 const wrap=(code:string)=>`<Dari><Pipeline>${code}</Pipeline></Dari>`;
-const planOnly=wrap('let plan=query({limit:5,value:1}); debug(plan.columns);');
-const source=wrap('let ctx=context(); let plan=query({limit:5,value:1}); let alias=plan; let facts=exec_query(alias);');
+const planOnly=wrap('plan <-query({limit:5,value:1}); peek <- plan.columns;');
+const source=wrap('ctx <-context(); plan <-query({limit:5,value:1}); alias <-plan; facts <-exec_query(alias);');
 try {
   let run=await runtime.run(planOnly);
   assert.equal(run.status,'complete',run.error);
   assert.equal(executions,0);assert.equal(compiles,1);assert.equal(run.acquisitions.length,0);
   assert.deepEqual(runtime.read('plan',planOnly).value.data,{columns});
-  assert.deepEqual(runtime.read('debug/1',planOnly).value.data,columns);
+  assert.deepEqual(runtime.read('peek',planOnly).value.data,columns);
   assert.ok(!JSON.stringify(runtime.read('plan',planOnly).value.sources).includes('select n'));
   run=await runtime.run(source);
   assert.equal(executions,1);assert.equal(compiles,1);
@@ -46,17 +46,17 @@ try {
   entry.modelHash='model-2';
   run=await runtime.run(changed);assert.equal(executions,5);assert.equal(compiles,3);
   for(const input of ['{columns:plan.columns}','plan.columns','data(plan)']){
-    const invalid=wrap(`let plan=query({limit:5,value:2}); let invalid=exec_query(${input});`);
+    const invalid=wrap(`plan <-query({limit:5,value:2}); invalid <-exec_query(${input});`);
     run=await runtime.run(invalid);
     assert.equal(run.outputs.get('invalid')!.status,'failed');
     assert.match(run.outputs.get('invalid')!.error!,/complete plan/);assert.equal(executions,5);
   }
-  const invalidDynamic=wrap('let ctx=context(); let plan=query({limit:ctx.utc.epochMillis}); let facts=exec_query(plan);');
+  const invalidDynamic=wrap('ctx <-context(); plan <-query({limit:ctx.utc.epochMillis}); facts <-exec_query(plan);');
   run=await runtime.run(invalidDynamic);
   assert.equal(run.outputs.get('plan')!.status,'failed');assert.equal(run.outputs.get('facts')!.status,'blocked');assert.equal(executions,5);
   const pinned=new DraftRuntime(backend,{maxCacheEntries:2});
   try{
-    const crowded=source.replace('</Pipeline>',Array.from({length:12},(_,i)=>`let a${i}=data(${i});`).join('')+'</Pipeline>');
+    const crowded=source.replace('</Pipeline>',Array.from({length:12},(_,i)=>`a${i} <-data(${i});`).join('')+'</Pipeline>');
     await pinned.run(crowded);const before=executions;
     const again=await pinned.run(crowded);
     assert.equal(again.outputs.get('facts')!.status,'cached');

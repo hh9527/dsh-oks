@@ -167,14 +167,17 @@ export class DraftRuntime {
         this.resetAcquisitions();
       }
       run.batch = this.batch;
-      let debug = 0;
+      const jobs=new Map<string,Promise<void>>();
+      const pending=new Map<string,Promise<Computed>>();
+      const captures=new Map<string,Capture>();
       let outputBytes = 0;
-      for (const node of document.nodes) {
+      const executeNode=async(node:PipelineNode) => {
         const statement = node.statement;
-        const name = statement.kind === 'binding' ? statement.name : `debug/${++debug}`;
+        const name = statement.kind === 'binding' ? statement.name : 'output';
+        const ephemeral=statement.kind==='output'||statement.name.startsWith('_');
         if (options.signal?.aborted) {
           run.outputs.set(name, { status: 'blocked', span: statement.span, error: 'aborted',internal:node.internal,...(node.display?{display:node.display}:{}) });
-          continue;
+          return;
         }
         let executed = false;
         let failedCall: CallContext | undefined;
@@ -223,16 +226,22 @@ export class DraftRuntime {
             environment,
             batch: acquisition ? run.batch : null,
           }));
-          let result = this.cached(key);
-          const hit = result !== undefined;
-          if (!result) {
-            failedCall = context;
-            if(acquisition && this.captured.has(key))
-              throw new Error('Captured snapshot was reclaimed; use refresh:true or renew_context before acquiring it again');
-            if(acquisition && this.captured.size>=4096)
-              throw new Error('Acquisition identity budget exceeded; use refresh:true or renew_context');
-            result = await this.backend.execute(context);
-            if (options.signal?.aborted) throw new Error('aborted');
+          const cacheable=acquisition||!ephemeral;
+          const pendingKey=cacheable?key:`ephemeral:${key}`;
+          let result=cacheable?this.cached(key):undefined;
+          let hit=result!==undefined;
+          if(!result){
+            failedCall=context;
+            const shared=pending.get(pendingKey);
+            if(shared){ result=await shared; hit=true; }
+            else {
+              if(acquisition&&this.captured.has(key))throw new Error('Captured snapshot was reclaimed; use refresh:true or renew_context before acquiring it again');
+              if(acquisition&&this.captured.size>=4096)throw new Error('Acquisition identity budget exceeded; use refresh:true or renew_context');
+              const work=this.backend.execute(context);
+              pending.set(pendingKey,work);
+              result=await work;
+            }
+            if(options.signal?.aborted)throw new Error('aborted');
           }
           // Assemble with current inputs before admitting a new successful computation to the cache.
           failedCall = context;
@@ -247,15 +256,16 @@ export class DraftRuntime {
               : previous && previous.environment !== environmentHash ? 'environment-changed'
               : previous ? 'cache-reclaimed' : 'no-retained-acquisition';
             const evidenceTime = isRecord(result.evidence) && typeof result.evidence.acquiredAt === 'string' ? result.evidence.acquiredAt : undefined;
-            capture = hit ? this.cache.get(key)?.capture : { acquiredAt: evidenceTime ?? new Date(this.now()).toISOString(), fromRun: run.id, fromBatch: run.batch };
+            capture = hit ? captures.get(key)??this.cache.get(key)?.capture : { acquiredAt: evidenceTime ?? new Date(this.now()).toISOString(), fromRun: run.id, fromBatch: run.batch };
             if (!capture) throw new Error('Cached acquisition is missing its capture record');
+            captures.set(key,capture);
             run.acquisitions.push({ binding: name, operator: expr.operator as 'exec_query' | 'context', at: { line: expr.span.start.line, column: expr.span.start.column }, status: hit ? 'cached' : 'executed', reason, ...capture });
             this.acquisitionHistory.delete(identity);
             if (this.acquisitionHistory.size >= 128) this.acquisitionHistory.delete(this.acquisitionHistory.keys().next().value!);
             this.acquisitionHistory.set(identity, { environment: environmentHash, batch: run.batch });
           }
           if(acquisition) this.captured.add(key);
-          if (!hit) { this.store(key, result, acquisition, capture); executed = true; }
+          if (!hit) { if(cacheable)this.store(key, result, acquisition, capture); executed = true; }
           return value;
         };
         try {
@@ -271,7 +281,19 @@ export class DraftRuntime {
             ...(failedCall.asset?{asset:failedCall.asset.name}:{}),bindings:node.bindings} : undefined;
           run.outputs.set(name, { status: error instanceof Blocked ? 'blocked' : 'failed', error: `${this.file}:${location.start.line}:${location.start.column}: ${message(error)}`, span: location,internal:node.internal,...(node.display?{display:node.display}:{}), ...(context?{context}:{}) });
         }
+      };
+      for(const node of document.nodes){
+        const name=node.statement.kind==='binding'?node.statement.name:'output';
+        const job=Promise.resolve().then(async()=>{
+          await Promise.all(node.bindings.map(binding=>jobs.get(binding)));
+          await executeNode(node);
+        });
+        jobs.set(name,job);
       }
+      await Promise.all(jobs.values());
+      // Completion order does not change the public source order.
+      run.outputs=new Map([...jobs.keys()].flatMap(name=>run.outputs.has(name)?[[name,run.outputs.get(name)!] as const]:[]));
+      run.acquisitions.sort((a,b)=>a.at.line-b.at.line||a.at.column-b.at.column);
       run.status = options.signal?.aborted ? 'cancelled' : 'complete';
     } catch (error) {
       run.status = options.signal?.aborted ? 'cancelled' : 'invalid';

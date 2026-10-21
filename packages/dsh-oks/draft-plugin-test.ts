@@ -23,7 +23,7 @@ apply({logger:{info:(message:string)=>logs.push(message)},get:(name:string)=>nam
   effect:(fn:()=>unknown)=>{const result=fn();if(typeof result==='function')dispose.push(result as ()=>void);},
   on:(_name:string,listener:unknown)=>{listeners.push(listener);return ()=>{};},
 });
-const expected=['oks_read','oks_write','oks_edit','oks_list','oks_delete','va_ask','oks_run_answer','oks_show','renew_context','oks_data'];
+const expected=['oks_read','oks_write','oks_edit','oks_list','oks_delete','va_ask','oks_run_answer','oks_show','renew_context','oks_project'];
 assert.deepEqual([...registered.keys()].sort(),expected.sort());
 const session={id:'draft-plugin-test',header:{cwd:root}};
 const exec={agent:{session}};
@@ -33,36 +33,37 @@ const call=async(name:string,args:unknown)=>{
   const tool=registered.get(name);const value=await tool.execute(args,exec);
   assert.deepEqual(value,JSON.parse(JSON.stringify(value)),`${name} output must survive JSON unchanged`);
   if(snapshot)assert.notEqual(snapshot(value),undefined,`${name} must pass the running host lossless JSON validator`);
-  const text=tool.output.render(args,value).map((block:any)=>block.text??'').join('');assert.ok(Buffer.byteLength(text)<=16384,`${name} payload limit`);return {value,text};
+  const text=tool.output.render(args,value).map((block:any)=>block.text??'').join('');if(name==='oks_read')assert.ok(Buffer.byteLength(value.lines.map((line:any)=>line.text).join('\n'))<=50*1024,'read selected text limit');else assert.ok(Buffer.byteLength(text)<=16384,`${name} payload limit`);return {value,text};
 };
 const source=`<Dari title="告警概览">
 <Pipeline>
-let ctx=context();
-let months=time_windows(ctx,{unit:"month",count:2,mode:"complete"});
-let facts=exec_query(query({op:"Graph",root:"a",nodes:[{id:"a",entity:"current_alarm"}],edges:[],select:[],count:"a",limit:5}));
-let total=jq("total.jq",{facts});
-debug(total);
+ctx <-context();
+months <-time_windows(ctx,{unit:"month",count:2,mode:"complete"});
+facts <-exec_query(query({op:"Graph",root:"a",nodes:[{id:"a",entity:"current_alarm"}],edges:[],select:[],count:"a",limit:5}));
+total <-jq("total.jq",{facts});
+{total}
 </Pipeline>
 <Asset language="jq" name="total.jq">.facts.rows[0] | to_entries[0].value</Asset>
 <Template name="answer"><article><p>当前告警数：<Value data={total} /></p></article></Template>
 </Dari>`;
 try {
   assert.equal(skills.length,1);
-  await call('oks_write',{path:'oks://work/plan.dari',content:'<Dari><Pipeline>let plan=query({op:"Graph",root:"a",nodes:[{id:"a",entity:"current_alarm"}],edges:[],select:[],count:"a",limit:5}); debug(plan.columns);</Pipeline></Dari>'});
+  await call('oks_write',{path:'oks://work/plan.dari',content:'<Dari><Pipeline>plan <-query({op:"Graph",root:"a",nodes:[{id:"a",entity:"current_alarm"}],edges:[],select:[],count:"a",limit:5}); {columns:plan.columns}</Pipeline></Dari>'});
   const planned=await call('oks_run_answer',{src:'oks://work/plan.dari'});
   assert.equal(planned.value.ok,true,planned.text);
   assert.equal(planned.value.acquisitions.length,0);
-  assert.deepEqual((await call('oks_data',{input:'oks://work/plan.dari#plan'})).value.data,{columns:[{name:'a_count',type:'Int',nullable:false}]});
+  assert.deepEqual((await call('oks_project',{input:'oks://work/plan.dari#plan'})).value.data,{columns:[{name:'a_count',type:'Int',nullable:false}]});
   await call('oks_write',{path:'oks://work/draft.dari',content:asDari(source)});
   let result=await call('oks_run_answer',{src:'oks://work/draft.dari'});
   assert.equal(result.value.delivery.status,'ready',result.text);
   assert.equal(result.value.delivery.mode,'retained');
   assert.equal(result.value.outputs.find((item:any)=>item.name==='facts').truncated,false);
   assert.deepEqual(result.value.outputs.find((item:any)=>item.name==='facts').columns,[{name:'a_count',type:'Int',nullable:false}]);
-  assert.deepEqual((await call('oks_data',{input:'oks://work/draft.dari#facts',pointer:'/columns'})).value.data,[{name:'a_count',type:'Int',nullable:false}]);
+  assert.deepEqual((await call('oks_project',{input:'oks://work/draft.dari#facts',select:"'columns'"})).value.data.columns,[{name:'a_count',type:'Int',nullable:false}]);
   const firstBatch=result.value.batch;
-  const count=(await call('oks_data',{input:'oks://work/draft.dari#total'})).value.data;
+  const count=(await call('oks_project',{input:'oks://work/draft.dari#total'})).value.data;
   assert.ok(typeof count==='number' && count>0);
+  assert.deepEqual((await call('oks_project',{input:'oks://work/draft.dari#output'})).value.data,{total:count});
   result=await call('oks_run_answer',{src:'oks://work/draft.dari'});
   assert.equal(result.value.batch,firstBatch);
   assert.equal(result.value.counts.executed,0);
@@ -70,26 +71,36 @@ try {
   const shownReport=await call('oks_show',{input:'oks://work/draft.dari#answer'});
   assert.match(shownReport.value.path,/\.report\.html$/);
   assert.match(readFileSync(shownReport.value.path,'utf8'),new RegExp(String(count)));
-  result=await call('oks_data',{input:'oks://knowledge',method:'oks://builtin/tools/ktools.lib.jq#search',args:{query:'current_alarm',take:2}});
+  result=await call('oks_project',{input:'oks://knowledge',transform:{lib:'oks://builtin/tools/ktools.lib.jq',name:'search',args:{query:'current_alarm',take:2}}});
   assert.ok(result.value.data.total>0);
+  const explore=async(name:string,args:unknown)=>(await call('oks_project',{input:'oks://knowledge',transform:{lib:'oks://builtin/tools/ktools.lib.jq',name,args}})).value.data;
+  const overview=await explore('overview',{take:2});
+  assert.ok(overview.total>0&&overview.datasets.length>0);
+  const card=await explore('card',{id:'current_alarm',section:'dimensions',take:2,docs:true});
+  assert.ok(card.dimensions.length>0&&card.counts.dimensions>=card.dimensions.length);
+  const nodes=await explore('nodes',{keys:['datasets/current_alarm'],mode:'both',take:2});
+  assert.equal(nodes[0].key,'datasets/current_alarm');
+  assert.ok(nodes[0].outline.length>0&&nodes[0].facts.length>0);
+  const routes=await explore('routes',{nodes:['datasets/current_alarm',card.dimensions[0].key],via:['dimensions'],max_depth:1,budget:100,max_paths:2});
+  assert.ok(routes.path_count>0);
   const sourceLibrary=(await call('oks_read',{path:'oks://builtin/tools/ktools.lib.jq'})).value;
-  assert.ok(sourceLibrary.lines.some((line:string)=>line.includes('def search($args)')));
+  assert.ok(sourceLibrary.lines.some((line:any)=>line.text.includes('def search($args)')));
   await call('oks_write',{path:'oks://memory/tools/ktools.lib.jq',content:'def schema_counts($args): . | {datasets:(.datasets|length),types:(.types|length)};'});
-  const counts=(await call('oks_data',{input:'oks://knowledge',method:'oks://memory/tools/ktools.lib.jq#schema_counts',args:{}})).value.data;
+  const counts=(await call('oks_project',{input:'oks://knowledge',transform:{lib:'oks://memory/tools/ktools.lib.jq',name:'schema_counts',args:{}}})).value.data;
   assert.ok(counts.datasets>0&&counts.types>0);
   await assert.rejects(call('oks_edit',{path:'oks://memory/tools/ktools.lib.jq',old_string:'. |',new_string:'missing_function'}),/missing_function/);
-  assert.deepEqual((await call('oks_data',{input:'oks://knowledge',method:'oks://memory/tools/ktools.lib.jq#schema_counts'})).value.data,counts);
+  assert.deepEqual((await call('oks_project',{input:'oks://knowledge',transform:{lib:'oks://memory/tools/ktools.lib.jq',name:'schema_counts',args:{}}})).value.data,counts);
   assert.ok((await call('oks_list',{})).value.files.some((file:any)=>file.name==='oks://memory/tools/ktools.lib.jq'));
-  result=await call('oks_data',{input:'oks://knowledge',project:{datasets:{current_alarm:{fields:'Shape'}}}});
-  assert.equal(result.value.data.datasets.current_alarm.fields.type,'object');
-  const months=(await call('oks_data',{input:'oks://work/draft.dari#months'})).value.data;
+  result=await call('oks_project',{input:'oks://knowledge',select:'datasets.current_alarm.fields:keys'});
+  assert.ok(Array.isArray(result.value.data.datasets.current_alarm['fields:keys']));
+  const months=(await call('oks_project',{input:'oks://work/draft.dari#months'})).value.data;
   assert.equal(months.length,2);
   assert.match(months[1].end.rfc3339,/T00:00:00\+08:00$/);
-  const topics=(await call('oks_data',{input:'oks://help/query'})).value.data.topics;
-  assert.ok(topics.includes('graph/filter'));
-  assert.equal(typeof (await call('oks_data',{input:'oks://help/query',pointer:'/graph~1filter'})).value.data.text,'string');
+  const help=(await call('oks_read',{path:'oks://help/query.md',limit:2000})).value;
+  assert.match(help.lines.map((line:any)=>line.text).join('\n'),/ontology-intent-v1/);
+  await assert.rejects(call('oks_project',{input:'oks://help/query.md'}),/Unknown structured resource/);
   await call('oks_edit',{path:'oks://work/draft.dari',old_string:'当前告警数：',new_string:'当前告警总数：'});
-  result=await call('oks_data',{input:'oks://work/draft.dari#total'});
+  result=await call('oks_project',{input:'oks://work/draft.dari#total'});
   assert.equal(result.value.stale,true);
   result=await call('oks_run_answer',{src:'oks://work/draft.dari'});
   assert.equal(result.value.delivery.status,'ready',result.text);
@@ -122,31 +133,31 @@ try {
   }
   result=await call('oks_run_answer',{src:'oks://work/example.dari'});
   assert.equal(result.value.delivery.status,'ready',result.text);
-  const exampleReport=(await call('oks_data',{input:'oks://work/example.dari#reports.conclusion'})).value.data;
+  const exampleReport=(await call('oks_project',{input:'oks://work/example.dari#reports.conclusion'})).value.data;
   assert.equal(exampleReport.items.value_1,2);assert.equal(exampleReport.items.value_2,5);
   const columnSource=['## pipeline','```js',
-    'let epoch=exec_query(query({op:"Graph",root:"x",nodes:[{id:"x",entity:"device"}],edges:[],select:[{node:"x",dimension:"device_create_ms"}],limit:1}));',
-    'let utc=exec_query(query({op:"Graph",root:"x",nodes:[{id:"x",entity:"device_kpi"}],edges:[],select:[{node:"x",dimension:"device_kpi_ts_raw"}],limit:1}));',
-    'let cpu=exec_query(query({op:"Graph",root:"x",nodes:[{id:"x",entity:"device_kpi"}],edges:[],select:[],measures:[{node:"x",measure:"cpu_usage"}],limit:1}));',
-    'debug(epoch.columns);','```'].join('\n');
+    'epoch <-exec_query(query({op:"Graph",root:"x",nodes:[{id:"x",entity:"device"}],edges:[],select:[{node:"x",dimension:"device_create_ms"}],limit:1}));',
+    'utc <-exec_query(query({op:"Graph",root:"x",nodes:[{id:"x",entity:"device_kpi"}],edges:[],select:[{node:"x",dimension:"device_kpi_ts_raw"}],limit:1}));',
+    'cpu <-exec_query(query({op:"Graph",root:"x",nodes:[{id:"x",entity:"device_kpi"}],edges:[],select:[],measures:[{node:"x",measure:"cpu_usage"}],limit:1}));',
+    '{columns:epoch.columns}','```'].join('\n');
   await call('oks_write',{path:'oks://work/columns.dari',content:asDari(columnSource)});
   const typed=await call('oks_run_answer',{src:'oks://work/columns.dari'});
   assert.equal(typed.value.ok,true,typed.text);
   for(const [binding,type] of [['epoch','EpochMillis'],['utc','DatetimeUtc'],['cpu','Float']]) {
-    const columns=(await call('oks_data',{input:'oks://work/columns.dari#'+binding,pointer:'/columns'})).value.data;
+    const columns=(await call('oks_project',{input:'oks://work/columns.dari#'+binding,select:"'columns'"})).value.data.columns;
     assert.equal(columns[0].type,type);
-    const data=(await call('oks_data',{input:'oks://work/columns.dari#'+binding})).value.data;
+    const data=(await call('oks_project',{input:'oks://work/columns.dari#'+binding})).value.data;
     assert.equal(data.truncated,binding!=='cpu');
     assert.equal(data.rows.length,1);
     assert.equal(typed.value.outputs.find((item:any)=>item.name===binding).truncated,binding!=='cpu');
     assert.equal(typed.value.outputs.find((item:any)=>item.name===binding).columns[0].type,type);
   }
-  assert.equal((await call('oks_data',{input:'oks://work/columns.dari#debug/1'})).value.data[0].type,'EpochMillis');
-  await call('oks_data',{input:'oks://work/columns.dari#debug'});
-  await call('oks_data',{input:'oks://work/columns.dari#epoch',meta:true});
-  await call('oks_write',{path:'oks://work/validation.dari',content:'<Dari><Pipeline>let rows=missing;</Pipeline><Asset language="jq" name="one.jq">missing_one</Asset><Asset language="jq" name="two.jq">missing_two</Asset><Figures><ColumnChart name="bad" data={rows}/></Figures><Report name="bad"><article onclick="bad"><p>invalid</p></article></Report></Dari>'});
+  assert.equal((await call('oks_project',{input:'oks://work/columns.dari#output'})).value.data.columns[0].type,'EpochMillis');
+  await call('oks_project',{input:'oks://work/columns.dari#output'});
+  await call('oks_project',{input:'oks://work/columns.dari#meta.epoch'});
+  await call('oks_write',{path:'oks://work/validation.dari',content:'<Dari><Pipeline>rows <-missing;</Pipeline><Asset language="jq" name="one.jq">missing_one</Asset><Asset language="jq" name="two.jq">missing_two</Asset><Figures><ColumnChart name="bad" data={rows}/></Figures><Report name="bad"><article onclick="bad"><p>invalid</p></article></Report></Dari>'});
   const invalid=await call('oks_run_answer',{src:'oks://work/validation.dari'});assert.equal(invalid.value.status,'invalid');assert.equal(invalid.value.counts.executed,0);
-  const validationDiagnostics=(await call('oks_data',{input:invalid.value.diagnosticsInput,offset:0,limit:100})).value;
+  const validationDiagnostics=(await call('oks_project',{input:invalid.value.diagnosticsInput,select:'[0..100]'})).value;
   assert.ok(validationDiagnostics.data.some((d:any)=>d.stage==='pipeline'));
   for(const asset of ['one.jq','two.jq','figures.bad','reports.bad'])assert.ok(validationDiagnostics.data.some((d:any)=>d.asset===asset),asset);
   assert.equal(existsSync(join(root,'.oks')),false,'query/render/export must not create internal disk storage');

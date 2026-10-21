@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { createJaqEngine } from './src/jaq.ts';
+import { helpFiles } from './src/help-files.ts';
 import { builtinCode, toolResource } from './src/knowledge-programs.ts';
 
 const engine = createJaqEngine(process.argv[2] ?? fileURLToPath(new URL('./lib/oks-wti.wasm', import.meta.url)));
@@ -66,7 +67,7 @@ try {
   for (const value of [null,{},context('2026-01-01T00:00:00Z','Mars/Olympus'),{utc:{epochMillis:'1790854863000'},tz:{client:{id:'UTC'}}}]) {
     await assert.rejects(run({unit:'month',count:1,mode:'complete'},value)); checks++;
   }
-  assert.ok(toolResource('oks://help/time'));
+  assert.match(helpFiles['oks://help/time.md'],/tzfloor/);
   assert.ok((toolResource(uri) as any).source.includes('tzfloor'));
   console.log(`✓ 时间窗口 ${checks} 组检查通过：毫秒/RFC3339 一致、完整/当前/滚动、跨年/闰年、DST、连续窗口与坏输入`);
 } finally {engine.dispose();}

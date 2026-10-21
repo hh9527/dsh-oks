@@ -1,4 +1,4 @@
-/** 模型可见回执的字节预算：以最终渲染文本计量，超限时返回有界诊断。 */
+/** 结构化回执按最终文本计量；文本读取使用独立的标准 read 行窗口。 */
 import { isRecord } from './host.ts';
 import type { ToolDefinition } from './host.ts';
 import { createProjector } from './project.ts';
@@ -57,7 +57,14 @@ export function payloadTooLarge(tool: string, value: unknown, actualBytes: numbe
   return error;
 }
 
-/** 所有工具共用最终出口；oks_data 成功回执的 data 是业务结果，其他回执按自身结构摘要。 */
+/** Exact JSON representation length, with a prefix preview rather than a partial value. */
+export function projectOverflow(data:unknown) {
+  const repr=JSON.stringify(data);
+  return {error:'payload_too_large',repr:repr.slice(0,4096),reprLength:repr.length,
+    len:typeof data==='string'||Array.isArray(data)?data.length:isRecord(data)?Object.keys(data).length:null};
+}
+
+/** 所有工具共用最终出口；oks_project 成功回执的 data 是业务结果，其他回执按自身结构摘要。 */
 export function withOutputLimit(definition: ToolDefinition): ToolDefinition {
   const render = definition.output.render.bind(definition.output);
   return {
@@ -67,8 +74,12 @@ export function withOutputLimit(definition: ToolDefinition): ToolDefinition {
       render: (args, value) => {
         const blocks = render(args, value);
         const actualBytes = blocks.reduce((sum, block) => sum + Buffer.byteLength(block.text ?? '', 'utf8'), 0);
-        if (actualBytes <= PAYLOAD_MAX_BYTES) return blocks;
+        // File reads already enforce the host read window (50 KiB of selected text).
+        if (definition.name === 'oks_read' || actualBytes <= PAYLOAD_MAX_BYTES) return blocks;
         const result: unknown = value;
+        if (definition.name === 'oks_project' && isRecord(result) && result.ok === true && Object.hasOwn(result,'data')) {
+          return [{type:'text',text:JSON.stringify(projectOverflow(result.data))}];
+        }
         // A failed run must remain actionable even when its failure directory exceeds
         // the normal result budget. Messages are bounded by the producer.
         if(definition.name==='oks_run_answer' && isRecord(result) && Array.isArray(result.failures) && result.failures.length) {
@@ -77,7 +88,7 @@ export function withOutputLimit(definition: ToolDefinition): ToolDefinition {
             omittedOutputs:Number(result.omittedOutputs??0)+(Array.isArray(outputs)?outputs.length:0),
             omittedAcquisitions:Number(result.omittedAcquisitions??0)+(Array.isArray(acquisitions)?acquisitions.length:0)})}];
         }
-        const data = definition.name === 'oks_data' && isRecord(result) && result.ok === true
+        const data = definition.name === 'oks_project' && isRecord(result) && result.ok === true
           && Object.hasOwn(result, 'data') ? result.data : result;
         return [{ type: 'text', text: JSON.stringify(payloadTooLarge(definition.name, data, actualBytes)) }];
       },

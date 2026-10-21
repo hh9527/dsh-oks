@@ -15,8 +15,8 @@ const backend=createDraftBackend({entry:{} as WorkspaceEntry,file,contextZone:()
 const runtime=new DraftRuntime({...backend,execute(ctx){if(ctx.operator==='render_figure')renders++;return backend.execute(ctx);}},{file});
 const figure=(component:string,id:string,caption:string)=>`<figure id="${id}" class="authored"><${component} spec={${component==='Table'?'tableSpec':'spec'}} data={rows} /><figcaption>${caption}</figcaption></figure>`;
 const source=(body:string,code='')=>`<Dari><Notes>类型和编号测试</Notes><Pipeline>
-let rows=data([{x:"A",n:2},{x:"B",n:3}],{kind:"example"});
-let spec={x:"x",value:"n"};let tableSpec={columns:["x","n"]};${code}
+rows <-data([{x:"A",n:2},{x:"B",n:3}],{kind:"example"});
+spec <-{x:"x",value:"n"};tableSpec <-{columns:["x","n"]};${code}
 </Pipeline><Template name="answer"><article>${body}</article></Template></Dari>`;
 try{
  assert.deepEqual(Object.values(COMPONENT_KINDS).sort(),[...CHART_KINDS,'table'].sort());
@@ -48,21 +48,21 @@ try{
   ['<ColumnChart spec={spec} data={rows} />','<ColumnChart spec={spec} data={rows} /><Table spec={tableSpec} data={rows} />','exactly one'],
   ['<ColumnChart spec={spec} data={rows} />','<ColumnChart spec={spec} data={rows} nodes={rows} />','Unknown attribute nodes'],
   ['<figcaption>类别比较</figcaption>','<figurecaption>类别比较</figurecaption>','figcaption'],
-  ['let spec={x:', 'let spec={kind:"column",x:','omit kind'],
-  ['let spec={x:', 'let spec={stack:"total",x:',null],
+  ['spec <-{x:', 'spec <-{kind:"column",x:','omit kind'],
+  ['spec <-{x:', 'spec <-{stack:"total",x:',null],
   ['<figure id="one" class="authored">','<figure id="one" class="authored" title={spec}>','static strings'],
  ]as const){
   const result=await runtime.run(one.replace(from,to));
   if(expected===null){assert.equal(result.outputs.get('answer')?.status,'executed');continue;}
   assert.equal(result.status,'invalid',`${to}: ${result.error}`);assert.ok(result.error?.includes(expected),result.error);assert.equal(result.diagnostics?.[0].file,file);
  }
- const unsupported=await runtime.run(one.replace('ColumnChart','PieChart').replace('let spec={x:','let spec={stack:"total",x:'));
+ const unsupported=await runtime.run(one.replace('ColumnChart','PieChart').replace('spec <-{x:','spec <-{stack:"total",x:'));
  assert.equal(unsupported.status,'invalid');assert.match(unsupported.error!,/stack/);
- const dynamic=source(figure('ColumnChart','one','类别比较')).replace('let spec={x:"x",value:"n"};','let spec=jq("spec.jq",{});').replace('</Dari>','<Asset name="spec.jq" language="jq">{kind:"column",x:"x",value:"n"}</Asset></Dari>');
+ const dynamic=source(figure('ColumnChart','one','类别比较')).replace('spec <-{x:"x",value:"n"};','spec <-jq("spec.jq",{});').replace('</Dari>','<Asset name="spec.jq" language="jq">{kind:"column",x:"x",value:"n"}</Asset></Dari>');
  const failed=await runtime.run(dynamic);assert.equal(failed.outputs.get('@figure/1')?.status,'failed');assert.equal(failed.outputs.get('answer')?.status,'blocked');
  assert.equal(queries,0);
  const stray=source('<ColumnChart spec={spec} data={rows} />');assert.throws(()=>parseDraft(stray,file),/direct child/);
- const raw='<Dari><Pipeline>let value=data("</Pipeline>");</Pipeline><Asset language="jq" name="a.jq">"</Asset>"</Asset></Dari>';
+ const raw='<Dari><Pipeline>value <-data("</Pipeline>");</Pipeline><Asset language="jq" name="a.jq">"</Asset>"</Asset></Dari>';
  assert.equal(parseDraft(raw,file).assets.get('a.jq')!.source,'"</Asset>"');
  console.log('DARI components: tag kinds, caption numbering/order, IDs/classes, reply/artifact, cache identity, multiple answers and invalid specs passed');
 }finally{runtime.dispose();engine.dispose();}
