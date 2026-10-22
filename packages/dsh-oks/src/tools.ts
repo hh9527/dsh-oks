@@ -166,7 +166,7 @@ export function createTools({ knowledge, va, timeContext, log, attachments, ktoo
     },
     {
       name: 'va_ask',
-      description: 'Consult this session\'s vocabulary helper and get its answer back: send one paraphrase — a word, a phrase or a sentence, any language — and you receive the vocabulary\'s own equivalent or near expressions, one per line and verbatim. The helper holds the whole vocabulary in its system prompt, so the first call sets it up and takes longer; each later call is one question. Treat what it returns as leads: look the strings up with oks_project({input:"oks://knowledge",transform:{lib:"oks://builtin/tools/ktools.lib.jq",name:"search",args:{query:"returned word"}}}) and read declarations with its read method; read resolves the exact returned address and pairs facts with descriptions.',
+      description: 'Ask this session\'s vocabulary subagent about one paraphrase — a word, phrase or sentence in any language. Returns delivery confirmation; the subagent sends its answer separately through the host. Wait for its answer before using the vocabulary leads. Consultations reuse the same child with a fixed whole-vocabulary prefix and collapsed previous questions and answers. Verify returned expressions with oks_project and read the corresponding knowledge declarations.',
       parameters: {
         type: 'object',
         properties: {
@@ -188,7 +188,7 @@ export function createTools({ knowledge, va, timeContext, log, attachments, ktoo
           throw new Error('dsh-oks: 词汇助手不咨询自己。');
         }
         if (caller === undefined || typeof key !== 'string' || key.length === 0) {
-          throw new Error('dsh-oks: 无法确定调用方会话，va_ask 需要它来记住词汇助手。');
+          throw new Error('dsh-oks: 无法确定调用方会话，va_ask 需要它来登记词汇子会话。');
         }
         return va.ask(caller, key, query, exec?.signal);
       },

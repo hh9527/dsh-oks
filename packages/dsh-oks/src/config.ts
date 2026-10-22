@@ -26,10 +26,11 @@ export interface OksDeclaration {
   queryMaxRows?: number;
 }
 
-/** 插件行 config 里可以覆盖的键（va 相关的三项见 src/va.ts）。 */
+/** 插件行 config 里可以覆盖的键（va 相关配置见 src/va.ts）。 */
 export interface PluginConfig extends OksDeclaration {
+  /** 专用词汇预设使用此模式，只贡献提示词与权限。 */
+  vocabularyHelper?: boolean;
   vaPreset?: string;
-  vaAskTimeoutMs?: number;
   vaReasoningEffort?: string;
 }
 

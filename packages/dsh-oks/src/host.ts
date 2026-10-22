@@ -3,7 +3,7 @@
 //
 // 三块：
 //   1. 插件上下文（ctx / agentCtx）与它取到的服务、工具定义；
-//   2. agent 句柄与**会话表面**（工具 exec 拿到的 agent、va 装配出来的助手）；
+//   2. agent 句柄与**会话表面**（工具 exec 拿到的调用方与词汇子会话）；
 //   3. 知识服务的响应形状——宿主之外的对端协议，同样只声明我们用到的字段；
 //      外加两个收窄小工具（isRecord / isArray）与错误转文本，供各模块共用。
 //
@@ -48,44 +48,40 @@ export interface SkillsService {
   register(skill: SkillLike): Disposable | void;
 }
 
-export interface AgentHandle {
-  agent: AgentLike;
-}
-
-/** `ctx.get('agents')`：建顶层 agent（va 用它装配词汇助手）。 */
-export interface AgentsService {
-  create(options: AgentCreateOptions): Promise<AgentHandle>;
-}
-
-export interface AgentCreateOptions {
-  sessionId: string;
-  meta: { cwd: string; agentPreset: string };
-  agentOptions: { provider?: string; model?: string; reasoningEffort?: string };
-  setup(agentCtx: PluginContext, agent: AgentLike): void;
-  signal?: AbortSignal;
-}
-
-/** `ctx.get('agentPresets')`：把调用方的 preset 拼进助手自己的作用域。 */
-export interface AgentPresetsService {
-  composedPreset(scope?: PluginContext): string | undefined;
-  composeFrom(scope: PluginContext, from?: PluginContext): void;
-}
-
-/** `ctx.get('sessionTitle')`：给助手会话写日志级标题。 */
-export interface SessionTitleService {
-  rename(session: SessionLike, title: string): void;
-  get?(session: SessionLike): { title?: string } | undefined;
-}
-
-/** `ctx.get('workspaceRegistry')`：助手会话的归档 / 恢复。 */
-export interface WorkspaceRegistry {
-  archiveSession(sessionId: string, options?: { stopActivity?: boolean }): Promise<unknown>;
-  unarchiveSession(sessionId: string): Promise<unknown>;
-}
-
 export interface SystemPromptService {
   section(options: { name: string; order: number; text: string; interpolate?: boolean }): void;
   getSectionOrder(name: string): number;
+}
+
+/** 宿主执行、登记并向父会话投递子会话结果。 */
+export interface SubagentActivation {
+  childId: string;
+  messageId: string;
+  result: Promise<{ output: ContentBlock[]; stopReason: string; diagnostic?: string }>;
+  dispose(): Promise<void>;
+}
+
+export interface SubagentsService {
+  listChildren(parentSessionId: string, signal?: AbortSignal): Promise<{ id: string; label?: string; mode: string }[]>;
+  sendMessage(parent: AgentLike, childId: string, prompt: ContentBlock[], options: { signal: AbortSignal }): Promise<string>;
+  startActivation(spec: {
+    provider: string;
+    label: string;
+    childId: string;
+    delivery: 'parent';
+    signal: AbortSignal;
+    request: {
+      parent: AgentLike;
+      cwd: string;
+      agentPreset: string;
+      prompt: ContentBlock[];
+      agentOptions?: { reasoningEffort: string };
+    };
+  }): Promise<SubagentActivation>;
+}
+
+export interface PromptAssembly {
+  sections: { name: string; text: string; interpolate?: boolean }[];
 }
 
 /** 工具定义：宿主只按 name/description/parameters/output 注册，execute 由宿主调用。
@@ -121,20 +117,24 @@ export interface WorkspaceProbe {
   agent?: { session?: SessionLike } | null;
 }
 
-/** 插件上下文（apply 的 ctx、setup 的 agentCtx、调用方 agent 的 ctx 都是这个形状）。
+/** 插件上下文（apply 的 ctx）。
  *  `get` 按已知服务名给具体类型，其余回落成 unknown，取到后各调用处照旧自己判断。 */
 export interface PluginContext {
   logger?: LoggerLike | null;
   get(name: 'attachments'): AttachmentsService | undefined;
   get(name: 'skills'): SkillsService | undefined;
-  get(name: 'agents'): AgentsService | undefined;
-  get(name: 'agentPresets'): AgentPresetsService | undefined;
-  get(name: 'workspaceRegistry'): WorkspaceRegistry | undefined;
-  get(name: 'sessionTitle'): SessionTitleService | undefined;
+  get(name: 'subagents'): SubagentsService | undefined;
   get(name: string): unknown;
   /** 需要某个服务时才装配（取不到就不装）：插件在无 web 的部署里照常工作。 */
   inject?(names: string[], run: (ctx: PluginContext) => void): void;
   on(event: 'agent/pre-step', handler: PreStepHandler): Disposable;
+  on(event: 'subagent/end', handler: (payload: { id: string; stopReason: string }) => void): Disposable;
+  on(event: 'agent/status', handler: (payload: { agent: AgentLike; status: string }) => void): Disposable;
+  on(event: 'system-prompt/assemble', handler: (
+    assembly: PromptAssembly,
+    context: { agent?: AgentLike; signal?: AbortSignal },
+    next: () => Promise<PromptAssembly>,
+  ) => Promise<PromptAssembly>): Disposable;
   effect(effect: () => unknown): void;
   tools: ToolsService;
   systemPrompt?: SystemPromptService | null;
@@ -153,6 +153,7 @@ export interface ContextMessageLike {
 
 export interface StepDecision {
   kind?: string;
+  messages?: ContextMessageLike[];
 }
 
 export interface PreStepPayload {
@@ -172,6 +173,7 @@ export interface ContentBlock {
 
 export interface EventData {
   id?: string;
+  content?: ContentBlock[];
   reason?: { kind?: string } | null;
   interrupted?: boolean;
   message?: { content?: ContentBlock[] | null } | null;
@@ -198,27 +200,9 @@ export interface SessionLike {
   append(type: string, data: unknown, options?: unknown): EventLike;
 }
 
-/** 插件自己写给助手的一条用户消息。 */
-export interface SessionMessage {
-  id: string;
-  role: string;
-  content: ContentBlock[];
-  source: Record<string, unknown>;
-}
-
-export interface AgentOptions {
-  provider?: string;
-  model?: string;
-}
-
-/** 工具 exec 拿到的 agent / agents.create 返回的 agent 句柄。 */
+/** 词汇咨询使用的调用方身份与工作区；其余执行行为由宿主管理。 */
 export interface AgentLike {
   session: SessionLike;
-  followup(message: SessionMessage): void;
-  status?: string | null;
-  /** va 装配助手时要跟着调用方走的两处：模型选项与调用方的服务作用域。 */
-  options?: AgentOptions | null;
-  ctx?: PluginContext;
 }
 
 // ── 3. 知识服务响应（对端协议）与收窄小工具 ──────────────────────────────────

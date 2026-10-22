@@ -17,10 +17,11 @@ import { createTimeContext } from './time-context.ts';
 import { createTools } from './tools.ts';
 import { withOutputLimit } from './payload.ts';
 import { createVaRuntime } from './va.ts';
+import { installVocabularyHelper } from './va-helper.ts';
 import type { LogFn, PluginContext } from './host.ts';
 import type { PluginConfig } from './config.ts';
 
-export const inject = ['tools'];
+export const inject = ['tools', 'systemPrompt'];
 
 export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
   const log: LogFn = (message) => {
@@ -33,12 +34,17 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
     }
   };
 
+  const knowledge = createKnowledge({ ctx, log, config });
+  ctx.effect(() => knowledge.dispose);
+  if (config.vocabularyHelper === true) {
+    installVocabularyHelper({ ctx, knowledge, log });
+    return;
+  }
+
   const timeContext = createTimeContext({ ctx, log });
   timeContext.install();
 
-  const knowledge = createKnowledge({ ctx, log, config });
-
-  const va = createVaRuntime({ ctx, log, config, knowledge });
+  const va = createVaRuntime({ ctx, log, config });
 
   const definitions = createTools({ knowledge, va, timeContext, log, config, attachments:()=>ctx.get('attachments') });
   ctx.effect(() => definitions.dispose);
@@ -47,7 +53,6 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
     if (typeof dispose === 'function') ctx.effect(() => dispose);
   }
 
-  ctx.effect(() => knowledge.dispose);
   // 求值器是一个常驻 worker（第一次用 jq 时拉起）：卸载时收掉，别让它拖着事件循环。
   ctx.effect(() => disposeJaqEngine);
 }

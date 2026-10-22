@@ -7,7 +7,7 @@
 
 | 工具 | 职责 |
 | --- | --- |
-| `va_ask({query})` | 词汇规整，返回线索，随后核实事实 |
+| `va_ask({query})` | 发起词汇咨询；子 agent 回答送达后，核实词汇线索 |
 | `oks_project({input,transform?,select?})` | 直读结构化资源，先用 jq 方法处理，再用字符串规则投影，返回 `.data` |
 | `oks_read/write/edit/list/delete` | 管理逻辑源码地址；read 支持内置源码，list 用 path 指定目录 |
 | `oks_run_answer({src,answer?,refresh?})` | 执行分析稿并保留结果 |
@@ -16,6 +16,33 @@
 
 
 业务计算定义在稿件内。`oks_project` 的普通读取视图是 `.data`；meta 显式查看追踪信息。
+
+## 词汇子会话
+
+`va_ask` 为每个父会话复用一个宿主管理的 `spawn` 子会话，使用 `oks-vocabulary`
+预设。父会话的子会话目录保留咨询标签和历史记录；执行完成、失败或取消后释放运行实例，
+下次咨询恢复同一个子会话。父会话恢复后从持久目录找回它。
+同一父会话同时发起的相同问题共享一次执行，不同问题串行执行。
+
+助手保留完整词表的固定系统前缀，每轮把前缀之后的历史问答和旧标记收起为一个固定标记，
+再加入当前问题。模型上下文不随咨询次数增长，原始问答完整保留在会话日志中。
+工具面为空，权限为只读。
+主 agent 每次通过 `va_ask` 发起咨询，工具返回子会话 ID 与消息 ID；
+答案由宿主作为子 agent 消息送回主 agent，收到后再使用其中的词汇线索。
+首次调用使用 `startActivation`，续问使用 `sendMessage`，均采用官方宿主的原生生命周期。
+模型路由继承父会话，推理档位默认 `off`；模型须支持配置的档位。
+这些选项写在父预设的 OKS 插件行 `config` 中：
+
+```yaml
+vaPreset: oks-vocabulary
+vaReasoningEffort: "off"  # inherit 表示沿用父会话档位
+```
+
+安装器会注册助手预设。手工配置时，注册 ID 为 `oks-vocabulary` 的 agent preset，
+其中只装配 `@local/dsh-oks`，插件行配置为 `vocabularyHelper: true`。
+工作区 `oks.json` 负责模型和数据源声明。
+
+宿主使用官方 DSH `0.2.1-rc.2`，无需源码补丁。咨询的执行、结果投递、中断和释放由宿主管理。
 
 ## 快速体验
 
@@ -183,21 +210,20 @@ bin/telora -C <模型目录> build <模型名> --snapshot \
 
 ## 安装 / 卸载
 
-- **推荐**：在 Web 的「插件」页安装本目录，或命令行
+- 独立运行环境使用仓库根目录的 `just install` / `just run`，目录与端口配置见[安装说明](../../README.md)。
+- **手工全局安装**：在 Web 的「插件」页安装本目录，或命令行
   `dsh plugin --profile web add link:<本目录>`，再把 `@local/dsh-oks` 加进
   profile `package.json` 的 `dsh.profile.bundles`（两处缺一不可）。这条路上 `add` 会把
   包升成 profile 的 bundle 层，本包自带的 `cordis.patch.yml`（一行顶层 `oks`）跟着生效。
 - **只把工具面放进 preset**：`dsh.profile.bundles` 里不列本包，改在一个 preset 行
   （`@deepseek-ai/dsh-agent-preset`，`config.plugins` 里含 `"@local/dsh-oks"`）里挂载。
-  此时 `oks_*` / `oks_*` / `va_ask` 只属于该 preset 的作用域，其它 preset 的会话没有
-  这些工具。仓库根的 `install-preset.sh` 一次配好这个形态——初始化 profile、写 `link:` 依赖、在
-  该 profile 里装链接、把 preset 追加进 `cordis.patch.yml`，可重复执行，在仓库根直接跑就行：
-  `./install-preset.sh`（profile 默认取 `$DSH_PROFILE`，没有就 `web`；`--profile` /
-  `--dsh-home` 只作覆盖，见 `--help`）。
+  此时 `oks_*` / `va_ask` 只属于该 preset 的作用域，其它 preset 的会话没有
+  这些工具。`just install` 配好这个形态并注册 `oks-vocabulary` 助手预设，可重复执行。
+  手工安装也须按“词汇子会话”一节注册助手预设。
 - 用 `link:` 而不是 `file:`：前者是符号链接（改源码重启即生效），后者会被 pnpm
   硬链接成拷贝，插件页能显示但源码改动不再生效。
 - 卸载：从 `dsh.profile.bundles` 去掉包名并 `dsh plugin --profile web remove @local/dsh-oks`；
-  preset 形态先从 `cordis.patch.yml` 删掉那段 `preset-oks`，再执行同一条 `remove`。
+  preset 形态先从 `cordis.patch.yml` 删掉 `preset-oks` 与 `preset-oks-vocabulary`，再执行同一条 `remove`。
 
 ## 开发与验收
 
