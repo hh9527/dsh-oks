@@ -35,6 +35,7 @@ install:
     PATCH_FILE="$PROFILE_DIR/cordis.patch.yml"
 
     command -v node >/dev/null 2>&1 || fail '需要 node（dsh 也依赖它）'
+    command -v watchexec >/dev/null 2>&1 || fail '启动器需要 watchexec'
 
     # 用数组而不是字符串：路径里有空格时字符串会被拆开。
     if [ -n "${DSH_CMD:-}" ]; then
@@ -259,7 +260,8 @@ install:
     const command=process.argv.slice(2).map(quote).join(' ');
     writeFileSync(process.env.START_FILE,
       '#!/usr/bin/env bash\nset -euo pipefail\nexport DSH_HOME='+quote(process.env.DSH_HOME)+
-      '\ncd -- '+quote(process.env.WORKSPACE)+'\nexec '+command+' --port '+quote(process.env.PORT)+' "$@"\n',
+      '\nCTRL_FILE="$DSH_HOME/.ctrl"\ntouch "$CTRL_FILE"\ncd -- '+quote(process.env.WORKSPACE)+
+      '\nexec watchexec --restart --ignore-nothing --shell=none -w "$CTRL_FILE" -- '+command+' --port '+quote(process.env.PORT)+' "$@"\n',
       {mode:0o755});
     JS
     say "启动：$DSH_HOME_DIR/start.sh（端口 $OKS_INSTALL_PORT，工作区 $OKS_WORKSPACE）"

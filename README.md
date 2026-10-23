@@ -7,7 +7,7 @@
 - `rfc/`：设计与变更记录。
 - `justfile`：构建、安装和启动 OKS preset。
 
-安装需要 just、Node.js、pnpm，以及支持 `wasm32-unknown-unknown` 的 Rust 工具链。
+安装需要 just、watchexec、Node.js、pnpm，以及支持 `wasm32-unknown-unknown` 的 Rust 工具链。
 
 ```sh
 just install
@@ -30,5 +30,10 @@ just target=/srv/oks run
 更新正在使用的安装目录前先停止对应进程，安装完成后再启动。
 `just run` 使用启动器保存的端口和工作区，并透传额外参数，例如 `just run --help`。
 从其他目录调用时可用 `just --justfile /path/to/dsh-oks/justfile install`。
+
+`start.sh` 使用 watchexec 监听安装目录内的 `.ctrl`，文件变化时重启进程。
+例如 `touch ~/ws/oks-demo/dsh-oks-10924/.ctrl` 重启验证区，
+`touch ~/ws/oks-demo/dsh-oks-10923/.ctrl` 重启正式区。
+首次使用新启动器时，先退出原进程，再运行 `start.sh`；之后可通过 `.ctrl` 触发重启。
 
 安装和工具说明见 [插件 README](packages/dsh-oks/README.md)。
