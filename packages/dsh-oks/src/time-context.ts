@@ -1,7 +1,25 @@
 import { deriveContextTimeZone } from './time.ts';
 import type { ContextTimeZone } from './time.ts';
 import { errorText } from './host.ts';
-import type { LogFn, PluginContext, SessionLike } from './host.ts';
+import type { ContextMessageLike, LogFn, PluginContext, SessionLike } from './host.ts';
+
+function isRequestMessage(message: ContextMessageLike): boolean {
+  return message?.source?.kind === 'user' && typeof message.source.rpcId === 'string';
+}
+
+/** 恢复最近一轮带用户 RPC 的消息；轮次边界避免混合历次请求的时区。 */
+function lastRequestMessages(session: SessionLike): ContextMessageLike[] {
+  const messages: ContextMessageLike[] = [];
+  if (!Number.isSafeInteger(session.seq) || !session.eventAt) return messages;
+  for (let seq = session.seq! - 1; seq >= 0; seq--) {
+    const event = session.eventAt(seq);
+    if (event?.type === 'turn/start' && messages.length > 0) break;
+    if (event?.type === 'user/message' && event.data && isRequestMessage(event.data)) {
+      messages.push(event.data);
+    }
+  }
+  return messages.reverse();
+}
 
 export interface TimeContext {
   /** 会话 → 规范推导结果（resolved / mixed / missing / invalid）。 */
@@ -10,21 +28,20 @@ export interface TimeContext {
 }
 
 export function createTimeContext({ ctx, log }: { ctx: PluginContext; log: LogFn }): TimeContext {
-  // 上下文时区：按插件规范，浏览器时区挂在**当轮用户消息**的 source.clientTimeZone 上
-  // （与 dsh-time-context 同一套字段与 resolved / mixed / missing 三态）。这里在 agent/pre-step
-  // 时读一次并按会话记下，供两个时间工具取用；取不到就报错，让 agent 去问用户。
+  // 用户 RPC 更新浏览器时区；内部续跑沿用该请求的结果。恢复会话时从日志重建。
   const zones = new Map<SessionLike, ContextTimeZone>(); // session -> 规范推导结果
   const install = (): void => {
     try {
       ctx.on('agent/pre-step', async (payload, next) => {
         const decision = await next();
         const session = payload?.agent?.session;
-        if (decision?.kind !== 'reject' && session !== undefined) {
-          const derived = deriveContextTimeZone(payload.messages);
-          const carriesMessages = Array.isArray(payload.messages) && payload.messages.length > 0;
-          // 同一回合从第 2 步起 payload.messages 是空的（用户消息只在"进入"那一步），
-          // 此时不能把已知时区覆盖成 missing；只有这一步确实带了用户消息才更新。
-          if (derived.kind !== 'missing' || carriesMessages) zones.set(session, derived);
+        if (decision?.kind !== 'reject' && !payload.signal?.aborted && session !== undefined) {
+          const messages = decision?.messages ?? payload.messages ?? [];
+          if (messages.some(isRequestMessage)) {
+            zones.set(session, deriveContextTimeZone(messages));
+          } else if (!zones.has(session)) {
+            zones.set(session, deriveContextTimeZone(lastRequestMessages(session)));
+          }
         }
         return decision;
       });

@@ -257,8 +257,21 @@ total <-jq("total.jq",{facts});
 <Template name="answer"><article><p>总数 <Value data={total} /></p></article></Template>
 </Dari>`;
 await call('oks_write',{path:draftFile,content:draftSource});
+// 模拟真实宿主：用户 RPC 建立时区，词汇子会话的结果随后触发内部续跑。
+const timeSession = sessionFor(DEV_ROOT).agent.session;
+for (const messages of [
+  [{ source: { kind: 'user', rpcId: 'smoke-time', clientTimeZone: 'Asia/Shanghai' } }],
+  [{ source: { kind: 'subagent-settled' } }],
+]) {
+  await waterfall(listenersOf(events, 'agent/pre-step'), { agent: { session: timeSession }, messages },
+    () => Promise.resolve({ kind: 'enter', messages }));
+}
 const firstRun=await call('oks_run_answer',{src:draftFile});
 ok('真实查询与 jq 形成对话答案',firstRun.value.delivery.status==='ready' && firstRun.value.delivery.mode==='retained');
+const capturedContext = (await call('oks_project',{input:draftFile+'#ctx'})).value.data;
+ok('子会话续跑保留 context 的时间和时区', capturedContext.tz.client.id === 'Asia/Shanghai'
+  && Number.isSafeInteger(capturedContext.utc.epochMillis)
+  && Date.parse(capturedContext.utc.rfc3339) === capturedContext.utc.epochMillis);
 const total=(await call('oks_project',{input:draftFile+'#total'})).value.data;
 ok('真实计数为非负数',typeof total==='number' && total>=0);
 const secondRun=await call('oks_run_answer',{src:draftFile});

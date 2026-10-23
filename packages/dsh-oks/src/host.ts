@@ -159,6 +159,7 @@ export interface StepDecision {
 export interface PreStepPayload {
   agent?: { session?: SessionLike } | null;
   messages?: readonly ContextMessageLike[] | null;
+  signal?: AbortSignal;
 }
 
 export type PreStepHandler = (
@@ -172,6 +173,7 @@ export interface ContentBlock {
 }
 
 export interface EventData {
+  source?: ContextMessageLike['source'];
   id?: string;
   content?: ContentBlock[];
   reason?: { kind?: string } | null;

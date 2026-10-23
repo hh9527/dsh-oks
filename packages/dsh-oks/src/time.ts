@@ -55,13 +55,11 @@ function deriveContextTimeZone(messages: unknown): ContextTimeZone {
     if (typeof value !== 'string') continue;
     if (value !== 'UTC' && !IANA_TIME_ZONE.test(value)) return { kind: 'invalid', timeZone: value };
     try {
-      if (new Intl.DateTimeFormat('en-US', { timeZone: value }).resolvedOptions().timeZone !== value) {
-        return { kind: 'invalid', timeZone: value };
-      }
+      // 合法别名按 Intl 的规范名合并，避免同一时区的不同名称被判成冲突。
+      zones.add(new Intl.DateTimeFormat('en-US', { timeZone: value }).resolvedOptions().timeZone);
     } catch {
       return { kind: 'invalid', timeZone: value };
     }
-    zones.add(value);
   }
   const sorted = [...zones].sort();
   if (sorted.length === 0) return { kind: 'missing' };
