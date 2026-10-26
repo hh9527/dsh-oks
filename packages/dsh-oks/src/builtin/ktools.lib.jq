@@ -6,13 +6,14 @@
   def pathof: split("#") | map(split("/") | map(decode_uri)) | add;
   def fact($g; $key): ($key | pathof) as $p | $g | getpath($p);
   def identity($key): ($key | pathof) as $p
-    | {key:$key,type:({datasets:"Dataset",types:"Ty",relations:"Relation",fields:"Field",dimensions:"Dimension",measures:"Measure",values:"Value",time_roles:"TimeRole",business_links:"BusinessLink",tools:"Tool",kinds:"FigureKind",topics:"ToolTopic"}[$p[-2]]),
+    | {key:$key,type:({entities:"Entity",dimension_groups:"DimensionGroup",measure_groups:"MeasureGroup",bindings:"Binding",roles:"Role",datasets:"Dataset",types:"Ty",relations:"Relation",fields:"Field",dimensions:"Dimension",measures:"Measure",values:"Value",time_roles:"TimeRole",business_links:"BusinessLink",tools:"Tool",kinds:"FigureKind",topics:"ToolTopic"}[$p[-2]]),
        id:$p[-1],dataset:(if $p[0] == "datasets" then $p[1] else null end)};
+  def typekey($type): if ($type|startswith("types/")) then $type else "types/"+($type|encode_uri) end;
   def page($skip; $take): {total:length,start:$skip,items:.[$skip:($skip+$take)],next:(if ($skip+$take)<length then ($skip+$take) else null end)};
   def edges($g):
     $g.items[] | .key as $source | fact($g;$source) | to_entries[]
     | . as $entry
-    | if (["datasets","types","relations","fields","dimensions","measures","values","time_roles","business_links","tools","kinds","topics"] | index($entry.key)) != null then
+    | if (["entities","dimension_groups","measure_groups","bindings","roles","datasets","types","relations","fields","dimensions","measures","values","time_roles","business_links","tools","kinds","topics"] | index($entry.key)) != null then
         if ($entry.value | type) == "array" then $entry.value[] | {source:$source,key:.,link:$entry.key}
         elif ($entry.value | type) == "object" then $entry.value | keys[] | {source:$source,key:($source + "#" + $entry.key + "/" + (. | encode_uri)),link:$entry.key}
         else empty end
@@ -140,12 +141,12 @@ def card($args):
             from:$r.from_dataset,to:$r.to_dataset,cardinality:$r.cardinality}
            + (if $args.docs then {doc:($ix[$ref].doc // "")} else {} end)] as $rels
       | [($d.dimensions // {})[] | .type | select(.!=null)] | unique as $types
-      | [$types[] as $type | ($g.types[$type]) as $t | select($t!=null)
+      | [$types[] as $type | (fact($g;typekey($type))) as $t | select($t!=null)
          | [(($t.values // {})|to_entries[]) | .key as $id
-            | ("types/"+($type|encode_uri)+"#values/"+($id|encode_uri)) as $ref
+            | (typekey($type)+"#values/"+($id|encode_uri)) as $ref
             | {id:$id,key:$ref,label:__label($ix;$ref;$id),wires:(.value.wires // [])}
               + (if $args.docs then {doc:($ix[$ref].doc // "")} else {} end)] as $all
-         | {type:$type,key:("types/"+($type|encode_uri)),canonical_order:($t.canonical_order // []),
+         | {type:$type,key:typekey($type),canonical_order:($t.canonical_order // []),
             total:($all|length),values:($all[$args.value_skip:($args.value_skip+$args.take)]),
             truncated:($args.value_skip>0 or ($args.value_skip+$args.take)<($all|length)),
             next:(if ($args.value_skip+$args.take)<($all|length) then $args.value_skip+$args.take else null end)}] as $values

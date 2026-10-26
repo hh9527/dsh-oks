@@ -1,3 +1,4 @@
+import { derivePublishedKnowledge } from './published-knowledge.ts';
 import { mountPresentationKnowledge } from './presentation-knowledge.ts';
 import { buildSemanticGraph } from './knowledge-graph.ts';
 import type { SemanticGraph } from './knowledge-graph.ts';
@@ -63,6 +64,8 @@ export interface RetrievalIndex {
 
 /** 派生检索层需要的两处：设置（domain）与 wasm 宿主。 */
 export interface IndexWorkspace {
+  publishedKnowledge?: unknown;
+  presentationItems?: unknown;
   settings: Settings;
   runner: Runner | null;
 }
@@ -148,6 +151,11 @@ function deriveIndex(nodes: KnowledgeNode[], contract: {
 
 /** 按发现契约爬完整个图并派生。首次检索时同步执行（同步阻塞，便于先跑通）。 */
 export async function buildRetrievalIndex(entry: IndexWorkspace, sha: string, log: LogFn): Promise<RetrievalIndex> {
+  if (entry.publishedKnowledge !== undefined) {
+    const index = derivePublishedKnowledge(entry.publishedKnowledge, entry.presentationItems);
+    log(`[oks] static initialization knowledge ${sha} · ${index.keys.size} facts`);
+    return index;
+  }
   const started = Date.now();
   const { domain } = entry.settings;
   // ensureWorkspace 返回前一定装配好宿主；这里按这个约定断言。

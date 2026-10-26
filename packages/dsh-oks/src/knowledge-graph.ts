@@ -2,14 +2,18 @@ import { isRecord } from './host.ts';
 import type { KnowledgeNode } from './host.ts';
 
 export interface KnowledgeItem { key: string; names: string[]; doc: string }
+export const graphRoots = ['entities','datasets','dimension_groups','measure_groups','types','relations','tools'] as const;
 export interface SemanticGraph {
+  entities?: Record<string, Record<string, unknown>>;
+  dimension_groups?: Record<string, Record<string, unknown>>;
+  measure_groups?: Record<string, Record<string, unknown>>;
   datasets: Record<string, Record<string, unknown>>;
   types: Record<string, Record<string, unknown>>;
   relations: Record<string, Record<string, unknown>>;
   tools: Record<string, Record<string, unknown>>;
   items: KnowledgeItem[];
 }
-export const kindRoles: Record<string,string> = {Dataset:'datasets',Field:'fields',Dimension:'dimensions',Measure:'measures',Ty:'types',Value:'values',Relation:'relations',TimeRole:'time_roles',BusinessLink:'business_links'};
+export const kindRoles: Record<string,string> = {Entity:'entities',DimensionGroup:'dimension_groups',MeasureGroup:'measure_groups',Binding:'bindings',Role:'roles',Dataset:'datasets',Field:'fields',Dimension:'dimensions',Measure:'measures',Ty:'types',Value:'values',Relation:'relations',TimeRole:'time_roles',BusinessLink:'business_links'};
 export const encodePart = (s:string):string => encodeURIComponent(s).replace(/[!'()*]/g,c=>`%${c.charCodeAt(0).toString(16).toUpperCase()}`);
 
 /** 独立节点 # 节点内成员；字典键始终使用原始 ID。 */
@@ -18,7 +22,7 @@ export function refPath(ref:string):string[] {
   if (halves.length>2 || halves.some(p=>p==='')) throw new Error(`Invalid knowledge address: ${ref}`);
   const root=halves[0].split('/');
   const member=halves[1]?.split('/') ?? [];
-  if (root.length!==2 || !['datasets','types','relations','tools'].includes(root[0]) || (member.length!==0 && (member.length!==2 || ![...Object.values(kindRoles),'kinds','topics'].includes(member[0])))) throw new Error(`Invalid knowledge address: ${ref}`);
+  if (root.length!==2 || !graphRoots.includes(root[0] as typeof graphRoots[number]) || (member.length!==0 && (member.length!==2 || ![...Object.values(kindRoles),'kinds','topics'].includes(member[0])))) throw new Error(`Invalid knowledge address: ${ref}`);
   return [...root,...member].map((s,i)=>{
     if (i%2===0) return s;
     const value=decodeURIComponent(s);

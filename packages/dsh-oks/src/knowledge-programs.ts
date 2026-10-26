@@ -54,7 +54,7 @@ export function builtinCode(src:string,rawArgs:unknown):{file:string;text:string
   if((program.args.includes('skip')&&(!Number.isSafeInteger(args.skip)||Number(args.skip)<0))||(program.args.includes('take')&&(!Number.isSafeInteger(args.take)||Number(args.take)<1||Number(args.take)>50)))throw new Error('builtin skip must be nonnegative; take must be 1..50');
   for(const key of ['input','key','query','type','dataset','link','id','section','mode'])if(args[key]!==undefined&&(typeof args[key]!=='string'||(key!=='query'&&args[key]==='')))throw new Error(`builtin ${key} must be a string`);
   if(['read','members','references'].includes(name)&&typeof args.key!=='string')throw new Error('builtin requires key');
-  if(typeof args.key==='string' && !/^(datasets|types|relations|tools)\/[^/#]+(?:#[^#]+)?$/.test(args.key))throw new Error(`Unknown knowledge key: ${args.key}`);
+  if(typeof args.key==='string' && !/^(entities|datasets|dimension_groups|measure_groups|types|relations|tools)\/[^/#]+(?:#[^#]+)?$/.test(args.key))throw new Error(`Unknown knowledge key: ${args.key}`);
   for(const key of ['docs','include_source'])if(args[key]!==undefined&&typeof args[key]!=='boolean')throw new Error(`builtin ${key} must be boolean`);
   for(const key of ['keys','nodes','expand','via','avoid'])if(args[key]!==undefined&&(!Array.isArray(args[key])||args[key].length>50||args[key].some(value=>typeof value!=='string'||!value)))throw new Error(`builtin ${key} must be an array of at most 50 nonempty strings`);
   if(name==='card') {

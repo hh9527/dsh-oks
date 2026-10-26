@@ -1,3 +1,4 @@
+import { readBuildInformation } from './service-metadata.ts';
 import { createJaqEngine } from './jaq.ts';
 import type { JaqOptions, JaqOutcome } from './jaq.ts';
 import { createHash } from 'node:crypto';
@@ -13,13 +14,16 @@ import { singleFlight } from './single-flight.ts';
 import { errorText } from './host.ts';
 import type { LogFn, PluginContext, WorkspaceProbe } from './host.ts';
 
-/** 进程级的检索层缓存：模型内容的 sha256 + domain -> 知识原文、词汇表与反向引用索引。
+/** 进程级的检索层缓存：模型内容摘要 + 外部说明摘要 + domain -> 知识原文、词汇表与反向引用索引。
  *  词汇助手是另一个 agent 作用域里的实例，它和主 agent 共用这一份，不重爬引用图。 */
 const INDEX_BY_ARTIFACT = new Map<string, RetrievalIndex>();
 
 /** 一个工作区的运行环境：设置 + wasm 宿主 + 惰性建立的检索层。
  *  runner 在 ensureWorkspace 返回前一定装配好；取用方按这个约定断言非空。 */
 export interface WorkspaceEntry {
+  publishedKnowledge?: unknown;
+  presentationItems?: unknown;
+  presentationHash?: string;
   root: string;
   from: string;
   settings: Settings;
@@ -91,7 +95,13 @@ export function createKnowledge({ ctx, log, config }: {
     if (existing !== undefined) return existing;
     const settings = resolveSettings(root, config);
     const bytes = readFileSync(settings.model);
+    const metadata = readBuildInformation(bytes);
+    const presentationFile = `${settings.model}.knowledge-items.json`;
+    const presentationBytes = existsSync(presentationFile) ? readFileSync(presentationFile) : undefined;
+    if (presentationBytes !== undefined && !(metadata !== null && Object.hasOwn(metadata, 'ontology.knowledge'))) throw new Error('External knowledge presentation requires initialization-published knowledge');
     const entry: WorkspaceEntry = {
+      ...(metadata !== null && Object.hasOwn(metadata, 'ontology.knowledge') ? { publishedKnowledge: metadata['ontology.knowledge'] } : {}),
+      ...(presentationBytes === undefined ? {} : { presentationItems: JSON.parse(presentationBytes.toString('utf8')), presentationHash: createHash('sha256').update(presentationBytes).digest('hex') }),
       root,
       from,
       settings,
@@ -105,18 +115,18 @@ export function createKnowledge({ ctx, log, config }: {
   };
 
   // 词汇表与引用图按**产物**持有：同一份产物被多个工作区、多个会话声明时只派生一次。
-  // 身份用模型内容的 sha256 + domain（服务的 revision 字符串在两次不同构建之间可能不变，不能当身份）。
+  // 身份用模型内容摘要 + 外部说明摘要 + domain（服务的 revision 字符串在两次不同构建之间可能不变，不能当身份）。
   // 缓存放在**模块级**：词汇助手是另一个 agent 作用域里的实例，它要用同一份数据模型，
   // 而不是把整棵引用图再爬一遍。
   const indexes = INDEX_BY_ARTIFACT;
 
   // 正在进行的索引派生：并发的首次检索共享同一次初始化，不会各爬一遍引用图。
-  const indexFlights = new Map<string, Promise<RetrievalIndex>>(); // 模型内容的 sha256 + domain -> 在飞的 promise
+  const indexFlights = new Map<string, Promise<RetrievalIndex>>(); // 模型内容摘要 + 外部说明摘要 + domain -> 在飞的 promise
 
   /** 惰性建立检索层：第一次检索时执行，之后按产物哈希复用；并发时 single flight。 */
   const ensureIndex = async (entry: WorkspaceEntry): Promise<RetrievalIndex> => {
     if (entry.index !== null) return entry.index;
-    const sha = `${entry.modelHash}:${entry.settings.domain}`;
+    const sha = `${entry.modelHash}:${entry.presentationHash ?? ""}:${entry.settings.domain}`;
     const shared = indexes.get(sha);
     if (shared !== undefined) {
       entry.index = shared;
@@ -133,7 +143,7 @@ export function createKnowledge({ ctx, log, config }: {
 
   const queryKnowledge = async (entry: WorkspaceEntry, program: string, options: JaqOptions): Promise<JaqOutcome> => {
     const index = await ensureIndex(entry);
-    const identity = `${entry.modelHash}:${entry.settings.domain}`;
+    const identity = `${entry.modelHash}:${entry.presentationHash ?? ""}:${entry.settings.domain}`;
     let engine = engines.get(identity);
     if (engine === undefined) {
       engine = createJaqEngine();
