@@ -10,7 +10,7 @@ const own = (target: Record<string, unknown>, key: string, value: unknown): void
 const kindOf = (role: string): string => Object.entries(kindRoles).find(([, value]) => value === role)?.[0] ?? role;
 
 /** Only navigation is derived here. All capabilities remain model facts. */
-export function derivePublishedKnowledge(input: unknown, presentation?: unknown): RetrievalIndex {
+export function derivePublishedKnowledge(input: unknown, presentation?: unknown, vocabulary?: unknown): RetrievalIndex {
   if (!isRecord(input) || input.knowledge_contract !== 'ontology-knowledge-v4' || input.intent_contract !== 'ontology-intent-v1' || input.addressing !== 'node-member-uri-v1') throw new Error('Unsupported initialization knowledge contract');
   if (typeof input.revision !== 'string' || input.revision === '' || !Array.isArray(input.facts) || !Array.isArray(input.items)) throw new Error('Invalid initialization knowledge publication');
   const graph: SemanticGraph = { entities: {}, datasets: {}, dimension_groups: {}, measure_groups: {}, types: {}, relations: {}, tools: {}, items: [] };
@@ -93,11 +93,29 @@ export function derivePublishedKnowledge(input: unknown, presentation?: unknown)
   }
   graph.items = [...items.values()].sort((a, b) => a.key.localeCompare(b.key, 'en'));
   mountPresentationKnowledge(graph);
-  const terms: Term[] = graph.items.map(item => {
+  let terms: Term[] = graph.items.map(item => {
     const path = refPath(item.key); const name = path.at(-1)!;
     return { key: item.key, kind: kindOf(path.at(-2)!), name, doc: item.doc, aliases: item.names.filter(alias => alias !== name), owner: path.length === 4 ? path[0] === 'datasets' ? 'dataset' : 'ty' : null, ownerValue: path.length === 4 ? path[1] : null };
   });
-  return { revision: input.revision, knowledge: graph, sourceNodes: [], contract: { knowledge_contract: input.knowledge_contract, intent_contract: input.intent_contract, addressing: input.addressing },
+  if (vocabulary !== undefined) {
+    if (!Array.isArray(vocabulary)) throw new Error('Invalid model vocabulary');
+    const seen = new Set<string>();
+    const selected: Term[] = [];
+    for (const term of vocabulary) {
+      if (!isRecord(term) || typeof term.key !== 'string' || !facts.has(term.key) || seen.has(term.key) ||
+          typeof term.kind !== 'string' || typeof term.name !== 'string' || typeof term.doc !== 'string' ||
+          !Array.isArray(term.aliases) || term.aliases.some(alias => typeof alias !== 'string') ||
+          !(term.owner === null || typeof term.owner === 'string') ||
+          !(term.ownerValue === null || typeof term.ownerValue === 'string')) throw new Error('Invalid model vocabulary term');
+      seen.add(term.key);
+      const item = items.get(term.key)!;
+      selected.push({ key: term.key, kind: term.kind, name: term.name, doc: item.doc || term.doc,
+        aliases: [...new Set([...term.aliases as string[], ...item.names.filter(name => name !== term.name)])],
+        owner: term.owner as string | null, ownerValue: term.ownerValue });
+    }
+    terms = selected;
+  }
+  return { revision: input.revision, knowledge: graph, contract: { knowledge_contract: input.knowledge_contract, intent_contract: input.intent_contract, addressing: input.addressing },
     meta: { format: 'oks-knowledge-v3', revision: input.revision, roots: graphRoots, counts: Object.fromEntries(graphRoots.map(root => [root, Object.keys(graph[root] ?? {}).length])) },
     terms, keys: new Set(graph.items.map(item => item.key)), links: edges };
 }

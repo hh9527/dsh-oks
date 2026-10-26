@@ -3,14 +3,14 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { readBuildInformation } from './src/service-metadata.ts';
 import { derivePublishedKnowledge } from './src/published-knowledge.ts';
-import { buildRetrievalIndex } from './src/retrieval.ts';
+import { collectProgrammedKnowledge } from './src/programmed-knowledge.ts';
 import { encodePart, resolveFact } from './src/knowledge-graph.ts';
 import { createJaqEngine } from './src/jaq.ts';
 import { builtinCode } from './src/knowledge-programs.ts';
 
 const leb = (n: number): number[] => n < 128 ? [n] : [(n % 128) | 128, ...leb(Math.floor(n / 128))];
 const header = [0,97,115,109,1,0,0,0];
-const section = (text: string, sectionName = 'telora.service.metadata'): number[] => {
+const section = (text: string, sectionName = 'telora.build.information'): number[] => {
   const name = [...Buffer.from(sectionName)];
   const payload = [...leb(name.length), ...name, ...Buffer.from(text)];
   return [0, ...leb(payload.length), ...payload];
@@ -28,14 +28,9 @@ for (const malformed of [bytes.subarray(0, bytes.length - 1), Uint8Array.from([.
 const envelope = JSON.stringify({ version: 1, entries: { 'ontology.knowledge': input } });
 const current = section(envelope, 'telora.build.information');
 assert.deepEqual(readBuildInformation(Uint8Array.from([...header, ...current]))?.['ontology.knowledge'], input);
-for (const sections of [
-  [...current, ...current],
-  [...current, ...section(envelope)],
-  [...section(envelope), ...current],
-  [...section(envelope), ...section('{}', 'telora.build.information')],
-  [...current, ...section('{}')],
-]) assert.throws(() => readBuildInformation(Uint8Array.from([...header, ...sections])));
-assert.deepEqual(readBuildInformation(Uint8Array.from([...header, ...section(envelope), ...section('{"version":1,"entries":{}}', 'telora.build.information')]))?.['ontology.knowledge'], input);
+assert.throws(() => readBuildInformation(Uint8Array.from([...header, ...current, ...current])));
+assert.equal(readBuildInformation(Uint8Array.from([...header, ...section(envelope, 'telora.service.metadata')])), null);
+assert.deepEqual(readBuildInformation(Uint8Array.from([...header, ...section('{}', 'telora.service.metadata'), ...current]))?.['ontology.knowledge'], input);
 // Builtins are inline expressions, never graph addresses or reverse-link hubs.
 const inline = derivePublishedKnowledge(publication([
   fact('types/Business', { kind: 'Ref', representation: 'Int' }),
@@ -61,7 +56,7 @@ assert.equal(enriched.knowledge.items.find(item => item.key === ds)?.doc, 'å¤–éƒ
 assert.equal(resolveFact(enriched.knowledge, `${ds}#dimensions/one`).projectable, false);
 assert.throws(() => derivePublishedKnowledge(input, { version: 1, items: [{ key: ds, names: [], doc: '', projectable: true }] }), /presentation item/);
 assert.throws(() => derivePublishedKnowledge(input, { version: 1, items: [{ key: 'datasets/missing', names: [], doc: '' }] }), /presentation item/);
-const index = await buildRetrievalIndex({ settings: { domain: 'test' } as any, publishedKnowledge: input, runner: { send: () => { throw new Error('static knowledge must not call discovery'); } } as any }, 'fixture', () => {});
+const index = derivePublishedKnowledge(input);
 assert.equal(resolveFact(index.knowledge, `${ds}#dimensions/one`).projectable, false);
 assert.deepEqual((resolveFact(index.knowledge, group).referenced_by as any).bindings, [first, second]);
 assert.ok(index.keys.has(first) && index.keys.has(second));
@@ -80,7 +75,8 @@ try {
 if (process.argv[2]) {
   const metadata = readBuildInformation(readFileSync(process.argv[2]));
   assert.ok(metadata && Object.hasOwn(metadata, 'ontology.knowledge'));
-  const actual = derivePublishedKnowledge(metadata['ontology.knowledge']);
+  const collected = await collectProgrammedKnowledge(metadata['ontology.knowledge']) as {graph:unknown;vocabulary:unknown};
+  const actual = derivePublishedKnowledge(collected.graph, undefined, collected.vocabulary);
   for (const ty of Object.values(actual.knowledge.types)) {
     assert.ok(!['Int', 'Float', 'String', 'Array', 'Dict'].includes(ty.kind as string));
     const variants = Array.isArray(ty.variants) ? ty.variants.map((v: any) => v.name) : [];

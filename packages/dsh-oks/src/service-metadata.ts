@@ -26,7 +26,7 @@ export function readBuildInformation(bytes: Uint8Array): Record<string, unknown>
     const nameLength = word();
     if (cursor + nameLength > end) throw new Error('Invalid Wasm custom section name');
     const name = decoder.decode(take(nameLength));
-    if (name === 'telora.build.information' || name === 'telora.service.metadata') {
+    if (name === 'telora.build.information') {
       if (results.has(name)) throw new Error(`Duplicate build information section: ${name}`);
       const data: unknown = JSON.parse(decoder.decode(bytes.subarray(cursor, end)));
       if (data === null || typeof data !== 'object' || Array.isArray(data)) throw new Error('Invalid build information');
@@ -36,10 +36,5 @@ export function readBuildInformation(bytes: Uint8Array): Record<string, unknown>
     }
     cursor = end;
   }
-  const current = results.get('telora.build.information');
-  const legacy = results.get('telora.service.metadata');
-  if (current && legacy && Object.hasOwn(current, 'ontology.knowledge') && Object.hasOwn(legacy, 'ontology.knowledge')) {
-    throw new Error('Conflicting ontology.knowledge in build information and Service metadata');
-  }
-  return current === undefined ? legacy ?? null : { ...legacy, ...current };
+  return results.get('telora.build.information') ?? null;
 }

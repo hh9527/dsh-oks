@@ -18,17 +18,9 @@ const nodes=[
  n('Ty/Level','Ty',{id:'Level',values:[{id:'high'}],storage:'Int'},{node:'types/Level',member:null},[link('Member','Value/Level/high','Value')]),
  n('Value/Level/high','Value',{id:'high',ty:'Level',wires:[{Int:1}]},{node:'types/Level',member:'values/high'}),
 ];
-const discovery={addressing:'node-member-uri-v1',knowledge_contract:'ontology-knowledge-v3',intent_contract:'ontology-intent-v1',revision:'fixture',roots:['Dataset/test'],key_patterns:[],vocabulary:[{kind:'Dataset'},{kind:'Dimension',owner:'dataset'}]};
-const runner=(contract:any=discovery,source=nodes)=>({send:async(method:string,input:any)=>({ok:method.endsWith('/discovery')?contract:{Document:{Found:source.find(n=>n.key===input.key)}}}),dispose(){}});
-const entry=(contract:any=discovery,source=nodes)=>({settings:{domain:'test'},runner:runner(contract,source)}) as any;
-const index=await buildRetrievalIndex(entry(),'hash',()=>{});
-const graph=index.knowledge;
+const graph=buildSemanticGraph(nodes).graph;
 assert.deepEqual(Object.keys(graph),['datasets','types','relations','tools','items']);
 assert.equal(graph.items.filter(item=>!item.key.startsWith('tools/')).length,nodes.length-1);
-assert.equal(index.sourceNodes.length,nodes.length);
-assert.equal(index.meta.format,'oks-knowledge-v2');
-assert.ok(Buffer.byteLength(JSON.stringify(index.meta))<1024);
-assert.equal(index.terms.length,2);
 assert.equal(graph.datasets[dataset].fields!==undefined,true);
 assert.deepEqual(graph.types.Level.fields,[ds+'#fields/name']);
 assert.deepEqual(resolveFact(graph,ds+'#fields/name').datasets,[ds]);
@@ -39,9 +31,11 @@ assert.equal(resolveFact(graph,ds+'#dimensions/name').label,undefined);
 assert.equal(resolveFact(graph,ds+'#dimensions/name').dataset,undefined);
 assert.deepEqual(refPath(ds+'#fields/name'),['datasets',dataset,'fields','name']);
 for(const key of ['datasets/a%2fb','datasets/%','datasets/x#fields/x#x','datasets/x#unknown/x']) assert.throws(()=>refPath(key));
-await assert.rejects(buildRetrievalIndex(entry({...discovery,knowledge_contract:'old'}),'',()=>{}),/契约不兼容/);
-await assert.rejects(buildRetrievalIndex(entry({...discovery,addressing:'old'}),'',()=>{}),/地址契约/);
-await assert.rejects(buildRetrievalIndex(entry(discovery,nodes.slice(0,-1)),'',()=>{}),/无法解析知识 key/);
+let runtimeCalls=0;
+for (const publishedKnowledge of [undefined, {knowledge_contract:'ontology-knowledge-v4',facts:[]}, {knowledge_contract:'ontology-knowledge-discovery-v1'}]) {
+ await assert.rejects(buildRetrievalIndex({publishedKnowledge,settings:{domain:'test'} as any,runner:{send:async()=>{runtimeCalls++;throw new Error('must not run');}} as any},'',()=>{}),/requires ontology-knowledge-javascript-v1/);
+}
+assert.equal(runtimeCalls,0);
 const dup=structuredClone(nodes);dup[2].address=dup[3].address;assert.throws(()=>buildSemanticGraph(dup),/kind mismatch|Duplicate/);
 const wrong=structuredClone(nodes);wrong[1].links[0].role='values';assert.throws(()=>buildSemanticGraph(wrong),/role mismatch/);
 const engine=createJaqEngine(fileURLToPath(new URL('./lib/oks-wti.wasm',import.meta.url)));

@@ -188,19 +188,34 @@ Report 使用 `<article>` 根、受支持的元素/属性、显式自闭合空�
 exec_query 使用计划内的 Intent limit 作为行数保险。模型和数据源是独立部署物；当前进程已加载的工作区环境在重启后重新加载。
 运行器的内存结果有独立的容量与保留窗口，导出的宿主附件持久保留。
 
+## 构建期知识
+
+插件从 Wasm 的 `telora.build.information` 读取 `ontology.knowledge`。
+当前协议为 `ontology-knowledge-javascript-v1`，发布固定 JS 函数体 program 和模型 JSON data。同一 ontology 版本对所有模型使用完全一致的 JS；模型标注只派生 `{revision,instructions}` JSON，指令格式为 `[operation,...args]`。
+
+插件 JSON.parse 构建信息后执行：
+
+```js
+const buildKnowledge = new Function("data", publication.program);
+const { graph, vocabulary } = buildKnowledge(publication.data);
+```
+
+插件信任模型代码，直接同步执行。静态 JS 负责模型结构、规范地址、Group 哈希、Map／Set 去重和事实合并；插件验证最终 v4 图和词条，再派生导航与反向链接。
+vocabulary 决定 `va_ask` 的业务词条；`<model>.knowledge-items.json` 可补充名称、别名和说明。
+成功索引按模型内容、domain 及展示文件摘要缓存，知识工具和词汇助手共享它；编译、执行或验证错误拒绝加载且不进入缓存。
+
 ## 快照怎么来
 
 ```sh
 cd lab-ontology
-bin/telora -C <模型目录> build <模型名> --snapshot \
+bin/telora -C <模型目录> build <模型名> --staged \
   --initialization-fuel 100000 --request-fuel 100000 --with-memory-limit 1024 \
   -o /path/to/model.wasm   # 这个路径相对工作区的 oks.json 填进 model
 ```
 
 注意三点：
 
-- `--snapshot` 是**必需**的：当前只支持快照产物，插件用 Node 自带的引擎
-  （`node:worker_threads` + 内置 WebAssembly）直接导入它。
+- 当前模型使用 `--staged` 在构建期准备状态及知识描述。插件通过 Node worker 和 WebAssembly 执行 transform。
 - `--with-memory-limit` 必须给足：缺省构建会在初始化阶段报 `growth operation limited`
   而失败。这个上限在**构建时**定死，是产物本身的一部分。
 - 完整命令与构建后的发布校验见模型仓库的 `icloud_model/docs/SOURCE_REFRESH.md`。

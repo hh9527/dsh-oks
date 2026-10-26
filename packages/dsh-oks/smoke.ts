@@ -193,7 +193,7 @@ console.log('=== 检索层：并发的首次检索只派生一次索引 ===');
     builtin('search', { query: 'loss' }),
   ]);
   ok('并发两次首次检索只派生一次索引',
-    logs.filter((line) => line.includes('discovery index') || line.includes('static initialization knowledge')).length === 1);
+    logs.filter((line) => line.includes('build-time knowledge')).length === 1);
   ok('两个并发调用都拿到了结果', left.text.length > 0 && right.text.length > 0);
 }
 
