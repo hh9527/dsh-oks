@@ -2,18 +2,34 @@
 
 ## 先理解知识图的整体形状
 
-oks://knowledge 可以看成一个完整的大 JSON 文件，用 oks_project 读取、处理和投影，根为 {datasets,types,relations,tools,items}。前四项是按 ID 索引的字典，保存事实和分类关系；items 是说明条目数组，保存 {key,names,doc}。名称和说明与事实分开存放，内置 read 方法可以配对读取。
+oks://knowledge 可以看成一个完整的大 JSON 文件，用 oks_project 读取、处理和投影，根分支、形状和直接成员数量由当前图的实际键动态生成，显示在本页的当前工作区概览及会话工具导航中。对象分支保存按 ID 索引的事实和分类关系；items 是说明条目数组，保存 {key,names,doc}。名称和说明与事实分开存放，内置 read 方法可以配对读取。
 
-dataset 或 type 是独立节点，其 fields、dimensions、values 等是节点内成员。自有成员用字典内嵌，关联目标用地址数组表达。引用按类别组织，工具层生成反向引用；理解一个节点时可以沿关系继续探索，也可以仅投影所需分支。
+Entity、Dataset、DimensionGroup、MeasureGroup、Type、Relation 和 Tool 都是独立节点；Dataset 的 fields、roles、bindings、dimensions 等及 Type 的 values 是节点内成员。自有成员用字典内嵌，关联目标用地址数组表达。引用按类别组织，工具层生成反向引用；理解一个节点时可以沿关系继续探索，也可以仅投影所需分支。
 
 同名字段在不同位置可能有不同形状：datasets.<id>.fields 是自有字段字典，types.<id>.fields 是使用该类型的字段地址数组。判断自有成员和引用要结合所在位置与实际 shape，不能把所有 links 混为同一种结构。
 
 知识图的事实来自领域模型，tools 中的用法知识由工具初始化时挂载。下面是结构示意，不代表当前领域实际存在这些 ID，也不授予任何查询能力。
 
+已知分支的含义如下；未知分支也会进入动态概览，完整目录与节点数量以当前模型的 `:keys` 和各分支 `:len` 为准。结构示例中的 ID 和成员不用于推断目录是否完整。
+
+| 根分支 | 节点类型 | 用途 |
+|---|---|---|
+| `entities` | Entity | 业务身份及其身份类型，独立于具体数据集 |
+| `datasets` | Dataset | 物理数据源、行类型、粒度、字段及已绑定的查询能力 |
+| `dimension_groups` | DimensionGroup | 可复用维度定义，通过 Dataset 的 bindings 映射到输入字段和公开维度 |
+| `measure_groups` | MeasureGroup | 可复用度量定义及统计约束，通过 Dataset 的 bindings 发布具体度量 |
+| `types` | Ty | 领域类型、规范值域及显式允许的反向引用 |
+| `relations` | Relation | 数据集之间声明的关系与连接约束 |
+| `tools` | Tool | 插件提供的工具用法知识 |
+| `items` | 说明条目数组 | 通过 key 配对节点及成员的名称与说明 |
+
 ### 结构示意
 
 ```json
 {
+  "entities": {},
+  "dimension_groups": {},
+  "measure_groups": {},
   "datasets": {
     "current_alarm": {
       "fields": {"severity": {"nullable": false}},
@@ -25,6 +41,7 @@ dataset 或 type 是独立节点，其 fields、dimensions、values 等是节点
   },
   "types": {
     "Severity": {
+      "reverse_references": true,
       "values": {"major": {}},
       "fields": ["datasets/current_alarm#fields/severity"],
       "dimensions": ["datasets/current_alarm#dimensions/alarm_severity"]
@@ -38,23 +55,23 @@ dataset 或 type 是独立节点，其 fields、dimensions、values 等是节点
 
 ## 从概览逐层理解事实与关系
 
-先查看各分支的 keys 和 len，了解有哪些节点及规模。再选择相关 dataset 或 type，读取自身事实、所需成员和对应说明。字段、维度、度量与时间角色各有用途；业务可用能力以实际声明为准。沿分类引用查相关节点时，只展开需要的类别。
+先读取根目录 `:keys`，再查看实际分支的 keys 和 len，了解节点类别及规模。不要根据示例列举的节点类别判断当前模型缺少某种知识。再选择相关 Entity、Dataset、Group 或 Type，读取自身事实、所需成员和对应说明。字段、维度、度量与时间角色各有用途；业务可用能力以实际声明为准。沿分类引用查相关节点时，只展开需要的类别。
 
 不必读取整个大节点：可以同时选择 grain、scope 等自身事实，并将 fields、dimensions、measures 等分支投影为 keys 或 len。需要值域时只选 values。需要名称和说明时，使用 read 配对读取小分支，或用 search、members 和 references 导航。
 
 ```json
-{"input":"oks://knowledge","select":"datasets:keys[0..10],types:keys,relations:keys,tools:keys"}
+{"input":"oks://knowledge","select":"entities:len,datasets:len,dimension_groups:len,measure_groups:len,types:len,relations:len,tools:len,items:len"}
 ```
 
 ## 地址与事实
 
 ### 数据根
 
-oks_project 以 oks://knowledge 为输入时看到 {datasets,types,relations,tools,items}；方法直接接收知识图根对象。字典键使用原始业务 ID，items 为 [{key,names,doc}]。
+oks_project 以 oks://knowledge 为输入时直接接收当前模型的知识图根对象，根键由实际对象决定，不以本文的示例清单为边界。字典键使用原始业务 ID，items 为 [{key,names,doc}]。
 
 ### 语义地址
 
-独立节点地址为 datasets/<编码后的ID>、types/<编码后的ID>、relations/<编码后的ID>、tools/<工具名>。工具成员为 #kinds/<类型>、#topics/<主题>；节点成员为 node#fields/<编码后的ID>、#dimensions/<ID>、#measures/<ID>、#time_roles/<ID>、#business_links/<ID> 或 types/<ID>#values/<ID>。地址中的每个 ID 恰好进行一次 URI 组件编码，返回的 key 应原样使用；字典键保持原始 ID。
+独立节点地址为 entities/<编码后的ID>、datasets/<编码后的ID>、dimension_groups/<编码后的ID>、measure_groups/<编码后的ID>、types/<编码后的ID>、relations/<编码后的ID>、tools/<工具名>。工具成员为 #kinds/<类型>、#topics/<主题>；节点成员为 node#fields/<编码后的ID>、#roles/<ID>、#bindings/<ID>、#dimensions/<ID>、#measures/<ID>、#time_roles/<ID>、#business_links/<ID> 或 types/<ID>#values/<ID>。地址中的每个 ID 恰好进行一次 URI 组件编码，返回的 key 应原样使用；字典键保持原始 ID。
 
 ### 工具知识
 
@@ -62,11 +79,11 @@ tools.render_figure 包含 kinds 与 topics，tools.report 包含 topics。工�
 
 ### 分类导航
 
-dataset 拥有 fields/dimensions/measures/time_roles/business_links 字典；type 拥有 values 字典以及 fields/dimensions 等分类引用。工具根据归属和正向事实派生反向引用，成员可双向导航；related/traversable 保留关系类别，referenced_by 提供反向导航。引用数组保存地址，自有字典保存事实；引用表达关联，查询权限以模型声明为准。
+Dataset 拥有 fields/roles/bindings/dimensions/measures/time_roles/business_links 字典；Role 引用 Entity，Binding 引用可复用 Group，具体维度和度量引用自己的 Binding 与 Group。Type 拥有 values 字典；只有 reverse_references 为 true 时才提供 fields/dimensions 等使用方的反向引用。工具根据归属和正向事实派生允许的反向引用；related/traversable 保留关系类别，referenced_by 提供反向导航。引用数组保存地址，自有字典保存事实；引用表达关联，查询权限以模型声明为准。
 
 ### 类型的字段引用
 
-types.<id>.fields 包含通过声明该值类型的维度暴露的字段。这是导航信息，不表示原始存储字段的类型。维度的 type 为声明的值域 ID，input_kinds 为可接受的字面量类型。
+显式允许反向引用的 types.<id>.fields 包含通过声明该值类型的维度暴露的字段。这是导航信息，不表示原始存储字段的类型。维度的 type 为声明的值域 ID，input_kinds 为可接受的字面量类型。
 
 ### 分支投影
 
@@ -88,7 +105,7 @@ types.<id>.fields 包含通过声明该值类型的维度暴露的字段。这�
 ```json
 {
   "input": "oks://knowledge",
-  "select": "datasets:keys,types:keys,relations:keys,tools:keys,items:keys"
+  "select": "entities:keys[0..10],datasets:keys[0..10],dimension_groups:keys[0..10],measure_groups:keys[0..10],types:keys[0..10],relations:keys[0..10],tools:keys,items:len"
 }
 ```
 

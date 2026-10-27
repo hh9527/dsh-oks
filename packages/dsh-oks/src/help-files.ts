@@ -8,4 +8,4 @@ import {modelContracts} from './contracts.ts';
 
 /** Readonly virtual text files, inlined into the standalone bundle. */
 export const helpFiles:Record<string,string> = Object.fromEntries(Object.entries({knowledge,project,draft,query:querySource.replaceAll('{{intentContract}}',modelContracts.intent),time,figures}).map(([name,text])=>[`oks://help/${name}.md`,text]));
-export function helpEntries() {return Object.entries(helpFiles).map(([name,text])=>({name,bytes:Buffer.byteLength(text),modifiedAt:''}));}
+export function helpEntries(files:Record<string,string> = helpFiles) {return Object.entries(files).map(([name,text])=>({name,bytes:Buffer.byteLength(text),modifiedAt:''}));}

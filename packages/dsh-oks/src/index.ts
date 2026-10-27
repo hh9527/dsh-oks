@@ -12,6 +12,7 @@ export { renderEchartsSvg } from './chart/echarts.ts';
 export { renderMarkdown } from './chart/markdown.ts';
 
 import { createKnowledge } from './knowledge.ts';
+import { installKnowledgeNavigation } from './knowledge-navigation.ts';
 import { disposeJaqEngine } from './jaq.ts';
 import { createTimeContext } from './time-context.ts';
 import { createTools } from './tools.ts';
@@ -40,6 +41,8 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
     installVocabularyHelper({ ctx, knowledge, log });
     return;
   }
+
+  installKnowledgeNavigation({ ctx, knowledge, log });
 
   const timeContext = createTimeContext({ ctx, log });
   timeContext.install();

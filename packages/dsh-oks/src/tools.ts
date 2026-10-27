@@ -1,4 +1,6 @@
 import {helpFiles,helpEntries} from './help-files.ts';
+import { renderKnowledgeHelp } from './knowledge-navigation.ts';
+import { errorText } from './host.ts';
 import { WORK_URI, MEMORY_URI, sourceUri } from './resource-path.ts';
 import { createKtools, type Ktools } from './ktools.ts';
 import { KTOOLS_FILE, KTOOLS_BUILTIN } from './ktools-path.ts';
@@ -50,6 +52,18 @@ export function createTools({ knowledge, va, timeContext, log, attachments, ktoo
   log: LogFn;
   config: PluginConfig | undefined;
 }): ToolDefinition[] & { dispose(): void } {
+  const helpTexts = async (exec: ToolExec): Promise<Record<string, string>> => {
+    if (!exec.agent?.session) return helpFiles;
+    try {
+      const entry = knowledge.ensureWorkspace(exec);
+      const index = await knowledge.ensureIndex(entry);
+      return { ...helpFiles, 'oks://help/knowledge.md': renderKnowledgeHelp(helpFiles['oks://help/knowledge.md'], index.knowledge, entry.settings.domain) };
+    } catch (error) {
+      exec.signal?.throwIfAborted();
+      log('[oks] knowledge help overview unavailable: ' + errorText(error));
+      return { ...helpFiles, 'oks://help/knowledge.md': helpFiles['oks://help/knowledge.md'] + '\n当前模型目录暂不可用；模型就绪后用 oks_project({input:"oks://knowledge",select:":keys"}) 核对实际根分支。\n' };
+    }
+  };
   const definitions: ToolDefinition[] = [
     {
       name: 'oks_read',
@@ -68,7 +82,8 @@ export function createTools({ knowledge, va, timeContext, log, attachments, ktoo
       async execute(args: WorkReadArgs, exec: ToolExec) {
         if(typeof args?.path==='string'&&args.path.startsWith('oks://help/')){
           if(!Object.hasOwn(helpFiles,args.path))throw new Error('Unknown readonly help file; use oks_list({path:"oks://help/"})');
-          return readTextLines(helpFiles[args.path],args.path,args.offset,args.limit,'oks_read');
+          const files=args.path==='oks://help/knowledge.md'?await helpTexts(exec):helpFiles;
+          return readTextLines(files[args.path],args.path,args.offset,args.limit,'oks_read');
         }
         if(args?.path===KTOOLS_BUILTIN)return readTextLines(builtinKtoolsSource,KTOOLS_BUILTIN,args.offset,args.limit,'oks_read');
         const entry = knowledge.ensureWorkspace(exec);
@@ -135,7 +150,7 @@ export function createTools({ knowledge, va, timeContext, log, attachments, ktoo
       output: { schema: OBJECT_OUTPUT, render: renderValue },
       async execute(args:{path?:unknown}, exec: ToolExec) {
         const path=args?.path;
-        if(path==='oks://help/')return {ok:true as const,files:helpEntries(),count:helpEntries().length};
+        if(path==='oks://help/'){const files=helpEntries(await helpTexts(exec));return {ok:true as const,files,count:files.length};}
         const entry = knowledge.ensureWorkspace(exec);
         const dirs=[WORK_URI,MEMORY_URI,MEMORY_URI+'tools/','oks://builtin/','oks://builtin/tools/'];
         if(path!==undefined&&!dirs.includes(path as string))throw new Error('path must be an OKS source directory');

@@ -1,4 +1,4 @@
-# 只读方法库，输入为 {datasets,types,relations,tools,items}。
+# 只读方法库，输入为当前知识图根对象；用 oks_project select=":keys" 查看实际根分支。
 # search 定位候选，overview/card/nodes 读取事实，routes 探索连接。
 # 写计划前核实粒度、允许的操作、值域含义与关系基数。
 # 路径用于导航；分页与搜索上限意味着结果可能不完整，查询权限以模型声明为准。
