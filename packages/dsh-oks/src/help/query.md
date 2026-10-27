@@ -14,11 +14,11 @@ Contains、NotContains、StartsWith、EndsWith 只用于已授权的 Text 维度
 
 ## UTC 时间分桶
 
-声明的 UTC 分桶维度投影小时、天或日历月起点。与声明的度量一起选择，按桶聚合；Intent 不接受 granularity 参数。DatetimeUtc 输出规范 UTC 格式 YYYY-MM-DDTHH:MM:SSZ；DateUtc 输出 YYYY-MM-DD，仅支持天/月；EpochMillis 输出整数 Unix 毫秒。输入输出逻辑类型一致，NULL 保持 NULL。公共日历范围为 0001..9999 年，越界 epoch 返回 NULL。负 epoch 向较早的桶取整；月是日历操作，不是固定时长。PostgreSQL 会话时区不改变桶边界。先对原始时间维度应用显式半开窗口，再按桶分组；只有用户要求该总体时才用桶筛选替代原窗口。时区、时钟、本地日历解释和类型转换均须显式确定。
+声明的 UTC 分桶维度投影小时、天或日历月起点。与声明的度量一起选择，按桶聚合；Intent 不接受 granularity 参数。DateTimeUtc 输出规范 UTC 格式 YYYY-MM-DDTHH:MM:SSZ；Date 输出 YYYY-MM-DD，仅支持天/月；EpochMillis 输出整数 Unix 毫秒。输入输出逻辑类型一致，NULL 保持 NULL。公共日历范围为 0001..9999 年，越界 epoch 返回 NULL。负 epoch 向较早的桶取整；月是日历操作，不是固定时长。PostgreSQL 会话时区不改变桶边界。先对原始时间维度应用显式半开窗口，再按桶分组；只有用户要求该总体时才用桶筛选替代原窗口。时区、时钟、本地日历解释和类型转换均须显式确定。
 
 ## 时间窗口操作
 
-Graph 的 time_windows 项为 {node,dimension,start,end}，可位于根或 exists 中。维度必须声明时间角色，授权 end 所需的 Lt；提供 start 时还需授权 Ge。区间为 [start,end)，包含 start、不包含 end。end 必填、非 null 且为具体值；start 可为 null 或省略，表示 end 之前的全部历史。规划时固定 end，使意图包含明确截止点。边界使用该维度的同一逻辑格式，start 必须早于 end。SQL 对原始列使用绑定值：>= start AND < end，省略 start 时仅 < end。时钟、数据库 now()、时区和列侧时间转换都不隐式引入。昨天、最近七天、日历月等相对时期须先用应用参考时间和时区计算，再提交具体边界。日历日不一定为 24 小时，日历月不是固定天数。例如 DatetimeUtc 的 UTC 2024 年 2 月为 start=2024-02-01T00:00:00Z、end=2024-03-01T00:00:00Z。本区间契约与 dimension.half_open 无关，后者表示部分枚举的业务值域。类型关联到此操作不代表字段获得授权。
+Graph 的 time_windows 项为 {node,dimension,start,end}，可位于根或 exists 中。维度必须声明时间角色，授权 end 所需的 Lt；提供 start 时还需授权 Ge。区间为 [start,end)，包含 start、不包含 end。end 必填、非 null 且为具体值；start 可为 null 或省略，表示 end 之前的全部历史。规划时固定 end，使意图包含明确截止点。边界使用该维度的同一逻辑格式，start 必须早于 end。SQL 对原始列使用绑定值：>= start AND < end，省略 start 时仅 < end。时钟、数据库 now()、时区和列侧时间转换都不隐式引入。昨天、最近七天、日历月等相对时期须先用应用参考时间和时区计算，再提交具体边界。日历日不一定为 24 小时，日历月不是固定天数。例如 DateTimeUtc 的 UTC 2024 年 2 月为 start=2024-02-01T00:00:00Z、end=2024-03-01T00:00:00Z。本区间契约与 dimension.half_open 无关，后者表示部分枚举的业务值域。类型关联到此操作不代表字段获得授权。
 
 ## 受限 IPv4 子网操作
 
@@ -26,7 +26,7 @@ InSubnet 和 NotInSubnet 只适用于 ops 声明该操作的 Ipv4 维度。value
 
 ## 逻辑类型与字段能力
 
-物理存储类型与逻辑值域分别声明。即使存储为 String 或 Int，时间字段也区分 DatetimeUtc、DateUtc、LocalDateTime 与 EpochMillis。LocalDateTime 表示不含时区的日期时间，不依赖运行环境的本地时区；与绝对时刻互转需要显式时区或偏移量。显式 logical_type(Ipv4) 使用四段 0..255、无前导零的规范点分十进制 String 存储，其逻辑类型不是 Text。支持地址 Eq/Ne 与 IPv4 CIDR 的 InSubnet/NotInSubnet，详见子网契约；不支持字典序、Contains、IPv6 或隐式 Text 转换。非规范存储地址违反存储契约，准备阶段不扫描数据。字段发布的 ops 可缩小类型能力，不能赋予类型未定义的操作。索引可用性与成本属于字段和物理能力考量，不改变地址语义。字段名不用于推断类型，格式未知的原始来源列在表示方式明确前保留为 Text。逻辑类型本身不授予筛选或投影权限。
+物理存储类型与逻辑值域分别声明。即使存储为 String 或 Int，时间字段也区分 DateTimeUtc、Date、DateTime 与 EpochMillis。Date 表示不含时区的日历日期；DateTime 表示不含时区的日期时间，不依赖运行环境的本地时区；与绝对时刻互转需要显式时区或偏移量。显式 logical_type(Ipv4) 使用四段 0..255、无前导零的规范点分十进制 String 存储，其逻辑类型不是 Text。支持地址 Eq/Ne 与 IPv4 CIDR 的 InSubnet/NotInSubnet，详见子网契约；不支持字典序、Contains、IPv6 或隐式 Text 转换。非规范存储地址违反存储契约，准备阶段不扫描数据。字段发布的 ops 可缩小类型能力，不能赋予类型未定义的操作。索引可用性与成本属于字段和物理能力考量，不改变地址语义。字段名不用于推断类型，格式未知的原始来源列在表示方式明确前保留为 Text。逻辑类型本身不授予筛选或投影权限。
 
 ## 字段角色与对象引用
 

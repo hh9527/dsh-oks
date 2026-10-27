@@ -33,7 +33,7 @@ assert.equal(readBuildInformation(Uint8Array.from([...header, ...section(envelop
 assert.deepEqual(readBuildInformation(Uint8Array.from([...header, ...section('{}', 'telora.service.metadata'), ...current]))?.['ontology.knowledge'], input);
 // Builtins are inline expressions, never graph addresses or reverse-link hubs.
 const inline = derivePublishedKnowledge(publication([
-  fact('types/Business', { kind: 'Ref', representation: 'Int' }),
+  fact('types/Business', { kind: 'Ref', representation: 'Int', reverse_references: true }),
   fact('types/Row', { kind: 'Ref', field_types: [
     { name: 'flag', type: 'Bool' }, { name: 'count', type: 'Option(Int)' },
     { name: 'nested', type: 'Array(Option(Dict(types/Business)))' },

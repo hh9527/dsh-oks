@@ -25,3 +25,7 @@ Wasm 自定义段为 telora.service.metadata，信封为 {version:1,entries:{"on
 可选的 <model.wasm>.knowledge-items.json 是独立说明文件：{version:1,items:[{key,names,doc}]}。其中 key 必须存在，names 追加别名，非空 doc 补充说明；拒绝事实字段和权限字段。Wasm 摘要、说明文件内容摘要与 domain 共同组成检索身份。没有外部说明时使用模型 items；二者都没有时仍可按稳定地址检索。
 
 本轮只改隔离分支，不改运行配置或部署文件。总进展在 lab-ontology #64 汇报，不另开阶段 issue。
+
+## 类型反向引用策略
+
+模型的 Ty 事实可声明布尔字段 `reverse_references`，默认值为 `false`，仅显式设置 `true` 才生成类型反向引用。值为 `false` 或省略时，插件保留类型节点与正向导航，省略目标类型上的使用者导航及反向引用索引，`references` 查询返回空结果。该策略由模型类型上的 property 发布，插件不维护时间类型名称清单；Date、DateTime、DateTimeUtc、EpochMillis 在模型标准标量定义中显式关闭反向引用。类型自己的成员结构仍保留。

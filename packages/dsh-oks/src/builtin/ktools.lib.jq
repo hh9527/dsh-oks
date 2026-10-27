@@ -80,7 +80,8 @@ def references($args):
   ({"skip":0,"take":10} + $args) as $args |
 
       . as $g
-      | if fact($g;$args.key) == null then error("Unknown knowledge key: "+$args.key) else
+      | if fact($g;$args.key) == null then error("Unknown knowledge key: "+$args.key)
+        elif identity($args.key).type == "Ty" and fact($g;$args.key).reverse_references != true then [] | page($args.skip;$args.take) else
         ($g.items | map({key:.key,value:.}) | from_entries) as $docs
         | [edges($g) | select(.key == $args.key and ($args.link == null or .link == $args.link))
            | . as $edge | identity(.source) as $id | select($args.type == null or $id.type == $args.type)

@@ -149,7 +149,7 @@ try {
   await call('oks_write',{path:'oks://work/columns.dari',content:asDari(columnSource)});
   const typed=await call('oks_run_answer',{src:'oks://work/columns.dari'});
   assert.equal(typed.value.ok,true,typed.text);
-  for(const [binding,type] of [['epoch','EpochMillis'],['utc','DatetimeUtc'],['cpu','Float']]) {
+  for(const [binding,type] of [['epoch','EpochMillis'],['utc','DateTimeUtc'],['cpu','Float']]) {
     const columns=(await call('oks_project',{input:'oks://work/columns.dari#'+binding,select:"'columns'"})).value.data.columns;
     assert.equal(columns[0].type,type);
     const data=(await call('oks_project',{input:'oks://work/columns.dari#'+binding})).value.data;

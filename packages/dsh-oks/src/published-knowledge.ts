@@ -22,6 +22,7 @@ export function derivePublishedKnowledge(input: unknown, presentation?: unknown,
     if (facts.has(entry.key)) throw new Error(`Duplicate published fact: ${entry.key}`);
     // Navigation belongs to the plugin; model facts cannot replace it.
     if (['related', 'traversable', 'referenced_by'].some(key => Object.hasOwn(entry.value as Record<string, unknown>, key))) throw new Error(`Reserved navigation field: ${entry.key}`);
+    if (Object.hasOwn(entry.value, 'reverse_references') && (path.length !== 2 || path[0] !== 'types' || typeof entry.value.reverse_references !== 'boolean')) throw new Error(`Invalid reverse reference policy: ${entry.key}`);
     facts.set(entry.key, { value: structuredClone(entry.value), references: [...new Set(entry.references as string[])] });
   }
   for (const [key, fact] of facts) {
@@ -64,10 +65,14 @@ export function derivePublishedKnowledge(input: unknown, presentation?: unknown,
       const targetFact = facts.get(target);
       if (targetFact === undefined) throw new Error(`Unresolved published knowledge reference: ${source} → ${target}`);
       direct(fact.value, refPath(target).at(-2)!, target);
-      direct(targetFact.value, path.at(-2)!, source);
+      const targetPath = refPath(target);
+      const reverse = targetPath[0] !== 'types' || targetPath.length !== 2 || targetFact.value.reverse_references === true;
+      if (reverse) direct(targetFact.value, path.at(-2)!, source);
       add(fact.value, 'related', refPath(target).at(-2)!, target);
-      add(targetFact.value, 'referenced_by', path.at(-2)!, source);
-      edges.push({ source, target, link: 'Related' });
+      if (reverse) {
+        add(targetFact.value, 'referenced_by', path.at(-2)!, source);
+        edges.push({ source, target, link: 'Related' });
+      }
     }
     if (path.length === 4) {
       const parent = `${path[0]}/${encodePart(path[1])}`;

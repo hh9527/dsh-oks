@@ -12,7 +12,7 @@ import { capLine } from './text.ts';
 export const WORK_DIR = '.work';
 
 /** 模型声明的结果列：逻辑类型和可空性来自静态投影，与实际返回行无关。 */
-export const RESULT_TYPES = ['Int', 'Float', 'Bool', 'String', 'DatetimeUtc', 'EpochMillis', 'LocalDateTime'] as const;
+export const RESULT_TYPES = ['Int', 'Float', 'Bool', 'String', 'DateTimeUtc', 'EpochMillis', 'DateTime'] as const;
 export interface ResultColumn {
   name: string;
   type: typeof RESULT_TYPES[number];
