@@ -52,7 +52,7 @@ try{
  assert.deepEqual(parseDraft(parsed.dari!.source).authoring,parseDraft(source).authoring);
  assert.equal(queries,0);assert.equal(contexts,before);assert.equal(read().value.sources[0].delivery!.html,page);
  assert.equal((runtime.read('reports.other',source).value.data as any).context.run,first.id);
- const projection=createSelector('context.{batch,captures},dari.figures.unused.data.rows')(data) as any;
+ const projection=createSelector('{context.{batch,captures},dari.figures.unused.data.rows}')(data) as any;
  assert.deepEqual(projection.dari.figures.unused.data.rows,[{label:'甲',n:3}]);
  const changed=source.replace('保留原始口径与注释','新的口径');assert.equal(read(changed).stale,true);assert.equal((read(changed).value.data as any).dari.source,source);
  const second=await runtime.run(changed),reused=read(changed).value.data as any;assert.equal(contexts,before);

@@ -76,7 +76,7 @@ try {
   assert.ok(!('error' in archive));assert.equal(archive.version,1);assert.equal(archive.dari!.source,asDari(source));
   assert.equal(archive.context!.batch,firstBatch);assert.equal(typeof archive.context!.model!.domain,'string');
   assert.ok(archive.context!.captures.length>0);
-  assert.equal((await call('oks_project',{input:'oks://work/draft.dari#answer',select:'dari.source,context.batch'})).value.data.dari.source,asDari(source));
+  assert.equal((await call('oks_project',{input:'oks://work/draft.dari#answer',select:'{dari.source,context.batch}'})).value.data.dari.source,asDari(source));
   result=await call('oks_project',{input:'oks://knowledge',transform:{lib:'oks://builtin/tools/ktools.lib.jq',name:'search',args:{query:'current_alarm',take:2}}});
   assert.ok(result.value.data.total>0);
   const explore=async(name:string,args:unknown)=>(await call('oks_project',{input:'oks://knowledge',transform:{lib:'oks://builtin/tools/ktools.lib.jq',name,args}})).value.data;
@@ -87,8 +87,9 @@ try {
   const nodes=await explore('nodes',{keys:['datasets/current_alarm'],mode:'both',take:2});
   assert.equal(nodes[0].key,'datasets/current_alarm');
   assert.ok(nodes[0].outline.length>0&&nodes[0].facts.length>0);
-  const routes=await explore('routes',{nodes:['datasets/current_alarm',card.dimensions[0].key],via:['dimensions'],max_depth:1,budget:100,max_paths:2});
-  assert.ok(routes.path_count>0);
+  const discovery=await explore('cap',{cq:{target:{dataset:'current_alarm'},select:[{dimension:card.dimensions[0].id}]},join_depth:0});
+  assert.equal(discovery.discovery.requires_transform,true);
+  assert.equal(discovery.candidate_intent.nodes[0].entity,'current_alarm');
   const sourceLibrary=(await call('oks_read',{path:'oks://builtin/tools/ktools.lib.jq'})).value;
   assert.ok(sourceLibrary.lines.some((line:any)=>line.text.includes('def search($args)')));
   await call('oks_write',{path:'oks://memory/tools/ktools.lib.jq',content:'def schema_counts($args): . | {datasets:(.datasets|length),types:(.types|length)};'});
@@ -163,7 +164,7 @@ try {
   await call('oks_project',{input:'oks://work/columns.dari#meta.epoch'});
   await call('oks_write',{path:'oks://work/validation.dari',content:'<Dari><Pipeline>rows <-missing;</Pipeline><Asset language="jq" name="one.jq">missing_one</Asset><Asset language="jq" name="two.jq">missing_two</Asset><Figures><ColumnChart name="bad" data={rows}/></Figures><Report name="bad"><article onclick="bad"><p>invalid</p></article></Report></Dari>'});
   const invalid=await call('oks_run_answer',{src:'oks://work/validation.dari'});assert.equal(invalid.value.status,'invalid');assert.equal(invalid.value.counts.executed,0);
-  const validationDiagnostics=(await call('oks_project',{input:invalid.value.diagnosticsInput,select:'[0..100]'})).value;
+  const validationDiagnostics=(await call('oks_project',{input:invalid.value.diagnosticsInput,select:'[0:100]'})).value;
   assert.ok(validationDiagnostics.data.some((d:any)=>d.stage==='pipeline'));
   for(const asset of ['one.jq','two.jq','figures.bad','reports.bad'])assert.ok(validationDiagnostics.data.some((d:any)=>d.asset===asset),asset);
   assert.equal(existsSync(join(root,'.oks')),false,'query/render/export must not create internal disk storage');

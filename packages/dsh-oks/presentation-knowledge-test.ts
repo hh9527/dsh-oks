@@ -35,7 +35,7 @@ try {
  assert.equal((await run('members',{key:'tools/render_figure',link:'kinds',skip:10})).items.length,4);
  assert.ok(members.items.every((item:any)=>item.type==='FigureKind'));
  assert.equal((await run('search',{type:'Tool'})).total,2);
- assert.ok((await run('references',{key:'tools/render_figure#kinds/column'})).items.some((item:any)=>item.key==='tools/render_figure'&&item.link==='kinds'));
+ assert.ok((await run('references',{key:'tools/render_figure#kinds/column'})).items.some((item:any)=>item.key==='tools/render_figure'&&item.link==='tools'));
  assert.equal((await run('members',{key:'tools/render_figure#kinds/column',link:'tools'})).items[0].key,'tools/render_figure');
  const read=await run('read',{key:'tools/render_figure#kinds/column'});
  assert.ok((await run('members',{key:'tools/render_figure#kinds/column',link:'related.topics'})).items.some((item:any)=>item.key==='tools/render_figure#topics/switches'));

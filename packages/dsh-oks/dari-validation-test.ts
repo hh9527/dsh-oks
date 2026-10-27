@@ -36,10 +36,10 @@ try{
  const many=Array.from({length:24},(_,i)=>asset(`bad${i}.jq`,`missing_${i}`)).join('');
  result=await run(`<Dari><Pipeline>sample <-data(null);</Pipeline>${many}${asset('final.jq','error("last after 24 errors")')}</Dari>`);
  assert.equal(result.status,'invalid');assert.equal(result.diagnosticsInput,input+'#diagnostics');assert.ok(result.omittedDiagnostics>0);assert.ok(result.diagnostics.length>0);
- diagnostics=(await call('oks_project',{input:input+'#diagnostics',select:'[0..100]'}));assert.equal(diagnostics.data.length,24);
+ diagnostics=(await call('oks_project',{input:input+'#diagnostics',select:'[0:100]'}));assert.equal(diagnostics.data.length,24);
  assert.equal(result.diagnostics.length+result.omittedDiagnostics,24);
  assert.ok(checked.includes('error("last after 24 errors")'));
- const page=await call('oks_project',{input:input+'#diagnostics',select:'[20..24]'});assert.equal(page.data.length,4);
+ const page=await call('oks_project',{input:input+'#diagnostics',select:'[20:24]'});assert.equal(page.data.length,4);
  const before=checked.length;await call('oks_project',{input:input+'#diagnostics'});assert.equal(checked.length,before,'diagnostic reads never compile or execute');
  const changed=`<Dari><Notes>moved 中文😀</Notes><Pipeline>sample <-data(null);</Pipeline>${many}</Dari>`;await run(changed);
  diagnostics=(await call('oks_project',{input:input+'#diagnostics'})).data;
@@ -52,7 +52,7 @@ try{
  result=await run(`<Dari><Pipeline></Pipeline>${transport}${asset('afterTransport.jq','error("after transport failures")')}</Dari>`);
  assert.equal(result.status,'invalid');assert.ok(checked.includes('error("after transport failures")'));
  assert.ok(Buffer.byteLength(JSON.stringify(result))<16384);assert.equal(result.diagnostics.length+result.omittedDiagnostics,12);assert.ok(result.diagnostics.every(d=>d.messageTruncated));
- diagnostics=await call('oks_project',{input:input+'#diagnostics',select:'[11..12]'});assert.equal(diagnostics.data[0].message,'编译服务临时错误'.repeat(500));
+ diagnostics=await call('oks_project',{input:input+'#diagnostics',select:'[11:12]'});assert.equal(diagnostics.data[0].message,'编译服务临时错误'.repeat(500));
  result=await run('<Dari><Pipeline>x <-data(1);</Pipeline>');assert.equal(result.status,'invalid');assert.equal(result.diagnostics[0].stage,'container');
  assert.equal(execution,0);assert.equal(modelChecks,0);
  console.log('DARI validation: independent pipeline/assets/figures/reports, all assets after 16 errors, complete paged diagnostics, source remapping and zero execution passed');

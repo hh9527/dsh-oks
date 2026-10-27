@@ -111,7 +111,7 @@ summary <- jq("summary.jq", {facts, params});
 ## 知识发现
 
 ```js
-oks_project({input:"oks://knowledge",select:"datasets:keys,types:keys"})
+oks_project({input:"oks://knowledge",select:"{datasets:keys,types:keys}"})
 oks_project({input:"oks://knowledge",transform:{lib:"oks://builtin/tools/ktools.lib.jq",name:"search",args:{query:"候选词",take:10}}})
 oks_project({input:"oks://knowledge",transform:{lib:"oks://builtin/tools/ktools.lib.jq",name:"read",args:{key:"返回的地址"}}})
 oks_read({path:"oks://help/query.md"})
@@ -149,12 +149,12 @@ unit 为 year/quarter/month/week/day，count 为 1..50。周从周一开始，�
 ## 只读查看与交付
 
 ```js
-oks_project({input:"oks://work/draft.dari#facts",select:"rows[0..5]"})
+oks_project({input:"oks://work/draft.dari#facts",select:"rows[0:5]"})
 oks_project({input:"oks://work/draft.dari#output"})
 oks_project({input:"oks://work/draft.dari#meta.summary"})
 ```
 
-select 保留字段层级；切片与算子进入输出键名。例如 rows[0..5] 的数据在 .data["rows[0..5]"] 中。根数组用 [0..5] 直接取样。
+select 保留字段层级；切片与算子进入输出键名。例如 rows[0:5] 的数据在 .data["rows[0:5]"] 中。根数组用 [0:5] 直接取样。
 读取对应当前会话该源码的最近一次运行；失败/移除/阻塞/回收不回退旧成功值。改稿后保留结果标 stale。
 查询的 `truncated` 表示是否还有未返回的行；rows 最多包含请求的 limit 行。
 查询的 `columns` 采用模型声明的 Int/Float/Bool/String/DatetimeUtc/EpochMillis/LocalDateTime，
@@ -307,4 +307,4 @@ node scripts/split-query.ts old.dari new.dari
 
 DARI 报告 HTML 在非执行元数据中保留 `{version:1,context,dari}`。context 是本次运行与实际采集的快照；dari 包含完整 source、title、notes、assets、pipeline、reports，以及所有图表的 code、binding、status 和成功时的实际 data。dari.values 以规范化投影 code 为键，保存正文实际引用的标量，例如 `{"summary.total":42}`；相同投影跨报告去重。归档只保存图表数据与正文引用值，不保存全部中间绑定。整稿源码可完整恢复，导出不会刷新时间或执行查询。
 
-用 `oks_project({input:"oks://work/分析.dari#reports.answer",select:"context,dari.pipeline"})` 按需查看。图表与报告无依赖的分支执行结束后也纳入归档；失败分支保留状态。归档受运行存储预算约束。
+用 `oks_project({input:"oks://work/分析.dari#reports.answer",select:"{context,dari.pipeline}"})` 按需查看。图表与报告无依赖的分支执行结束后也纳入归档；失败分支保留状态。归档受运行存储预算约束。

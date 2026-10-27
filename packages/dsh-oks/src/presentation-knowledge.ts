@@ -13,18 +13,22 @@ export function mountPresentationKnowledge(graph: SemanticGraph): void {
   graph.tools = {};
   for (const [owner, raw] of Object.entries(authored.roots)) {
     const root = raw as Record<string, any>;
-    graph.tools[owner] = {...root.facts, kinds: {}, topics: {}};
+    graph.tools[owner] = {...root.facts, kinds: {}, topics: {}, referenced_by: {}};
     graph.items.push({key:`tools/${owner}`, names:root.names, doc:root.doc});
     for (const category of ['kinds', 'topics']) {
       for (const [id, rawNode] of Object.entries(root[category])) {
         const node = rawNode as Record<string, any>;
-        (graph.tools[owner][category] as Record<string, unknown>)[id] = {...node.facts, tools:[`tools/${owner}`]};
+        (graph.tools[owner][category] as Record<string, unknown>)[id] = {...node.facts, tools:[`tools/${owner}`], referenced_by:{tools:[`tools/${owner}`]}};
+        const reverse = graph.tools[owner].referenced_by as Record<string,string[]>;
+        (reverse[category] ??= []).push(`tools/${owner}#${category}/${id}`);
         graph.items.push({key:`tools/${owner}#${category}/${id}`, names:node.names, doc:node.doc});
       }
     }
   }
   graph.tools.render_figure.related = {tools:['tools/report']};
   graph.tools.report.related = {tools:['tools/render_figure']};
+  (graph.tools.render_figure.referenced_by as Record<string,string[]>).tools=['tools/report'];
+  (graph.tools.report.referenced_by as Record<string,string[]>).tools=['tools/render_figure'];
   delete graph.tools.report.kinds;
   for (const [component, kind] of Object.entries(COMPONENT_KINDS)) {
     const fact = resolveFact(graph, `tools/render_figure#kinds/${kind}`);
@@ -40,8 +44,8 @@ export function mountPresentationKnowledge(graph: SemanticGraph): void {
     fact.related = {topics:topics.map(topic => `tools/render_figure#topics/${topic}`)};
     for (const topic of topics) {
       const target = resolveFact(graph, `tools/render_figure#topics/${topic}`);
-      const reverse = (target.referenced_by ??= {kinds:[]}) as {kinds:string[]};
-      reverse.kinds.push(`tools/render_figure#kinds/${kind}`);
+      const reverse = (target.referenced_by ??= {}) as Record<string,string[]>;
+      (reverse.kinds ??= []).push(`tools/render_figure#kinds/${kind}`);
     }
   }
   graph.items.sort((a,b) => a.key.localeCompare(b.key,'en'));

@@ -19,6 +19,9 @@ const nodes=[
  n('Value/Level/high','Value',{id:'high',ty:'Level',wires:[{Int:1}]},{node:'types/Level',member:'values/high'}),
 ];
 const graph=buildSemanticGraph(nodes).graph;
+// Legacy graph fixture explicitly opts into the current reverse-reference policy.
+graph.types.Level.reverse_references=true;
+graph.types.Level.referenced_by={dimensions:[ds+'#dimensions/name'],fields:[ds+'#fields/name']};
 assert.deepEqual(Object.keys(graph),['datasets','types','relations','tools','items']);
 assert.equal(graph.items.filter(item=>!item.key.startsWith('tools/')).length,nodes.length-1);
 assert.equal(graph.datasets[dataset].fields!==undefined,true);

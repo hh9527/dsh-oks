@@ -28,7 +28,7 @@ try{
   const code=builtinCode('builtin://knowledge/references.jq',{key:`types/${name}`});
   const result=await engine.run(code.text,{input:{knowledge:index.knowledge},timeoutMs:5000,maxBytes:65536,programFile:code.file});
   assert.equal(result.ok,true,JSON.stringify(result));
-  assert.equal((result as any).data.total,name==='Explicit'?2:0);
+  assert.equal((result as any).data.total,name==='Explicit'?1:0);
  }
 }finally{await engine.dispose();}
 console.log('Type policy: nodes/forward navigation retained; reverse navigation/index/query suppressed; default opt-out and explicit opt-in verified');

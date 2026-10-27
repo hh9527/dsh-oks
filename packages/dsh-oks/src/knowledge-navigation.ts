@@ -21,7 +21,7 @@ export function knowledgeBranches(graph: object) {
     const shape = Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value;
     const count = Array.isArray(value) ? value.length : isRecord(value) ? Object.keys(value).length : undefined;
     const path = selectedKey(key);
-    const select = isRecord(value) ? `${path}:keys[0..10]` : Array.isArray(value) ? `${path}[0..3]` : path;
+    const select = isRecord(value) ? `${path}:keys[0:10]` : Array.isArray(value) ? `${path}[0:3]` : path;
     return { key, shape, ...(count === undefined ? {} : { count }), ...(Object.hasOwn(meanings, key) ? { meaning: meanings[key] } : {}), select };
   });
 }

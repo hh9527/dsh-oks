@@ -1,61 +1,52 @@
 import assert from 'node:assert/strict';
 import {createJaqEngine} from './src/jaq.ts';
 import {createKtools} from './src/ktools.ts';
-import {builtinCode,builtinKtoolsSource} from './src/knowledge-programs.ts';
-const enc=encodeURIComponent;
-const id='alarm/a#中文',ty='级别/a',dim='level/#',relation='join/a#';
-const dataset='datasets/'+enc(id),type='types/'+enc(ty),field=dataset+'#fields/'+enc(dim),dimension=dataset+'#dimensions/'+enc(dim),rel='relations/'+enc(relation);
-const values=['wire_1','major/a'].map(v=>type+'#values/'+enc(v));
-const graph={datasets:{[id]:{grain:['id'],fields:{[dim]:{types:[type],datasets:[dataset]}},dimensions:{[dim]:{field:dim,fields:[field],type:ty,types:[type],ops:['Eq'],values,filterable:true}},measures:{n:{aggregate:'Sum',field:'n'}},time_roles:{clock:{encoding:'EpochMillis'}},relations:[rel]},other:{grain:['other']},source_mirror:{grain:['id']}},
- types:{[ty]:{canonical_order:['major/a','wire_1'],values:{wire_1:{wires:[{Int:1}]},'major/a':{wires:[{Int:2}]}},fields:[field],dimensions:[dimension],related:{datasets:[dataset]}}},
- relations:{[relation]:{from_dataset:id,to_dataset:'other',cardinality:{from:'Many',to:'One'},datasets:[dataset,'datasets/other']}},tools:{},
- items:[{key:dataset,names:['告警'],doc:'Dataset meaning'},{key:field,names:['存储级别'],doc:'Field meaning'},{key:dimension,names:['业务级别'],doc:'Dimension meaning'},{key:type,names:['告警级别'],doc:'Type meaning'},{key:values[0],names:['有业务名的 wire 值'],doc:'Do not hide named values'},{key:values[1],names:['严重'],doc:'Major'},{key:rel,names:['归属'],doc:'Relation meaning'},{key:'datasets/other',names:['其他'],doc:''},{key:'datasets/source_mirror',names:['镜像'],doc:''}]};
+import {builtinCode} from './src/knowledge-programs.ts';
+const id='alarm/a#中文', dataset='datasets/'+encodeURIComponent(id), type='types/Level';
+const field=dataset+'#fields/id', dimension=dataset+'#dimensions/level', measure=dataset+'#measures/n';
+const graph:any={entities:{Identity:{roles:[dataset+'#roles/owner']},Shared:{roles:[dataset+'#roles/owner','datasets/other#roles/owner']}},
+ datasets:{[id]:{grain:['id'],kind:'Entity',source:'alarm',scope:[{op:'Eq'}],
+ fields:{id:{types:[type]}},roles:{owner:{entity:'entities/Identity'}},bindings:{level:{group:'dimension_groups/level'}},business_links:{},
+ dimensions:{level:{type,field,fields:[field],ops:['Eq'],filterable:false,authorized:false,projectable:false,computed:false,half_open:false,canonical_order:['major'],canonical_values:[{id:'major',wires:[{Int:1}]}],group:'dimension_groups/level'}},
+ measures:{n:{aggregate:'Count',anchor_field:field,statistic:'Count',sampling:{unit:'count',role:'Primary'}}},
+ time_roles:{clock:{field,encoding:'EpochMillis',semantics:'Utc',authoritative:false}},relations:['relations/join1','relations/join2']},
+ other:{grain:['a','b'],dimensions:{},measures:{}},third:{grain:['id'],dimensions:{},measures:{}}},
+ dimension_groups:{level:{name:'level'}},measure_groups:{},
+ types:{Level:{reverse_references:true,values:{major:{wires:[{Int:1}]}},referenced_by:{fields:[field],dimensions:[dimension]}},Hidden:{reverse_references:false}},
+ relations:{join1:{from_dataset:dataset,to_dataset:'datasets/other',cardinality:{from:'Many',to:'Optional'},key:{from:field,to:'datasets/other#fields/a'},guard:{op:'Eq'}},
+ join2:{from_dataset:dataset,to_dataset:'datasets/other',cardinality:{from:'Many',to:'One'},key:{from:field,to:'datasets/other#fields/b'},guard:null},
+ next:{from_dataset:'datasets/other',to_dataset:'datasets/third',cardinality:{from:'Many',to:'One'},key:{from:'datasets/other#fields/a',to:'datasets/third#fields/id'},guard:null}},tools:{render_figure:{kinds:{table:{component:'table',required:[],series:{},switches:[]}}}},items:[]};
+for(const root of ['entities','datasets','dimension_groups','types','relations'])for(const [id,value]of Object.entries(graph[root]) as any){
+ const key=root+'/'+encodeURIComponent(id);graph.items.push({key,names:[id==='alarm/a#中文'?'告警':id],doc:'fixture'});
+ for(const kind of ['fields','roles','bindings','dimensions','measures','time_roles','values'])if(value[kind]&&!Array.isArray(value[kind]))for(const member of Object.keys(value[kind]))graph.items.push({key:key+'#'+kind+'/'+encodeURIComponent(member),names:[member],doc:'member'});
+}
 const engine=createJaqEngine(process.argv[2]??'lib/oks-wti.wasm');
 const library=createKtools(engine.checkLibrary,engine.run);
-const run=async(name:string,args:Record<string,unknown>={},input:unknown=graph)=>{
+async function run(name:string,args:Record<string,unknown>={}){
  const code=await library.program('','oks://builtin/tools/ktools.lib.jq#'+name,args);
- const out=await engine.runDocument(code.text,input,{input:null,timeoutMs:5000,maxBytes:8*1024*1024,programFile:code.file});
- assert.ok(out.ok);return out.data as any;
-};
-try {
- assert.match(builtinKtoolsSource,/def overview\(\$args\)/);
- const overview=await run('overview');assert.equal(overview.total,3);assert.equal(overview.datasets.find((d:any)=>d.id===id).label,'告警');
- assert.equal(overview.datasets.find((d:any)=>d.id===id).key,dataset);
- assert.equal((await run('overview',{include_source:false})).total,2);
- const page=await run('overview',{take:1});assert.equal(page.datasets.length,1);assert.equal(page.next,1);assert.equal(page.truncated,true);
- assert.equal((await run('overview',{skip:3})).datasets.length,0);
- const card=await run('card',{id,docs:true});assert.equal(card.label,'告警');assert.deepEqual(card.grain,['id']);
- assert.equal(card.dimensions[0].key,dimension);assert.equal(card.dimensions[0].label,'业务级别');assert.equal(card.dimensions[0].doc,'Dimension meaning');assert.deepEqual(card.dimensions[0].ops,['Eq']);
- assert.equal(card.relations[0].id,relation);assert.deepEqual(card.relations[0].cardinality,{from:'Many',to:'One'});
- assert.equal(card.time_roles[0].encoding,'EpochMillis');assert.equal(card.counts.values,2);
- assert.equal(card.values[0].values[0].label,'有业务名的 wire 值');assert.deepEqual(card.values[0].canonical_order,['major/a','wire_1']);
- const first=await run('card',{id,section:'values',take:1});assert.equal(first.dimensions,undefined);assert.equal(first.values[0].total,2);assert.equal(first.values[0].next,1);assert.equal(first.values[0].truncated,true);
- assert.equal((await run('card',{id,section:'values',take:1,value_skip:1})).values[0].values[0].id,'major/a');
- const shape=await run('card',{id,section:'shape'});assert.equal(shape.dimensions,undefined);assert.equal(shape.counts.dimensions,1);
- const docs=await run('nodes',{keys:[dimension]});assert.equal(docs[0].label,'业务级别');assert.equal(docs[0].facts,undefined);assert.ok(docs[0].outline.some((x:any)=>x.fact==='ops'));
- const facts=await run('nodes',{keys:[type,values[1],'types/missing'],mode:'both',take:1,expand:['canonical_order']});
- assert.equal(facts[0].facts.find((f:any)=>f.fact==='values').truncated,true);assert.equal(facts[0].facts.find((f:any)=>f.fact==='values').total,2);
- assert.deepEqual(facts[0].facts.find((f:any)=>f.fact==='canonical_order').value,['major/a','wire_1']);assert.equal(facts[1].label,'严重');assert.equal(facts[2].error,'unknown node');
- const routes=await run('routes',{nodes:[dataset,type],max_depth:2});assert.ok(routes.path_count>=2);assert.equal(routes.truncated,false);
- assert.ok(routes.paths.some((p:any)=>p.nodes.includes(field)));assert.ok(routes.paths.some((p:any)=>p.nodes.includes(dimension)));
- const via=await run('routes',{nodes:[dataset,type],via:['fields','types']});assert.equal(via.path_count,1);assert.deepEqual(via.paths[0].nodes,[dataset,field,type]);
- assert.deepEqual((await run('routes',{nodes:[type,dataset],via:['related.datasets']})).paths[0].via,['related.datasets']);
- const avoid=await run('routes',{nodes:[dataset,type],avoid:['#dimensions/']});assert.ok(avoid.paths.every((p:any)=>!p.nodes.includes(dimension)));
- const one=await run('routes',{nodes:[dataset,type],max_paths:1});assert.equal(one.path_count,1);assert.equal(one.truncated,true);
- const capped=await run('routes',{nodes:[dataset,type],budget:1});assert.ok(capped.search.candidates<=1);assert.equal(capped.truncated,true);
- const depth=await run('routes',{nodes:[dataset,type],max_depth:1});assert.equal(depth.path_count,0);assert.equal(depth.depth_capped,true);
- assert.equal((await run('routes',{nodes:[dataset,values[1]],max_depth:4})).path_count>0,true,'known leaf endpoint needs no outgoing edges');
- assert.equal((await run('routes',{nodes:[values[1],values[1]]})).paths[0].hops,0);
- assert.equal((await run('routes',{nodes:[values[1],dataset]})).path_count,0);
- await assert.rejects(run('routes',{nodes:[dataset,'types/missing']}),/Unknown route endpoint/);
- await assert.rejects(run('card',{id:'missing'}),/Unknown dataset/);
- for(const [name,args]of [
-  ['overview',{take:0}],['overview',{skip:-1}],['overview',{include_source:'yes'}],['overview',{unknown:1}],
-  ['card',{}],['card',{id,section:'oops'}],['card',{id,docs:1}],['card',{id,value_skip:-1}],
-  ['nodes',{}],['nodes',{keys:'x'}],['nodes',{keys:Array(51).fill(type)}],['nodes',{keys:[type],mode:'oops'}],['nodes',{keys:[type],expand:[1]}],
-  ['routes',{nodes:[dataset]}],['routes',{nodes:[dataset,type],budget:0}],['routes',{nodes:[dataset,type],budget:20001}],
-  ['routes',{nodes:[dataset,type],max_depth:9}],['routes',{nodes:[dataset,type],max_paths:51}],['routes',{nodes:[dataset,type],via:'fields'}],
- ] as const)assert.throws(()=>builtinCode(`builtin://knowledge/${name}.jq`,args));
- await assert.rejects(library.program('','oks://builtin/tools/ktools.lib.jq#__kindex',{}));
- console.log('harvested builtin methods: encoded IDs, descriptions, values, pagination, categorized paths, cycles, leaf endpoints, hard search caps and argument validation passed');
+ const out=await engine.runDocument(code.text,graph,{input:null,timeoutMs:5000,maxBytes:1e6});assert(out.ok);return out.data as any;
+}
+try{
+ const overview=await run('overview',{take:1});assert.equal(overview.total,3);assert.equal(overview.next,1);assert.equal(overview.datasets[0].label,'告警');
+ const card=await run('card',{id,docs:true});assert.equal(card.measures[0].anchor_field,field);assert.equal(card.measures[0].unit,'count');assert.equal(card.dimensions[0].authorized,false);assert.equal(card.dimensions[0].computed,false);assert.equal(card.dimensions[0].half_open,false);assert.equal(card.dimensions[0].projectable,false);assert.equal(card.dimensions[0].canonical_values[0].id,'major');assert.equal(card.roles[0].facts.entity,'entities/Identity');assert.equal(card.bindings[0].facts.group,'dimension_groups/level');assert.equal(card.counts.bindings,1);assert.equal(card.values,undefined);
+ const members=await run('members',{key:dataset,take:50});assert(members.items.length>0);assert(members.items.every((m:any)=>m.type&&m.key!== 'id'));assert(!members.items.some((m:any)=>m.link==='scope'||m.link==='grain'));
+ const refs=await run('references',{key:type,type:'Dimension'});assert.equal(refs.items[0].key,dimension);assert.equal(refs.coverage,'referenced_by');
+ assert.equal((await run('references',{key:'types/Hidden'})).coverage,'reverse_references_false');
+ assert.equal((await run('read',{key:dimension})).facts.projectable,false);
+ const nodes=await run('nodes',{keys:[dimension,'types/missing'],mode:'both'});assert.equal(nodes[1].error,'unknown node');
+ assert.equal((await run('search',{type:'Entity'})).total,2);
+ const cq={target:{dataset:id},select:[{dimension:'level'}],measures:[{measure:'n'}]};
+ const cap=await run('cap',{cq,join_depth:2,take:50});assert.equal(cap.discovery.requires_transform,true);assert.equal(cap.ok,undefined);assert.equal(cap.select[0].facts.authorized,false);assert.deepEqual(cap.candidate_intent.nodes,[{id:'d',entity:id}]);assert.equal(cap.joins.total,4);
+ assert.equal(cap.joins.items.filter((j:any)=>j.steps.length===1).length,2);assert.equal(cap.joins.items.filter((j:any)=>j.steps.length===2).length,2);
+ assert(cap.joins.items.every((j:any)=>!Object.hasOwn(j,'grain_safe')&&!Object.hasOwn(j,'grain_proof')));assert(cap.joins.items.some((j:any)=>j.steps[0].guard?.op==='Eq'));
+ const paged=await run('cap',{cq,join_depth:2,take:1});assert.equal(paged.joins.items.length,1);assert.equal(paged.joins.next,1);
+ const missing=await run('cap',{cq:{target:{dataset:id},select:[{dimension:'missing'}]}});assert.equal(missing.candidate_intent,null);assert.equal(missing.unresolved[0].id,'missing');
+ const byEntity=await run('cap',{cq:{target:{entity:'Identity'}},join_depth:0});assert.equal(byEntity.target.dataset,id);
+ const ambiguous=await run('cap',{cq:{target:{entity:'Shared'}}});assert.equal(ambiguous.target.candidates.length,2);assert.equal(ambiguous.target.dataset,null);assert.equal(ambiguous.candidate_intent,null);
+ const discoveryOnly=await run('cap',{cq:{...cq,window:{dimension:'level',start:'bad-time',end:'bad-time'},rank:{measure:'n',direction:'Wrong',take:0}},join_depth:0});assert.equal(discoveryOnly.candidate_intent.top_by_measure.take,0);assert.equal(discoveryOnly.candidate_intent.time_windows[0].end,'bad-time');assert.equal(discoveryOnly.discovery.requires_transform,true);
+ const unknownRank=await run('cap',{cq:{...cq,rank:{measure:'missing'}}});assert.equal(unknownRank.candidate_intent,null);
+ assert((await run('shape_audit')).roots.includes('entities'));assert.equal((await run('shape_audit')).coverage,'observed_graph');
+ assert.equal((await run('metric_map',{pattern:'n'})).total,1);assert.equal((await run('figure_kinds'))[0].component,'table');
+ for(const [name,args]of [['routes',{}],['card',{id,section:'values'}],['card',{id,value_skip:1}],['metric_map',{}],['cap',{}],['cap',{cq:{target:{dataset:id,entity:'Identity'}}}],['cap',{cq,join_depth:3}],['cap',{cq,take:51}],['cap',{cq:{target:{dataset:id},select:[{}]}}]] as const)assert.throws(()=>builtinCode(`builtin://knowledge/${name}.jq`,args));
+ console.log('Capability discovery: current cards, encoded IDs, false facts, precise navigation, reverse policy, entity ambiguity, alternative relation paths, paging, raw request forwarding, observations and parameter validation passed');
 }finally{engine.dispose();}

@@ -1,51 +1,67 @@
-# 只读方法库，输入为当前知识图根对象；用 oks_project select=":keys" 查看实际根分支。
-# search 定位候选，overview/card/nodes 读取事实，routes 探索连接。
-# 写计划前核实粒度、允许的操作、值域含义与关系基数。
-# 路径用于导航；分页与搜索上限意味着结果可能不完整，查询权限以模型声明为准。
+# 能力发现方法库：从模型事实发现能力、约束与候选关联，提供带事实引用的查询草案。
+# 候选骨架必须交给 transform 验证并 lowering；本库不判定查询合法性或粒度安全。
+# 根目录用 oks_project select=":keys" 查看，声明字段和布尔值按原样返回。
 
   def pathof: split("#") | map(split("/") | map(decode_uri)) | add;
   def fact($g; $key): ($key | pathof) as $p | $g | getpath($p);
   def identity($key): ($key | pathof) as $p
     | {key:$key,type:({entities:"Entity",dimension_groups:"DimensionGroup",measure_groups:"MeasureGroup",bindings:"Binding",roles:"Role",datasets:"Dataset",types:"Ty",relations:"Relation",fields:"Field",dimensions:"Dimension",measures:"Measure",values:"Value",time_roles:"TimeRole",business_links:"BusinessLink",tools:"Tool",kinds:"FigureKind",topics:"ToolTopic"}[$p[-2]]),
        id:$p[-1],dataset:(if $p[0] == "datasets" then $p[1] else null end)};
-  def typekey($type): if ($type|startswith("types/")) then $type else "types/"+($type|encode_uri) end;
   def page($skip; $take): {total:length,start:$skip,items:.[$skip:($skip+$take)],next:(if ($skip+$take)<length then ($skip+$take) else null end)};
-  def edges($g):
-    $g.items[] | .key as $source | fact($g;$source) | to_entries[]
-    | . as $entry
-    | if (["entities","dimension_groups","measure_groups","bindings","roles","datasets","types","relations","fields","dimensions","measures","values","time_roles","business_links","tools","kinds","topics"] | index($entry.key)) != null then
-        if ($entry.value | type) == "array" then $entry.value[] | {source:$source,key:.,link:$entry.key}
-        elif ($entry.value | type) == "object" then $entry.value | keys[] | {source:$source,key:($source + "#" + $entry.key + "/" + (. | encode_uri)),link:$entry.key}
-        else empty end
-      elif (["related","traversable","referenced_by"] | index($entry.key)) != null then
-        $entry.value | to_entries[] | . as $group | $group.value[] | {source:$source,key:.,link:($entry.key+"."+$group.key)}
-      else empty end;
 
   def __kindex: .items | map({key:.key,value:{label:(.names[0] // ""),doc:(.doc // "")}}) | from_entries;
   def __label($ix;$key;$fallback): if ($ix[$key].label // "") == "" then $fallback else $ix[$key].label end;
   def __window($skip;$take): . as $all | {total:length,skip:$skip,take:$take,truncated:($skip>0 or ($skip+$take)<length),next:(if ($skip+$take)<length then $skip+$take else null end),items:$all[$skip:($skip+$take)]};
-  def __route_allowed($p;$e;$a):
-    (($a.via|length)==0 or ($a.via|index($e.link))!=null)
-    and (all($a.avoid[]; . as $s | ($e.to|contains($s))|not))
-    and (($p.path|index($e.to))==null);
-  def __route_walk($a):
-    if ($a.frontier|length)==0 then $a + {truncated:false}
-    elif ($a.found|length)>=$a.maxpaths then $a + {truncated:true}
-    elif $a.depth >= $a.maxdepth then
-      $a + {truncated:false,depth_capped:any($a.frontier[]; . as $p | any(($a.adj[$p.path[-1]] // [])[]; __route_allowed($p;.;$a)))}
-    else
-      (reduce $a.frontier[] as $p ({frontier:[],found:$a.found,candidates:$a.candidates,capped:false};
-        reduce ($a.adj[$p.path[-1]] // [])[] as $e (.;
-          if .candidates >= $a.budget or (.found|length)>=$a.maxpaths then .capped=true
-          else .candidates+=1
-            | if __route_allowed($p;$e;$a) then
-                {path:($p.path+[$e.to]),links:($p.links+[$e.link])} as $next
-                | if $e.to==$a.target then .found+=[$next] else .frontier+=[$next] end
-              else . end
-          end))) as $next
-      | if $next.capped then $a + $next + {depth:($a.depth+1),truncated:true}
-        else __route_walk($a + $next + {depth:($a.depth+1)}) end
-    end;
+
+  # ---------- 通用小工具 ----------
+  def __id($addr): ($addr | split("/") | last | decode_uri);
+  def __has($arr; $v): any(($arr // [])[]; . == $v);
+# ---------- 形状自检：知识图实际形状 vs 库里的硬编码类别表 ----------
+# 用于发现「知识 shape 变了、库里的类别清单过时」。返回实际根分支、成员类别（含是否已知）、
+# 以及各类节点的自有事实键集合。参数：无
+def __known_categories:
+  ["entities","dimension_groups","measure_groups","bindings","roles","datasets","types","relations",
+   "fields","dimensions","measures","values","time_roles","business_links","tools","kinds","topics"];
+
+# 库自认为已暴露的事实键（与 card/overview 的实现保持一致）；shape_audit 用它算 drifted 键。
+def __surfaced:
+  {"datasets":["source","row","grain","kind","scope","clock","roles","fields","time_roles","bindings",
+               "dimensions","measures","business_links","types","related","relations","referenced_by"],
+   "relations":["from_dataset","to_dataset","cardinality","key","guard","from_role","to_role"],
+   "dimensions":["field","fields","type","ops","filterable","input_kinds","output_type","authorized",
+                 "projectable","computed","canonical_order","canonical_values","half_open","utc_bucket",
+                 "binding","group","scope","local"],
+   "measures":["type","aggregate","anchor_field","statistic","sampling","computed","predicate","input",
+               "requires","group","binding"]};
+
+def shape_audit($args):
+  (.items | map(.key)) as $keys
+  | __known_categories as $known
+  | __surfaced as $s
+  | ([ $keys[] | split("#") as $h | ($h[0] | split("/")[0]) ] | unique) as $roots
+  | ([ $keys[] | select(contains("#")) | (split("#") | last | split("/") | first) ] | group_by(.) | map({category:.[0], count:length})) as $cats
+  | ([.datasets[] | keys[]] | unique) as $dk
+  | ([.relations[] | keys[]] | unique) as $rk
+  | ([.datasets[] | (.dimensions // {})[] | keys[]] | unique) as $dmk
+  | ([.datasets[] | (.measures // {})[] | keys[]] | unique) as $mk
+  | {roots:(keys),fact_roots:$roots,coverage:"observed_graph",
+     member_categories:[ $cats[] | .category as $c | . + {known:(($known | index($c)) != null)} ],
+     unknown_categories:[ $cats[] | .category as $c | select(($known | index($c)) == null) | .category ],
+     dataset_fact_keys:$dk, relation_fact_keys:$rk,
+     dimension_fact_keys:$dmk, measure_fact_keys:$mk,
+     dimension_group_fact_keys:([(.dimension_groups // {})[] | keys[]] | unique),
+     measure_group_fact_keys:([(.measure_groups // {})[] | keys[]] | unique),
+     time_role_fact_keys:([.datasets[] | (.time_roles // {})[] | keys[]] | unique),
+     type_fact_keys:([.types[] | keys[]] | unique),
+     entity_fact_keys:([(.entities // {})[] | keys[]] | unique),
+     drift:{unexposed:{datasets:[$dk[] as $k | select((($s.datasets)|index($k)) == null) | $k],
+                       relations:[$rk[] as $k | select((($s.relations)|index($k)) == null) | $k],
+                       dimensions:[$dmk[] as $k | select((($s.dimensions)|index($k)) == null) | $k],
+                       measures:[$mk[] as $k | select((($s.measures)|index($k)) == null) | $k]},
+            stale:{datasets:[($s.datasets)[] as $k | select(($dk|index($k)) == null) | $k],
+                   relations:[($s.relations)[] as $k | select(($rk|index($k)) == null) | $k],
+                   dimensions:[($s.dimensions)[] as $k | select(($dmk|index($k)) == null) | $k],
+                   measures:[($s.measures)[] as $k | select(($mk|index($k)) == null) | $k]}}};
 
 # 检索 ID、名称和说明，返回精确语义地址与精简匹配结果。
 # 参数：query, type, dataset, skip, take
@@ -62,31 +78,53 @@ def search($args):
       | sort_by([(-.score),.key]) | page($args.skip;$args.take);
 
 # 读取分类出向引用或自有成员。link 选择 fields/dimensions/values 等类别，type 可选，用于限制目标类型。
+# 实现只读该节点自身事实（不再为单点查询扫描全图 items），因此在大图上可用。
 # 参数：key, link, type, skip, take
 def members($args):
   ({"skip":0,"take":10} + $args) as $args |
 
-      . as $g
+      . as $g | __kindex as $ix
       | if fact($g;$args.key) == null then error("Unknown knowledge key: "+$args.key) else
-        ($g.items | map({key:.key,value:.}) | from_entries) as $docs
-        | [edges($g) | select(.source == $args.key and ($args.link == null or .link == $args.link))
-           | . as $edge | identity(.key) as $id | select($args.type == null or $id.type == $args.type)
-           | {key:$edge.key,type:$id.type,id:$id.id,label:($docs[$edge.key].names[0] // $id.id),link:$edge.link}]
+        (fact($g;$args.key)) as $f
+        | (if ($f|type) == "object" then
+             [ $f | to_entries[] | . as $e
+               | if (["related","traversable","referenced_by"] | index($e.key)) != null then
+                   $e.value | to_entries[] | . as $group
+                   | ($e.key+"."+$group.key) as $link
+                   | select($args.link==null or $args.link==$link)
+                   | $group.value[] | {key:.,link:$link}
+                 elif (__known_categories | index($e.key)) != null then
+                   select($args.link==null or $args.link==$e.key)
+                   | if ($e.value|type)=="array" then $e.value[] | {key:.,link:$e.key}
+                     elif ($e.value|type)=="object" then $e.value|keys[] | {key:($args.key+"#"+$e.key+"/"+(encode_uri)),link:$e.key}
+                     else empty end
+                 else empty end ]
+           else [] end) as $refs
+        | [ $refs[] | select((.key|type)=="string") | select(fact($g;.key)!=null)
+            | . as $m | (identity($m.key)) as $i
+            | select($args.type == null or $i.type == $args.type)
+            | {key:$m.key,type:$i.type,id:$i.id,label:__label($ix;$m.key;$i.id),link:$m.link} ]
         | unique_by([.key,.link]) | sort_by([.key,.link]) | page($args.skip;$args.take) end;
 
 # 查找指向精确语义地址的入向引用；可按类别 link 和来源类型 type 筛选。
+# 读取插件派生的 referenced_by；coverage 标记该索引的来源。
 # 参数：key, link, type, skip, take
 def references($args):
   ({"skip":0,"take":10} + $args) as $args |
 
-      . as $g
+      . as $g | __kindex as $ix
       | if fact($g;$args.key) == null then error("Unknown knowledge key: "+$args.key)
-        elif identity($args.key).type == "Ty" and fact($g;$args.key).reverse_references != true then [] | page($args.skip;$args.take) else
-        ($g.items | map({key:.key,value:.}) | from_entries) as $docs
-        | [edges($g) | select(.key == $args.key and ($args.link == null or .link == $args.link))
-           | . as $edge | identity(.source) as $id | select($args.type == null or $id.type == $args.type)
-           | {key:$edge.source,type:$id.type,id:$id.id,label:($docs[$edge.source].names[0] // $id.id),link:$edge.link}]
-        | unique_by([.key,.link]) | sort_by([.key,.link]) | page($args.skip;$args.take) end;
+        elif identity($args.key).type == "Ty" and (fact($g;$args.key).reverse_references != true) then [] | page($args.skip;$args.take) + {coverage:"reverse_references_false"}
+        else
+          (fact($g;$args.key)) as $f
+          | [ ((($f // {}).referenced_by // {}) | to_entries[]) | .key as $cat
+              | select($args.link == null or $cat == $args.link)
+              | (.value[] | {key:., link:$cat}) ]
+          | [ .[] | . as $e | (identity($e.key)) as $i
+              | select($args.type == null or $i.type == $args.type)
+              | {key:$e.key,type:$i.type,id:$i.id,label:__label($ix;$e.key;$i.id),link:$e.link} ]
+          | unique_by([.key,.link]) | sort_by([.key,.link])
+          | page($args.skip;$args.take) + {coverage:"referenced_by"} end;
 
 # 配对读取事实与说明。key 可指向节点、成员或 datasets/alarm#dimensions 这样的分类分支；只展开所选分支。
 # 参数：key
@@ -98,7 +136,8 @@ def read($args):
         ($args.key + (if ($args.key|contains("#")) then "/" else "#" end)) as $prefix
         | {key:$args.key,facts:$facts,items:[$g.items[] | select(.key == $args.key or (.key|startswith($prefix)))]} end;
 
-# 列出数据集的名称、粒度和能力数量。稳定分页：skip=0、take=40（1..50）。include_source 默认为 true；显式设为 false 时过滤 source_ 开头的 ID。数量用于导航，查询权限以模型声明为准。
+# 列出数据集的名称、粒度和能力数量；每行并带时间能力、桶、聚合与单位，便于先定分析层。
+# 稳定分页：skip=0、take=40（1..50）。include_source 默认为 true；显式设为 false 时过滤 source_ 开头的 ID。
 # 参数：skip, take, include_source
 def overview($args):
   ({"skip":0,"take":40,"include_source":true} + $args) as $args |
@@ -107,14 +146,22 @@ def overview($args):
     | [$g.datasets | to_entries[] | select($args.include_source or (.key|startswith("source_")|not))
        | .key as $id | .value as $d | ("datasets/"+($id|encode_uri)) as $key
        | {id:$id,key:$key,label:__label($ix;$key;$id),grain:($d.grain // []),
+          kind:($d.kind // null),clock:($d.clock // null),
           dims:(($d.dimensions // {})|length),meas:(($d.measures // {})|length),
-          trs:(($d.time_roles // {})|length),rels:(($d.relations // [])|length)}]
+          trs:(($d.time_roles // {})|length),rels:(($d.relations // [])|length),
+          has_time:((($d.time_roles // {})|length)>0),
+          time_encoding:([($d.time_roles // {})[] | .encoding] | unique),
+          buckets:([($d.dimensions // {})[] | select(.utc_bucket != null) | .utc_bucket.unit] | unique),
+          aggregates:([($d.measures // {})[] | .aggregate] | unique),
+          sum_available:__has([($d.measures // {})[] | .aggregate]; "Sum"),
+          units:([($d.measures // {})[] | ((.sampling // {}) | .unit)] | map(select(. != null)) | unique)}]
     | sort_by(.id) | __window($args.skip;$args.take) | {total,page:{skip,take},truncated,next,datasets:.items};
 
-# 用原始字典 id 读取数据集卡片，包含粒度、维度允许的操作、度量、时间编码、关系基数和值域。section 为 all/shape/dimensions/measures/time_roles/relations/values；默认 skip=0、take=20（1..50）、docs=false。counts 和 pages 按分段报告总量、截断与下一页偏移。值域各有 total/truncated/next；value_skip=0 控制域内值分页。所有值 ID 均保留。
-# 参数：id, section, skip, take, docs, value_skip
+# 用原始字典 id 读取数据集卡片，包含粒度、维度允许的操作、度量（含统计量与物理单位）、时间编码、关系基数与遍历方向、值域。
+# section 为 all/shape/roles/bindings/dimensions/measures/time_roles/relations/business_links；默认 skip=0、take=20（1..50）、docs=false。
+# 参数：id, section, skip, take, docs
 def card($args):
-  ({"section":"all","skip":0,"take":20,"docs":false,"value_skip":0} + $args) as $args |
+  ({"section":"all","skip":0,"take":20,"docs":false} + $args) as $args |
 
     . as $g | __kindex as $ix | $args.id as $id | ("datasets/"+($id|encode_uri)) as $key
     | $g.datasets[$id] as $d
@@ -122,16 +169,24 @@ def card($args):
       [($d.dimensions // {}) | to_entries[] | .key as $id | .value as $v
        | ($key+"#dimensions/"+($id|encode_uri)) as $ref
        | {id:$id,key:$ref,label:__label($ix;$ref;$id),field:$v.field,fields:$v.fields,type:$v.type,
-          ops:$v.ops,filterable:$v.filterable,input_kinds:$v.input_kinds,value_contract:$v.value_contract}
+          ops:$v.ops,filterable:$v.filterable,input_kinds:$v.input_kinds,
+          output_type:($v.output_type // null),authorized:$v.authorized,
+          projectable:$v.projectable,computed:$v.computed,
+          canonical_order:($v.canonical_order // []),
+          canonical_values:($v.canonical_values // []),
+          binding:($v.binding // null),group:($v.group // null)}
          + (if $args.docs then {doc:($ix[$ref].doc // "")} else {} end)
          + (if $v.half_open!=null then {half_open:$v.half_open} else {} end)
          + (if $v.utc_bucket!=null then {utc_bucket:$v.utc_bucket} else {} end)] as $dims
       | [($d.measures // {}) | to_entries[] | .key as $id | .value as $v
          | ($key+"#measures/"+($id|encode_uri)) as $ref
-         | {id:$id,key:$ref,label:__label($ix;$ref;$id),agg:$v.aggregate,field:$v.field}
-           + (if $args.docs then {doc:($ix[$ref].doc // "")} else {} end)
-           + (if $v.computed!=null then {computed:$v.computed} else {} end)
-           + (if $v.predicate!=null then {predicate:$v.predicate} else {} end)] as $meas
+         | {id:$id,key:$ref,label:__label($ix;$ref;$id),type:$v.type,agg:$v.aggregate,anchor_field:($v.anchor_field // null),
+            statistic:($v.statistic // null),unit:((($v.sampling // {}) | .unit) // null),
+            sampling_role:((($v.sampling // {}) | .role) // null),
+            input:($v.input // null),requires:($v.requires // []),
+            binding:($v.binding // null),group:($v.group // null),
+            computed:$v.computed,predicate:($v.predicate // null)}
+           + (if $args.docs then {doc:($ix[$ref].doc // "")} else {} end)] as $meas
       | [($d.time_roles // {}) | to_entries[] | .key as $id | .value as $v
          | ($key+"#time_roles/"+($id|encode_uri)) as $ref
          | {id:$id,key:$ref,label:__label($ix;$ref;$id),field:$v.field,encoding:$v.encoding,
@@ -139,29 +194,33 @@ def card($args):
            + (if $args.docs then {doc:($ix[$ref].doc // "")} else {} end)] as $trs
       | [($d.relations // [])[] | . as $ref | (fact($g;$ref)) as $r
          | {id:($ref|pathof|last),key:$ref,label:__label($ix;$ref;($ref|pathof|last)),
-            from:$r.from_dataset,to:$r.to_dataset,cardinality:$r.cardinality}
+            from:$r.from_dataset,to:$r.to_dataset,cardinality:$r.cardinality,
+            key_fields:($r.key // null),guard:($r.guard // null),
+            from_role:($r.from_role // null),to_role:($r.to_role // null),
+            directions:["forward","reverse"]}
            + (if $args.docs then {doc:($ix[$ref].doc // "")} else {} end)] as $rels
-      | [($d.dimensions // {})[] | .type | select(.!=null)] | unique as $types
-      | [$types[] as $type | (fact($g;typekey($type))) as $t | select($t!=null)
-         | [(($t.values // {})|to_entries[]) | .key as $id
-            | (typekey($type)+"#values/"+($id|encode_uri)) as $ref
-            | {id:$id,key:$ref,label:__label($ix;$ref;$id),wires:(.value.wires // [])}
-              + (if $args.docs then {doc:($ix[$ref].doc // "")} else {} end)] as $all
-         | {type:$type,key:typekey($type),canonical_order:($t.canonical_order // []),
-            total:($all|length),values:($all[$args.value_skip:($args.value_skip+$args.take)]),
-            truncated:($args.value_skip>0 or ($args.value_skip+$args.take)<($all|length)),
-            next:(if ($args.value_skip+$args.take)<($all|length) then $args.value_skip+$args.take else null end)}] as $values
+      | [($d.roles // {}) | to_entries[] | {id:.key,key:($key+"#roles/"+(.key|encode_uri)),facts:.value}] as $roles
+      | [($d.bindings // {}) | to_entries[] | {id:.key,key:($key+"#bindings/"+(.key|encode_uri)),facts:.value}] as $bindings
+      | [($d.business_links // {}) | to_entries[] | {id:.key,key:($key+"#business_links/"+(.key|encode_uri)),facts:.value}] as $links
+      | ([($d.measures // {})[] | .aggregate] | unique) as $aggs
       | {id:$args.id,key:$key,label:__label($ix;$key;$args.id),doc:($ix[$key].doc // ""),grain:($d.grain // []),
-         counts:{dimensions:($dims|length),measures:($meas|length),time_roles:($trs|length),relations:($rels|length),
-                 value_domains:($values|length),values:($values|map(.total)|add // 0)},page:{skip:$args.skip,take:$args.take}}
+         kind:($d.kind // null),source:($d.source // null),clock:($d.clock // null),scope:($d.scope // []),
+         row:($d.row // null),business_links:((($d.business_links // {})|length)),
+         aggregates:$aggs,sum_available:__has($aggs;"Sum"),
+         has_time:((($d.time_roles // {})|length)>0),
+         time_encoding:([($d.time_roles // {})[] | .encoding] | unique),
+         buckets:([($d.dimensions // {})[] | select(.utc_bucket != null) | .utc_bucket.unit] | unique),
+         units:([($d.measures // {})[] | ((.sampling // {}) | .unit)] | map(select(. != null)) | unique),
+         counts:{dimensions:($dims|length),measures:($meas|length),time_roles:($trs|length),relations:($rels|length),roles:($roles|length),bindings:($bindings|length),business_links:($links|length)},
+         page:{skip:$args.skip,take:$args.take}}
       + (reduce [{name:"dimensions",items:$dims},{name:"measures",items:$meas},{name:"time_roles",items:$trs},
-                 {name:"relations",items:$rels},{name:"values",items:$values}][] as $section ({};
+                 {name:"relations",items:$rels},{name:"roles",items:$roles},{name:"bindings",items:$bindings},{name:"business_links",items:$links}][] as $section ({};
           if $args.section=="all" or $args.section==$section.name then
             . + {($section.name):$section.items[$args.skip:($args.skip+$args.take)]}
               + {pages:((.pages // {}) + {($section.name):($section.items|__window($args.skip;$args.take)|del(.items))})}
           else . end)) end;
 
-# 用 keys 批量读取至多 50 个语义地址。mode=docs 返回说明和提纲，facts 返回精简结构，both 同时返回两者。take=8（1..50）限制各成员列表，并返回 total/truncated。expand 指定完整展开的事实字段，docs=false 省略说明。编码地址原样使用，未知地址逐项返回错误。直接结构投影可用 select。
+# 用 keys 批量读取至多 50 个语义地址。mode=docs 返回说明和提纲，facts 返回精简结构，both 同时返回两者。
 # 参数：keys, mode, take, docs, expand
 def nodes($args):
   ({"mode":"docs","take":8,"docs":true,"expand":[]} + $args) as $args |
@@ -185,19 +244,100 @@ def nodes($args):
                       else {fact:$e.key,kind:"value",value:$e.value} end]}
                 else {} end) end) end];
 
-# 在 nodes 中给出恰好两个语义地址，查找有向简单路径。默认 max_depth=3（0..8）、max_paths=20（1..50）、budget=20000（1..20000 条检查边）。via 限制边类别；avoid 排除地址包含指定子串的目标。分类边保留 related.datasets 等类别名。扩展过程受限：truncated 表示路径数或搜索预算耗尽，depth_capped 表示深度限制下仍有未探索分支。受限搜索没有找到路径，不足以证明不连通。路径用于导航，写查询前仍需核实模型关系与基数。
-# 参数：nodes, max_depth, max_paths, budget, via, avoid
-def routes($args):
-  ({"max_depth":3,"max_paths":20,"budget":20000,"via":[],"avoid":[]} + $args) as $args |
+# 按子串给出「按数据集聚合」的成员版图：search 是逐条命中，这里一次看清某主题散在哪些层、什么单位、有无时间能力。
+# 参数：pattern（必填，按大小写无关子串匹配）, skip, take
+def metric_map($args):
+  ($args.pattern // "" | ascii_downcase) as $p |
+  [.datasets | to_entries[] | .key as $id | .value as $d
+   | ([($d.dimensions // {}) | keys[] | select(ascii_downcase | contains($p))]) as $dims
+   | ([($d.measures // {}) | to_entries[] | select(.key | ascii_downcase | contains($p))
+       | ((.value.sampling // {}) | .unit // "-")]) as $units
+   | select(($dims|length) > 0 or ($units|length) > 0)
+   | {dataset:$id, dims:($dims|length), measures:($units|length),
+      units:([$units[]] | unique), has_time:((($d.time_roles // {})|length) > 0),
+      buckets:([($d.dimensions // {})[] | select(.utc_bucket != null) | .utc_bucket.unit] | unique)}]
+  | sort_by(.dataset) | page(($args.skip // 0);($args.take // 20));
 
-    . as $g | $args.nodes[0] as $start | $args.nodes[1] as $target
-    | if fact($g;$start)==null or fact($g;$target)==null then error("Unknown route endpoint") else
-      ([edges($g) | {from:.source,to:.key,link:.link}] | unique_by([.from,.to,.link]) | sort_by([.from,.to,.link])
-       | group_by(.from) | map({key:.[0].from,value:map({to,link})}) | from_entries) as $adj
-      | (if $start==$target then {found:[{path:[$start],links:[]}],truncated:false,depth_capped:false,candidates:0,depth:0}
-         else __route_walk({adj:$adj,target:$target,maxdepth:$args.max_depth,maxpaths:$args.max_paths,budget:$args.budget,
-                           via:$args.via,avoid:$args.avoid,frontier:[{path:[$start],links:[]}],found:[],candidates:0,depth:0,depth_capped:false}) end) as $result
-      | {from:$start,to:$target,max_depth:$args.max_depth,path_count:($result.found|length),
-         truncated:$result.truncated,depth_capped:$result.depth_capped,
-         paths:($result.found|map({hops:((.path|length)-1),nodes:.path,via:.links})|sort_by([.hops,.nodes,.via])),
-         search:{candidates:$result.candidates,depth_reached:$result.depth}} end;
+# 图表类型 -> 组件标签、必填映射、series 语义、开关。
+def figure_kinds($args):
+  [.tools.render_figure.kinds | to_entries[]
+   | {kind:.key, component:.value.component, required:.value.required,
+      series:.value.series, switches:.value.switches}]
+  | sort_by(.kind);
+
+
+# 关联候选保留完整关系路径、方向、基数、连接键和 guard，支持至多两跳。
+# 深度限制与分页只限定发现范围，不表达连接完整性或查询合法性。
+def __join_step($id;$r;$direction):
+  {relation:$id,address:("relations/"+($id|encode_uri)),direction:$direction,
+   from:(if $direction=="forward" then $r.from_dataset else $r.to_dataset end),
+   to:(if $direction=="forward" then $r.to_dataset else $r.from_dataset end),
+   from_role:$r.from_role,to_role:$r.to_role,cardinality:$r.cardinality,key:$r.key,guard:$r.guard};
+def __join_candidates($g;$dataset;$depth):
+  if $depth==0 then [] else
+    ("datasets/"+($dataset|encode_uri)) as $start
+    | [$g.relations | to_entries[] | .key as $id | .value as $r
+       | (if $r.from_dataset==$start then __join_step($id;$r;"forward") else empty end),
+         (if $r.to_dataset==$start then __join_step($id;$r;"reverse") else empty end)] as $first
+    | ($first | map({path:[$start,.to],steps:[.]})) as $one
+    | (if $depth<2 then [] else
+        [$one[] as $p | $g.relations | to_entries[] | .key as $id | .value as $r
+         | (if $r.from_dataset==$p.path[-1] then __join_step($id;$r;"forward") else empty end),
+           (if $r.to_dataset==$p.path[-1] then __join_step($id;$r;"reverse") else empty end)
+         | . as $step | select(($p.path|index($step.to))==null)
+         | {path:($p.path+[$step.to]),steps:($p.steps+[$step])}]
+       end) as $two
+    | ($one+$two) | unique_by([.path,[.steps[]|[.relation,.direction]]])
+    | sort_by([(.steps|length),.path,[.steps[].relation]]) end;
+
+# cap 是能力发现器。cq 描述兴趣：target:{dataset}|{entity}, select:[{dimension}],
+# measures:[{measure}], window, rank, node。skip/take 分页关联候选，join_depth=0..2。
+# 仅报告事实是否找到，不检查操作授权、输入值、时间编码或关联粒度。
+# 多个 Dataset 使用同一 Entity 时返回 candidates，交由调用方明确选择。
+def cap($args):
+  . as $g | ($args.cq // {}) as $cq | ($cq.node // "d") as $node
+  | (if $cq.target.dataset!=null then
+       if $g.datasets[$cq.target.dataset]!=null then [$cq.target.dataset] else [] end
+     elif $cq.target.entity!=null and $g.entities[$cq.target.entity]!=null then
+       [($g.entities[$cq.target.entity].roles // [])[] | (split("#")[0] | pathof) as $p
+        | select($p[0]=="datasets" and $g.datasets[$p[1]]!=null) | $p[1]] | unique
+     else [] end) as $candidates
+  | (if ($candidates|length)==1 then $candidates[0] else null end) as $ds
+  | (if $ds!=null then $g.datasets[$ds] else null end) as $d
+  | (if $ds!=null then "datasets/"+($ds|encode_uri) else null end) as $address
+  | [($cq.select // [])[] | .dimension as $id
+     | {id:$id,address:(if $address!=null then $address+"#dimensions/"+($id|encode_uri) else null end),
+        facts:(if $d!=null then $d.dimensions[$id] else null end)}] as $select
+  | [($cq.measures // [])[] | .measure as $id
+     | {id:$id,address:(if $address!=null then $address+"#measures/"+($id|encode_uri) else null end),
+        facts:(if $d!=null then $d.measures[$id] else null end)}] as $measures
+  | (if $cq.window==null then null else
+       {requested:$cq.window,dimension:(if $d!=null then $d.dimensions[$cq.window.dimension] else null end)}
+       | . + {roles:[($d.time_roles // {}) | to_entries[] | select(.value.field!=null and .value.field== $d.dimensions[$cq.window.dimension].field)
+          | {address:($address+"#time_roles/"+(.key|encode_uri)),facts:.value}]}
+     end) as $time
+  | ([if $ds==null then {field:"target",reason:(if ($candidates|length)>1 then "multiple_datasets" else "not_found" end)} else empty end]
+     + [$select[] | select(.facts==null) | {field:"select",id:.id,reason:"not_found"}]
+     + [$measures[] | select(.facts==null) | {field:"measures",id:.id,reason:"not_found"}]
+     + [if $cq.window!=null and $time.dimension==null then {field:"window.dimension",id:$cq.window.dimension,reason:"not_found"} else empty end]
+     + [if $cq.rank!=null and ($d.measures[$cq.rank.measure] // null)==null then {field:"rank.measure",id:$cq.rank.measure,reason:"not_found"} else empty end]) as $unresolved
+  | (if $ds==null then [] else __join_candidates($g;$ds;($args.join_depth // 1)) end) as $joins
+  | {target:{requested:$cq.target,candidates:$candidates,dataset:$ds,address:$address},
+     dataset:(if $d==null then null else {grain:$d.grain,kind:$d.kind,scope:$d.scope,clock:$d.clock,
+       counts:{roles:(($d.roles // {})|length),bindings:(($d.bindings // {})|length)},
+       available:{dimensions:(($d.dimensions // {})|keys|page(($args.skip // 0);($args.take // 20))),
+                  measures:(($d.measures // {})|keys|page(($args.skip // 0);($args.take // 20))),
+                  time_roles:(($d.time_roles // {})|keys|page(($args.skip // 0);($args.take // 20)))}} end),
+     select:$select,measures:$measures,time:$time,unresolved:$unresolved,
+     joins:($joins|page(($args.skip // 0);($args.take // 20))),
+     discovery:{join_depth:($args.join_depth // 1),path_scope:"direct_relations",requires_transform:true},
+     candidate_intent:(if ($unresolved|length)>0 then null else
+       {op:"Graph",root:$node,nodes:[{id:$node,entity:$ds}],edges:[],
+        select:[($cq.select // [])[] | {node:$node,dimension:.dimension}]}
+       + (if ($measures|length)>0 then {measures:[($cq.measures // [])[] | {node:$node,measure:.measure}]} else {} end)
+       + (if $cq.window!=null then {time_windows:[{node:$node,dimension:$cq.window.dimension,start:$cq.window.start,end:$cq.window.end}]} else {} end)
+       + (if $cq.rank!=null then {top_by_measure:($cq.rank+{node:$node})} else {} end)
+       end),
+     receipts:([if $address!=null then {address:$address,fact:"dataset"} else empty end]
+       + [($select+$measures)[] | select(.facts!=null) | {address:.address,fact:"capability"}]
+       + [($time.roles // [])[] | {address:.address,fact:"time_role"}])};

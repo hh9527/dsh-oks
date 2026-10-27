@@ -94,7 +94,7 @@ Figures 可以独立于 Report 运行。已有图表数据位于 #figures.<name>
 report.html 使用固定的 `<script type="json" id="oks-metadata">` 存放非执行 JSON 元数据 `{version:1,context,dari}`；回读只定位这段并解析 JSON，直接使用归档的作者结构与数据。用 oks_project 读取已运行报告的这些分支，例如：
 
 ```json
-{"input":"oks://work/分析.dari#reports.answer","select":"context.{model,captures},dari.figures"}
+{"input":"oks://work/分析.dari#reports.answer","select":"{context.{model,captures},dari.figures}"}
 ```
 
 context 保存本次 run、采集 batch、源码哈希、运行开始时间、模型标识，以及实际 context() 值的 captures 和采集记录 acquisitions。导出不会重新获取时间；复用采集时保留原始值与采集来源。一稿中未调用 context() 时 captures 为空，不生成替代时钟。

@@ -60,7 +60,7 @@ Entity、Dataset、DimensionGroup、MeasureGroup、Type、Relation 和 Tool 都�
 不必读取整个大节点：可以同时选择 grain、scope 等自身事实，并将 fields、dimensions、measures 等分支投影为 keys 或 len。需要值域时只选 values。需要名称和说明时，使用 read 配对读取小分支，或用 search、members 和 references 导航。
 
 ```json
-{"input":"oks://knowledge","select":"entities:len,datasets:len,dimension_groups:len,measure_groups:len,types:len,relations:len,tools:len,items:len"}
+{"input":"oks://knowledge","select":"{entities:len,datasets:len,dimension_groups:len,measure_groups:len,types:len,relations:len,tools:len,items:len}"}
 ```
 
 ## 地址与事实
@@ -105,7 +105,7 @@ Dataset 拥有 fields/roles/bindings/dimensions/measures/time_roles/business_lin
 ```json
 {
   "input": "oks://knowledge",
-  "select": "entities:keys[0..10],datasets:keys[0..10],dimension_groups:keys[0..10],measure_groups:keys[0..10],types:keys[0..10],relations:keys[0..10],tools:keys,items:len"
+  "select": "{entities:keys[0:10],datasets:keys[0:10],dimension_groups:keys[0:10],measure_groups:keys[0:10],types:keys[0:10],relations:keys[0:10],tools:keys,items:len}"
 }
 ```
 
@@ -248,26 +248,6 @@ Dataset 拥有 fields/roles/bindings/dimensions/measures/time_roles/business_lin
 }
 ```
 
-### 探索连接
-
-```json
-{
-  "input": "oks://knowledge",
-  "transform": {
-    "lib": "oks://builtin/tools/ktools.lib.jq",
-    "name": "routes",
-    "args": {
-      "nodes": [
-        "<返回的起点地址>",
-        "<返回的终点地址>"
-      ],
-      "max_depth": 3,
-      "max_paths": 5,
-      "budget": 1000
-    }
-  }
-}
-```
 
 ### 自定义方法
 
@@ -327,12 +307,28 @@ oks://memory/tools/ktools.lib.jq 保存已积累的自定义方法。通过完�
 
 ### card
 
-用原始字典 id 读取数据集卡片，包含粒度、维度允许的操作、度量、时间编码、关系基数和值域。section 为 all/shape/dimensions/measures/time_roles/relations/values；默认 skip=0、take=20（1..50）、docs=false。counts 和 pages 按分段报告总量、截断与下一页偏移。值域各有 total/truncated/next；value_skip=0 控制域内值分页。所有值 ID 均保留。
+用原始字典 id 读取数据集卡片，查看维度能力、度量锚点、采样统计量和单位、时间角色、Entity roles、Group bindings 及关系事实。section 为 all/shape/roles/bindings/dimensions/measures/time_roles/relations/business_links，默认 all；skip=0、take=20（1..50）、docs=false。counts 和 pages 按分段报告总量和分页。维度的 canonical_values 保留规范值事实，布尔值按原样输出。关联只展示声明的连接键、基数和 guard，不推断粒度安全。
 
 ### nodes
 
 用 keys 批量读取至多 50 个语义地址。mode=docs 返回说明和提纲，facts 返回精简结构，both 同时返回两者。take=8（1..50）限制各成员列表，并返回 total/truncated。expand 指定完整展开的事实字段，docs=false 省略说明。编码地址原样使用，未知地址逐项返回错误。直接结构投影可用 select。
 
-### routes
+### cap：发现模型能力
 
-在 nodes 中给出恰好两个语义地址，查找有向简单路径。默认 max_depth=3（0..8）、max_paths=20（1..50）、budget=20000（1..20000 条检查边）。via 限制边类别；avoid 排除地址包含指定子串的目标。分类边保留 related.datasets 等类别名。扩展过程受限：truncated 表示路径数或搜索预算耗尽，depth_capped 表示深度限制下仍有未探索分支。受限搜索没有找到路径，不足以证明不连通。路径用于导航，写查询前仍需核实模型关系与基数。
+`cap` 读取模型事实，按 `cq.target` 定位 Dataset，返回相关维度、度量、时间角色、可选关联路径和事实引用。Entity 对应多个 Dataset 时返回候选列表，由调用方选择。
+
+```json
+{"input":"oks://knowledge","transform":{"lib":"oks://builtin/tools/ktools.lib.jq","name":"cap","args":{"cq":{"target":{"dataset":"network-element"},"select":[{"dimension":"ne_id"}]},"join_depth":1,"take":20}}}
+```
+
+结果包含 `target`、`dataset`、`select`、`measures`、`time`、`unresolved`、分页 `joins`、`candidate_intent` 和 `receipts`。候选中保留模型声明的操作、单位、基数、连接键和 guard；多条关系通往同一 Dataset 时分别保留。`unresolved` 说明未找到的事实。`candidate_intent` 是单 Dataset 草案，发现的关联候选不会自动写入 edges。
+
+`cq` 可包含 `node`、`select:[{dimension}]`、`measures:[{measure}]`、`window:{dimension,start,end}` 和 `rank:{measure,direction,take}`。发现器不验证请求值、时间编码、授权或粒度安全。草案必须交给 transform 验证并 lowering；`discovery.requires_transform` 为 true。
+
+`join_depth` 为 0..2，默认 1；`skip/take` 分页可用能力名称和关联候选，take 为 1..50。关联发现只读取直接 Relation，不宣称覆盖替代路径或业务连接的全部组合。
+
+### shape_audit、metric_map 与 figure_kinds
+
+- `shape_audit({})` 返回当前根分支、成员类别、观察到的事实键及其与摘要字段表的差异。未观察到的字段不等于模型契约不支持该字段
+- `metric_map({pattern,skip,take})` 按成员名子串发现相关 Dataset、单位与时间能力，稳定分页
+- `figure_kinds({})` 返回图表类型、组件标签、映射与开关事实

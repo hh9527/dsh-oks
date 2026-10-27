@@ -60,13 +60,13 @@ try {
   assert.deepEqual((await call('oks_project',{input:'oks://knowledge',transform:{lib:'oks://memory/tools/ktools.lib.jq',name:'names',args:{}}})).data,['datasets','items','relations','types']);
   const tooLarge=await call('oks_project',{input:'oks://knowledge',transform:{lib:'oks://memory/tools/ktools.lib.jq',name:'large',args:{}}});
   assert.equal(tooLarge.data.length,100000);
-  const narrowed=await call('oks_project',{input:'oks://knowledge',transform:{lib:'oks://memory/tools/ktools.lib.jq',name:'large'},select:'[0..3]'});assert.deepEqual(narrowed.data,[0,1,2]);
+  const narrowed=await call('oks_project',{input:'oks://knowledge',transform:{lib:'oks://memory/tools/ktools.lib.jq',name:'large'},select:'[0:3]'});assert.deepEqual(narrowed.data,[0,1,2]);
   assert.equal(readdirSync(root).includes('.oks'),false,'只读知识与失败不创建材料');
 
   await write('<Dari><Pipeline>payload <-data('+JSON.stringify(payload)+');business <-data({meta:"业务元数据",origin:"业务来源",data:9});</Pipeline></Dari>');
   await draftCall('oks_run_answer',{src:file});
   assert.deepEqual((await draftCall('oks_project',{input:file+'#payload'})).data,payload);
-  assert.equal((await draftCall('oks_project',{input:file+'#payload',select:'rows[0..1]'})).data['rows[0..1]'][0].count,7);
+  assert.equal((await draftCall('oks_project',{input:file+'#payload',select:'rows[0:1]'})).data['rows[0:1]'][0].count,7);
   assert.equal((await draftCall('oks_project',{input:file+'#business',select:"'data'"})).data.data,9);
   assert.ok((await draftCall('oks_project',{input:file+'#meta.payload'})).data.sources.length>0);
   for(const input of ['.oks/data/old.def.json','.oks/figures/old.pie.svg','artifacts/old.report.html'])await assert.rejects(call('oks_project',{input}),/Unknown structured resource/);
@@ -75,7 +75,7 @@ try {
   const args={input:file+'#large'};
   const full=await draftCall('oks_project',args);assert.deepEqual(full.data,largeRows);
   const rendered=render('oks_project',args,full);assert.ok(Buffer.byteLength(rendered)<=16384);assert.match(rendered,/payload_too_large/);
-  const page=await draftCall('oks_project',{...args,select:'[2..5]'});assert.deepEqual(page.data,largeRows.slice(2,5));
+  const page=await draftCall('oks_project',{...args,select:'[2:5]'});assert.deepEqual(page.data,largeRows.slice(2,5));
 
   for(const [binding,expected,pick] of [
     ['selected <-fact;',payload,'.rowCount'],

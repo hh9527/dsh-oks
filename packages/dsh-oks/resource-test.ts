@@ -3,6 +3,7 @@ import {mkdtempSync,readFileSync,rmSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {registerHooks} from 'node:module';
+import {renderKnowledgeHelp} from './src/knowledge-navigation.ts';
 import {createKtools} from './src/ktools.ts';
 import {createJaqEngine} from './src/jaq.ts';
 import {LIBRARY_URI,LIBRARY_PATH,BUILTIN_LIBRARY_URI} from './src/resource-path.ts';
@@ -16,7 +17,7 @@ const engine=createJaqEngine(resolve(process.argv[2]??'lib/oks-wti.wasm'));
 const ktools=createKtools(engine.checkLibrary,engine.run);
 let reads=0;let modelMethods=0;
 const graph={datasets:{one:{fields:{n:{type:'Int'}}}},types:{},relations:{},tools:{},items:[{key:'datasets/one',names:['One'],doc:'One dataset'}]};
-const entry={root,modelHash:'test',settings:{workspaceRoot:root,retention:{auto:{work:null,artifacts:60,materials:60}}}};
+const entry={root,modelHash:'test',settings:{domain:'test',workspaceRoot:root,retention:{auto:{work:null,artifacts:60,materials:60}}}};
 const knowledge={ensureWorkspace(){reads++;return entry;},ensureIndex:async()=>({knowledge:graph}),queryKnowledge:(_entry,source,options)=>{modelMethods++;assert.equal(options.inputName,undefined);return engine.runDocument(source,graph,options);}} as any;
 const timeContext={zones:new Map(),install(){}} as any;
 const tools=createTools({knowledge,ktools,config:undefined,va:{} as any,timeContext,log(){}});
@@ -33,13 +34,14 @@ try {
  assert.equal(helpFiles.length,6);
  for(const {name} of helpFiles){
   assert.match(name,/^oks:\/\/help\/[a-z]+\.md$/);
-  const text=readFileSync(new URL('./src/help/'+name.split('/').at(-1),import.meta.url),'utf8');
+  const source=readFileSync(new URL('./src/help/'+name.split('/').at(-1),import.meta.url),'utf8');
+  const text=name==='oks://help/knowledge.md'?renderKnowledgeHelp(source,graph,entry.settings.domain):source;
   const page=await call('oks_read',{path:name,offset:2,limit:3});
   assert.deepEqual(page.lines,text.split('\n').slice(1,4).map((text,at)=>({number:at+2,text})));
   assert.equal(page.offset,2);
   await assert.rejects(call('oks_project',{input:name}),/Unknown structured resource/);
  }
- assert.equal(reads,0,'help listing, reading and rejected projection need no model/workspace');
+ assert.equal(reads,2,'help listing and knowledge help load current graph; other help and rejected projections need no model');
  await assert.rejects(call('oks_read',{path:'oks://help/query'}),/Unknown readonly help file/);
  await assert.rejects(call('oks_read',{path:'oks://help/missing.md'}),/Unknown readonly help file/);
  assert.deepEqual((await call('oks_project',{input:'oks://knowledge',select:"'datasets'.'one'.'fields'.'n'"})).data,{datasets:{one:{fields:{n:{type:'Int'}}}}});
@@ -48,7 +50,7 @@ try {
  await call('oks_write',{path:LIBRARY_URI,content:'def first($args): .rows[0].n + $args.add; def graph_names($args): .datasets | keys; def keys_of($args): keys;'});
  assert.ok(existsSync(join(root,LIBRARY_PATH)));
  assert.deepEqual((await call('oks_project',{input:'oks://knowledge',transform:{lib:LIBRARY_URI,name:'graph_names',args:{}}})).data,['one']);
- const composed=await call('oks_project',{input:'oks://knowledge',transform:{lib:BUILTIN_LIBRARY_URI,name:'search',args:{query:'One'}},select:'total,items:len'});
+ const composed=await call('oks_project',{input:'oks://knowledge',transform:{lib:BUILTIN_LIBRARY_URI,name:'search',args:{query:'One'}},select:'{total,items:len}'});
  assert.deepEqual(composed.data,{total:1,'items:len':1});
  const transformCount=modelMethods;
  await assert.rejects(call('oks_project',{input:'oks://knowledge',transform:{lib:BUILTIN_LIBRARY_URI,name:'search'},select:'broken.'}),/select/);

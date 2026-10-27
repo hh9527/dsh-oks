@@ -47,7 +47,7 @@ try {
   assert.deepEqual((await call('oks_project',{input:file+'#facts',select:"'columns'"})).data.columns,[{name:'n',type:'Int',nullable:true}]);
   assert.equal(result.acquisitions[0].reason,'no-retained-acquisition');assert.equal(result.omittedAcquisitions,0);
   result=await call('oks_project',{input:file+'#total'});assert.equal(result.data,7);assert.equal(result.stale,false);assert.equal(writes,0);assert.equal(queries,1);
-  result=await call('oks_project',{input:file+'#facts',select:'rows[0..1]'});assert.deepEqual(result.data,{'rows[0..1]':[{n:7}]});
+  result=await call('oks_project',{input:file+'#facts',select:'rows[0:1]'});assert.deepEqual(result.data,{'rows[0:1]':[{n:7}]});
   result=await call('oks_project',{input:file+'#output'});assert.deepEqual(result.data,{total:7});
   assert.equal((await call('oks_project',{input:file+'#output',select:'total'})).data.total,7);
   await assert.rejects(call('oks_project',{input:file+'#total'},other),/No retained run/);
@@ -120,7 +120,7 @@ tableSpec <-data({columns:["name","占比(%)"]});
   assert.match(result.failures[0].error,/占比/);
   assert.ok(result.omittedOutputs>0);
   assert.ok(Buffer.byteLength(JSON.stringify(result))<7500);
-  const allFailures=await call('oks_project',{input:file+'#failures',select:'[0..1]'});
+  const allFailures=await call('oks_project',{input:file+'#failures',select:'[0:1]'});
   assert.equal(allFailures.data[0].context.component,'Table');
   assert.equal(allFailures.data[0].figureId,'tbl-dominant');
   assert.ok((await call('oks_project',{input:file+'#failures',select:':len'})).data>=2);
