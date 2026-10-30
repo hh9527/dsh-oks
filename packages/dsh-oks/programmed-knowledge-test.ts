@@ -43,6 +43,6 @@ console.log('static JavaScript knowledge: parsed data, new Function scope, reuse
 
 assert.equal(renderWholeVocabulary({terms:[{...vocabulary[0],key:'datasets/device',name:'设备',aliases:['终端','NE'],doc:'设备清单'}]} as any),'- datasets/device:设备,终端,NE;设备清单');
 assert.equal(renderWholeVocabulary({terms:[{...vocabulary[0],key:'types/a:b',name:'a,b;c',aliases:['"quoted"','x\\y','line\nnext'],doc:'first\r\nsecond;detail:literal,comma'}]} as any),
-  '- types/a\\:b:a\\,b\\;c,"quoted",x\\\\y,line\\nnext;first\\r\\nsecond;detail:literal,comma');
+  '- types/a:b:a b c,"quoted",x y,line next;first second detail literal comma');
 assert.equal(renderWholeVocabulary({terms:[{...vocabulary[0],key:'z',name:'Z',aliases:[],doc:''},{...vocabulary[0],key:'a',name:'A',aliases:[],doc:''}]} as any),'- a:A;\n- z:Z;');
 assert.equal(renderWholeVocabulary({terms:[]} as any),'');

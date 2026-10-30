@@ -54,16 +54,11 @@ export async function buildRetrievalIndex(entry: IndexWorkspace, sha: string, lo
   return index;
 }
 
-/** 一行一条：- key:name,alias;doc。只转义结构分隔符和换行，保留原始词汇。 */
+/** 一行一条：- key:name,alias;doc。地址保留原文，词汇中的分隔符和换行归一为空格。 */
 export function renderWholeVocabulary(index: RetrievalIndex): string {
-  const escape = (text: string, separators: string) => text.replace(/[\\\r\n,:;]/g, char => {
-    if (char === '\\') return '\\\\';
-    if (char === '\n') return '\\n';
-    if (char === '\r') return '\\r';
-    return separators.includes(char) ? '\\' + char : char;
-  });
+  const plain = (text: string) => text.replace(/[\\,:;\s]+/g, ' ').trim();
   const sorted = [...index.terms].sort((left, right) => left.key.localeCompare(right.key, 'en'));
-  return sorted.map(term => '- ' + escape(term.key, ':') + ':'
-    + [term.name, ...term.aliases].map(name => escape(name, ',;')).join(',')
-    + ';' + escape(term.doc, '')).join('\n');
+  return sorted.map(term => '- ' + term.key + ':'
+    + [term.name, ...term.aliases].map(plain).join(',')
+    + ';' + plain(term.doc)).join('\n');
 }
