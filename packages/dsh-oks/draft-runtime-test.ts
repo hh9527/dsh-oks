@@ -20,8 +20,8 @@ const backend: DraftBackend = {
     if (ctx.operator === 'data') return { data: ctx.args[0].data };
     if (ctx.operator === 'context') return { data: { now: clock } };
     if (ctx.operator === 'exec_query') return { data: { rows: [{ n: counts.get('exec_query') }] }, evidence: { acquiredAt: clock, model } };
-    if (ctx.operator === 'jq') {
-      if (ctx.asset!.source.includes('fail')) throw new Error('runtime jq failure');
+    if (ctx.operator === 'sql') {
+      if (ctx.asset!.source.includes('fail')) throw new Error('runtime sql failure');
       return { data: (ctx.args[1]?.data as { value?: unknown } | undefined)?.value ?? null };
     }
     return { data: { rendered: ctx.args[1].data } };
@@ -38,9 +38,9 @@ const backend: DraftBackend = {
     return { data: computed.data, sources: [{ origin, at: [], path: [] }] };
   },
 };
-const wrap = (pipeline: string, asset = '.value') => `## pipeline\n\`\`\`js\n${pipeline}\n\`\`\`\n## assets\n\`\`\`jq name="value.jq"\n${asset}\n\`\`\``;
+const wrap = (pipeline: string, asset = '.value') => `## pipeline\n\`\`\`js\n${pipeline}\n\`\`\`\n## assets\n\`\`\`sql name="value.sql"\n${asset}\n\`\`\``;
 const runtime = new FixtureRuntime(backend, { now: () => clock, retentionMs: 10000 });
-const source = wrap('facts <- exec_query({limit: 1}); summary <- jq("value.jq", {value: facts.rows[0].n}); peek <- summary;');
+const source = wrap('facts <- exec_query({limit: 1}); summary <- sql("value.sql", {value: facts.rows[0].n}); peek <- summary;');
 let run = await runtime.run(source);
 assert.equal(run.status, 'complete');
 assert.equal(run.outputs.get('facts')!.status, 'executed');
@@ -57,16 +57,16 @@ clock++;
 run = await runtime.run(source);
 assert.equal(run.batch, batch);
 assert.equal(counts.get('exec_query'), 1);
-assert.equal(counts.get('jq'), 1);
+assert.equal(counts.get('sql'), 1);
 assert.equal(run.outputs.get('facts')!.status, 'cached');
 assert.equal(run.outputs.get('summary')!.status, 'cached');
 assert.equal(run.acquisitions[0].reason, 'reused');
 assert.equal(run.acquisitions[0].acquiredAt, firstAcquisition.acquiredAt);
 assert.equal(run.acquisitions[0].fromRun, firstAcquisition.fromRun);
-const moved = source.replaceAll('facts', 'renamed').replaceAll('value.jq', 'renamed.jq');
+const moved = source.replaceAll('facts', 'renamed').replaceAll('value.sql', 'renamed.sql');
 run = await runtime.run(moved);
 assert.equal(counts.get('exec_query'), 1);
-assert.equal(counts.get('jq'), 1);
+assert.equal(counts.get('sql'), 1);
 assert.equal(runtime.read('renamed', moved).value.data !== undefined, true);
 assert.throws(() => runtime.read('facts', moved), /not defined/);
 run = await runtime.run(source, { refresh: true });
@@ -88,34 +88,34 @@ preflightFailure = true;
 assert.equal((await runtime.run(source)).status, 'invalid');
 assert.equal(counts.get('exec_query'), countBeforeInvalid);
 preflightFailure = false;
-const failed = wrap('bad <- jq("value.jq", {}); blocked <- data(bad); good <- data(3); peek <- good;', 'fail');
+const failed = wrap('bad <- sql("value.sql", {}); blocked <- data(bad); good <- data(3); peek <- good;', 'fail');
 run = await runtime.run(failed);
 assert.equal(run.outputs.get('bad')!.status, 'failed');
 assert.equal(run.outputs.get('blocked')!.status, 'blocked');
 assert.equal(run.outputs.get('good')!.value!.data, 3);
 assert.throws(() => runtime.read('bad', failed), /failed/);
 assert.throws(() => runtime.read('blocked', failed), /blocked/);
-const failureCount = counts.get('jq')!;
+const failureCount = counts.get('sql')!;
 await runtime.run(failed);
-assert.equal(counts.get('jq'), failureCount + 1, '运行失败不产生成功缓存');
-const projection = wrap('a <- data({nested: {n: 7}, other: 1}); b <- jq("value.jq", {value: a.nested.n});');
+assert.equal(counts.get('sql'), failureCount + 1, '运行失败不产生成功缓存');
+const projection = wrap('a <- data({nested: {n: 7}, other: 1}); b <- sql("value.sql", {value: a.nested.n});');
 await runtime.run(projection);
-const beforeProject = counts.get('jq');
+const beforeProject = counts.get('sql');
 await runtime.run(projection.replace('other: 1', 'other: 2'));
-assert.equal(counts.get('jq'), beforeProject, '未选中的字段变化不重算纯计算');
+assert.equal(counts.get('sql'), beforeProject, '未选中的字段变化不重算纯计算');
 const badProjection = wrap('a <- data({rows: [1]}); peek <- a.rows[2]; peek2 <- a.toString; peek3 <- a.rows["0"];');
 run = await runtime.run(badProjection);
 for (const name of ['peek', 'peek2', 'peek3']) assert.equal(run.outputs.get(name)!.status, 'failed');
 
 // Same bytes and program, different true input origin: calculation can hit; lineage must change.
-const originA = wrap('// Source A\na <- data(7); result <- jq("value.jq", {value: a});');
+const originA = wrap('// Source A\na <- data(7); result <- sql("value.sql", {value: a});');
 const originB = originA.replace('Source A', 'Source B');
 await runtime.run(originA);
 const valueA = runtime.read('result', originA).value;
-const beforeOrigin = counts.get('jq');
+const beforeOrigin = counts.get('sql');
 await runtime.run(originB);
 const valueB = runtime.read('result', originB).value;
-assert.equal(counts.get('jq'), beforeOrigin);
+assert.equal(counts.get('sql'), beforeOrigin);
 assert.notEqual(valueA.sources[0].origin.root, valueB.sources[0].origin.root);
 assert.ok(Object.values(valueB.sources[0].origin.nodes).some(node => node.motivation === 'Source B'));
 assert.ok(!Object.values(valueB.sources[0].origin.nodes).some(node => node.motivation === 'Source A'));

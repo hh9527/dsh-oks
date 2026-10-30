@@ -1,6 +1,5 @@
 import {readWindow,readArgs,READ_STREAM_MIN_SIZE} from './read.ts';
-import { sourcePath, LIBRARY_PATH } from './resource-path.ts';
-import { KTOOLS_FILE, KTOOLS_INITIAL_SOURCE } from './ktools-path.ts';
+import { sourcePath } from './resource-path.ts';
 import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync,
   writeFileSync } from 'node:fs';
@@ -22,6 +21,11 @@ export function isResultColumn(value: unknown): value is ResultColumn {
   return isRecord(value) && typeof value.name === 'string' && value.name.trim() !== ''
     && typeof value.type === 'string' && (RESULT_TYPES as readonly string[]).includes(value.type)
     && typeof value.nullable === 'boolean';
+}
+
+/** SQL expressions may have unknown static type; model declarations remain strict. */
+export function isTableColumn(value:unknown):boolean {
+  return isResultColumn(value)||(isRecord(value)&&typeof value.name==='string'&&value.name.trim()!==''&&value.type==='Unknown'&&typeof value.nullable==='boolean');
 }
 
 /** 一列的观察结果：列名取自 SQL 元数据，类型按返回值观察。 */
@@ -47,7 +51,7 @@ export interface OriginNode {
   /** query：实际提交并通过校验的意图（相对时间已解析成绝对边界）。 */
   intent?: unknown;
   /** transform：实际执行的加工方式。 */
-  method?: 'jq' | 'project' | 'identity';
+  method?: 'pipeline' | 'sql' | 'project' | 'identity';
   /** project：完整的纯 JSON 规则。 */
   project?: unknown;
   /** 程序实际看到的输入形状；单输入的 `$` 绑定键仅用于来源链。 */
@@ -65,14 +69,14 @@ export interface OriginNode {
   /** display：这次合成用的绘图规格（重放时照它把数据块重建出来）。 */
   spec?: unknown;
   /** transform：实际执行的 snip（**程序正文**；来自文件的也记正文，`.work/` 被清掉也不影响来路）。
-   *  仅 jq 加工记录此字段。 */
+   *  程序由类型化 Pipeline 或 SQL lowering 生成。 */
   snip?: string;
-  /** transform：这段程序来自哪份代码文件（`jq.src` 指向的那一份）。 */
+  /** transform：这段程序来自哪份代码文件。 */
   snipFile?: string;
   /** 报告序列化形态：源码集中放在报告的 `assets` 里，节点用 `src://<key>` 引用它。
    *  报告是唯一使用这种引用形态的地方——普通材料照旧把程序正文内嵌在 `snip` 里。 */
   byFile?: string;
-  /** transform：从结果里取回的那一段（jq 点路径，`snip` 是 `.` 时它就是这次操作的全部内容）。 */
+  /** transform：从结果里取回的那一段（字段路径，`snip` 是 `.` 时它就是这次操作的全部内容）。 */
   pick?: string;
   /** transform：表达式产出了几个值。它把"恰好一个数组值"与"多个输出"分开，
    *  于是 `data: []` 是"一个空数组"还是"没有输出"有据可查。 */
@@ -408,7 +412,7 @@ export function describeRows(
   return { columns, rows: encoded };
 }
 
-/** 单份代码文件的字节上限：它是**能被 `jq.src` 引用为程序**的上限——一份这么大的程序说明该拆开。 */
+/** 单份程序正文的字节上限。 */
 export const CODE_MAX_BYTES = 64 * 1024;
 
 /** `.work/` 里单份文本文件的上限（存得住的上限，比"能当程序引用的上限"宽）。 */
@@ -441,20 +445,12 @@ export function workspaceFilePath(root: string, raw: unknown): string {
   return target;
 }
 
-/** 工作文件与唯一持久库均使用完整相对路径，并逐次验证真实边界。 */
+/** 工作文件使用完整相对路径，并逐次验证真实边界。 */
 export function workPath(root: string, raw: unknown, tool: string): { rel: string; full: string } {
   const given=raw;
   raw=sourcePath(raw);
   validateFilePath(raw);
-  if (raw === LIBRARY_PATH) {
-    if(given!==KTOOLS_FILE)throw new Error(`Use ${KTOOLS_FILE} for the persistent library`);
-    for (const part of ['memory','memory/oks','memory/oks/tools',LIBRARY_PATH]) {
-      try { if(lstatSync(resolve(root,part)).isSymbolicLink()) throw new Error(`${tool}: library symlinks are not allowed`); }
-      catch(error) { if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error; }
-    }
-    return {rel:given as string,full:workspaceFilePath(root,raw)};
-  }
-  if (!raw.startsWith(`${WORK_DIR}/`)) throw new Error(`${tool} 需要 oks://work/ 下的完整文件地址，例如 oks://work/analysis.jq`);
+  if (!raw.startsWith(`${WORK_DIR}/`)) throw new Error(`${tool} 需要 oks://work/ 下的完整文件地址，例如 oks://work/analysis.dari`);
   const full = workspaceFilePath(root, raw);
   const base = resolve(root, WORK_DIR);
   if (existsSync(base)) {
@@ -488,18 +484,13 @@ export function listWorkFiles(root: string): Array<{ name: string; bytes: number
       modifiedAt: new Date(info.mtimeMs).toISOString().replace(/\.\d{3}Z$/, 'Z'),
     };
   });
-  const library=workPath(root,KTOOLS_FILE,'oks_list');
-  if(existsSync(library.full)) {
-    const info=statSync(library.full);
-    files.push({name:KTOOLS_FILE,bytes:info.size,modifiedAt:info.mtime.toISOString().replace(/\.\d{3}Z$/, 'Z')});
-  }
   return files;
 }
 
 /** 把父目录建出来，再做一次真实路径复核（父目录若是符号链接指向 `.work/` 外面，这里就挡住）。 */
 function ensureInsideWork(root: string, target: string): void {
   mkdirSync(dirname(target), { recursive: true });
-  const base = realpathSync(resolve(root, relative(root,target)===LIBRARY_PATH?dirname(LIBRARY_PATH):WORK_DIR));
+  const base = realpathSync(resolve(root, WORK_DIR));
   const real = realpathSync(dirname(target));
   const inside = relative(base, real);
   if (inside.length > 0 && (inside.startsWith('..') || isAbsolute(inside))) {
@@ -548,7 +539,7 @@ export function writeWorkFile(root: string, path: unknown, content: unknown, too
 /** 改一份 `.work/` 下的文本文件：字面替换。`old` 必须原样出现——找不到、或出现多次而没开
  *  `replaceAll`，都报出来（改错地方的代价比多问一句高）。 */
 /** 读 `.work/` 下**一整份文本文件**（不限扩展名）：报告正文这类"内容文件"走它。
- *  与 `readCodeFile` 的分工：那个只认 `.jq`（程序），这个认内容。 */
+ */
 export function readWorkText(root: string, raw: unknown, tool: string): { text: string; file: string } {
   const { rel, text } = readWorkTextWhole(root, raw, tool);
   return { text, file: rel };
@@ -590,7 +581,7 @@ function readWorkTextWhole(root: string, path: unknown, tool: string): { rel: st
   const { rel, full } = workPath(root, path, tool);
   let text: string;
   try {
-    text = rel===KTOOLS_FILE&&!existsSync(full)?KTOOLS_INITIAL_SOURCE:readFileSync(full, 'utf8');
+    text = readFileSync(full, 'utf8');
   } catch {
     throw new Error(`读不到 ${rel}`
       + `。材料、图表件与报告不在 ${WORK_DIR}/ 下：要读它们用 oks_project（用 select 选择或 transform 处理）；`
@@ -607,7 +598,6 @@ function readWorkTextWhole(root: string, path: unknown, tool: string): { rel: st
 export async function readWorkFile(root:string,path:unknown,offset:unknown,limit:unknown,tool:string) {
   readArgs(offset,limit);
   const {rel,full}=workPath(root,path,tool);
-  if(rel===KTOOLS_FILE&&!existsSync(full))return readTextLines(KTOOLS_INITIAL_SOURCE,rel,offset,limit,tool);
   const stat=statSync(full);
   if(!stat.isFile())throw new Error(`Not a regular file: ${rel}`);
   const chunks=stat.size>=READ_STREAM_MIN_SIZE?createReadStream(full,{encoding:'utf8'}):[readFileSync(full,'utf8')];
@@ -616,44 +606,6 @@ export async function readWorkFile(root:string,path:unknown,offset:unknown,limit
 
 export function readTextLines(text:string,rel:string,offset:unknown,limit:unknown,_tool:string) {
   return readWindow([text],rel,offset,limit);
-}
-
-/** `.work/` 里现有的代码文件（报错时列给 agent 看，免得它反复猜文件名）。 */
-function codeFiles(root: string): string {
-  try {
-    const names = readdirSync(join(root, WORK_DIR)).filter((name) => name.endsWith('.jq')).sort();
-    return names.length === 0 ? `（${WORK_DIR}/ 里还没有 .jq 文件）` : names.map((name) => `${WORK_DIR}/${name}`).join('、');
-  } catch {
-    return `（还没有 ${WORK_DIR}/ 目录）`;
-  }
-}
-
-export const isCodeFile = (name: string): boolean => name.endsWith('.jq');
-
-/** 读一份代码文件：`.work/` 下的 `.jq`，`oks_project` 的 `jq.src` 指向它。
- *
- *  为什么代码只走文件、不进参数：内层语言（jq）与外层序列化（JSON）的语法长得像，模型一进
- *  "代码模式"就会把 jq 的 `{a: b}` 直接写成 JSON 值（实测 13 次整轮失败里有 3 次是这样）。
- *  参数里只留一个文件名，两侧语法就不再相邻；程序本身用 `oks_write` 写、`oks_edit` 增量改，
- *  还能回读、报错能带上下文。 */
-export function readCodeFile(root: string, raw: unknown): { text: string; file: string } {
-  const { rel, full } = workPath(root, raw, 'jq.src');
-  if (!isCodeFile(rel)) {
-    throw new Error(`jq.src 指向的是一段 jq 程序：文件名要以 .jq 结尾（收到 ${JSON.stringify(rel)}）`);
-  }
-  let text: string;
-  try {
-    text = readFileSync(full, 'utf8');
-  } catch {
-    throw new Error(`读不到 ${rel}`
-      + `。jq.src 只认 ${WORK_DIR}/ 下的 .jq：先用 oks_write 写出这个程序。`);
-  }
-  const bytes = Buffer.byteLength(text);
-  if (bytes > CODE_MAX_BYTES) {
-    throw new Error(`${rel} 有 ${(bytes / 1024).toFixed(0)} KB，超过单份代码的上限 `
-      + `${CODE_MAX_BYTES / 1024} KB：把它拆成几份，或改用别的办法。`);
-  }
-  return { text, file: rel };
 }
 
 /** 从一份 data 里取行对象数组：`{ rows, … }` 与"data 直接就是数组"两种形状都认。
@@ -669,7 +621,7 @@ export function rowsOf(data: unknown, asset: unknown): Array<Record<string, unkn
     if (!Array.isArray(data.columns)) throw new Error('data.columns 需要列声明数组。');
     for (const [index, column] of data.columns.entries()) {
       if (!isRecord(column) || typeof column.name !== 'string' || column.name.trim() === ''
-          || (!isResultColumn(column) && (!Array.isArray(column.types) || !column.types.every((type: unknown) => typeof type === 'string')))
+          || (!isTableColumn(column) && (!Array.isArray(column.types) || !column.types.every((type: unknown) => typeof type === 'string')))
           || typeof column.nullable !== 'boolean') {
         throw new Error(`data.columns[${index}] 列声明无效：需要 {"name":"count","type":"Int","nullable":false} 或带 types 数组的列对象；行对象数组或仅带 rows 的对象也可直接用于表格与图表。`);
       }

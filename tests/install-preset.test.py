@@ -37,7 +37,6 @@ elif Path(sys.argv[0]).name=='pnpm':
  if args==['run','build']:
   Path('lib').mkdir(exist_ok=True)
   Path('lib/index.mjs').write_text('// published plugin')
-  Path('lib/oks-wti.wasm').write_bytes(b'wasm')
 elif args[0]=='plugin':
  profile=Path(os.environ['DSH_HOME'])/'profiles'/args[2]
  profile.mkdir(parents=True,exist_ok=True)
@@ -82,7 +81,6 @@ elif args[0]=='plugin':
             published = target / "packages/dsh-oks"
             self.assertEqual(manifest['dependencies']['@local/dsh-oks'], f"link:{published}")
             self.assertEqual(manifest['dsh']['profile']['bundles'], ['@deepseek-ai/dsh-web-app'])
-            self.assertTrue((published / "lib/oks-wti.wasm").exists())
             self.assertNotIn('scripts', json.loads((published / 'package.json').read_text()))
             self.assertFalse((repo / "packages/dsh-oks/lib").exists())
             patch = (target / "profiles/web/cordis.patch.yml").read_text()

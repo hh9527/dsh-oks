@@ -1,6 +1,4 @@
 import { readBuildInformation } from './service-metadata.ts';
-import { createJaqEngine } from './jaq.ts';
-import type { JaqOptions, JaqOutcome } from './jaq.ts';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolveSettings, workspaceRootFor } from './config.ts';
@@ -41,7 +39,6 @@ export interface ExecutorEntry {
 export interface Knowledge {
   ensureWorkspace(exec: WorkspaceProbe | undefined): WorkspaceEntry;
   ensureIndex(entry: WorkspaceEntry): Promise<RetrievalIndex>;
-  queryKnowledge(entry: WorkspaceEntry, program: string, options: JaqOptions): Promise<JaqOutcome>;
   executorFor(settings: Settings): ExecutorEntry;
   dispose(): void;
 }
@@ -53,7 +50,6 @@ export function createKnowledge({ ctx, log, config }: {
 }): Knowledge {
   // 插件不认识模型：设置与 wasm 宿主都在**第一次用到某个工作区**时按那份 oks.json 惰性建立；
   // 一个进程里可以有任意多个工作区，互不影响。
-  const engines = new Map<string, ReturnType<typeof createJaqEngine>>();
   const workspaces = new Map<string, WorkspaceEntry>(); // root -> entry
   // 执行器按**数据文件**持有：同一个数据文件被多个工作区声明时共享一个只读连接。
   const executors = new Map<string, ExecutorEntry>(); // dataFile -> { executor, manifest }
@@ -64,7 +60,7 @@ export function createKnowledge({ ctx, log, config }: {
       throw new Error(
         `dsh-oks: ${settings.workspaceFile} 没有声明 dataFile，pipeline 中的 query 无处可查。`
         + '需要 {"dataFile":"<相对 oks.json 的 .sqlite 路径>"}；'
-        + '知识发现可以使用 oks_project({input:"oks://knowledge",select:":keys"})。',
+        + '领域知识可通过 oks_search、oks_card 和 oks_cap 获取。',
       );
     }
     const existing = executors.get(dataFile);
@@ -141,17 +137,6 @@ export function createKnowledge({ ctx, log, config }: {
     return index;
   };
 
-  const queryKnowledge = async (entry: WorkspaceEntry, program: string, options: JaqOptions): Promise<JaqOutcome> => {
-    const index = await ensureIndex(entry);
-    const identity = `${entry.modelHash}:${entry.presentationHash ?? ""}:${entry.settings.domain}`;
-    let engine = engines.get(identity);
-    if (engine === undefined) {
-      engine = createJaqEngine();
-      engines.set(identity, engine);
-    }
-    return engine.runDocument(program, index.knowledge, options);
-  };
-
   // 卸载时把每个工作区的 wasm 宿主与每个数据文件的执行器都关掉。
   const dispose = (): void => {
     for (const entry of workspaces.values()) {
@@ -160,8 +145,6 @@ export function createKnowledge({ ctx, log, config }: {
       } catch { /* 尽量都关掉，不让一个失败挡住其余 */ }
     }
     workspaces.clear();
-    for (const engine of engines.values()) engine.dispose();
-    engines.clear();
     for (const entry of executors.values()) {
       try {
         entry.executor?.dispose();
@@ -170,5 +153,5 @@ export function createKnowledge({ ctx, log, config }: {
     executors.clear();
   };
 
-  return { ensureWorkspace, ensureIndex, queryKnowledge, executorFor, dispose };
+  return { ensureWorkspace, ensureIndex, executorFor, dispose };
 }

@@ -1,3 +1,4 @@
+import { readDomainSummary } from './domain-summary.ts';
 import { isRecord, errorText } from './host.ts';
 import type { PluginContext, LogFn } from './host.ts';
 import type { Knowledge } from './knowledge.ts';
@@ -48,12 +49,10 @@ export function installKnowledgeNavigation({ ctx, knowledge, log }: { ctx: Plugi
     if (!context.agent) return assembled;
     context.signal?.throwIfAborted();
     try {
-      const entry = knowledge.ensureWorkspace({ agent: context.agent });
-      const index = await knowledge.ensureIndex(entry);
-      context.signal?.throwIfAborted();
+      const text = await readDomainSummary(knowledge, { agent: context.agent, signal: context.signal });
       return { ...assembled, sections: [
         ...assembled.sections.filter(section => section.name !== 'oks:knowledge-navigation'),
-        { name: 'oks:knowledge-navigation', text: renderKnowledgeNavigation(index.knowledge, entry.settings.domain), interpolate: false },
+        { name: 'oks:knowledge-navigation', text, interpolate: false },
       ] };
     } catch (error) {
       context.signal?.throwIfAborted();

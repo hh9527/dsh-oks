@@ -2,14 +2,12 @@ import assert from 'node:assert/strict';
 import { parseDraft } from './src/draft/document.ts';
 import { DraftRuntime } from './src/draft/runtime.ts';
 import { createDraftBackend } from './src/draft/backend.ts';
-import { createJaqEngine } from './src/jaq.ts';
 import { readReportPage } from './src/report/page.ts';
 import { SourceFile } from './src/draft/source.ts';
 import type { WorkspaceEntry } from './src/knowledge.ts';
 const file='中文😀.dari';
-const jq=createJaqEngine(process.argv[2]??'lib/oks-wti.wasm');
 let queries=0;
-const runtime=new DraftRuntime(createDraftBackend({entry:{} as WorkspaceEntry,file,jq,contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge:{executorFor(){queries++;throw new Error('No SQL expected');}}}),{file});
+const runtime=new DraftRuntime(createDraftBackend({entry:{} as WorkspaceEntry,file,contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge:{executorFor(){queries++;throw new Error('No SQL expected');}}}),{file});
 const draft=(body:string)=>`<Dari title="分析 &amp; 复核"><Pipeline>value <-data("&lt;script&gt; &amp; \\\"quoted\\\"");</Pipeline><Report name="answer"><article>${body}</article></Report></Dari>`;
 try {
   for(const [body,expected] of [
@@ -29,7 +27,7 @@ try {
   for(const code of ['answer <-render_html("a.xhtml",{});','answer <-render_report("a",{});']){
     assert.throws(()=>parseDraft(`<Dari><Pipeline>${code}</Pipeline></Dari>`,file),/Unknown operator/);
   }
-  assert.throws(()=>parseDraft('<Dari><Pipeline></Pipeline><Asset name="a.xhtml" language="xhtml"><article/></Asset></Dari>',file),/jq/);
+  assert.throws(()=>parseDraft('<Dari><Pipeline></Pipeline><Asset name="a.xhtml" language="xhtml"><article/></Asset></Dari>',file),/sql/);
   const body='<!-- 保留意图 --><h2>概览 &amp; 趋势</h2><p title="&quot;安全&quot; &amp;">&lt;字面量&gt; &#x1f600; &#123;文本} <Value data={value}/></p><p data-oks-shrink>完整结论</p><a href="https://example.com/?a=1&amp;b=2">链接</a><br/>';
   const source=draft(body);
   const run=await runtime.run(source);assert.equal(run.status,'complete',run.error);
@@ -55,4 +53,4 @@ try {
   const badQuery=draft('<a href="file:///bad">bad</a>').replace('value <-data','facts <-exec_query(query({limit:1})); value <-data');
   assert.equal((await runtime.run(badQuery)).status,'invalid');assert.equal(queries,0,'report compilation gates all execution');
   console.log('DARI native reports: sole entry, structural validation, escaping, metadata, original source spans and execution gating passed');
-} finally {runtime.dispose();jq.dispose();}
+} finally {runtime.dispose();}

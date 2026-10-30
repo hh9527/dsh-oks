@@ -1,3 +1,5 @@
+import {typeOf,record,type Ty} from './typed-types.ts';
+import { projectionError } from './projection.ts';
 import {buildReportArchive,type ReportArchive,type ExecutionContext} from './archive.ts';
 import {withReportArchive} from '../report/page.ts';
 import { COMPONENT_KINDS, type FigureKind } from './components.ts';
@@ -14,8 +16,8 @@ import type { DataOrigin, ResultColumn } from '../results.ts';
 export type ValueSource = { display?: { kind: 'chart' | 'table'; content: string }; delivery?: { html: string; title: string }; origin: DataOrigin; at: (string | number)[]; path: (string | number)[] };
 /** Internal plan payload; carried by a whole value reference, never by JSON construction/projection. */
 export type QueryPlan = { environment: string; intent: unknown; sql: string; bindings: unknown[]; columns: ResultColumn[]; limit_slot: number };
-export type DraftValue = { data: unknown; sources: ValueSource[]; plan?: QueryPlan; reportValues?: Record<string,unknown> };
-export type Computed = { data: unknown; evidence?: unknown };
+export type DraftValue = { logicalType?:unknown; data: unknown; sources: ValueSource[]; plan?: QueryPlan; reportValues?: Record<string,unknown> };
+export type Computed = { logicalType?:unknown; data: unknown; evidence?: unknown };
 export type CallContext = {
   operator: Operator;
   figureKind?: FigureKind;
@@ -34,6 +36,13 @@ export interface DraftBackend {
   executionContext?(): ExecutionContext['model'];
   /** Deterministic checks must complete before execute is called for any node. */
   preflight(document: DraftDocument, signal?: AbortSignal): Promise<void>;
+  checkSql?(context:CallContext):Promise<Computed>;
+  checkTyped?(context:CallContext):Promise<Computed>;
+  beginRun?(run:string):void;
+  finishRun?(run:string):Promise<void>;
+  dispose?():void;
+  /** Validate available (possibly partial) design values without rendering or acquiring rows. */
+  checkCall?(context: CallContext, known: (value: unknown) => boolean): SourceDiagnostic[];
   /** Include the actual compiler/model/source/renderer environment affecting this operator. */
   environment(operator: Operator): unknown;
   execute(context: CallContext): Promise<Computed>;
@@ -76,6 +85,11 @@ export type DraftRun = {
 type Capture = Pick<Acquisition, 'acquiredAt' | 'fromRun' | 'fromBatch'>;
 type CacheEntry = { result: Computed; bytes: number; acquisition: boolean; capture?: Capture; at: number };
 class Blocked extends Error {}
+const normalizeTyped=(source:string)=>{
+  const strip=(v:unknown):unknown=>Array.isArray(v)?v.map(strip):v!==null&&typeof v==='object'?Object.fromEntries(Object.entries(v).filter(([k])=>k!=='s').map(([k,v])=>[k,strip(v)])):v;
+  return strip(JSON.parse(source));
+};
+const safeType=(value:unknown):Ty=>{try{return typeOf(value);}catch{return {kind:'record',fields:{},nullable:false};}};
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -162,6 +176,7 @@ export class DraftRuntime {
     const run: DraftRun = { id: randomUUID(), sourceHash: hash(source), batch: this.batch, at: this.now(), status: 'running', outputs: new Map(), acquisitions: [] };
     this.latest = run;
     try {
+      this.backend.beginRun?.(run.id);
       const document = this.parse(source,this.file);
       run.answers=document.answers;
       if (options.signal?.aborted) throw new Error('aborted');
@@ -202,6 +217,7 @@ export class DraftRuntime {
             const values: [string | number, DraftValue][] = [];
             for (const [key, entry] of entries) values.push([key, await evaluate(entry)]);
             return {
+              logicalType:expr.kind==='object'?record(Object.fromEntries(values.map(([key,v])=>[key,(v.logicalType as Ty|undefined)??safeType(v.data)]))):undefined,
               data: expr.kind === 'array' ? values.map(([, value]) => value.data) : Object.fromEntries(values.map(([key, value]) => [key, value.data])),
               sources: values.flatMap(([key, value]) => value.sources.map(source => ({ ...source, at: [key, ...source.at] }))),
             };
@@ -211,9 +227,10 @@ export class DraftRuntime {
             const isArray = Array.isArray(input.data);
             if (input.data === null || typeof input.data !== 'object' ||
                 (isArray ? typeof expr.key !== 'number' : typeof expr.key !== 'string') || !Object.hasOwn(input.data, expr.key)) {
-              throw new DraftSyntaxError(`Projection ${JSON.stringify(expr.key)} is missing or has the wrong container type`,expr.span);
+              throw new DraftSyntaxError(projectionError(input.data,expr),expr.span);
             }
             return {
+              logicalType:(input.logicalType as Ty|undefined)?.kind==='array'?(input.logicalType as Extract<Ty,{kind:'array'}>).element:(input.logicalType as Ty|undefined)?.kind==='record'?(input.logicalType as Extract<Ty,{kind:'record'}>).fields[expr.key]:undefined,
               data: (input.data as Record<string | number, unknown>)[expr.key],
               sources: input.sources.flatMap(source => source.at.length === 0
                 ? [{ ...source, path: [...source.path, expr.key] }]
@@ -222,14 +239,16 @@ export class DraftRuntime {
           }
           const args: DraftValue[] = [];
           for (const arg of expr.args) args.push(await evaluate(arg));
-          const asset = expr.operator === 'jq' || expr.operator === 'render_report' ? document.assets.get(args[0].data as string) : undefined;
+          const asset = expr.operator === 'sql' || expr.operator === 'render_report' ? document.assets.get(args[0].data as string) : undefined;
           const context: CallContext = { operator: expr.operator, figureKind:expr.figureKind, args, asset, statement, span: expr.span, run: run.id, batch: run.batch, sourceHash: run.sourceHash, title: document.title, signal: options.signal };
           const acquisition = expr.operator === 'exec_query' || expr.operator === 'context';
           const environment = this.backend.environment(expr.operator);
           const key = hash(canonicalJson({
             operator: expr.operator,
             figureKind: expr.figureKind ?? null,
-            args: asset ? [asset.source, ...args.slice(1).map(value => value.data)] : args.map(value => expr.operator==='exec_query'?{data:value.data,plan:value.plan??null}:value.data),
+            args: ['typed_value','relational','relational_one'].includes(expr.operator)?[
+              normalizeTyped(String(args[0].data)),{data:args[1].data,logicalType:args[1].logicalType??null}
+            ]:asset ? [asset.source, ...args.slice(1).map(value => value.data)] : args.map(value => expr.operator==='exec_query'?{data:value.data,plan:value.plan??null}:value.data),
             environment,
             batch: acquisition ? run.batch : null,
           }));
@@ -322,6 +341,7 @@ export class DraftRuntime {
         run.error=`${this.file}:${error.span.start.line}:${error.span.start.column}: ${error.message}`;
       }
     } finally {
+      await this.backend.finishRun?.(run.id);
       this.active = false;
     }
     return structuredClone(run);
@@ -359,6 +379,7 @@ export class DraftRuntime {
 
   dispose() {
     if (this.active) throw new Error('Cannot dispose an active draft runtime');
+    this.backend.dispose?.();
     this.latest = undefined;
     this.cache.clear();
     this.acquisitionHistory.clear();

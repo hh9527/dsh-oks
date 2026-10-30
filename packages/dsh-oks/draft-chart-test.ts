@@ -12,16 +12,14 @@ import {readChartInput} from './src/results.ts';
 import {createDraftTools} from './src/draft/tools.ts';
 import {createDraftBackend} from './src/draft/backend.ts';
 import {readReportPage} from './src/report/page.ts';
-import {createJaqEngine} from './src/jaq.ts';
 import type {Knowledge,WorkspaceEntry} from './src/knowledge.ts';
 import type {ToolExec} from './src/host.ts';
 const DEV_ROOT=mkdtempSync(join(tmpdir(),'oks-chart-draft-'));
 mkdirSync(join(DEV_ROOT,'.work'));
-const engine=createJaqEngine(process.argv[2]);
 const entry={root:DEV_ROOT,modelHash:'fixture',settings:{workspaceRoot:DEV_ROOT,domain:'test',queryMaxRows:500}} as WorkspaceEntry;
 const knowledge={ensureWorkspace:()=>entry} as Knowledge;
 const drafts=createDraftTools({knowledge,timeContext:{zones:new Map(),install(){}},
- backend:(entry,file,contextZone)=>createDraftBackend({knowledge,entry,file,contextZone,jq:engine}),
+ backend:(entry,file,contextZone)=>createDraftBackend({knowledge,entry,file,contextZone}),
  attachments:()=>testAttachments(DEV_ROOT),
 });
 const exec={agent:{session:{id:'chart-regression'}}} as ToolExec;
@@ -714,4 +712,4 @@ try {
   if (empty.value.ok !== true) throw new Error('空数组应当是有效输入');
 
  console.log(`chart regression: ${passed} visual assertions plus switch matrix and invalid specs passed through draft tools`);
-}finally{drafts.dispose();engine.dispose();rmSync(DEV_ROOT,{recursive:true,force:true});}
+}finally{drafts.dispose();rmSync(DEV_ROOT,{recursive:true,force:true});}

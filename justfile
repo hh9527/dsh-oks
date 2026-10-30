@@ -62,7 +62,6 @@ install:
       pnpm run build
     ) || fail '插件构建失败'
     [ -f "$BUILD_DIR/packages/dsh-oks/lib/index.mjs" ] || fail '缺少 index.mjs'
-    [ -f "$BUILD_DIR/packages/dsh-oks/lib/oks-wti.wasm" ] || fail '缺少 oks-wti.wasm'
     mkdir -p "$PACKAGE_DIR"
     BUILD_PACKAGE="$BUILD_DIR/packages/dsh-oks" PACKAGE_DIR="$PACKAGE_DIR" node --input-type=module <<'JS'
     import {readFileSync,writeFileSync,cpSync} from 'node:fs';

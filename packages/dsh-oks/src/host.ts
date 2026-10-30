@@ -101,6 +101,11 @@ export interface ToolDefinition {
   execute(args: never, exec: ToolExec): Promise<unknown>;
 }
 
+/** DSH native one-action approval; only allowed-once authorizes execution. */
+export interface ApprovalService {
+  request(input:{agent:AgentLike;toolName:string;callId?:string;reason:string;signal?:AbortSignal}):Promise<'allowed-once'|'rejected'|'cancelled'|'unavailable'>;
+}
+
 export interface ToolsService {
   register(tool: ToolDefinition): Disposable | void;
   restrict(options: { allow: string[] }): void;
@@ -108,6 +113,7 @@ export interface ToolsService {
 
 /** 工具 execute 收到的 exec：插件只用到取消信号与调用方 agent。 */
 export interface ToolExec {
+  callId?: string;
   signal?: AbortSignal;
   agent?: AgentLike;
 }
@@ -121,6 +127,7 @@ export interface WorkspaceProbe {
  *  `get` 按已知服务名给具体类型，其余回落成 unknown，取到后各调用处照旧自己判断。 */
 export interface PluginContext {
   logger?: LoggerLike | null;
+  get(name: 'approval'): ApprovalService | undefined;
   get(name: 'attachments'): AttachmentsService | undefined;
   get(name: 'skills'): SkillsService | undefined;
   get(name: 'subagents'): SubagentsService | undefined;
@@ -191,6 +198,7 @@ export interface EventLike {
 /** 会话表面：工作区来源（meta/header/cwd）、日志事件、以及表面节点的追加与收起。
  *  `seq` 与 `surface.nodes` 是表面序号；`append` 返回刚落下的那条事件。 */
 export interface SessionLike {
+  requestHeader?(): { config?: { provider?:string; model?:string } } | undefined;
   id?: string;
   seq?: number;
   cwd?: string;
@@ -204,6 +212,7 @@ export interface SessionLike {
 
 /** 词汇咨询使用的调用方身份与工作区；其余执行行为由宿主管理。 */
 export interface AgentLike {
+  options?: { provider?:string; model?:string };
   session: SessionLike;
 }
 

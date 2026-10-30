@@ -1,103 +1,54 @@
 # DARI 分析稿
 
-## 分析稿的结构与最小示例
+一个业务问题使用一份 `.dari`。`data` 定义不可变的取数与后处理，`figure` 定义图表，`report` 定义可交付报告。用 oks_write/oks_edit 编辑，oks_check 检查；oks_run 检查后整稿执行；默认直接运行，requireRunApproval=true 时先申请宿主用户批准。
 
-使用 oks_write/oks_edit 编辑 oks://work/<问题>.dari，使用 oks_run_answer({src:"oks://work/<问题>.dari"}) 检查并执行。DARI 是 JSX 风格容器，Pipeline 与 jq 源码原样书写；Notes 保存业务口径。Report 可省略，分析结果也可以直接用于对话回答。
+## 声明与节点
 
-### 示例稿
-
-```source
-<Dari title="本次查询概览">
-<Notes>说明查询对象和统计口径。</Notes>
-<Pipeline>
-plan <- query({
-  op: "Graph", root: "d",
-  nodes: [{id: "d", entity: "<实际数据集ID>"}],
-  edges: [], select: [], count: "d", limit: 100
+```dari
+data facts := query({op:"Graph",root:"d",nodes:[{id:"d",entity:"<实际数据集ID>"}],edges:[],select:[],count:"d",limit:100});
+data summary := select_one({
+  from:{s:facts},group_by:(r)=>({}),
+  fields:(g,rows)=>({returned_groups:count(rows)})
 });
-facts <- exec_query(plan);
-summary <- jq("summary.jq", {facts});
-{summary}
-</Pipeline>
-<Asset language="jq" name="summary.jq">
-{rowsReturned: (.facts.rows | length)}
-</Asset>
-<Report name="answer">
-<article><h1>本次查询</h1><p>返回行数：<Value data={summary.rowsReturned} /></p></article>
-</Report>
-</Dari>
+
+report answer := Report(title = "对象概览") [
+  h1 [ "对象概览" ],
+  p [ "返回分组数：", Value(data = summary?.returned_groups), ],
+];
 ```
 
-## 绑定、投影与算子
+对象 ID 从 cap/card 获得。绑定共享一个命名空间、不可重复，先定义后引用。`:=` 是不可变绑定；支持 `//` 和 `/* ... */` 注释。每条声明以 `;` 结束。
 
-pipeline 用 `name <- expression;` 声明不可变绑定，禁止重复名称与 shadow。名字先定义后引用；可选的末尾对象声明展示输出，例如 `{facts, columns: plan.columns}`，末尾对象可带分号。支持 JSON 字面量/数组/对象、静态字段或下标，以及固定算子 query/exec_query/context/data/time_windows/jq/render_figure。筛选、遍历、运算和聚合写在 jq。
+图表与报告统一使用 `tag(attr = expression, ...) [ children ]`。属性或子节点为空时可省略对应部分；子节点是 JSON 字符串或节点，使用逗号分隔，允许尾逗号。字符串中的中文、&、< 直接书写，渲染器负责 HTML 转义。
 
-所有 assets、Pipeline、Figures 和 Report 先编译校验，汇总诊断，通过后才开始执行。节点按引用组成 DAG，依赖就绪即可执行，独立分支逻辑并行；源码顺序只约束引用，不串行化执行。失败只阻塞其下游。
+```dari
+figure counts := ColumnChart(spec = {x:"name",value:"count"}, data = grouped);
+report answer := Report [
+  h1 [ "对象统计" ],
+  p [ "总数：", Value(data = summary?.total), ],
+  figure [
+    Figure(ref = counts),
+    figcaption [ "类别分布" ],
+  ],
+];
+```
 
-名字以 `_` 开头的节点不跨运行保留计算缓存，本次运行内多个引用共享结果。context()/exec_query() 的采集批次规则独立保留：输入不变时复用，refresh 或 renew_context 重置。
+figure 绑定右侧是图表组件或 Table，data 直接接受 Table(T)，无需 `.rows`。report 绑定右侧是 Report，直接写正文节点。`Figure(ref = counts)` 中 ref 是已经声明的 figure 绑定；`FigureRef(ref = counts)` 显示本报告对应的图/表编号。
 
-算子输入直接是绑定的 `.data` 负荷：`jq("a.jq", {facts})` 看到 `{facts:负荷}`；`facts.rows[0]` 选择数据，来源和路径自动携带。字段缺失或越界明确失败。
+图表属性与 Value.data 接受有类型表达式，例如 `Value(data = round(summary?.cpu,2))`。普通排版节点的属性使用静态字符串，例如 `p(class = "lead")`。业务数值通过 Value 引用；静态业务参数可以直接写入标题或正文。显式字面文本使用 `Lit ["1.2"]`；其子节点只接受字符串。Lit 声明静态文字，观测得到的业务值仍通过 Value 引用。
 
-`data(value,{kind:"given"|"parameter"|"assumption"|"example"})` 记录给定材料的性质；第二参数默认 given。参数或假设要写清楚来源性质。
+## 类型检查
 
-紧邻绑定或末尾输出对象前的独立 `//` 注释作为本步业务说明。源码、程序、实际输入和来源链由运行器保存。
+`query(intent)` 是 Table(T)。检查调用模型获得 columns，直接建立 T 并参与后续推导，不读取业务行。`select(spec)` 推导 Table(U)；`select_one(spec)` 返回普通 Option(U) 对象。表列在 select 的行参数中访问；报告标量使用 select_one。
 
-## 先检查计划，再执行查询
+表达式、聚合、Option 和有限 map 语义见 `oks://help/pipeline.md`；查询意图见 `oks://help/query.md`；时间见 `oks://help/time.md`；图表形式见摘要中对应的单图表手册，正文见 `oks://help/report.md`。
 
-`query(Intent)` 只做模型校验和计划生成，不访问数据库，返回计划可见负荷 `{columns}`。先只写计划并用 `{columns:plan.columns}` 核对列名和类型，再增加 `facts <-exec_query(plan);` 取得数据。exec_query 只接受 query 产生的完整计划绑定；手工对象、columns 投影和 jq 重构结果不能执行。顶层 limit 必填，范围 1..500。优先在 Intent 中完成总体聚合和排名。查询结果为 `{rows,columns,truncated}`；truncated 为 true 表示还有未返回的行，当前 rows 只是一部分；columns 是模型声明的 `{name,type,nullable}`，空结果也保留类型。回执预览列声明；完整读取用 `oks_project({input:"oks://work/draft.dari#facts",select:"columns"})`，稿内可用 `{columns:facts.columns}`。limit 是最终输出行数上限，不是总体规模或业务 Top-N。
+检查回执的 queries 包含查询和关系节点的列，types 列出绑定类型，diagnostics 给出原稿位置、错误字段和可用字段。检查覆盖图表映射、报告结构、Value 标量和溯源要求，不返回业务值。query 的 limit 必填，范围 1..500；截断结果不能用于后处理聚合。
 
-### 查询语法
+## 批准与交付
 
-oks://help/query.md
+完成整稿检查后调用 `oks_run({src:"oks://work/<问题>.dari"})`。默认检查后直接运行。设置 requireRunApproval=true 时，每次运行通过 DSH 原生批准机制，批准绑定本稿源码、模型、数据配置和冻结的上下文。拒绝或取消时不执行；等待中源码或配置变化会拒绝继续。
 
-## jq 输入、输出与语法
+只有一个 report 时自动交付；多个 report 使用 `answer:"报告绑定名"` 选择。结果的 `values` 包含报告 Value 引用的标量，`figures` 包含该报告实际展示的图表事实；data 绑定作为内部计算保留，不自动全部返回。报告附件使用运行回执的 `delivery.publication.present` 参数调用宿主 present 工具交付。
 
-`jq("a.jq",{...})` 引用当前文档的具名 jq，恰好输出一个 JSON 值。进入 map 后用 `$in` 保留具名输入：`. as $in | ...`。空结果用 [] 或 null。
-
-jq 对象键统一用双引号，尤其是中文、纯数字和含标点的键：`{"告警级别": .level, "2026": .count, "占比(%)": .ratio}`。读取这些键用 `.["告警级别"]` 或 `.["2026"]`；动态键用 `{($key): value}`。
-
-## 查看中间结果与诊断
-
-Pipeline 最后用对象声明展示输出，例如 `{summary, columns:plan.columns}`。小值进入运行回执的 output 项，大值保留只读地址；用 `oks_project({input:"oks://work/draft.dari#output"})` 读取完整对象，或用 select 精确投影。`output` 是末尾对象的保留名称，不能用于绑定。末尾对象可省略，Figures 和 Report 可直接引用所有绑定。
-
-已有具名中间值也可以直接读取，例如 `oks_project({input:"oks://work/draft.dari#summary"})`。读取不会执行 SQL、重新计算或刷新时间上下文。修改稿件后，已有结果标记 stale，重新运行后得到新结果。
-
-完整编译诊断通过 `#diagnostics` 读取，失败节点通过 `#failures` 读取；可用 select 根切片分批查看。
-
-需要新的筛选、摘要或计算时，在稿内增加绑定或调整末尾对象，再执行整稿。正常工具回执限 16 KiB，失败信息优先保留；查询和加工也有内部预算，适当收窄。
-
-## 采集复用、刷新与时间上下文
-
-`exec_query(plan)` 与 `context()` 在同一采集批次复用首次成功结果；输入计划变化时只重新执行该查询及重算下游。context 没有输入，时间和时区在同一批次保持不变；修改 jq/模板不触发重查。`oks_run_answer({src:"oks://work/draft.dari",refresh:true})` 新建采集批次并运行；`renew_context({src:"oks://work/draft.dari"})` 只重置当前会话中该稿的批次，下次运行再采集，旧输出暂不可读。计划编译仍可复用。一个批次可以包含不同采集时刻，不代表数据库事务快照。回执 acquisitions 给出实际采集时间、原运行/批次和复用或重采原因。
-
-### 时间帮助
-
-oks://help/time.md
-
-## 独立图表与报告引用
-
-图表规格在 Pipeline 定义：`spec <- {x:"level",value:"count"};`；图表独立定义为 `<Figures><ColumnChart name="severity" spec={spec} data={facts.rows} /></Figures>`。报告引用 `<figure><Figure ref="severity"/><figcaption>说明</figcaption></figure>`；文字交叉引用用 `<FigureRef ref="severity"/>`，目标必须在本 Report 出现。每份 Report 按首次展示顺序分别编图号、表号，重复引用复用编号。id/class/title/lang 写在 figure。
-
-标量写 `<Value data={summary.total} />`；普通正文元素和属性静态书写。正文遵守 报告正文元素/属性白名单，文本中的 & 与 < 使用实体；pipeline 与 jq 无需 XML 转义。
-
-业务数字从引用和计算进入正文；文字中的数字用 `<span data-oks-lit="">…</span>` 声明。结论和评价用 data-oks-shrink 标记。
-
-输出地址：`#binding` 读取 pipeline 数据，`#figures.severity` 读取具名图表，`#reports.answer` 读取报告；均用 oks_project，返回负荷为 .data。单个 Report 自动选中；多个时用 answer:"reports.answer" 选择。
-
-### 呈现帮助
-
-oks://help/figures.md
-
-## 检查结果并交付图表或报告
-
-运行后用 `oks_show({input:"oks://work/分析.dari#figures.severity"})` 将已有图表保存为宿主持久附件；将返回的 markdown 原样嵌入回答，SVG 在对话中展示。`#reports.answer` 与 Table 导出 HTML 附件；收到 `present` 字段后，立即以该对象为参数调用宿主 `present` 工具，显示文件卡片。此调用读取已运行的结果；回执的 stale 标明源码是否已编辑。附件按内容寻址，工作区清理不影响已导出内容。独立图表用标题，不添加报告编号。
-
-运行返回选中的报告地址 `delivery.input`；用 `oks_show({input:"oks://work/分析.dari#reports.answer"})` 导出 `.report.html` 附件，随后调用 `present(返回值.present)`，将报告作为文件卡片交付。最终回答说明结论即可。报告自带展示数据、来源及 jq/DARI。
-
-计算状态和交付状态分别检查；独立分支失败不代表答案依赖失败。回复超过预算或呈现形式不受支持时，改稿或选择报告交付。
-
-导出前用 `oks_project({input:"oks://work/分析.dari#reports.answer"})` 读取报告数据（version/context/dari）。`oks_read/write/edit/list/delete` 管理 `oks://work/` 临时源码与 `oks://memory/tools/ktools.lib.jq` 持久方法库；`oks_read` 也支持只读的内置源码。
-
-## 报告中的分析稿快照
-
-HTML 报告归档整份 DARI 作者源码与本次执行上下文。已有报告的 context、dari 分支可用 oks_project 按需读取；dari.source 是可恢复的完整原文，dari.figures 保存各图表的代码、执行状态与实际输入。导出只读取快照，不重新运行，详见 oks://help/figures.md。
+普通重跑复用查询和后处理缓存，改后处理不重新取数；refresh:true 创建新的采集上下文。运行后解读获准返回的事实。

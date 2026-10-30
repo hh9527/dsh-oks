@@ -1,18 +1,18 @@
 import { createSelector } from '../select.ts';
 import {chartTitle} from '../chart/spec.ts';
 import type {ChartSpec} from '../chart/spec.ts';
-import { createKtools, type Ktools } from '../ktools.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { createProjector } from '../project.ts';
 import type { JsonValue } from '../project.ts';
-import type { AttachmentsService, FileAttachmentRef, ToolDefinition, ToolExec } from '../host.ts';
+import type { ApprovalService, AttachmentsService, FileAttachmentRef, ToolDefinition, ToolExec } from '../host.ts';
 import { isRecord } from '../host.ts';
 import type { Knowledge, WorkspaceEntry } from '../knowledge.ts';
 import type { TimeContext } from '../time-context.ts';
 import type { ContextTimeZone } from '../time.ts';
-import { embedChartInput, isResultColumn, readWorkText } from '../results.ts';
+import { embedChartInput, isTableColumn, readWorkText } from '../results.ts';
 import { createDraftBackend } from './backend.ts';
 import { DraftRuntime } from './runtime.ts';
+import { checkDesign, parseDesign, parseExecutableDesign } from './design.ts';
 import type { DraftBackend, DraftRun, DraftValue } from './runtime.ts';
 import { escapeHtml, renderMarkdown } from '../chart/markdown.ts';
 import { canonicalJson } from '../key.ts';
@@ -29,20 +29,20 @@ const assertKeys = (args: unknown, keys: string[]) => {
   if (!isRecord(args) || Object.keys(args).some(key => !keys.includes(key))) throw new Error(`Expected only ${keys.join(', ')}`);
 };
 
-type RecordState = { runtime: DraftRuntime; zone: ContextTimeZone; touched: number; active: boolean };
+type RecordState = { contextTime:number; runtime: DraftRuntime; zone: ContextTimeZone; touched: number; active: boolean };
 
 export function createDraftTools(options: {
   knowledge: Knowledge;
   attachments?:()=>AttachmentsService|undefined;
+  approval?:()=>ApprovalService|undefined;
   timeContext: TimeContext;
-  ktools?: Ktools;
   backend?: (entry: WorkspaceEntry, file: string, zone: () => ContextTimeZone) => DraftBackend;
 }) {
-  const ktools=options.ktools??createKtools();
   const records = new Map<string, RecordState>();
   const anonymousSessions = new WeakMap<object, string>();
   const shutdown = new AbortController();
   let closed = false;
+  const pending = new Set<string>();
   const keyFor = (entry: WorkspaceEntry, exec: ToolExec, file: string) => {
     const session = exec?.agent?.session;
     if (!session) throw new Error('Draft tools require a caller session');
@@ -65,9 +65,9 @@ export function createDraftTools(options: {
         if (!candidate) throw new Error('All retained draft slots are active; wait for a running draft');
         candidate[1].runtime.dispose(); records.delete(candidate[0]);
       }
-      const state = { zone: { kind: 'missing' } as ContextTimeZone, touched: Date.now(), active: false };
-      const backend = options.backend?.(entry, file, () => state.zone) ?? createDraftBackend({ knowledge: options.knowledge, entry, file, contextZone: () => state.zone });
-      record = Object.assign(state, { runtime: new DraftRuntime(backend,{file}) });
+      const state = { contextTime:Date.now(), zone: { kind: 'missing' } as ContextTimeZone, touched: Date.now(), active: false };
+      const backend = options.backend?.(entry, file, () => state.zone) ?? createDraftBackend({ knowledge: options.knowledge, entry, file, contextZone: () => state.zone,contextNow:()=>state.contextTime });
+      record = Object.assign(state, { runtime: new DraftRuntime(backend,{file,parse:parseExecutableDesign}) });
       records.set(key, record);
     }
     if (!record) throw new Error('No retained run for this session and source; execute the draft first');
@@ -102,7 +102,7 @@ export function createDraftTools(options: {
           item.rowCount = state.value.data.rows.length;
           if (typeof state.value.data.truncated === 'boolean') item.truncated = state.value.data.truncated;
         }
-        if (isRecord(state.value.data) && Array.isArray(state.value.data.columns) && state.value.data.columns.every(isResultColumn)) {
+        if (isRecord(state.value.data) && Array.isArray(state.value.data.columns) && state.value.data.columns.every(isTableColumn)) {
           const columns: unknown[] = [];
           for (const column of state.value.data.columns.slice(0, 12)) {
             if (jsonBytes([...columns, column]) > 1200) break;
@@ -139,10 +139,113 @@ export function createDraftTools(options: {
     }
     return result;
   };
+  const checkSource = async (entry:WorkspaceEntry, file:string, text:string, exec:ToolExec, signal:AbortSignal, selection:{answer?:string;requireSelection?:boolean}={}) => {
+    const zone:ContextTimeZone=structuredClone(options.timeContext.zones.get(exec.agent!.session!)??{kind:'missing'});
+    const knowledge={executorFor:()=>{throw new Error('Business query execution is forbidden during checking');}};
+    const record=recordFor(entry,exec,file,true);record.zone=zone;
+    const backend=createDraftBackend({knowledge,entry,file,contextZone:()=>zone,contextNow:()=>record.contextTime});
+    return checkDesign(text,file,backend,signal,selection);
+  };
   const tools: ToolDefinition[] = [
     {
+      name:'oks_check',
+      description:'Check a DARI design without executing business queries. Returns query columns and types, diagnostics, and checks deferred until real data is available. query(intent) obtains model columns to type Table(T); select derives a Table and select_one derives Option(Row). Returns inferred binding types without business values. No business results are returned.',
+      parameters:{type:'object',properties:{src:{type:'string'},answer:{type:'string'}},required:['src'],additionalProperties:false},output,
+      async execute(args:{src?:unknown;answer?:unknown},exec:ToolExec) {
+        assertKeys(args,['src','answer']);
+        if(args.answer!==undefined&&typeof args.answer!=='string')throw new Error('answer must be a Report name');
+        if(typeof args.src!=='string'||!args.src.endsWith('.dari'))throw new Error('src must be a oks://work/*.dari path');
+        const entry=options.knowledge.ensureWorkspace(exec);
+        const read=readWorkText(entry.root,args.src,'oks_check');
+        const signal=AbortSignal.any([shutdown.signal,AbortSignal.timeout(120000),...(exec.signal?[exec.signal]:[])]);
+        return checkSource(entry,read.file,read.text,exec,signal,{answer:args.answer as string|undefined});
+      },
+    },
+    {
+      name:'oks_run',
+      description:'Check and run a DARI draft, returning final facts and a selected report. Runs directly by default. When requireRunApproval is enabled in configuration, each call requests native DSH user approval for that exact source and run options; rejection, cancellation or missing approval service prevent execution.',
+      parameters:{type:'object',properties:{src:{type:'string'},answer:{type:'string'},refresh:{type:'boolean'}},required:['src'],additionalProperties:false},
+      output:{schema:OBJECT,render:(_args:unknown,value:unknown)=>{
+        const attachment=isRecord(value)&&isRecord(value.delivery)&&isRecord(value.delivery.publication)?value.delivery.publication.attachment:undefined;
+        return [{type:'text',text:JSON.stringify(value)},...(attachment?[{type:'file',attachment:attachment as FileAttachmentRef}]:[])];
+      }},
+      async execute(args:{src?:unknown;answer?:unknown;refresh?:unknown},exec:ToolExec){
+        assertKeys(args,['src','answer','refresh']);
+        if(typeof args.src!=='string'||!args.src.endsWith('.dari'))throw new Error('src must be an oks://work/*.dari path');
+        if(args.answer!==undefined&&typeof args.answer!=='string')throw new Error('answer must be a Report binding name');
+        if(args.refresh!==undefined&&typeof args.refresh!=='boolean')throw new Error('refresh must be boolean');
+        if(!exec.agent?.session)throw new Error('oks_run requires a caller session');
+        const entry=options.knowledge.ensureWorkspace(exec);
+        const requiresApproval=entry.settings.requireRunApproval===true;
+        const approval=requiresApproval?options.approval?.():undefined;
+        if(requiresApproval&&!approval)return {ok:false,status:'approval-unavailable',execution:'not performed'};
+        const read=readWorkText(entry.root,args.src,'oks_run');
+        const key=keyFor(entry,exec,read.file);
+        if(pending.has(key))throw new Error('This draft is already awaiting approval or running');
+        pending.add(key);
+        const signal=AbortSignal.any([shutdown.signal,...(exec.signal?[exec.signal]:[])]);
+        try{
+          signal.throwIfAborted();
+          if(args.refresh===true)recordFor(entry,exec,read.file,true).contextTime=Date.now();
+          const checked=await checkSource(entry,read.file,read.text,exec,AbortSignal.any([signal,AbortSignal.timeout(120000)]),{answer:args.answer as string|undefined,requireSelection:true});
+          if(!checked.ok)return {...checked,execution:'not performed'};
+          const sourceHash=sha(read.text);
+          const environment=canonicalJson([entry.modelHash,entry.settings.domain,entry.settings.dataFile,entry.settings.queryMaxRows,entry.settings.requireRunApproval??false,options.timeContext.zones.get(exec.agent!.session!)??null]);
+          let approvalStatus:'allowed-once'|'not-required'='not-required';
+          if(requiresApproval){
+            const reason=`${args.refresh===true?'刷新并运行':'运行'}分析稿 ${read.file.split('/').at(-1)}`;
+            const decision=await approval!.request({agent:exec.agent,toolName:'oks_run',...(exec.callId?{callId:exec.callId}:{}),reason,signal});
+            signal.throwIfAborted();
+            if(decision!=='allowed-once')return {ok:false,status:decision==='rejected'?'approval-rejected':decision==='cancelled'?'approval-cancelled':'approval-unavailable',execution:'not performed',sourceHash};
+            approvalStatus='allowed-once';
+          }
+          if(environment!==canonicalJson([entry.modelHash,entry.settings.domain,entry.settings.dataFile,entry.settings.queryMaxRows,entry.settings.requireRunApproval??false,options.timeContext.zones.get(exec.agent!.session!)??null]))return {ok:false,status:'environment-changed',execution:'not performed',sourceHash};
+          if(readWorkText(entry.root,args.src,'oks_run').text!==read.text)return {ok:false,status:'source-changed',execution:'not performed',sourceHash,message:'Draft changed before execution; check and run again.'};
+          const execute=tools.find(t=>t.name==='oks_run_answer')!;
+          const run=await execute.execute({...args,answer:checked.answer} as never,exec) as Record<string,unknown>;
+          const record=recordFor(entry,exec,read.file,false);
+          let result:unknown;
+          if(run.status==='complete'){
+            // The final object defines the facts released by this run.
+            const doc=parseDesign(read.text,read.file);
+            if(doc.syntax==='dom'){
+              // Data bindings stay internal. Release only the selected report's values and displayed figures.
+              if(checked.answer){
+                const report=record.runtime.read(checked.answer,read.text).value;
+                const asset=doc.assets.get('@report/'+checked.answer);
+                const node=doc.nodes.find(n=>n.statement.kind==='binding'&&n.statement.name===checked.answer);
+                const figures:Record<string,unknown>={};
+                if(node?.statement.value.kind==='call'){
+                  const inputs=node.statement.value.args[1];
+                  if(inputs?.kind==='object')for(const input of inputs.entries)if(asset?.references?.[input.key]?.kind==='figure'&&input.value.kind==='ref'){
+                    figures[input.value.name]=record.runtime.read(input.value.name,read.text).value.data;
+                  }
+                }
+                result={values:report.reportValues??{},figures};
+              }
+            }else if(doc.nodes.some(n=>n.statement.kind==='output')) {
+              try{result=record.runtime.read('output',read.text).value.data;}catch{/* Failed final output is represented in the run diagnostics. */}
+            }else{
+              const values:Record<string,unknown>={};
+              for(const node of doc.nodes)if(!node.internal&&node.statement.kind==='binding'){
+                try{values[node.statement.name]=record.runtime.read(node.statement.name,read.text).value.data;}catch{/* Failed bindings are represented in the run diagnostics. */}
+              }
+              result=values;
+            }
+          }
+          const delivery=isRecord(run.delivery)?run.delivery:undefined;
+          if(delivery?.status==='ready'&&typeof delivery.input==='string'&&options.attachments?.()){
+            const show=tools.find(t=>t.name==='oks_show')!;
+            const publication=await show.execute({input:delivery.input} as never,exec);
+            return {...run,...(result!==undefined?{result}:{}),warnings:checked.warnings,approval:approvalStatus,delivery:{status:'ready',mode:'attachment',publication}};
+          }
+          return {...run,...(result!==undefined?{result}:{}),warnings:checked.warnings,approval:approvalStatus,...(delivery?.status==='exploring'?{delivery:{status:'complete',mode:'facts'}}:delivery?.status==='ready'?{delivery:{status:'unavailable',error:'Host attachments service is unavailable; final facts are returned in result.'}}:{})};
+        }finally{pending.delete(key);}
+      },
+    },
+    {
       name: 'oks_run_answer',
-      description: 'Evaluate the complete pipeline and named assets, Figures and optional Reports in a .work .dari report. Pipeline uses name <- expression; bindings, with prior definitions only, no shadow, and an optional final output object. Assets compile before execution; nodes run by DAG dependencies. Names starting with _ skip cross-run calculation caching. Reuses this session/source acquisition batch and deterministic computations; refresh starts a new acquisition batch for exec_query/context, while query(intent) only compiles a reusable plan with columns. Collects independent pipeline, asset, figure and report validation errors before execution; #diagnostics pages the full list. Returns root failures first with component/asset, bindings, source location and reason; #failures reads the full list with pagination. Returns bounded statuses, the final output object and readonly references. A single Report returns its retained #reports.name address; use oks_show to publish an attachment. With multiple Reports select reports.name explicitly. Computation, query and rendering are defined in the draft.',
+      description: 'Host-only execution of a complete DARI draft. query(intent) acquires rows, columns and truncation metadata. This tool is not registered for agents.',
       parameters: { type: 'object', properties: { src: { type: 'string' }, answer: { type: 'string' }, refresh: { type: 'boolean' } }, required: ['src'], additionalProperties: false },
       output,
       async execute(args: { src?: unknown; answer?: unknown; refresh?: unknown }, exec: ToolExec) {
@@ -198,7 +301,7 @@ export function createDraftTools(options: {
       async execute(args:{input?:unknown},exec:ToolExec){
         assertKeys(args,['input']);
         const match=typeof args.input==='string' ? /^((?:oks:\/\/work\/|\.work\/).+\.dari)#((?:(?:figures|reports)\.)?[A-Za-z_$][A-Za-z0-9_$]*)$/.exec(args.input) : null;
-        if(!match)throw new Error('input must select #figures.name or #reports.name in an oks://work/*.dari source');
+        if(!match)throw new Error('input must select a figure or report binding, e.g. #cpu or #answer in an oks://work/*.dari source');
         const entry=options.knowledge.ensureWorkspace(exec);
         const read=readWorkText(entry.root,match[1],'oks_show');
         const record=recordFor(entry,exec,read.file,false);
@@ -247,42 +350,22 @@ export function createDraftTools(options: {
     },
     {
       name: 'oks_project',
-      description: 'Read structured input, optionally apply a jq transform {lib,name,args}, then a select rule string. The current model root directory, branch shapes and counts are provided in this session’s knowledge navigation and oks://help/knowledge.md; select=":keys" enumerates actual roots. Resources: oks://knowledge or retained oks://work/<file>.dari#<binding>, #figures.<name>, #reports.<name>, #output, #failures, #diagnostics and #meta.<binding>. select examples: ports.rows; {rows,columns}; items[0:25]:map({id,name}). :map projects array items or object values, preserving object keys; use ? to skip absent fields or preserve null while short-circuiting the rest, e.g. a?.b.{c?:len,d}. Multi-field projections require braces. :keys/:len inspect shape. Read oks://help/project.md with oks_read for syntax. Returns .data; oversized results return {error:"payload_too_large",repr,reprLength,len} with a 4096-character JSON preview. Reading never executes SQL, runs drafts, refreshes or saves.',
-      parameters:{type:'object',properties:{input:{type:'string'},select:{type:'string'},transform:{type:'object',properties:{lib:{type:'string'},name:{type:'string'},args:{type:'object'}},required:['lib','name'],additionalProperties:false}},required:['input'],additionalProperties:false},
+      description: 'Read structured input using a select rule string. The current model root directory, branch shapes and counts are provided in this session’s knowledge navigation and oks://help/knowledge.md; select=":keys" enumerates actual roots. Resources: oks://knowledge or retained oks://work/<file>.dari#<binding>, #figures.<name>, #reports.<name>, #output, #failures, #diagnostics and #meta.<binding>. select examples: ports.rows; {rows,columns}; items[0:25]:map({id,name}). :map projects array items or object values, preserving object keys; use ? to skip absent fields or preserve null while short-circuiting the rest, e.g. a?.b.{c?:len,d}. Multi-field projections require braces. :keys/:len inspect shape. Read oks://help/project.md with oks_read for syntax. Returns .data; oversized results return {error:"payload_too_large",repr,reprLength,len} with a 4096-character JSON preview. Reading never executes SQL, runs drafts, refreshes or saves.',
+      parameters:{type:'object',properties:{input:{type:'string'},select:{type:'string'}},required:['input'],additionalProperties:false},
       output,
-      async execute(args:{input?:unknown;select?:unknown;transform?:unknown},exec:ToolExec) {
-        assertKeys(args,['input','select','transform']);
+      async execute(args:{input?:unknown;select?:unknown},exec:ToolExec) {
+        assertKeys(args,['input','select']);
         if(typeof args.input!=='string')throw new Error('input must identify one structured resource');
         const select=args.select===undefined?undefined:createSelector(args.select);
-        let transform:{lib:string;name:string;args:Record<string,unknown>}|undefined;
-        if(args.transform!==undefined){
-          assertKeys(args.transform,['lib','name','args']);
-          const t=args.transform as Record<string,unknown>;
-          if(typeof t.lib!=='string'||t.lib.includes('#'))throw new Error('transform.lib must identify a library without #name');
-          if(typeof t.name!=='string'||!/^[A-Za-z_][A-Za-z0-9_]*$/.test(t.name))throw new Error('transform.name must be a method name');
-          if(t.args!==undefined&&!isRecord(t.args))throw new Error('transform.args must be an object');
-          transform={lib:t.lib,name:t.name,args:(t.args??{}) as Record<string,unknown>};
-        }
         const resource=args.input;
         const isKnowledge=resource==='oks://knowledge';
         // Open the workspace only when resolving a supported structured resource.
         let entry:WorkspaceEntry|undefined;
         const workspace=()=>entry??=options.knowledge.ensureWorkspace(exec);
         const view=async(data:unknown)=>{
-          if(transform){
-            const root=transform.lib==='oks://builtin/tools/ktools.lib.jq'?'':workspace().settings.workspaceRoot;
-            const code=await ktools.program(root,transform.lib+'#'+transform.name,transform.args,exec.signal);
-            // Transform output has a separate internal budget; select runs before the public payload budget.
-            const result=isKnowledge
-              ?await options.knowledge.queryKnowledge(workspace(),code.text,{input:null,timeoutMs:5000,maxBytes:8*1024*1024,signal:exec.signal,programFile:code.file})
-              :await ktools.run(code.text,{input:data,timeoutMs:5000,maxBytes:8*1024*1024,signal:exec.signal,programFile:code.file});
-            if(!result.ok)return {ok:false,error:'Transform output exceeds its internal 8 MiB budget; narrow the transform',shape:result.shape};
-            data=result.data;
-          }
           return {data:select?select(data as JsonValue):data};
         };
         if(isKnowledge){
-          if(transform)return {ok:true,model:workspace().modelHash,...await view(null)};
           const index=await options.knowledge.ensureIndex(workspace());
           return {ok:true,model:workspace().modelHash,...await view(index.knowledge)};
         }

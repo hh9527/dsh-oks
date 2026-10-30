@@ -1,0 +1,166 @@
+data ctx := context();
+data days := time_windows(ctx,{unit:"day",count:14,mode:"complete"});
+data bms := {start:days[0].start.epochMillis,end:days[6].end.epochMillis};
+data oms := {start:days[7].start.epochMillis,end:days[13].end.epochMillis};
+data rank := query({
+  op:"GraphPair", limit:20,
+  left:{
+    op:"Graph", root:"ls",
+    nodes:[{id:"ls",entity:"server_device"},{id:"lk",entity:"server_kpi"}],
+    edges:[{relation:"server_kpi_of_server",from:"lk",to:"ls"}],
+    select:[],
+    measures:[{node:"lk",measure:"server_cpu_usage"}],
+    group_by_identity:["ls"],
+    time_windows:[{node:"lk",dimension:"server_kpi_ts_raw",start:days[0].start.dateTimeUtc,end:days[6].end.dateTimeUtc}]
+  },
+  right:{
+    op:"Graph", root:"rs",
+    nodes:[{id:"rs",entity:"server_device"},{id:"rk",entity:"server_kpi"}],
+    edges:[{relation:"server_kpi_of_server",from:"rk",to:"rs"}],
+    select:[],
+    measures:[{node:"rk",measure:"server_cpu_usage"}],
+    group_by_identity:["rs"],
+    time_windows:[{node:"rk",dimension:"server_kpi_ts_raw",start:days[7].start.dateTimeUtc,end:days[13].end.dateTimeUtc}]
+  },
+  align_by:[{left:{node:"ls"},right:{node:"rs"}}],
+  select:[{side:"Left",node:"ls",dimension:"server_name"}],
+  rank_by:{op:"Subtract",minuend:"Right",subtrahend:"Left",direction:"Desc",take:3}
+});
+// 2) 基期严重告警数（按服务器）
+data baseAlarm := query({
+  op:"Graph", root:"els", limit:500,
+  nodes:[{id:"els",entity:"server_device"},{id:"ela",entity:"current_alarm"}],
+  edges:[{relation:"server_current_alarm",from:"ela",to:"els"}],
+  select:[{node:"els",dimension:"server_name"}],
+  measures:[{node:"ela",measure:"critical_or_major_alarm_count"}],
+  group_by_identity:["els"],
+  time_windows:[{node:"ela",dimension:"alarm_occur_utc_raw",start:bms.start,end:bms.end}]
+});
+// 3) 观察期严重告警数（按服务器）
+data obsAlarm := query({
+  op:"Graph", root:"els2", limit:500,
+  nodes:[{id:"els2",entity:"server_device"},{id:"ela2",entity:"current_alarm"}],
+  edges:[{relation:"server_current_alarm",from:"ela2",to:"els2"}],
+  select:[{node:"els2",dimension:"server_name"}],
+  measures:[{node:"ela2",measure:"critical_or_major_alarm_count"}],
+  group_by_identity:["els2"],
+  time_windows:[{node:"ela2",dimension:"alarm_occur_utc_raw",start:oms.start,end:oms.end}]
+});
+// 4) 服务器与租户对应关系
+data tenants := query({
+  op:"Graph", root:"tns", limit:500, row_grain:"Association",
+  nodes:[{id:"tns",entity:"server_device"},{id:"tnt",entity:"tenant"}],
+  edges:[{relation:"server_belongs_to_tenant",from:"tns",to:"tnt"}],
+  select:[{node:"tns",dimension:"server_name"},{node:"tnt",dimension:"tenant_name"}]
+});
+
+// left join 的可选右行通过 ?. 投影，再显式指定缺失行为。
+data topSum := select({
+  from: {r:rank},
+  joins: [
+    {kind:"left",source:{t:tenants},on:(r) => r.r.left_ls_server_name == r.t.tns_server_name},
+    {kind:"left",source:{ba:baseAlarm},on:(r) => r.r.left_ls_server_name == r.ba.els_server_name},
+    {kind:"left",source:{oa:obsAlarm},on:(r) => r.r.left_ls_server_name == r.oa.els2_server_name}
+  ],
+  fields: (r) => ({
+    name:r.r.left_ls_server_name,
+    tenant:r.t?.tnt_tenant_name ?? "未关联租户",
+    base:r.r.left_lk_server_cpu_usage,
+    obs:r.r.right_rk_server_cpu_usage,
+    delta:r.r.comparison_value,
+    baseAlarm:r.ba?.ela_critical_or_major_alarm_count ?? 0,
+    obsAlarm:r.oa?.ela2_critical_or_major_alarm_count ?? 0
+  })
+});
+
+data tableRows := select({
+  from: {s:topSum},
+  fields: (r) => ({
+    name:r.s.name,tenant:r.s.tenant,
+    base_cpu:round(r.s.base,2),current_cpu:round(r.s.obs,2),delta:round(r.s.delta,2)
+  }),
+  order_by: (out) => [desc(out.delta),asc(out.name)]
+});
+
+data alarmRows := select({
+  from: {s:topSum},
+  fields: (r) => ({name:r.s.name,tenant:r.s.tenant,base_count:r.s.baseAlarm,current_count:r.s.obsAlarm,change:r.s.obsAlarm-r.s.baseAlarm}),
+  order_by: (out) => [asc(out.name)]
+});
+
+// days 在检查期已知，map 展开有限查询；每个 query 的 columns 均参与推导。
+data daily := union_all(map(days,(day) => select({
+  from: {s:query({
+    op:"Graph",root:"sq",limit:500,
+    nodes:[{id:"sq",entity:"server_device"},{id:"kq",entity:"server_kpi"}],
+    edges:[{relation:"server_kpi_of_server",from:"kq",to:"sq"}],
+    select:[{node:"sq",dimension:"server_name"}],
+    measures:[{node:"kq",measure:"server_cpu_usage"}],group_by_identity:["sq"],
+    time_windows:[{node:"kq",dimension:"server_kpi_ts_raw",start:day.start.dateTimeUtc,end:day.end.dateTimeUtc}]
+  })},
+  fields: (r) => ({date:day.label,server:r.s.sq_server_name,cpu:r.s.kq_server_cpu_usage})
+})));
+
+data dailyRows := select({
+  from: {d:daily},
+  joins: [{kind:"inner",source:{s:topSum},on:(r) => r.d.server == r.s.name}],
+  fields: (r) => ({date:r.d.date,server:r.d.server,cpu:r.d.cpu}),
+  order_by: (out) => [asc(out.date),asc(out.server)]
+});
+
+// 普通可选对象，不是 rows 包装；空结果为 None，多行不会被静默丢弃。
+data winner := select_one({
+  from: {s:topSum},
+  fields: (r) => ({name:r.s.name,delta:r.s.delta}),
+  order_by: (out) => [desc(out.delta),asc(out.name)],
+  limit:1
+});
+
+// 全局聚合恰好一行，select_one 可以静态证明其行数约束。
+data summary := select_one({
+  from: {s:topSum},
+  group_by: (r) => ({}),
+  fields: (g,rows) => ({server_count:count(rows),max_increase:max(rows.s.delta)})
+});
+
+data summarySpec := {columns:["name","tenant","base_cpu","current_cpu","delta"]};
+data dailySpec := {x:"date",value:"cpu",series:"server"};
+data alarmSpec := {columns:["name","tenant","base_count","current_count","change"]};
+
+figure summaryTable := Table(spec = summarySpec, data = tableRows);
+
+figure dailyChart := LineChart(spec = dailySpec, data = dailyRows);
+
+figure alarmTable := Table(spec = alarmSpec, data = alarmRows);
+
+report answer := Report(title = "CPU 两期比较：有类型 Pipeline 设计示例") [
+  h1 [ "服务器 CPU 两期比较" ],
+  p [
+    "基期从 ",
+    Value(data = days[0].label),
+    " 起，观察期从 ",
+    Value(data = days[7].label),
+    " 起，均使用客户端自然日边界。",
+  ],
+  p [
+    "本次纳入 ",
+    Value(data = summary?.server_count),
+    " 台服务器。按预定排序的首台服务器为 ",
+    Value(data = winner?.name),
+    "，上升 ",
+    Value(data = winner?.delta),
+    " 个百分点。",
+  ],
+  figure [
+    Figure(ref = summaryTable),
+    figcaption [ "两期平均 CPU 与差值" ],
+  ],
+  figure [
+    Figure(ref = dailyChart),
+    figcaption [ "逐日平均 CPU，缺失不按零处理" ],
+  ],
+  figure [
+    Figure(ref = alarmTable),
+    figcaption [ "同一批服务器的两期严重告警数量" ],
+  ],
+];

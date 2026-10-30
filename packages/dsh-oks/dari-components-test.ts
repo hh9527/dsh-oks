@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createJaqEngine } from './src/jaq.ts';
 import { createDraftBackend } from './src/draft/backend.ts';
 import { DraftRuntime } from './src/draft/runtime.ts';
 import { parseDraft } from './src/draft/document.ts';
@@ -7,9 +6,8 @@ import { COMPONENT_KINDS } from './src/draft/components.ts';
 import { CHART_KINDS } from './src/chart/shared.ts';
 import type { WorkspaceEntry } from './src/knowledge.ts';
 const file='.work/components.dari';
-const engine=createJaqEngine(process.argv[2]??'lib/oks-wti.wasm');
 let queries=0,renders=0;
-const backend=createDraftBackend({entry:{} as WorkspaceEntry,file,contextZone:()=>({kind:'resolved',timeZone:'UTC'}),jq:engine,knowledge:{executorFor(){queries++;throw new Error('No SQL allowed');}}});
+const backend=createDraftBackend({entry:{} as WorkspaceEntry,file,contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge:{executorFor(){queries++;throw new Error('No SQL allowed');}}});
 const runtime=new DraftRuntime({...backend,execute(ctx){if(ctx.operator==='render_figure')renders++;return backend.execute(ctx);}},{file});
 const figure=(component:string,id:string,caption:string)=>`<figure id="${id}" class="authored"><${component} spec={${component==='Table'?'tableSpec':'spec'}} data={rows} /><figcaption>${caption}</figcaption></figure>`;
 const source=(body:string,code='')=>`<Dari><Notes>类型和编号测试</Notes><Pipeline>
@@ -55,11 +53,7 @@ try{
  }
  const unsupported=await runtime.run(one.replace('ColumnChart','PieChart').replace('spec <-{x:','spec <-{stack:"total",x:'));
  assert.equal(unsupported.status,'invalid');assert.match(unsupported.error!,/stack/);
- const dynamic=source(figure('ColumnChart','one','类别比较')).replace('spec <-{x:"x",value:"n"};','spec <-jq("spec.jq",{});').replace('</Dari>','<Asset name="spec.jq" language="jq">{kind:"column",x:"x",value:"n"}</Asset></Dari>');
- const failed=await runtime.run(dynamic);assert.equal(failed.outputs.get('@figure/1')?.status,'failed');assert.equal(failed.outputs.get('answer')?.status,'blocked');
  assert.equal(queries,0);
  const stray=source('<ColumnChart spec={spec} data={rows} />');assert.throws(()=>parseDraft(stray,file),/direct child/);
- const raw='<Dari><Pipeline>value <-data("</Pipeline>");</Pipeline><Asset language="jq" name="a.jq">"</Asset>"</Asset></Dari>';
- assert.equal(parseDraft(raw,file).assets.get('a.jq')!.source,'"</Asset>"');
  console.log('DARI components: tag kinds, caption numbering/order, IDs/classes, reply/artifact, cache identity, multiple answers and invalid specs passed');
-}finally{runtime.dispose();engine.dispose();}
+}finally{runtime.dispose();}

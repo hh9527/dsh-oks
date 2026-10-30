@@ -97,7 +97,7 @@ export const parseTableSpec = (spec: Record<string, unknown>): { title: string |
   if (spec.columns !== undefined && spec.columns !== null && (!Array.isArray(spec.columns)
       || spec.columns.length === 0 || spec.columns.some(name => typeof name !== 'string' || name === '')
       || new Set(spec.columns).size !== spec.columns.length)) {
-    throw new Error('table columns must be a nonempty array of unique column name strings; for display labels rename data keys in jq (tools/render_figure#topics/table_headers)');
+    throw new Error('table columns must be a nonempty array of unique column name strings; for display labels rename data keys in select fields (tools/render_figure#topics/table_headers)');
   }
   if (spec.title !== undefined && spec.title !== null && typeof spec.title !== 'string') throw new Error('table title must be a string');
   return {

@@ -2,6 +2,8 @@
 import type { Span } from '../draft/pipeline.ts';
 export const AUTHOR_ELEMENTS:readonly string[]=['article','section','h1','h2','h3','p','div','span','figure','figcaption','table','caption','thead','tbody','tfoot','tr','th','td','ul','ol','li','blockquote','pre','code','strong','em','a','br','hr'];
 export const AUTHOR_ATTRIBUTES:readonly string[]=['id','class','title','lang','data-oks-ref','data-oks-pick','data-oks-shrink','data-oks-lit','href','colspan','rowspan','scope'];
+/** Public authoring hides the literal marker behind Lit. */
+export const PUBLIC_AUTHOR_ATTRIBUTES=AUTHOR_ATTRIBUTES.filter(key=>key!=='data-oks-lit');
 export type ReportNode={kind:'text';text:string;span:Span}|{kind:'comment';text:string;span:Span}|ReportElement;
 export type ReportElement={kind:'element';name:string;attrs:Record<string,string>;children:ReportNode[];span:Span};
 export type ReportError={code:string;message:string;line:number;column:number;element:string|null};

@@ -1,16 +1,14 @@
 import assert from 'node:assert/strict';
-import {createJaqEngine} from './src/jaq.ts';
 import {createDraftBackend} from './src/draft/backend.ts';
 import {DraftRuntime} from './src/draft/runtime.ts';
 import {parseDraft} from './src/draft/document.ts';
 import {readReportPage,withReportArchive,REPORT_METADATA_OPEN} from './src/report/page.ts';
 import {createSelector} from './src/select.ts';
 import type {Knowledge,WorkspaceEntry} from './src/knowledge.ts';
-const jq=createJaqEngine(process.argv[2]??'lib/oks-wti.wasm');
 let contexts=0,queries=0;
 const entry={modelHash:'fixture-model',settings:{domain:'fixture'}} as WorkspaceEntry;
 const knowledge={executorFor(){queries++;throw new Error('No SQL allowed');}} as unknown as Knowledge;
-const backend=createDraftBackend({knowledge,entry,file:'analysis.dari',contextZone:()=>({kind:'resolved',timeZone:'Asia/Shanghai'}),jq});
+const backend=createDraftBackend({knowledge,entry,file:'analysis.dari',contextZone:()=>({kind:'resolved',timeZone:'Asia/Shanghai'})});
 const execute=backend.execute;backend.execute=ctx=>{if(ctx.operator==='context')contexts++;return execute(ctx);};
 const runtime=new DraftRuntime(backend,{file:'analysis.dari'});
 const source=`<Dari title="归档测试">
@@ -22,7 +20,7 @@ rows <- data([{label:"甲",n:3}]);
 spec <- {x:"label",value:"n"};
 badSpec <- {columns:["missing"]};
 </Pipeline>
-<Asset language="jq" name="unused.jq">{"text":"</script>&]]>中文🙂"}</Asset>
+<Asset language="sql" name="unused.sql">SELECT '</script>&]]>中文🙂' AS text</Asset>
 <Figures>
 <ColumnChart name="used" spec={spec} data={rows} />
 <ColumnChart name="unused" spec={spec} data={rows} />
@@ -42,7 +40,7 @@ try{
  assert.equal(data.context.run,first.id);assert.equal(data.context.batch,first.batch);assert.equal(data.context.sourceHash,first.sourceHash);
  assert.equal(data.context.captures.length,1);assert.deepEqual(data.context.captures[0].value,first.outputs.get('ctx')!.value!.data);
  assert.equal(data.dari.source,source);assert.equal(data.dari.notes,'保留原始口径与注释');assert.ok(data.dari.pipeline.includes('// 同一问题'));
- assert.ok(data.dari.assets['unused.jq'].includes('</script>&]]>中文🙂'));assert.equal(Object.keys(data.dari.assets).length,1);
+ assert.ok(data.dari.assets['unused.sql'].includes('</script>&]]>中文🙂'));assert.equal(Object.keys(data.dari.assets).length,1);
  assert.ok(data.dari.reports.other.includes('独立报告'));
  assert.equal(data.dari.figures.unused.code,'<ColumnChart name="unused" spec={spec} data={rows} />');
  assert.deepEqual(data.dari.figures.unused.data.rows,[{label:'甲',n:3}]);
@@ -81,4 +79,4 @@ try{
  const over=await limited.run(huge);assert.equal(over.archive,undefined);assert.match(over.outputs.get('reports.other')!.error!,/budget/);
  assert.throws(()=>limited.read('reports.other',huge),/budget/);limited.dispose();
  console.log('报告归档：整稿恢复、全部资产和图表、失败分支、上下文缓存与刷新、固定标记回读、安全转义、投影及预算通过');
-}finally{runtime.dispose();jq.dispose();}
+}finally{runtime.dispose();}

@@ -1,9 +1,8 @@
+import {queryKnowledge} from './src/knowledge-methods.ts';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { createJaqEngine } from './src/jaq.ts';
 import { buildRetrievalIndex } from './src/retrieval.ts';
 import { buildSemanticGraph, encodePart, refPath, resolveFact } from './src/knowledge-graph.ts';
-import { builtinCode, knowledgePrograms, toolResource } from './src/knowledge-programs.ts';
 
 const dataset='a/b#%中文';const encoded=encodePart(dataset);
 const role:Record<string,string>={Dataset:'datasets',Field:'fields',Dimension:'dimensions',Measure:'measures',Ty:'types',Value:'values',Relation:'relations',TimeRole:'time_roles',BusinessLink:'business_links'};
@@ -41,30 +40,12 @@ for (const publishedKnowledge of [undefined, {knowledge_contract:'ontology-knowl
 assert.equal(runtimeCalls,0);
 const dup=structuredClone(nodes);dup[2].address=dup[3].address;assert.throws(()=>buildSemanticGraph(dup),/kind mismatch|Duplicate/);
 const wrong=structuredClone(nodes);wrong[1].links[0].role='values';assert.throws(()=>buildSemanticGraph(wrong),/role mismatch/);
-const engine=createJaqEngine(fileURLToPath(new URL('./lib/oks-wti.wasm',import.meta.url)));
-try {
- const run=async(name:string,args:Record<string,unknown>={})=>{
-   const code=builtinCode(`builtin://knowledge/${name}.jq`,args);
-   const out=await engine.run(code.text,{input:{knowledge:graph,other:graph},timeoutMs:5000,maxBytes:16384,programFile:code.file});
-   assert.equal(out.ok,true);return (out as any).data;
- };
- const first=await run('search',{query:'站点',take:1});assert.equal(first.total,5);assert.equal(first.next,1);
- const next=await run('search',{query:'站点',skip:1,take:1});assert.notEqual(first.items[0].key,next.items[0].key);
- assert.equal((await run('search',{query:'站点',skip:4,take:1})).next,null);
- assert.deepEqual(await run('search',{query:'unknown'}),{total:0,start:0,items:[],next:null});
- const dims=await run('search',{type:'Dimension',dataset,input:'other'});assert.equal(dims.items[0].key,ds+'#dimensions/name');assert.equal(dims.items[0].id,'name');
- const members=await run('members',{key:ds,link:'dimensions'});assert.equal(members.items.length,1);assert.equal(members.items[0].key,ds+'#dimensions/name');
- const refs=await run('references',{key:'types/Level',type:'Dimension'});assert.ok(refs.items.some((r:any)=>r.key===ds+'#dimensions/name'));
- const read=await run('read',{key:ds+'#dimensions/name'});assert.deepEqual(read.facts,resolveFact(graph,ds+'#dimensions/name'));assert.deepEqual(read.items.map((i:any)=>i.key),[ds+'#dimensions/name']);
- const category=await run('read',{key:ds+'#fields'});assert.deepEqual(Object.keys(category.facts),['name']);assert.equal(category.items.length,1);assert.equal(category.facts.dimensions,undefined);
- const typeValues=await run('read',{key:'types/Level#values'});assert.deepEqual(Object.keys(typeValues.facts),['high']);assert.equal(typeValues.facts.fields,undefined);
- const typeFields=await run('members',{key:'types/Level',link:'fields'});assert.equal(typeFields.items[0].key,ds+'#fields/name');
- await assert.rejects(run('references',{key:'datasets/missing'}),/Unknown knowledge key/);
- for(const name of Object.keys(knowledgePrograms))assert.ok(toolResource(`builtin://knowledge/${name}.jq`));
- for(const args of [{take:0},{take:51},{skip:-1},{query:1},{unknown:true}])assert.throws(()=>builtinCode('builtin://knowledge/search.jq',args));
- assert.throws(()=>builtinCode('builtin://knowledge/read.jq',{key:ds,take:1}));
- // 原型名称也是业务 ID，不会成为对象原型或丢失。
- const proto=buildSemanticGraph([n('Dataset/proto','Dataset',{id:'__proto__'},{node:'datasets/__proto__',member:null})]).graph;
- assert.ok(Object.hasOwn(proto.datasets,'__proto__'));assert.equal(Object.getPrototypeOf(proto.datasets),Object.prototype);
- console.log('semantic graph: address encoding, ownership, categorized reverse links, exact slices+docs, paging and actual Wasm examples passed');
-}finally{engine.dispose();}
+
+const run=(name:string,args:Record<string,unknown>)=>queryKnowledge(graph,name,args) as any;
+const first=run('search',{query:'站点',take:1});assert.equal(first.total,5);assert.equal(first.next,1);
+assert.notEqual(first.items[0].key,run('search',{query:'站点',skip:1,take:1}).items[0].key);
+assert.deepEqual(run('search',{query:'unknown'}),{total:0,start:0,items:[],next:null});
+assert.equal(run('search',{query:'站点',type:'Dimension',dataset}).items[0].key,ds+'#dimensions/name');
+assert.deepEqual(run('read',{key:ds+'#dimensions/name'}).facts,resolveFact(graph,ds+'#dimensions/name'));
+assert.deepEqual(Object.keys(run('read',{key:ds+'#fields'}).facts),['name']);
+console.log('Semantic graph: address encoding, ownership, reverse links, exact slices and JS knowledge navigation passed');

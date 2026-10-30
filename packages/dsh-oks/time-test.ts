@@ -1,24 +1,12 @@
-// 固定时间锚点验证日历语义；必须使用真实 Wasm，不能用 JS 日期计算替代。
 import assert from 'node:assert/strict';
-import { fileURLToPath } from 'node:url';
-import { createJaqEngine } from './src/jaq.ts';
-import { helpFiles } from './src/help-files.ts';
-import { builtinCode, toolResource } from './src/knowledge-programs.ts';
-
-const engine = createJaqEngine(process.argv[2] ?? fileURLToPath(new URL('./lib/oks-wti.wasm', import.meta.url)));
-const uri = 'builtin://time/windows.jq';
+import {timeWindows,timeWindowOptions} from './src/time-windows.ts';
 const context = (at:string, zone='Asia/Shanghai') => ({utc:{epochMillis:Date.parse(at)},tz:{client:{id:zone}}});
 const ctx = context('2026-10-19T11:41:03.456+08:00');
 let checks = 0;
-const run = async (args:Record<string,unknown>, value:unknown=ctx) => {
-  const code = builtinCode(uri,args);
-  const out = await engine.run(code.text,{input:{ctx:value,anchor:value},timeoutMs:5000,maxBytes:16384,programFile:uri});
-  assert.equal(out.ok,true); checks++;
-  return (out as any).data as any[];
-};
+const run=async(args:unknown,value:unknown=ctx)=>{checks++;return timeWindows(value,args);};
 const verify = (rows:any[]) => {
   for (const [i,row] of rows.entries()) {
-    for (const b of [row.start,row.end]) assert.equal(Date.parse(b.rfc3339), b.epochMillis);
+    for (const b of [row.start,row.end]) {assert.equal(Date.parse(b.rfc3339), b.epochMillis);assert.equal(Date.parse(b.dateTimeUtc),b.epochMillis);assert.match(b.dateTimeUtc,/Z$/);}
     assert.ok(row.start.epochMillis < row.end.epochMillis);
     if (i > 0) assert.deepEqual(rows[i-1].end,row.start);
   }
@@ -56,18 +44,18 @@ try {
   assert.equal(midnightGap[0].end.epochMillis-midnightGap[0].start.epochMillis,23*3600000);
   const atBoundary = await run({unit:'month',count:1,mode:'complete'},context('2026-10-01T00:00:00+08:00'));
   assert.equal(atBoundary[0].label,'2026-09');
-  const renamed = await run({input:'anchor',unit:'month',count:1,mode:'current'});
-  assert.equal(renamed[0].label,'2026-10');
   const max = await run({unit:'month',count:50,mode:'complete'});
   assert.equal(max.length,50);
-  for (const rows of [complete,current,rolling,week,quarter,year,leap,dst,shortDay,longDay,midnightGap,atBoundary,renamed,max]) verify(rows);
+  for (const rows of [complete,current,rolling,week,quarter,year,leap,dst,shortDay,longDay,midnightGap,atBoundary,max]) verify(rows);
   for (const args of [null,[], 'encoded', {}, {unit:'hour',count:1,mode:'complete'}, {unit:['month'],count:1,mode:'complete'}, {unit:'month',count:1,mode:['complete']}, {unit:'month',count:0,mode:'complete'}, {unit:'month',count:51,mode:'complete'}, {unit:'month',count:1.5,mode:'complete'}, {unit:'month',count:1,mode:'guess'}, {unit:'month',count:1,mode:'complete',offset:480}]) {
-    assert.throws(()=>builtinCode(uri,args)); checks++;
+    assert.throws(()=>timeWindowOptions(args)); checks++;
   }
   for (const value of [null,{},context('2026-01-01T00:00:00Z','Mars/Olympus'),{utc:{epochMillis:'1790854863000'},tz:{client:{id:'UTC'}}}]) {
     await assert.rejects(run({unit:'month',count:1,mode:'complete'},value)); checks++;
   }
-  assert.match(helpFiles['oks://help/time.md'],/tzfloor/);
-  assert.ok((toolResource(uri) as any).source.includes('tzfloor'));
   console.log(`✓ 时间窗口 ${checks} 组检查通过：毫秒/RFC3339 一致、完整/当前/滚动、跨年/闰年、DST、连续窗口与坏输入`);
-} finally {engine.dispose();}
+} finally {}
+
+await assert.rejects(run({unit:'day',count:3,mode:'current'},context('2011-12-31T12:00:00+14:00','Pacific/Apia')),/no elapsed time/);
+const fold=await run({unit:'day',count:1,mode:'rolling'},context('2026-11-02T01:30:00-05:00','America/New_York'));
+assert.equal(fold[0].start.rfc3339,'2026-11-01T01:30:00-04:00');

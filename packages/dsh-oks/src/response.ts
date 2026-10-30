@@ -93,7 +93,7 @@ export function renderCurrentCtx(_args: unknown, value: CurrentCtxValue | null |
   const lines = [
     `asset:  ${value?.asset ?? ''}`,
     `这份时间上下文：${((value?.bytes ?? 0) / 1024).toFixed(1)} KB · ${value?.ms ?? 0} ms`,
-    '把它以 ctx 加载到 oks_project，用 builtin://time/windows.jq 计算带毫秒值与 RFC3339 的窗口；参数与示例见 oks://help/time.md。',
+    '在分析稿中使用 context() 和 time_windows(ctx,{unit,count,mode}) 计算时间窗口；参数与示例见 oks://help/time.md。',
     '',
     JSON.stringify(value?.data ?? null, null, 2),
   ];

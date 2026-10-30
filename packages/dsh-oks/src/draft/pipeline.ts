@@ -1,8 +1,9 @@
+import {parseTypedPipeline} from './typed-syntax.ts';
 import type { FigureKind } from './components.ts';
 /** The draft language is parsed as data. Source text is never evaluated as JavaScript. */
 export type Position = { offset: number; line: number; column: number };
 export type Span = { start: Position; end: Position };
-export type Operator = 'data' | 'query' | 'exec_query' | 'jq' | 'context' | 'render_figure' | 'render_report' | 'time_windows';
+export type Operator = 'data' | 'query' | 'exec_query' | 'sql' | 'typed_value' | 'relational' | 'relational_one' | 'table_union' | 'typed_table' | 'context' | 'render_figure' | 'render_report' | 'time_windows';
 export type Expr = (
   | { kind: 'literal'; value: string | number | boolean | null }
   | { kind: 'array'; values: Expr[] }
@@ -15,8 +16,9 @@ export type Statement = (
   | { kind: 'binding'; name: string; value: Expr }
   | { kind: 'output'; value: Expr }
 ) & { span: Span; motivation: string };
-export type AssetDependency = { name: string; language: 'jq'; span: Span };
+export type AssetDependency = { name: string; language: 'sql'; span: Span };
 export type PipelineNode = {
+  typed?:boolean;
   internal?: boolean;
   display?: { label: string; template: string; figureId?: string; component: string };
   statement: Statement;
@@ -36,12 +38,14 @@ export class DraftSyntaxError extends Error {
 }
 
 type Token = { text: string; value?: string | number; kind: 'id' | 'string' | 'number' | 'symbol' | 'eof'; span: Span; comments: string[] };
-const OPERATORS = new Set<string>(['data', 'query', 'exec_query', 'jq', 'context', 'render_figure', 'time_windows']);
+const OPERATORS = new Set<string>(['data', 'query', 'exec_query', 'sql', 'context', 'render_figure', 'time_windows']);
 const RESERVED = new Set(['let', 'debug', 'output', 'true', 'false', 'null', ...OPERATORS]);
 const MAX_DEPTH = 128;
 
 /** base is the location of the first code character in the original source file. */
 export function parsePipeline(source: string, base: Position = { offset: 0, line: 1, column: 1 }): PipelineNode[] {
+  const code=source.replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,' ');
+  if(/\b(?:select|select_one|table|union_all|map|map_opt|is_some|is_none|round|concat|case_when)\s*\(|=>|\?\.|\?\?|&&|\|\||==|!=/.test(code)||/[+*%!<>/]/.test(code.replaceAll('<-',''))||/[A-Za-z0-9_$)\]]\s*-/.test(code.replaceAll('<-','')))return parseTypedPipeline(source,base);
   let index = 0;
   let line = base.line;
   let column = base.column;
@@ -248,11 +252,11 @@ export function parsePipeline(source: string, base: Position = { offset: 0, line
       else if (expr.kind === 'project') visit(expr.input);
       else if (expr.kind === 'call') {
         const count = expr.args.length;
-        const arity = expr.operator === 'context' ? [0, 0] : ['query','exec_query'].includes(expr.operator) ? [1, 1] : ['data', 'jq'].includes(expr.operator) ? [1, 2] : [2, 2];
+        const arity = expr.operator === 'context' ? [0, 0] : ['query','exec_query'].includes(expr.operator) ? [1, 1] : ['data'].includes(expr.operator) ? [1, 2] : [2, 2];
         if (count < arity[0] || count > arity[1]) throw new DraftSyntaxError(`Invalid argument count for ${expr.operator}`, expr.span);
-        if (expr.operator === 'jq') {
+        if (expr.operator === 'sql') {
           const asset = expr.args[0];
-          const language = 'jq';
+          const language = expr.operator;
           if (asset.kind !== 'literal' || typeof asset.value !== 'string' || !/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(asset.value) || !asset.value.endsWith(`.${language}`)) {
             throw new DraftSyntaxError(`${expr.operator} requires a literal single-file .${language} asset name`, asset.span);
           }

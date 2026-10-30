@@ -7,7 +7,7 @@
 - `rfc/`：设计与变更记录。
 - `justfile`：构建、安装和启动 OKS preset。
 
-安装需要 just、watchexec、Node.js、pnpm，以及支持 `wasm32-unknown-unknown` 的 Rust 工具链。
+安装需要 just、watchexec、Node.js、pnpm。
 
 ```sh
 just install

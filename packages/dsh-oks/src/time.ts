@@ -7,8 +7,7 @@
 //   1. 所有"时刻"内部一律用 epoch 毫秒表示；时区只影响**表示**。
 //   2. 时区按**插件规范**取：本次请求的上下文时区（当轮用户消息上的 source.clientTimeZone）；
 //      没有或互相冲突（missing / mixed）时报错，让 agent 按规范的策略去问用户——不猜。
-//   3. 日历运算（加减、对齐到日历边界）由求值器里的受控内建做（`tzadd` / `tzfloor` / `tzceil`，
-//      见 crates/oks-wti）：时区显式传参，于是它进得了程序与来源链。
+//   3. 日历运算由 time-windows.ts 的 JS Temporal 实现，时区显式传参并进入来源链。
 
 import { isArray, isRecord } from './host.ts';
 import type { ContextMessageLike } from './host.ts';

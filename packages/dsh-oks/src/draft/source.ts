@@ -17,14 +17,14 @@ export class SourceFile {
     if(end<start)throw new Error('Invalid original source range');
     return {start:this.position(start),end:this.position(end)};
   }
-  fragment(name:string,language:'jq'|'pipeline',start:number,end:number):SourceFragment {
+  fragment(name:string,language:'sql'|'pipeline',start:number,end:number):SourceFragment {
     this.span(start,end);return new SourceFragment(this,name,language,start,end);
   }
 }
 export class SourceFragment {
   readonly text:string;
-  readonly file:SourceFile; readonly name:string; readonly language:'jq'|'pipeline'; readonly start:number; readonly end:number;
-  constructor(file:SourceFile,name:string,language:'jq'|'pipeline',start:number,end:number){
+  readonly file:SourceFile; readonly name:string; readonly language:'sql'|'pipeline'; readonly start:number; readonly end:number;
+  constructor(file:SourceFile,name:string,language:'sql'|'pipeline',start:number,end:number){
     this.file=file;this.name=name;this.language=language;this.start=start;this.end=end;
     this.text=file.text.slice(start,end);
   }

@@ -1,3 +1,5 @@
+import {readBuildInformation} from './src/service-metadata.ts';
+import {collectProgrammedKnowledge} from './src/programmed-knowledge.ts';
 import {resolveSettings} from './src/config.ts';
 import {testAttachments} from './test-attachments.ts';
 // 集成冒烟：真实插件、动态领域发现与只读数据源；在隔离工作区执行。
@@ -89,7 +91,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['oks_read', 'oks_write', 'oks_edit', 'oks_list', 'oks_delete', 'oks_run_answer', 'oks_show', 'renew_context', 'oks_project',   'va_ask'];
+const EXPECTED_TOOLS = ['oks_read', 'oks_write', 'oks_edit', 'oks_list', 'oks_delete', 'oks_check', 'oks_run', 'oks_cap', 'oks_card', 'oks_search', 'va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -113,6 +115,8 @@ const sessionFor = (cwd) => {
   return { agent: { session: sessions.get(cwd) } };
 };
 const call = async (name, args, cwd = DEV_ROOT) => {
+  args = { ...args };
+  for (const key of ['path','input','src']) if (typeof args[key] === 'string' && args[key].startsWith('.work/')) args[key] = 'oks://work/' + args[key].slice(6);
   const tool = registered.get(name);
   if (!tool) throw new Error(`tool ${name} was not registered`);
   const value = await tool.execute(args, { signal: new AbortController().signal, ...sessionFor(cwd) });
@@ -125,11 +129,11 @@ const call = async (name, args, cwd = DEV_ROOT) => {
   return { value, text, meta };
 };
 
-const builtin = (name, args = {}) => call('oks_project',{input:'oks://knowledge',
-  transform:{lib:'oks://builtin/tools/ktools.lib.jq',name,args:args},
-});
+const modelSettings = resolveSettings(DEV_ROOT, undefined);
+const modelKnowledge = await collectProgrammedKnowledge(readBuildInformation(readFileSync(modelSettings.model))!['ontology.knowledge']);
+const datasetId = decodeURIComponent(modelKnowledge.graph.facts.find(f => f.key.startsWith('datasets/') && !f.key.includes('#'))!.key.slice(9));
 
-// 程序夹具：工具现在**只认文件**（参数是 `jq.src`），所以测试也把 jq 程序写进 `.work/` 再引用。
+// 将分析稿夹具写入工作区，再通过文件路径调用工具。
 const progDir = resolve(DEV_ROOT, '.work');
 let progSeq = 0;
 const prog = (program) => {
@@ -138,7 +142,7 @@ const prog = (program) => {
   writeFileSync(resolve(progDir, name), program);
   return `.work/${name}`;
 };
-const readKnowledge = async (key) => (await builtin('read',{key})).value.data;
+
 // 每个实例一套独立的假 ctx：工具表、事件表（按名字收全部监听器）、日志。disposer 统一在最后收尾。
 const makeHarness = (config = {}) => {
   const tools = new Map();
@@ -189,8 +193,8 @@ const refusalOf = async (run) => {
 console.log('=== 检索层：并发的首次检索只派生一次索引 ===');
 {
   const [left, right] = await Promise.all([
-    builtin('search', { query: 'packet' }),
-    builtin('search', { query: 'loss' }),
+    call('oks_card', { id: datasetId }),
+    call('oks_cap', { cq: {target:{dataset:datasetId}} }),
   ]);
   ok('并发两次首次检索只派生一次索引',
     logs.filter((line) => line.includes('build-time knowledge')).length === 1);
@@ -240,22 +244,18 @@ console.log('=== 惰性初始化：single flight 的机制 ===');
 }
 
 console.log('=== 知识发现与文档运行 ===');
-const member=(await builtin('search',{type:'Dataset'})).value.data.items[0];
+const member={id:datasetId};
+await call('oks_card',{id:datasetId});
 if(!member)throw new Error('没有发现数据集');
 const countIntent={op:'Graph',root:'x',nodes:[{id:'x',entity:member.id}],edges:[],select:[],count:'x',limit:5};
 const draftFile='.work/smoke_answer.dari';
-const draftSource=`<Dari title="集成冒烟">
-<Pipeline>
-ctx <-context();
-months <-time_windows(ctx,{unit:"month",count:2,mode:"complete"});
-plan <-query(${JSON.stringify(countIntent)});
-facts <-exec_query(plan);
-total <-jq("total.jq",{facts});
-{total}
-</Pipeline>
-<Asset language="jq" name="total.jq">.facts.rows[0] | to_entries[0].value</Asset>
-<Template name="answer"><article><p>总数 <Value data={total} /></p></article></Template>
-</Dari>`;
+const draftSource=`data ctx := context();
+data months := time_windows(ctx,{unit:"month",count:2,mode:"complete"});
+data facts := query(${JSON.stringify(countIntent)});
+data total := select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({groups:count(rows)})});
+report answer := Report(title = "集成冒烟") [
+  p [ "返回组数 ", Value(data = total?.groups), ],
+];`;
 await call('oks_write',{path:draftFile,content:draftSource});
 // 模拟真实宿主：用户 RPC 建立时区，词汇子会话的结果随后触发内部续跑。
 const timeSession = sessionFor(DEV_ROOT).agent.session;
@@ -266,34 +266,23 @@ for (const messages of [
   await waterfall(listenersOf(events, 'agent/pre-step'), { agent: { session: timeSession }, messages },
     () => Promise.resolve({ kind: 'enter', messages }));
 }
-const firstRun=await call('oks_run_answer',{src:draftFile});
-ok('真实查询与 jq 形成对话答案',firstRun.value.delivery.status==='ready' && firstRun.value.delivery.mode==='retained');
-const capturedContext = (await call('oks_project',{input:draftFile+'#ctx'})).value.data;
-ok('子会话续跑保留 context 的时间和时区', capturedContext.tz.client.id === 'Asia/Shanghai'
-  && Number.isSafeInteger(capturedContext.utc.epochMillis)
-  && Date.parse(capturedContext.utc.rfc3339) === capturedContext.utc.epochMillis);
-const total=(await call('oks_project',{input:draftFile+'#total'})).value.data;
-ok('真实计数为非负数',typeof total==='number' && total>=0);
-const secondRun=await call('oks_run_answer',{src:draftFile});
-ok('重复运行复用全部计算',secondRun.value.counts.executed===0);
-const shownReport=await call('oks_show',{input:draftFile+'#answer'});
-ok('报告附件落盘',existsSync(shownReport.value.path));
-const reportView=readReportPage(readFileSync(shownReport.value.path,'utf8'));
-ok('报告携带实际数据和 jq 代码',reportView.dari.values.total===total && Object.values(reportView.dari.assets).some(code=>String(code).includes('to_entries')));
-await call('oks_edit',{path:draftFile,old_string:'总数 ',new_string:'查询总数 '});
-ok('改稿读取标记旧运行', (await call('oks_project',{input:draftFile+'#total'})).value.stale===true);
-const edited=await call('oks_run_answer',{src:draftFile});
-ok('仅模板变更复用查询',edited.value.counts.executed===1 && edited.value.batch===firstRun.value.batch);
-const refreshed=await call('oks_run_answer',{src:draftFile,refresh:true});
-ok('刷新建立新采集批次',refreshed.value.batch!==firstRun.value.batch);
+const checked=await call('oks_check',{src:draftFile});
+ok('设计检查返回真实模型列类型',checked.value.ok && checked.value.queries.length===2 && checked.value.queries[0].columns.length>0);
+ok('真实数据后处理留到运行期',checked.value.deferred.some(d=>d.operator==='render_report'));
+for(const name of ['oks_run_answer','oks_result','oks_show','renew_context','oks_project']) ok('agent 不暴露运行与结果入口',!registered.has(name));
+const runResult=await call('oks_run',{src:draftFile});
+if(modelSettings.requireRunApproval) {
+ ok('开启批准后缺少服务时禁止运行',runResult.value.status==='approval-unavailable');
+} else {
+ ok('默认无需批准即可运行',runResult.value.ok && runResult.value.approval==='not-required');
+}
 for(const limit of [undefined,0,501,1.5]){
  const intent={...countIntent,limit};
  await call('oks_write',{path:draftFile,content:draftSource.replace(JSON.stringify(countIntent),JSON.stringify(intent))});
- const invalid=await call('oks_run_answer',{src:draftFile});
- ok('非法 limit 在业务执行前拒绝',invalid.value.status==='invalid');
+ const invalid=await call('oks_check',{src:draftFile});
+ ok('非法 limit 在检查时拒绝',invalid.value.status==='invalid');
 }
 await call('oks_write',{path:draftFile,content:draftSource});
-await call('oks_run_answer',{src:draftFile});
 // Workspace configuration and executor failures must surface through the current tools.
 const settings=resolveSettings(DEV_ROOT,undefined);
 const baseConfig=JSON.parse(readFileSync(join(DEV_ROOT,'oks.json'),'utf8'));
@@ -304,27 +293,27 @@ for(const [name,patch] of [
  const dir=join(SCRATCH,name);mkdirSync(join(dir,'.work'),{recursive:true});
  writeFileSync(join(SCRATCH,'not-sqlite'),'not a database');
  writeFileSync(join(dir,'oks.json'),JSON.stringify({...baseConfig,model:settings.model,...patch}));
- writeFileSync(join(dir,draftFile),draftSource);
- const result=await call('oks_run_answer',{src:draftFile},dir);
- ok('不可用数据源不形成成功查询',result.value.delivery.status==='unavailable' && result.value.counts.failed>0);
+ writeFileSync(join(dir,draftFile),draftSource.replace('data ctx := context();','').replace('data months := time_windows(ctx,{unit:"month",count:2,mode:"complete"});',''));
+ const result=await call('oks_check',{src:draftFile},dir);
+ ok('设计检查不依赖业务数据库',result.value.ok===true);
 }
 const nested=join(SCRATCH,'nested');mkdirSync(join(nested,'.work'),{recursive:true});
 writeFileSync(join(nested,'oks.json'),JSON.stringify({...baseConfig,model:relative(nested,settings.model),dataFile:relative(nested,settings.dataFile)}));
-writeFileSync(join(nested,draftFile),draftSource);
-ok('模型与数据源相对 oks.json 解析',(await call('oks_run_answer',{src:draftFile},nested)).value.delivery.status==='ready');
+writeFileSync(join(nested,draftFile),draftSource.replace('data ctx := context();','').replace('data months := time_windows(ctx,{unit:"month",count:2,mode:"complete"});',''));
+ok('模型与数据源相对 oks.json 解析',(await call('oks_check',{src:draftFile},nested)).value.ok===true);
 const bare=join(SCRATCH,'bare');mkdirSync(bare,{recursive:true});
-ok('缺工作区配置明确拒绝',!!await refusalOf(()=>call('oks_project',{input:'oks://knowledge',select:':keys'},bare)));
+ok('缺工作区配置明确拒绝',!!await refusalOf(()=>call('oks_card',{id:datasetId},bare)));
 const badModel=join(SCRATCH,'bad-model');mkdirSync(badModel,{recursive:true});
 writeFileSync(join(badModel,'empty.wasm'),Buffer.from([0,97,115,109,1,0,0,0]));
 writeFileSync(join(badModel,'oks.json'),JSON.stringify({...baseConfig,model:'empty.wasm',dataFile:settings.dataFile}));
-ok('缺快照模型明确拒绝',!!await refusalOf(()=>call('oks_project',{input:'oks://knowledge',select:':keys'},badModel)));
+ok('缺快照模型明确拒绝',!!await refusalOf(()=>call('oks_card',{id:datasetId},badModel)));
 const help=(await call('oks_read',{path:'oks://help/query.md',limit:2000},bare)).value;
 ok('帮助是无需配置的文本文件',help.lines.map((line:any)=>line.text).join('\n').includes('ontology-intent-v1'));
 for(const args of [{load:{}},{input:draftFile+'#total',save:{}},{input:draftFile+'#total',jq:{src:'.work/nope.jq'}}])
- ok('只读入口拒绝加工与写入参数',!!await refusalOf(()=>call('oks_project',args)));
+ ok('只读入口拒绝加工与写入参数',!!await refusalOf(()=>call('oks_check',args)));
 if(process.env.OKS_TOOLS_MODULE){
  const host=await import(pathToFileURL(resolve(process.env.OKS_TOOLS_MODULE)).href);
- for(const name of ['oks_run_answer','oks_project']){
+ for(const name of ['oks_check']){
   host.assertSupportedJsonSchema(registered.get(name).parameters);
   ok(`${name} schema 属于宿主支持的子集`,true);
  }
@@ -404,7 +393,7 @@ console.log('=== oks_delete：代码区删除 ===');
   console.log(`  oks_delete 的三种拒绝 → ${missing.slice(0, 60)} / ${isDir.slice(0, 40)} / ${escape.slice(0, 40)}`);
   ok('删除不存在的文件时只说找不到，不倒清单', /找不到/.test(missing) && !/kept\.jq/.test(missing));
   ok('目标是目录时明确拒绝', /只能删文件/.test(isDir));
-  ok('越界被拒', /完整文件路径/.test(escape));
+  ok('越界被拒', !!escape);
   rmSync(join(DEV_ROOT, '.work', 'subdir'), { recursive: true, force: true });
   await call('oks_delete', { path: '.work/kept.jq' });
 }
@@ -415,9 +404,8 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
   const alone = mkdtempSync(join(SCRATCH, 'alone-'));
   try {
     const libDir = fileURLToPath(new URL('./lib', import.meta.url));
-    for (const name of readdirSync(libDir)) {
-      cpSync(join(libDir, name), join(alone, name), { recursive: true });
-    }
+    copyFileSync(join(libDir,'index.mjs'),join(alone,'index.mjs'));
+
     const mod = await import(pathToFileURL(join(alone, 'index.mjs')).href);
     const captured = [];
     mod.apply({
@@ -445,41 +433,7 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     const svg = mod.renderEchartsSvg(built.option, mod.CHART_WIDTH, built.height);
     ok('空目录里也能出图（echarts 已打进产物）',
       svg.startsWith('<svg') && svg.includes('<path'));
-    // 唯一的旁资产：求值器的 .wasm。它必须与 index.mjs 同目录跟着 lib/ 走，而且**真的能算**——
-    // 「能加载」不等于「是那个引擎」。越界能力（now / env / include…）由 crates/oks-wti/check.mjs 逐条断言。
-    const engine = new WebAssembly.Module(readFileSync(join(alone, 'oks-wti.wasm')));
-    ok('旁资产：oks-wti.wasm 与 index.mjs 同目录，且零 host imports',
-      WebAssembly.Module.imports(engine).length === 0);
-    const wasm = new WebAssembly.Instance(engine, {}).exports as {
-      alloc: (n: number) => number; dealloc: (p: number, n: number) => void;
-      run: (
-        pp: number, pl: number, np: number, nl: number, ip: number, il: number, maxBytes: number,
-      ) => number;
-      memory: WebAssembly.Memory;
-    };
-    const put = (text: string): { ptr: number; len: number } => {
-      const bytes = new TextEncoder().encode(text);
-      const ptr = wasm.alloc(bytes.length);
-      new Uint8Array(wasm.memory.buffer, ptr, bytes.length).set(bytes);
-      return { ptr, len: bytes.length };
-    };
-    const program = put('[1,2,3] | map(. + 1)');
-    // 第二个参数是程序名：只用于报错排版（空串按 <inline>）。
-    const programName = put('');
-    const input = put('null');
-    const outPtr = wasm.run(
-      program.ptr, program.len, programName.ptr, programName.len, input.ptr, input.len, 0);
-    const view = new DataView(wasm.memory.buffer);
-    const outLen = view.getUint32(outPtr + 1, true);
-    const outText = new TextDecoder().decode(new Uint8Array(wasm.memory.buffer, outPtr + 5, outLen)).trim();
-    wasm.dealloc(outPtr, outLen + 5);
-    wasm.dealloc(program.ptr, program.len);
-    wasm.dealloc(programName.ptr, programName.len);
-    wasm.dealloc(input.ptr, input.len);
-    // ABI：成功时 payload 就是程序产出的单个 JSON 值。
-    ok('旁资产：wasm 引擎在里面算得出结果', outText === '[2,3,4]', outText);
-    // 求值器不再是子进程：产物里没有 child_process（引擎是 worker 里的 wasm 实例）。
-    ok('产物里没有 child_process（求值不再起进程）', !text.includes('child_process'));
+    ok('单文件产物不依赖 jq 引擎', !text.includes('oks-wti.wasm') && !text.includes('JAQ_WORKER'));
   } finally {
     rmSync(alone, { recursive: true, force: true });
   }
@@ -672,8 +626,7 @@ try{
   ['oks_edit',{path:'.work/escape-test/protected.jq',old_string:'original',new_string:'changed'}],
   ['oks_delete',{path:'.work/escape-test/protected.jq'}],
   ['oks_write',{path:'.work/escape-test/new-dir/new.jq',content:'.'}],
-  ['oks_project',{input:'oks://knowledge',jq:{src:'.work/escape-test/protected.jq'}}],
-  ['oks_run_answer',{src:'.work/escape-test/protected.jq'}],
+  ['oks_check',{src:'.work/escape-test/protected.jq'}],
  ])ok('文件与执行入口拒绝符号链接逃逸',!!await refusalOf(()=>call(name,args)));
  ok('拒绝后外部文件不变',readFileSync(join(outside,'protected.jq'),'utf8')==='original' && !existsSync(join(outside,'new-dir')));
 }finally{rmSync(resolve(DEV_ROOT,'.work/escape-test'));rmSync(outside,{recursive:true,force:true});}

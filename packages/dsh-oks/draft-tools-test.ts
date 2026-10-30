@@ -6,15 +6,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDraftTools } from './src/draft/tools.ts';
 import { createDraftBackend } from './src/draft/backend.ts';
-import { createJaqEngine } from './src/jaq.ts';
 import type { Knowledge, WorkspaceEntry } from './src/knowledge.ts';
 import type { ToolExec } from './src/host.ts';
 import type { TimeContext } from './src/time-context.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'oks-draft-tools-'));
 mkdirSync(join(root,'.work'));
-const wasm=process.argv[2]; assert.ok(wasm);
-const jq=createJaqEngine(wasm);
 let queries=0; let writes=0; let savedPath="";
 const entry={root,modelHash:'test',settings:{workspaceRoot:root,domain:'test',dataFile:undefined,queryMaxRows:200},runner:{async send(_method:string,{intents}: {intents:{limit:number}[]}){return {ok:{accepted:true,queries:[{sql:'select 1',bindings:[intents[0].limit],limit_slot:0,columns:[{name:'n',type:'Int',nullable:true}]}]}};}}} as unknown as WorkspaceEntry;
 const knowledge={ensureWorkspace:()=>entry,executorFor:()=>({manifest:null,executor:{async send(){queries++;return {rows:[{n:7}],columns:['n'],truncated:false};},dispose(){}}})} as unknown as Knowledge;
@@ -23,7 +20,7 @@ const other={agent:{session:{id:'B'}}} as unknown as ToolExec;
 const timeContext={zones:new Map(),install(){}} as TimeContext;
 const drafts=createDraftTools({knowledge,timeContext,
   attachments:()=>testAttachments(root),
-  backend:(entry,file,contextZone)=>createDraftBackend({knowledge,entry,file,contextZone,jq}),
+  backend:(entry,file,contextZone)=>createDraftBackend({knowledge,entry,file,contextZone}),
 });
 const call=async(name:string,args:unknown,exec=caller)=>{
   const value=await (drafts.tools.find(tool=>tool.name===name)!.execute as unknown as (args:unknown,exec:ToolExec)=>Promise<any>)(args,exec);
@@ -31,7 +28,7 @@ const call=async(name:string,args:unknown,exec=caller)=>{
   return value;
 };
 const file='.work/draft.dari';
-const source='<Dari title="Answer title"><Pipeline>facts <-exec_query(query({limit:5})); total <-jq("total.jq",{facts}); {total}</Pipeline><Asset name="total.jq" language="jq">.facts.rows[0].n</Asset><Template name="answer"><article><p>Total: <Value data={total} /></p></article></Template></Dari>';
+const source='<Dari title="Answer title"><Pipeline>facts <-query({limit:5}); total <-facts.rows[0].n; {total}</Pipeline><Template name="answer"><article><p>Total: <Value data={total} /></p></article></Template></Dari>';
 const write=(value:string)=>writeFileSync(join(root,file),asDari(value));
 try {
   await assert.rejects(call('oks_project',{input:'oks://help/query.md'}), /Unknown structured resource/);
@@ -61,15 +58,13 @@ try {
   write(source.replace('</Dari>','<Template name="second"><article><Value data={total}/></article></Template></Dari>'));
   result=await call('oks_run_answer',{src:file});assert.equal(result.delivery.status,'selection_required');
   result=await call('oks_run_answer',{src:file,answer:'second'});assert.equal(result.delivery.status,'ready');
-  write(source.replace('.facts.rows[0].n','error("bad")'));
+  write(source.replace('total <-facts.rows[0].n','total <-facts.rows[10].n'));
   result=await call('oks_run_answer',{src:file});assert.equal(result.counts.failed,1);assert.equal(result.delivery.status,'unavailable');
   await assert.rejects(call('oks_project',{input:file+'#total'}),/failed/);
   assert.equal(result.failures[0].name,'total');
-  assert.equal(result.failures[0].asset,'total.jq');
-  assert.match(result.failures[0].error,/bad/);
+  assert.match(result.failures[0].error,/Array|index|missing|Index|projection|length|out of/);
   assert.ok(result.failures[0].at.line>0);
-  assert.equal((await call('oks_project',{input:file+'#failures'})).data[0].context.asset,'total.jq');
-  write(source.replace('{total}</Pipeline>','peek <-jq("failure.jq",{}); {total}</Pipeline>').replace('</Dari>','<Asset name="failure.jq" language="jq">error("independent")</Asset></Dari>'));
+  write(source.replace('{total}</Pipeline>','peek <-facts.rows[10]; {total}</Pipeline>'));
   result=await call('oks_run_answer',{src:file});assert.equal(result.computation,'partial');assert.equal(result.delivery.status,'ready');
   write(source.replace('total <-','const total='));
   result=await call('oks_run_answer',{src:file});assert.equal(result.status,'invalid');
@@ -133,8 +128,8 @@ tableSpec <-data({columns:["name","占比(%)"]});
   result=await call('oks_run_answer',{src:file});
   assert.equal(queries,beforePlan);
   assert.deepEqual(result.outputs.find((item:any)=>item.name==='plan').columns,[{name:'n',type:'Int',nullable:true}]);
-  assert.equal(result.acquisitions.length,0);
-  assert.deepEqual((await call('oks_project',{input:file+'#plan'})).data,{columns:[{name:'n',type:'Int',nullable:true}]});
+  assert.equal(result.acquisitions.length,1);
+  assert.deepEqual((await call('oks_project',{input:file+'#plan'})).data,{rows:[{n:7}],columns:[{name:'n',type:'Int',nullable:true}],truncated:false});
   write(source);
   result=await call('oks_run_answer',{src:file});
   const originalBatch=result.batch, beforeRenew=queries;
@@ -156,4 +151,4 @@ tableSpec <-data({columns:["name","占比(%)"]});
   assert.equal((await call('oks_run_answer',{src:file})).batch,renewed.batch);
   assert.equal(queries,beforeRenew+3);
   console.log('draft tools: readonly pagination, session isolation, delivery, debug and failed/removed-output lifecycle passed');
-} finally {drafts.dispose();jq.dispose();rmSync(root,{recursive:true,force:true});}
+} finally {drafts.dispose();rmSync(root,{recursive:true,force:true});}

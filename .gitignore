@@ -7,5 +7,5 @@ lib/
 # 冒烟测试用的工作区（指向真实的产物与数据库，落在仓库内以便写 oks-smoke）
 .smoke-ws/
 
-# Rust 工作区的构建产物（wasm 由 crates/ 下的 crate 编出）
+# 本地工具构建缓存
 target/

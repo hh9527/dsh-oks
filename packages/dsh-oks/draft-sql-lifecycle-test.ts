@@ -1,0 +1,36 @@
+import assert from 'node:assert/strict';
+import {mkdtempSync,readdirSync,existsSync,rmSync} from 'node:fs';
+import {homedir} from 'node:os';
+import {join} from 'node:path';
+import {setTimeout as delay} from 'node:timers/promises';
+import {SqlWorkspace} from './src/draft/sql.ts';
+const root=mkdtempSync(join(process.env.TMPDIR||join(homedir(),'.cache','tmp'),'draft-sql-lifecycle-'));
+const input=(value:number)=>({facts:{columns:[{name:'n',type:'Int',nullable:false}],rows:[{n:value}],truncated:false}});
+const files=()=>readdirSync(root).sort();
+const eventually=async(test:()=>boolean)=>{const end=Date.now()+3000;while(!test()&&Date.now()<end)await delay(10);assert(test(),'temporary database was not reclaimed');};
+const a=new SqlWorkspace({root,idleMs:100}),b=new SqlWorkspace({root,idleMs:100});
+try{
+ await a.execute('check','SELECT n FROM t_facts',input(1),true);
+ assert.deepEqual(files(),[],'schema-only check must not create a cache file');
+ a.beginRun('one');
+ assert.equal((await a.execute('one','SELECT n FROM t_facts',input(1))).rows[0].n,1);
+ const first=files();assert.equal(first.length,1);assert(existsSync(join(root,first[0],'cache.sqlite')));
+ await delay(150);assert.deepEqual(files(),first,'active run must survive idle interval');
+ a.finishRun('one');
+ a.beginRun('two');
+ assert.equal((await a.execute('two','SELECT n FROM t_facts',input(2))).rows[0].n,2,'edited inputs replace stale rows');
+ assert.deepEqual(files(),first,'different runs of one draft share the same database');
+ b.beginRun('other');
+ assert.equal((await b.execute('other','SELECT n FROM t_facts',input(99))).rows[0].n,99);
+ assert.equal(files().length,2,'separate draft instances must have separate database files');
+ await b.dispose();assert.deepEqual(files(),first,'disposing another draft cannot delete this draft cache');
+ a.finishRun('two');
+ await eventually(()=>files().length===0);
+ a.beginRun('three');
+ assert.equal((await a.execute('three','SELECT n FROM t_facts',input(3))).rows[0].n,3);
+ assert.notDeepEqual(files(),first,'expired database must be rebuilt');
+ a.finishRun('three');
+ await a.dispose();assert.deepEqual(files(),[],'dispose removes files immediately');
+ await assert.rejects(a.execute('closed','SELECT n FROM t_facts',input(1)),/disposed/);
+ console.log('Draft SQLite lifecycle: file reuse, isolation, active protection, expiry, rebuild, stale input replacement, checking and disposal passed');
+}finally{await a.dispose();await b.dispose();rmSync(root,{recursive:true,force:true});}

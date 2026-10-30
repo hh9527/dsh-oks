@@ -1,26 +1,30 @@
-<Dari title="示例数据概览">
-<Notes>下面的数值是演示数据，用于体验稿件执行、图表和交付。</Notes>
-<Pipeline>
-// 为演示提供两行数据，并明确标记其性质。
-sample <- data([{label:"A",value:2},{label:"B",value:3}],{kind:"example"});
-summary <- jq("summary.jq",{sample});
-chartSpec <- {x:"label",value:"value",title:"示例数值"};
-tableSpec <- {columns:["label","value"]};
-{summary}
-</Pipeline>
-<Asset language="jq" name="summary.jq">
-{total:(.sample | map(.value) | add),rows:(.sample | length)}
-</Asset>
-<Figures>
-<ColumnChart name="comparison" spec={chartSpec} data={sample} />
-<Table name="details" spec={tableSpec} data={sample} />
-</Figures>
-<Report name="conclusion">
-<article>
-<p>示例共 <Value data={summary.rows} /> 行，合计 <Value data={summary.total} />。</p>
-<figure><Figure ref="comparison"/><figcaption>示例数值</figcaption></figure>
-<figure><Figure ref="details"/><figcaption>示例明细</figcaption></figure>
-<p data-oks-shrink="">这些数值仅用于展示处理流程。</p>
-</article>
-</Report>
-</Dari>
+data facts := table([{level:"major",count:3}],{kind:"example"});
+data rows := select({from:{f:facts},fields:(r)=>({"告警级别":r.f.level,"数量":r.f.count})});
+data winner := select_one({from:{f:facts},fields:(r)=>({level:r.f.level}),order_by:(o)=>[asc(o.level)],limit:1});
+data chartSpec := {x:"告警级别",value:"数量"};
+data tableSpec := {columns:["告警级别","数量"]};
+data summary := select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({total:sum(rows.f.count)})});
+
+figure comparison := ColumnChart(spec = chartSpec, data = rows);
+
+figure details := Table(spec = tableSpec, data = rows);
+
+report answer := Report(title = "呈现示例") [
+  h1 [ "示例结果" ],
+  p [
+    "数量：",
+    Value(data = summary?.total),
+  ],
+  p [
+    "首项：",
+    Value(data = winner?.level),
+  ],
+  figure [
+    Figure(ref = comparison),
+    figcaption [ "类别比较" ],
+  ],
+  figure [
+    Figure(ref = details),
+    figcaption [ "明细" ],
+  ],
+];

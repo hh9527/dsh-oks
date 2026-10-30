@@ -1,7 +1,7 @@
 import { presentationFacts as authored } from './presentation-facts.ts';
 import { COMPONENT_KINDS } from './draft/components.ts';
 import { CHART_KINDS, EXPRESSION_SUPPORT } from './chart/shared.ts';
-import { AUTHOR_ATTRIBUTES, AUTHOR_ELEMENTS } from './report/structure.ts';
+import { PUBLIC_AUTHOR_ATTRIBUTES, AUTHOR_ELEMENTS } from './report/structure.ts';
 import { resolveFact } from './knowledge-graph.ts';
 import type { SemanticGraph } from './knowledge-graph.ts';
 
@@ -37,7 +37,7 @@ export function mountPresentationKnowledge(graph: SemanticGraph): void {
   }
   resolveFact(graph, 'tools/render_figure#topics/switches').support = EXPRESSION_SUPPORT;
   resolveFact(graph, 'tools/report#topics/references').components = COMPONENT_KINDS;
-  Object.assign(resolveFact(graph, 'tools/report#topics/body'), {elements:AUTHOR_ELEMENTS, attributes:AUTHOR_ATTRIBUTES});
+  Object.assign(resolveFact(graph, 'tools/report#topics/body'), {elements:AUTHOR_ELEMENTS, attributes:PUBLIC_AUTHOR_ATTRIBUTES});
   for (const kind of [...CHART_KINDS, 'table']) {
     const fact = resolveFact(graph, `tools/render_figure#kinds/${kind}`);
     const topics = kind === 'table' ? ['table_headers'] : kind === 'graph' ? ['spec','nodes'] : ['spec','switches'];

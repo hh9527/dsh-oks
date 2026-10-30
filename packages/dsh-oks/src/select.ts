@@ -87,7 +87,7 @@ export function createSelector(source:unknown):(input:JsonValue)=>JsonValue {
   const parsed=projection(0);space();
   if(cursor!==source.length){
     if(source[cursor]===',')fail('multiple projections must be enclosed in {…}');
-    if(source[cursor]==='|')fail('select does not support jq pipes; use a projection or transform');
+    if(source[cursor]==='|')fail('select accepts field paths, slices and projections; use typed pipeline for calculations');
     fail(`unexpected ${source[cursor]}`);
   }
   const evaluate=(value:JsonValue,steps:Step[],path:string):Selected=>{

@@ -3,9 +3,3 @@ declare module '*.md' {
   const text: string;
   export default text;
 }
-
-declare module '*.jq' {
-  /** 构建期内联的 jq 源码。 */
-  const text: string;
-  export default text;
-}

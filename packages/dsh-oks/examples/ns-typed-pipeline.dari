@@ -1,0 +1,32 @@
+data facts := query({
+  op:"Graph",root:"d",limit:500,
+  nodes:[{id:"d",entity:"network-element"}],edges:[],
+  select:[{node:"d",dimension:"ne_classification"}],
+  measures:[{node:"d",measure:"ne_count"}]
+});
+data classes := select({
+  from:{n:facts},
+  fields:(r)=>({classification:r.n.d_ne_classification,count:r.n.d_ne_count}),
+  order_by:(out)=>[desc(out.count),asc(out.classification)]
+});
+data summary := select_one({
+  from:{n:classes},group_by:(r)=>({}),
+  fields:(g,rows)=>({classification_count:count(rows),element_count:sum(rows.n.count)})
+});
+data spec := {x:"classification",value:"count"};
+
+figure classChart := ColumnChart(spec = spec, data = classes);
+
+report answer := Report(title = "NS 网元分类概览") [
+  h1 [ "网元分类概览" ],
+  p [
+    "共 ",
+    Value(data = summary?.classification_count),
+    " 类、",
+    Value(data = summary?.element_count),
+    " 个网元。",
+  ],
+  figure [
+    Figure(ref = classChart),
+  ],
+];

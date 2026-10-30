@@ -5,14 +5,12 @@ import {createHash} from 'node:crypto';
 import {join} from 'node:path';
 import {createDraftTools} from './src/draft/tools.ts';
 import {createDraftBackend} from './src/draft/backend.ts';
-import {createJaqEngine} from './src/jaq.ts';
 import {readReportPage} from './src/report/page.ts';
 import {parseDraft} from './src/draft/document.ts';
 import type {Knowledge,WorkspaceEntry} from './src/knowledge.ts';
 import type {TimeContext} from './src/time-context.ts';
 const root=mkdtempSync(join(tmpdir(),'oks-figures-'));mkdirSync(join(root,'.work'));
 const file='oks://work/analysis.dari',physical=join(root,'.work/analysis.dari');
-const jq=createJaqEngine(process.argv[2]??'lib/oks-wti.wasm');
 let queries=0,renders=0;let failSave=false;
 const attachments={async saveFile({data,name}:{data:Uint8Array;name:string}){
  if(failSave)throw new Error('attachment store failed');
@@ -21,7 +19,7 @@ const attachments={async saveFile({data,name}:{data:Uint8Array;name:string}){
 const entry={root,settings:{workspaceRoot:root}} as WorkspaceEntry;
 const knowledge={ensureWorkspace:()=>entry,executorFor(){queries++;throw new Error('No SQL allowed');}} as unknown as Knowledge;
 const drafts=createDraftTools({knowledge,attachments:()=>attachments,timeContext:{zones:new Map()} as TimeContext,backend:(entry,file,contextZone)=>{
- const backend=createDraftBackend({knowledge,entry,file,contextZone,jq});return {...backend,execute(ctx){if(ctx.operator==='render_figure')renders++;return backend.execute(ctx);}};
+ const backend=createDraftBackend({knowledge,entry,file,contextZone});return {...backend,execute(ctx){if(ctx.operator==='render_figure')renders++;return backend.execute(ctx);}};
 }});
 const caller={agent:{session:{id:'figures'}}};
 const call=async(name:string,args:unknown,exec=caller)=>{const tool=drafts.tools.find(t=>t.name===name)!;const result=await (tool.execute as Function)(args,exec);assert.deepEqual(result,JSON.parse(JSON.stringify(result)));return result;};
@@ -46,7 +44,7 @@ try{
  const original=readFileSync(first.path,'utf8');
  const source=base+report('overview','<p>见 <FigureRef ref="severity"/>。</p>'+fig('severity')+fig('details')+fig('severity'))+report('tables',fig('details')+fig('severity'))+'</Dari>';
  write(source);run=await call('oks_run_answer',{src:file});assert.equal(run.delivery.status,'selection_required');assert.deepEqual(run.delivery.candidates,['reports.overview','reports.tables']);assert.equal(renders,2,'reports reuse already rendered figures');
- const shown=await call('oks_show',{input:file+'#reports.overview'});assert.match(shown.path,/\.report\.html$/);assert.equal(shown.markdown,undefined);assert.deepEqual(shown.present,{files:[{path:shown.path,description:shown.title}]});assert.match(readFileSync(shown.path,'utf8'),/见 <span>图 1<\/span>/);
+ const shown=await call('oks_show',{input:file+'#reports.overview'});assert.match(shown.path,/\.report\.html$/);assert.equal(shown.markdown,undefined);assert.deepEqual(shown.present,{files:[{path:shown.path,description:shown.title}]});assert.match(readFileSync(shown.path,'utf8'),/见 <span(?: data-oks-lit="")?>图 1<\/span>/);
  assert.equal((readFileSync(shown.path,'utf8').match(/图 1：/g)??[]).length,2);assert.match(readFileSync(shown.path,'utf8'),/表 1：/);assert.doesNotMatch(readFileSync(shown.path,'utf8'),/图 2：/);
  assert.match(readFileSync((await call('oks_show',{input:file+'#reports.tables'})).path,'utf8'),/图 1：/);
  const tableShown=await call('oks_show',{input:file+'#figures.details'});assert.match(readFileSync(tableShown.path,'utf8'),/<table/);assert.deepEqual(tableShown.present,{files:[{path:tableShown.path,description:tableShown.title}]});assert.equal(tableShown.markdown,undefined);
@@ -65,4 +63,4 @@ try{
  assert.equal(readFileSync(shown.path,'utf8'),archived,'report attachment survives source deletion and renewal');
  assert.equal(queries,0);assert.equal(existsSync(join(root,'artifacts')),false);assert.equal(existsSync(join(root,'.oks')),false);
  console.log('DARI Figures/Report: independent figures, selectors, crossrefs, numbering, render reuse, read-only display snapshots and diagnostics passed');
-}finally{drafts.dispose();jq.dispose();rmSync(root,{recursive:true,force:true});}
+}finally{drafts.dispose();rmSync(root,{recursive:true,force:true});}

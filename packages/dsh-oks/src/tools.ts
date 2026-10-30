@@ -1,14 +1,11 @@
 import {helpFiles,helpEntries} from './help-files.ts';
 import { renderKnowledgeHelp } from './knowledge-navigation.ts';
 import { errorText } from './host.ts';
-import { WORK_URI, MEMORY_URI, sourceUri } from './resource-path.ts';
-import { createKtools, type Ktools } from './ktools.ts';
-import { KTOOLS_FILE, KTOOLS_BUILTIN } from './ktools-path.ts';
-import { builtinKtoolsSource } from './knowledge-programs.ts';
+import { WORK_URI, sourceUri } from './resource-path.ts';
 /** Host bridge: work files, vocabulary and draft tool lifecycle. */
 import { createDraftTools } from './draft/tools.ts';
 import type { PluginConfig } from './config.ts';
-import type { AttachmentsService, LogFn, ToolDefinition, ToolExec } from './host.ts';
+import type { ApprovalService, AttachmentsService, LogFn, ToolDefinition, ToolExec } from './host.ts';
 import type { Knowledge } from './knowledge.ts';
 import type { TimeContext } from './time-context.ts';
 import { renderAsk, VA_HELPER_PREFIX } from './va.ts';
@@ -43,10 +40,10 @@ interface AskArgs {
 }
 
 /** 注册宿主工具及其工作区／会话运行状态。 */
-export function createTools({ knowledge, va, timeContext, log, attachments, ktools=createKtools() }: {
+export function createTools({ knowledge, va, timeContext, log, attachments, approval }: {
   knowledge: Knowledge;
   attachments?:()=>AttachmentsService|undefined;
-  ktools?: Ktools;
+  approval?:()=>ApprovalService|undefined;
   va: VaRuntime;
   timeContext: TimeContext;
   log: LogFn;
@@ -67,11 +64,11 @@ export function createTools({ knowledge, va, timeContext, log, attachments, ktoo
   const definitions: ToolDefinition[] = [
     {
       name: 'oks_read',
-      description: 'Read line-numbered source from oks://work/<file>, persistent oks://memory/tools/ktools.lib.jq, or readonly oks://builtin/tools/ktools.lib.jq and oks://help/<name>.md. offset/limit page lines (default/max 2000); lines longer than 2000 characters are marked and truncated; selected text is capped at 50 KiB with a continuation offset. A missing oks://memory/tools/ktools.lib.jq returns an editable starter. Use oks_list({path:"oks://work/"}) to list files.',
+      description: 'Read line-numbered analysis source at oks://work/<file> or readonly manuals at oks://help/<name>.md. Use oks_list to discover files.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Source path: oks://work/<file>, oks://memory/tools/ktools.lib.jq or oks://builtin/tools/ktools.lib.jq and oks://help/<name>.md. Use oks_list for directories.' },
+          path: { type: 'string', description: 'Source path: oks://work/<file>' },
           offset: { type: 'number', description: 'First line to return, 1-based. Default 1.' },
           limit: { type: 'number', description: 'How many lines to return, 1..2000. Default 2000.' },
         },
@@ -85,7 +82,6 @@ export function createTools({ knowledge, va, timeContext, log, attachments, ktoo
           const files=args.path==='oks://help/knowledge.md'?await helpTexts(exec):helpFiles;
           return readTextLines(files[args.path],args.path,args.offset,args.limit,'oks_read');
         }
-        if(args?.path===KTOOLS_BUILTIN)return readTextLines(builtinKtoolsSource,KTOOLS_BUILTIN,args.offset,args.limit,'oks_read');
         const entry = knowledge.ensureWorkspace(exec);
         const root = entry.settings.workspaceRoot;
         const given = args?.path;
@@ -97,11 +93,11 @@ export function createTools({ knowledge, va, timeContext, log, attachments, ktoo
     },
     {
       name: 'oks_write',
-      description: 'Write UTF-8 source to oks://work/<file> or persistent oks://memory/tools/ktools.lib.jq. DARI drafts contain their own jq assets; execute them with oks_run_answer. Knowledge methods belong in oks://memory/tools/ktools.lib.jq: only comments and def name($args): ...; definitions, compiled before saving. Invalid content preserves the existing file. Read oks://builtin/tools/ktools.lib.jq for examples. The library is exempt from automatic cleanup.',
+      description: 'Write UTF-8 analysis source to oks://work/<file>. Check a DARI draft with oks_check, then execute it with oks_run; approval is controlled by configuration.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Source address: oks://work/<file> or oks://memory/tools/ktools.lib.jq.' },
+          path: { type: 'string', description: 'Source path: oks://work/<file>' },
           content: { type: 'string', description: 'Source text, verbatim.' },
         },
         required: ['path', 'content'],
@@ -110,7 +106,6 @@ export function createTools({ knowledge, va, timeContext, log, attachments, ktoo
       output: { schema: OBJECT_OUTPUT, render: renderWorkWrite },
       async execute(args: WorkWriteArgs, exec: ToolExec) {
         const entry = knowledge.ensureWorkspace(exec);
-        if(args?.path===KTOOLS_FILE)await ktools.validate(args.content,KTOOLS_FILE,exec.signal);
         const saved = writeWorkFile(entry.settings.workspaceRoot, args?.path, args?.content, 'oks_write');
         log(`[oks] oks_write ${saved.file} · ${(saved.bytes / 1024).toFixed(1)} KB · ${saved.created ? '新建' : '覆盖'}`);
         return { ok: true as const, ...saved };
@@ -118,11 +113,11 @@ export function createTools({ knowledge, va, timeContext, log, attachments, ktoo
     },
     {
       name: 'oks_edit',
-      description: 'Replace exact text in oks://work/<file> or persistent oks://memory/tools/ktools.lib.jq. old_string must occur once unless replace_all=true. Library edits compile before saving; invalid content preserves the existing file.',
+      description: 'Replace exact text in oks://work/<file>. old_string must occur once unless replace_all=true.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Source address: oks://work/<file> or oks://memory/tools/ktools.lib.jq.' },
+          path: { type: 'string', description: 'Source path: oks://work/<file>' },
           old_string: { type: 'string', description: 'The exact text to replace (must occur verbatim).' },
           new_string: { type: 'string', description: 'What to put in its place.' },
           replace_all: { type: 'boolean', description: 'Replace every occurrence instead of requiring uniqueness. Default false.' },
@@ -135,7 +130,6 @@ export function createTools({ knowledge, va, timeContext, log, attachments, ktoo
         const entry = knowledge.ensureWorkspace(exec);
         const root=entry.settings.workspaceRoot;
         const candidate=prepareWorkEdit(root,args?.path,args?.old_string,args?.new_string,args?.replace_all,'oks_edit');
-        if(candidate.file===KTOOLS_FILE)await ktools.validate(candidate.body,KTOOLS_FILE,exec.signal);
         if(readWorkText(root,candidate.file,'oks_edit').text!==candidate.original)throw new Error('File changed while validating; read and retry');
         writeWorkFile(root,candidate.file,candidate.body,'oks_edit');
         const saved={file:candidate.file,replaced:candidate.replaced,bytes:candidate.bytes};
@@ -145,28 +139,27 @@ export function createTools({ knowledge, va, timeContext, log, attachments, ktoo
     },
     {
       name: 'oks_list',
-      description: 'List readonly oks://help/ text files, oks://work/ scratch files and the existing persistent oks://memory/tools/ktools.lib.jq library: path, size and modification time.',
+      description: 'List readonly oks://help/ manuals or oks://work/ analysis source files.',
       parameters: { type: 'object', properties: {path:{type:'string'}}, additionalProperties: false },
       output: { schema: OBJECT_OUTPUT, render: renderValue },
       async execute(args:{path?:unknown}, exec: ToolExec) {
         const path=args?.path;
         if(path==='oks://help/'){const files=helpEntries(await helpTexts(exec));return {ok:true as const,files,count:files.length};}
         const entry = knowledge.ensureWorkspace(exec);
-        const dirs=[WORK_URI,MEMORY_URI,MEMORY_URI+'tools/','oks://builtin/','oks://builtin/tools/'];
+        const dirs=[WORK_URI];
         if(path!==undefined&&!dirs.includes(path as string))throw new Error('path must be an OKS source directory');
         const all=listWorkFiles(entry.settings.workspaceRoot).map(file=>({...file,name:sourceUri(file.name)}));
-        if(typeof path==='string'&&path.startsWith('oks://builtin/'))all.push({name:KTOOLS_BUILTIN,bytes:Buffer.byteLength(builtinKtoolsSource),modifiedAt:''});
         const files=all.filter(file=>path===undefined||file.name.startsWith(path as string));
         return { ok: true as const, files, count: files.length };
       },
     },
     {
       name: 'oks_delete',
-      description: 'Delete one file in oks://work/ or explicitly delete oks://memory/tools/ktools.lib.jq. The persistent library is only removed by explicit deletion; automatic cleanup retains it.',
+      description: 'Delete one source file in oks://work/.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'Source address: oks://work/<file> or oks://memory/tools/ktools.lib.jq.' },
+          path: { type: 'string', description: 'Source path: oks://work/<file>' },
         },
         required: ['path'],
         additionalProperties: false,
@@ -210,6 +203,6 @@ export function createTools({ knowledge, va, timeContext, log, attachments, ktoo
     },
   ];
 
-  const drafts = createDraftTools({ knowledge, timeContext, attachments, ktools });
+  const drafts = createDraftTools({approval, knowledge, timeContext, attachments });
   return Object.assign([...definitions, ...drafts.tools], { dispose: drafts.dispose });
 }

@@ -310,7 +310,7 @@ export const buildOption = (
   }
 
   // 关系图：`x` / `series` 是**边**的两端（与 sankey 同一套列语义），节点来自第二张表（`nodesSrc`）。
-  // 布局默认**按 `depth` 列分层**（层号由 agent 在 jq 里算：拓扑深度、到中心的跳数、网络层级都成）；
+  // 布局默认**按 `depth` 列分层**（层号由 Pipeline 计算：拓扑深度、到中心的跳数、网络层级都成）；
   // 节点表同时给了 `x`/`y` 就用给的坐标。力引导不做——排障图两次打开必须一样，随机观感不适合。
   if (spec.kind === 'graph') {
     const layout = resolveLayout({ categories: [], overrides: spec.layout ?? {}, defaultHeight: 340 });

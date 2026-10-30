@@ -8,14 +8,17 @@
 | 工具 | 职责 |
 | --- | --- |
 | `va_ask({query})` | 发起词汇咨询；子 agent 回答送达后，核实词汇线索 |
-| `oks_project({input,transform?,select?})` | 直读结构化资源，先用 jq 方法处理，再用字符串规则投影，返回 `.data` |
-| `oks_read/write/edit/list/delete` | 管理逻辑源码地址；read 支持内置源码，list 用 path 指定目录 |
-| `oks_run_answer({src,answer?,refresh?})` | 执行分析稿并保留结果 |
-| `oks_show({input})` | 将已有图表/报告写入宿主持久附件，返回引用及呈现指引 |
-| `renew_context({src})` | 重置稿件采集批次，下次运行重新采集 |
+| `oks_search({query,type?,dataset?,skip?,take?})` | 按领域词汇检索关联知识点 |
+| `oks_cap({cq,join_depth?,skip?,take?})` | 获取目标的查询能力、关联候选与待校验骨架 |
+| `oks_card({id?,key?,section?,skip?,take?})` | 按预制卡片核实数据集或精确领域节点 |
+| `oks_run({src,answer?,refresh?})` | 检查后执行整稿，返回事实和选中的报告附件；按 requireRunApproval 配置申请批准 |
+| `oks_check({src})` | 检查分析稿，返回查询列类型、诊断和待运行期检查项；不执行 SQL |
+| `oks_read/write/edit/list/delete` | 管理逻辑源码地址；read 支持独立文本手册，list 用 path 指定目录 |
 
 
-业务计算定义在稿件内。`oks_project` 的普通读取视图是 `.data`；meta 显式查看追踪信息。
+摘要直接进入系统上下文。预制工具完整返回其结果，输出规模由查询范围、分页和工具内部结构控制。
+
+agent 先设计和检查分析稿，oks_run 检查后执行并返回事实，按配置申请本次批准。内部宿主运行器保留执行、缓存、来源和呈现能力。
 
 ## 词汇子会话
 
@@ -30,12 +33,13 @@
 主 agent 每次通过 `va_ask` 发起咨询，工具返回子会话 ID 与消息 ID；
 答案由宿主作为子 agent 消息送回主 agent，收到后再使用其中的词汇线索。
 首次调用使用 `startActivation`，续问使用 `sendMessage`，均采用官方宿主的原生生命周期。
-模型路由继承父会话，推理档位默认 `off`；模型须支持配置的档位。
+模型路由继承父会话当前请求。DeepSeek 模型的词汇助手默认使用 `off`，其他模型默认继承推理档位；显式配置优先，模型须支持配置的档位。
 这些选项写在父预设的 OKS 插件行 `config` 中：
 
 ```yaml
 vaPreset: oks-vocabulary
-vaReasoningEffort: "off"  # inherit 表示沿用父会话档位
+# 可选覆盖：inherit 表示沿用父会话档位
+# vaReasoningEffort: "inherit"
 ```
 
 安装器会注册助手预设。手工配置时，注册 ID 为 `oks-vocabulary` 的 agent preset，
@@ -49,132 +53,75 @@ vaReasoningEffort: "off"  # inherit 表示沿用父会话档位
 把 [examples/answer.dari](examples/answer.dari) 的内容写到工作区 `oks://work/draft.dari`，随后：
 
 ```js
-oks_run_answer({src: "oks://work/draft.dari"})
-oks_project({input: "oks://work/draft.dari#summary"})
-oks_project({input: "oks://work/draft.dari#output"})
-oks_show({input: "oks://work/draft.dari#figures.comparison"})
-oks_show({input: "oks://work/draft.dari#reports.conclusion"})
+oks_check({src: "oks://work/draft.dari"})
 ```
 
-该示例明确使用演示数据。真实任务应先发现模型能力，在 pipeline 中先用 `query(Intent)` 校验计划，再用 `exec_query(plan)` 取得业务证据。
-支持只有计算的探索稿，逐步加入 jq、图表和答案。工作区必须声明模型；exec_query 另需 dataFile，query 计划校验不依赖数据库。
+该示例明确使用演示数据。真实任务应先发现模型能力，用 query(Intent) 表达取数，再用 oks_check 检查查询及列类型。检查不要求 dataFile；后处理类型在检查期推导，业务数据和渲染在运行时取得。
 
-## DARI 与最小语言
+## DARI 有类型 Pipeline
 
-`.dari`（Data Analysis and Representation Intermediate Format）是 JSX 风格的专用容器。
-Dari 内包含一个 Pipeline、具名 jq Asset（language="jq"）、可选 Notes、Figures 与 Report。代码正文无需 XML 转义。
-pipeline 是独立的进程内语言模块；jq 使用真实 Wasm 引擎独立编译。
-诊断携带原文件路径和 UTF-16 半开范围、从 1 开始的行列，支持中文、emoji 与 CRLF。
-全部具名程序在查询前预检，缓存结果重新映射到本轮原文件位置。
+`.dari` 使用 data、figure、report 声明不可变计算、图表和报告。图表与报告统一使用 `tag(attrs) [ children ]` 构造表达式。语法规范见 [RFC 0021](../../rfc/0021-typed-relational-pipeline.md)，使用说明见 [Pipeline 手册](src/help/pipeline.md)。
 
-模板以 article 为根：`<Value data={summary.total} />` 显示标量，
-`<Figures><ColumnChart name="severity" spec={chartSpec} data={facts.rows} /></Figures>` 生成独立图表。
-可选 `<Report name="overview">` 内通过 `<figure><Figure ref="severity"/><figcaption>说明</figcaption></figure>` 编排，`<FigureRef ref="severity"/>` 生成交叉引用编号。
-图元自闭合，spec 省略 kind，由标签决定类型；仅 NetworkGraph 接受 nodes。
-每个 figure 放一个 Figure 引用和可选的尾部 figcaption；图和表各自按首次展示顺序编号，每份报告重新开始，重复引用复用编号。
-花括号只接受 pipeline 绑定和静态投影；对象构造在 pipeline，运算在 jq。
-普通正文元素遵守 DARI 正文白名单，属性为静态字符串，文本中的 & 与 < 使用实体。
-Notes 为静态原文，以 `</Notes>` 为保留结束标记；不参与计算。
-
-执行入口为 `.dari`。具名 Asset 只包含 jq；Report 与 Figures 是稿件原生结构，直接编译成执行图。
-
-```js
-params <- data({threshold: 10}, {kind: "parameter"});
-plan <- query({op:"Graph",root:"d",nodes:[{id:"d",entity:"<发现的数据集ID>"}],edges:[],select:[],count:"d",limit:100});
-facts <- exec_query(plan);
-summary <- jq("summary.jq", {facts, params});
-{summary, first:facts.rows[0]}
+```text
+data facts := query({...});
+data result := select({
+  from:{f:facts},
+  fields:(r)=>({name:r.f.name,value:r.f.value}),
+  order_by:(out)=>[desc(out.value),asc(out.name)]
+});
+data first := select_one({
+  from:{r:result},fields:(row)=>({name:row.r.name,value:row.r.value}),
+  order_by:(out)=>[desc(out.value),asc(out.name)],limit:1
+});
+figure chart := BarChart(spec = {x:"name",value:"value"}, data = result);
+report answer := Report [
+  h1 [ "分析结果" ],
+  p [ "首项：", Value(data = first?.name), ],
+  figure [ Figure(ref = chart), ],
+];
 ```
 
-语法使用不可变 `name <- expression;` 绑定和可选的末尾输出对象，禁止 shadow，先定义后引用。全部 assets 先编译校验，执行按依赖 DAG 调度，独立分支逻辑并行。`_` 前缀绑定不跨运行缓存计算，本次运行内共享结果；采集批次仍由 refresh/renew_context 控制。支持 JSON 值/数组/对象、静态投影和固定算子。
-绑定语句必须有分号，末尾输出对象的分号可省略；变量先定义后引用，对象可简写 `{facts}`。注释支持 // 和 /* */。
-静态路径支持 `.field`、`["field"]`、`[0]`；不存在的字段、越界及类型错配明确报错。
-复杂筛选、遍历、算术与聚合写入 jq；输入文本按本语言解析，不执行任意 JS。
+模型在 check 时返回 query 的 columns，直接构成 Table(T) 的行类型。select 根据表类型、行作用域和表达式签名推导新的 Table(U)；select_one 得到普通的 Option(U)。表列通过行函数访问，报告标量使用可选对象投影，例如 `Value(data = first?.name);`。
 
-| 算子 | 数据与来源 |
-| --- | --- |
-| `data(value,{kind?})` | given（默认）/parameter/assumption/example，实际内容随来源保存 |
-| `context()` | 显式捕获浏览器时区与时刻，批次内固定；utc 有 epochMillis/epochSeconds/rfc3339 |
-| `time_windows(ctx,{unit,count,mode})` | 带 label、zone、毫秒及 RFC3339 起止的半开日历窗口 |
-| `query(Intent)` | 只校验并编译计划，不访问数据库；可见负荷 `{columns}`，列为模型声明的 `{name,type,nullable}`，顶层 limit 为 1..500 |
-| `exec_query(plan)` | 执行完整计划，结果 `{rows,columns,truncated}`；同批相同计划复用首次成功采集 |
-| `jq("a.jq",{...})` | 当前文档具名 asset，恰好输出一个 JSON 值，完整源码随来源保存 |
-| `render_figure(spec,{data,nodes?})` | 图/表展示件；table 选 columns，图使用 x/value/series 等列映射 |
+支持 inner/left join、筛选、投影、排序、limit、分组聚合、Option、有限 map、union_all 和时间转换。数值和字符串不发生隐式转换。错误字段、错误算术类型、可空谓词、非法聚合、图表列映射都在不读业务数据时检查。模型 columns 不包含的信息，如业务键唯一性和单位，不自行猜测。
 
-绑定传递 `.data` 值，来源带外携带。紧邻语句前的独立 // 行注释记录该步业务说明。
-资产语法、静态 Intent 和可提前判断的规格先检查，再开始新业务计算；动态 Intent 就绪后校验。
-运行中单分支失败阻塞其下游，独立分支继续。
-预检独立收集 pipeline、jq assets、figures、reports 的诊断；单个错误不阻止其他单元检查。
-运行回执提供有界预览和 omittedDiagnostics，完整诊断可通过 `#diagnostics` 分页读取。
-容器结构无法解析时先修复结构；本地预检有错时停止执行，也不发起模型相关的计划检查。
+运行以有类型计划生成参数化 SQL，在本次运行的 SQLite `:memory:` 内执行。每个结果集保留 schema；查询与派生计算按依赖缓存，缓存命中也能恢复临时表。select_one 的动态多行约束会在运行时拒绝。截断输入、schema 漂移、值类型不符、资源超限均明确失败。
+
+图表写成 `figure chart := BarChart(spec = spec, data = result);`，检查器验证列名和数值映射。报告通过 `figure [ Figure(ref = chart) ];` 编排。绑定不可变，先定义后引用；一个 report 自动交付，多个 report 通过 answer 选择。内部数据不自动返回，运行结果包含所选报告引用的标量和图表事实。源码、当前来源位置和计算过程跟随图表与报告保存。
 
 ## 知识发现
 
+数据分析流程直接进入预制 prompt，并以同一份文本在 `oks://help/workflow.md` 提供：理解意图、发现词汇和知识、批量检查查询及列类型、建立后处理后执行、审视数据并形成报告。
+
+模型的全局领域摘要以 Markdown 在系统上下文中一次性提供，覆盖全部 Entity、Dataset、维度、度量与关系概览；词汇表、反向连接和插件手册独立提供。摘要按模型缓存，不累积重复注入；`oks://domain/summary.md` 提供同源读取，`oks://domain/` 提供目录。局部 cap/card 保持结构化 JSON，携带事实与必要说明。
+
 ```js
-oks_project({input:"oks://knowledge",select:"{datasets:keys,types:keys}"})
-oks_project({input:"oks://knowledge",transform:{lib:"oks://builtin/tools/ktools.lib.jq",name:"search",args:{query:"候选词",take:10}}})
-oks_project({input:"oks://knowledge",transform:{lib:"oks://builtin/tools/ktools.lib.jq",name:"read",args:{key:"返回的地址"}}})
-oks_read({path:"oks://help/query.md"})
+va_ask({query:"业务说法"})
+oks_cap({cq:{target:{dataset:"目标数据集"}},take:20})
+oks_card({id:"目标数据集",section:"dimensions",skip:0,take:20})
+oks_card({key:"词汇助手返回的语义地址"})
+oks_list({path:"oks://help/"})
 ```
 
-select 直接作用于当前值，jq 输入为所选资源的值（知识图直接为 `{datasets,types,relations,tools,items}`）。内置源码可用 `oks_read({path:"oks://builtin/tools/ktools.lib.jq"})` 阅读。自定义方法统一保存在 `oks://memory/tools/ktools.lib.jq`，只含注释及 `def name($args): ...;`，使用 `transform:{lib:"oks://memory/tools/ktools.lib.jq",name:"name",args:{}}` 调用；保存前编译，错误保留原文件。文件跨会话持久保留。
-成员导航用 members，反向引用用 references；next 作为 skip 续页。
-独立地址形如 `datasets/<URI编码ID>`，成员形如 `datasets/<ID>#dimensions/<ID>`；返回地址原样使用。
-字典键是原始 ID。names/doc 与事实分开保存在 items；read 配对读取。
-精确选择 types 下的 values 不携带 fields 等分类引用。导航引用不授予查询能力，能力以领域声明为准。
+知识查询使用固定工具参数；具体约束以卡片和 transform 校验为准。有类型 Pipeline 负责 DARI 的数据计算。后处理与摘要写在分析稿中，由宿主运行。
+
 
 ## 时间与缓存
 
 ```js
-ctx <- context();
-months <- time_windows(ctx,{unit:"month",count:3,mode:"complete"});
-{months}
+data ctx := context();
+data months := time_windows(ctx,{unit:"month",count:3,mode:"complete"});
 ```
 
 complete 为最近 N 个完整期间；current 含当前期间，末端可能在未来；rolling 以捕获时刻为末端按日历回移。
 unit 为 year/quarter/month/week/day，count 为 1..50。周从周一开始，边界分别适用时区/DST 规则。
-细节见 `oks_read({path:"oks://help/time.md"})`，jq 时间原语使用 epoch 秒。
+细节见 `oks_read({path:"oks://help/time.md"})`，Pipeline 提供规范的 UTC/毫秒时间转换。
 
-低成本验证时，稿内只写 `plan <-query(intent); {columns:plan.columns}`，确认后加入 `facts <-exec_query(plan);`。计划身份保存在运行器内部，完整绑定可直接引用；JSON 构造、投影和 jq 重构不会生成可执行计划。
+## 设计检查
 
-反复提交完整源码默认复用本采集批次中相同计划的执行结果；输入计划变化只重采该查询，改 jq 或模板只影响其实际依赖。context 无输入，同批捕获的时间与时区固定。
-`refresh:true` 新建采集批次并立即运行；`renew_context({src:"oks://work/draft.dari"})` 只重置当前会话中指定稿件的批次，下次运行才采集，旧输出暂不可读。编译计划不因采集刷新而失效。批次不代表数据库事务快照，实际采集时间随证据保存。
-运行回执的 acquisitions 摘要包含 acquiredAt、fromRun/fromBatch，以及复用、显式刷新、环境变化等原因；省略项有计数。
-校验缓存包含程序/模型/检查器身份，计算缓存按实际值与环境判断，命中后仍装配本轮真实来源。
+oks_check 返回 queries（模型查询及关系节点的列）、types（各绑定的推导类型）、diagnostics 和 deferred。query columns 在本次检查内参与所有后续类型推导；检查不读业务数据库，不把未知事实折叠成空表、零或 None。业务值决定下一次 query 的写法会被拒绝。
 
-内部缓存与输出保留有容量上限：8 份工作区/会话/源码状态，30 分钟保留，计算缓存每份 128 项/16 MiB，
-单轮输出 32 MiB。源码至多 256 KiB、512 语句，标识符最长 128 字符，单稿执行 120 秒。
-采集快照被回收时会明确要求 refresh/renew_context，避免相同输入悄悄重查。进程重启允许缓存失效；读取不延长保留期，不恢复或重算。
-
-## 只读查看与交付
-
-```js
-oks_project({input:"oks://work/draft.dari#facts",select:"rows[0:5]"})
-oks_project({input:"oks://work/draft.dari#output"})
-oks_project({input:"oks://work/draft.dari#meta.summary"})
-```
-
-select 保留字段层级；切片与算子进入输出键名。例如 rows[0:5] 的数据在 .data["rows[0:5]"] 中。根数组用 [0:5] 直接取样。
-读取对应当前会话该源码的最近一次运行；失败/移除/阻塞/回收不回退旧成功值。改稿后保留结果标 stale。
-查询的 `truncated` 表示是否还有未返回的行；rows 最多包含请求的 limit 行。
-查询的 `columns` 采用模型声明的 Int/Float/Bool/String/DatetimeUtc/EpochMillis/LocalDateTime，
-保留最终投影顺序与保守 nullable；空结果、全 NULL 不影响声明。运行回执有列预览，完整读取可用
-`oks_project({input:"oks://work/draft.dari#facts",select:"columns"})`，稿内可写 `{columns:facts.columns}`。
-LocalDateTime 是不带时区或偏移量的日期与钟表时间。旧模型未提供 columns 时使用观察类型 `types`。
-
-新的计算、筛选或取样写回稿件再运行。末尾对象声明展示输出，回执关联原位置，小值直接返回，大值给 #output 引用。
-
-单个 Report 自动选择；多个时用 answer:"reports.name" 指定。计算和交付状态分开报告。
-`#figures.name` 与 `#reports.name` 通过 oks_project 读取结构数据。
-`oks_show({input:"oks://work/analysis.dari#figures.severity"})` 将已有 SVG（含证据）写入 ctx.attachments，返回 FileAttachmentRef、只读 path 与 markdown；将 markdown 原样嵌入回答即可在对话展示。报告输出 `.report.html`、Table 输出 `.html` 附件；收到 `present` 字段后，用它作为宿主 `present` 工具的参数，显示原生文件卡片。此调用读取已保留结果。附件按内容寻址，不受工作区清理影响；宿主通过 file 内容块保留持久引用，模型仅接收简短回执。
-报告附件为自包含 HTML，带全部引用数据、来源与 jq/DARI，删除工作源码后仍可解释。
-存储、呈现和生命周期统一由宿主附件服务管理。
-相同证据/源码重复交付复用仍存在的文件。最终工具反馈限制为 16 KiB。
-
-Report 使用 `<article>` 根、受支持的元素/属性、显式自闭合空元素。
-标量使用 Value，图表使用 Figure 引用。DARI 编译器直接校验作者结构，渲染器遍历编译结构生成 HTML。
-正文业务数字通过引用填入；文字数字用 span 的 data-oks-lit 声明，解释段用 data-oks-shrink 标记。
-报告读模型为 `{version,context,dari}`，图表数据在 dari.figures，正文引用值在 dari.values，报告正文源码在 dari.reports。
+oks_run 重新检查当前稿件，冻结检查与执行共享的时间上下文，按配置申请本次用户批准后执行。修改后处理不会重新采集未变化的 query；refresh 创建新采集上下文。运行期验证真实 schema、值域、来源与单行守卫，并返回事实和可用的报告附件。
 
 ## 工作区与运行配置
 
@@ -185,7 +132,7 @@ Report 使用 `<article>` 根、受支持的元素/属性、显式自闭合空�
 ```
 
 插件行 config 可覆盖 domain/model/dataFile；requestTimeoutMs 默认 60000，queryTimeoutMs 默认 30000。
-exec_query 使用计划内的 Intent limit 作为行数保险。模型和数据源是独立部署物；当前进程已加载的工作区环境在重启后重新加载。
+宿主执行 query 时使用 Intent limit 作为行数保险。模型和数据源是独立部署物；当前进程已加载的工作区环境在重启后重新加载。
 运行器的内存结果有独立的容量与保留窗口，导出的宿主附件持久保留。
 
 ## 构建期知识
@@ -245,7 +192,7 @@ bin/telora -C <模型目录> build <模型名> --staged \
 `mdast-util-from-markdown` 仅供旧 Markdown 草稿的迁移脚本与测试夹具使用，属于开发依赖，不进入插件运行产物。
 
 
-TypeScript 在 src/，纯 jq Wasm 引擎在 crates/oks-wti。产物仅为 lib/index.mjs 与同目录 oks-wti.wasm。
+TypeScript 在 src/，发布产物为单文件 lib/index.mjs。知识查询由固定 JS 方法实现，日历计算使用内联的 Temporal，后处理使用 typed pipeline 编译到 SQLite。
 echarts 依赖及技能源码在构建期打包，运行不依赖源码或 node_modules。
 Node 按 URL 缓存 ESM，link 安装需要重建并重启 profile 才加载新模块。
 
@@ -257,9 +204,9 @@ pnpm run check
 ```
 
 build/prepare/pretest 直接更新 lib，运行中的 link 安装需先暂停服务，验收通过后重启。
-Rust 需要 wasm32-unknown-unknown target；求值器没有时钟、环境或文件系统，超时/取消可强制终止 worker。
-源码解析、依赖/缓存/来源、只读生命周期、图表/DARI 报告、知识索引与原生引擎各有独立测试。
-真实模型/只读 SQLite 的工具集成使用 draft-plugin-test.ts，可对只含两份产物的独立目录验收。
+构建仅需 Node.js 与 pnpm；模型执行使用独立的 Telora 模型宿主。
+源码解析、依赖/缓存/来源、只读生命周期、图表/DARI 报告、知识索引、JS 日历和临时数据库生命周期各有独立测试。
+真实模型/只读 SQLite 的工具集成使用 model-integration-test.ts，可对只含两份产物的独立目录验收。
 
 源码格式见 [RFC 0015](../../rfc/0015-report-template-syntax.md)；执行与来源协议见 [RFC 0013](../../rfc/0013-answer-source.md)。
 
@@ -267,44 +214,49 @@ Rust 需要 wasm32-unknown-unknown target；求值器没有时钟、环境或文
 
 工具初始化时将领域无关的呈现用法挂载到 `tools`，与模型事实共享搜索、导航与投影。
 `tools/render_figure#kinds/<kind>` 提供必填列映射、series 语义、专属开关和可执行示例；
-`tools/render_figure#topics/table_headers` 说明字符串列名与 jq 表头重命名；
+`tools/render_figure#topics/table_headers` 说明字符串列名与 select 输出列命名；
 `tools/report#topics/references` 说明 Value、Figure 引用与静态投影。
 使用 `oks_read({path:"oks://help/figures.md"})` 查看入口，或用知识搜索查“图表”“表头”“data-oks-pick”。
 每个主题可单独读取；`#topics/draft` 提供完整可运行 DARI 示例。
 
-已有稿件若使用 query 直接取数，可显式迁移并保留原稿：
-
-```sh
-node scripts/split-query.ts old.dari new.dari
-```
-
-该命令将旧 query 调用包装为 exec_query(query(...))；新写的计划探索稿无需迁移。
-
 ## 逻辑文件系统
 
-- `oks://work/`：临时草稿与工作文件，物理位置为 `.work/`，通过 oks_delete 显式清理。
-- `oks://memory/tools/ktools.lib.jq`：持久方法库，物理位置为 `memory/oks/tools/ktools.lib.jq`，跨会话保留。
-- `oks://builtin/tools/ktools.lib.jq`：插件内置方法库，只读。
-- 导出内容由宿主附件服务持久保存，回执返回 FileAttachmentRef、path 和 Markdown。
+- `oks://work/`：临时分析稿与工作文件，物理位置为 `.work/`，通过 oks_delete 显式清理
+- `oks://help/*.md`：独立的只读文本手册
+- `oks://domain/summary.md`：模型与插件自动生成的全局领域摘要
+- 图表和报告由宿主附件服务持久保存，回执返回附件引用与呈现指引
 
-内置方法源码位于 `oks://builtin/tools/ktools.lib.jq`，自定义持久库位于 `oks://memory/tools/ktools.lib.jq`。
-`.lib.jq` 只含注释与 def 定义，保存前编译；方法入口为 `def name($args): ...;`，接收所选资源的值。
-`oks_project` 按 input → transform（可选）→ select（可选）执行，两者可组合。oks://knowledge 是完整 JSON 数据源；oks://help/*.md 是文本文件，由 oks_read 阅读。
-
-工作区文件由 `oks://work/` 与 `oks://memory/` 管理；运行结果与缓存保留在内存，图表和报告导出至宿主附件。
+agent 可检查稿件并通过 oks_run 运行；默认直接运行，配置 requireRunApproval=true 时先申请批准；result 直接返回最终输出，无独立结果读取工具。
 
 ### 按需读取工具用法
 
-入口提示词保留任务和工作方法。工具帮助是 oks://help/*.md 只读文本文件，用 oks_list({path:"oks://help/"}) 列出，再用 oks_read({path:"oks://help/draft.md"}) 阅读，offset/limit 按行分页。knowledge.md 解释整体知识图，project.md 解释数据投影，draft.md、query.md、time.md 和 figures.md 分别提供分析稿、查询、时间与呈现的方法。
+入口提示词保留任务和工作方法。工具帮助是 oks://help/*.md 只读文本文件，用 oks_list({path:"oks://help/"}) 列出，再用 oks_read({path:"oks://help/draft.md"}) 阅读，offset/limit 按行分页。knowledge.md 解释摘要、预制卡片和词汇助手，draft.md、query.md、time.md 和 figures.md 分别提供分析稿、查询、时间与呈现的方法。
 
 工具帮助统一维护在 `src/help/*.md`，作为普通 Markdown 文本在构建时内联，不转换为结构化知识。图表和报告的结构化能力与示例直接维护在 `src/presentation-facts.ts`；组件、能力矩阵和白名单由实现生成。维护约定见 `src/help/README.md`。
 
 文本读取：`oks_read` 与标准 read 使用相同窗口规则：默认/最多 2000 行，单行保留 2000 字符并标注截断，正文上限 50 KiB，返回续读 offset；偏移越界报错。文件目录使用 `oks_list`。
 
-`oks_project` 超限返回 `{error:"payload_too_large",repr,reprLength,len}`；repr 为完整数据 JSON 编码的前 4096 个字符，reprLength 为完整编码的 string.length，len 为数组/字符串长度或对象键数（其他值为 null）。
 
 ### 报告归档
 
 DARI 报告 HTML 在非执行元数据中保留 `{version:1,context,dari}`。context 是本次运行与实际采集的快照；dari 包含完整 source、title、notes、assets、pipeline、reports，以及所有图表的 code、binding、status 和成功时的实际 data。dari.values 以规范化投影 code 为键，保存正文实际引用的标量，例如 `{"summary.total":42}`；相同投影跨报告去重。归档只保存图表数据与正文引用值，不保存全部中间绑定。整稿源码可完整恢复，导出不会刷新时间或执行查询。
 
-用 `oks_project({input:"oks://work/分析.dari#reports.answer",select:"{context,dari.pipeline}"})` 按需查看。图表与报告无依赖的分支执行结束后也纳入归档；失败分支保留状态。归档受运行存储预算约束。
+宿主内部可按需读取归档，agent 通过获准的 oks_run 获取结果。图表与报告无依赖的分支执行结束后也纳入归档；失败分支保留状态。归档受运行存储预算约束。
+
+
+### 有类型 Pipeline 验收
+
+[IC CPU 两期比较](examples/cpu-typed-pipeline.dari) 覆盖窗口、18 个模型查询、关系组合、单行对象、聚合和逐日图；[NS 网元分类](examples/ns-typed-pipeline.dari) 覆盖另一模型的列 schema 与普通聚合对象。两份稿件均不含 Asset。
+
+`node --import ./scripts/markdown-loader.mjs draft-typed-test.ts` 验证无业务数据的类型检查、字段诊断、Option、左关联、空表/空组、聚合、单行守卫、有限展开、缓存恢复、schema 变化和预制图表手册示例。Issue [#49](https://github.com/hh9527/dsh-oks/issues/49) 跟踪实现与验收，当前为分支实现。
+
+
+### 运行批准配置
+
+requireRunApproval 默认为 false，oks_run 完成检查后直接执行。设为 true 时，每次运行（含缓存复用与刷新）通过宿主申请一次性批准；批准服务不可用、拒绝或取消时不执行。
+
+该字段可写在工作区 oks.json 或插件 config 中。优先级为插件显式配置 > 工作区配置 > 默认值，例如：
+
+```json
+{"requireRunApproval": true}
+```

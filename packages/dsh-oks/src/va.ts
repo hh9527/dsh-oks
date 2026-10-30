@@ -27,7 +27,6 @@ export function createVaRuntime({ ctx, log, config }: {
   config: PluginConfig | undefined;
 }): VaRuntime {
   const preset = config?.vaPreset?.trim() || VA_PRESET;
-  const effort = config?.vaReasoningEffort?.trim() || 'off';
   const states = new WeakMap<AgentLike, {
     childId?: string;
     discovered?: boolean;
@@ -83,6 +82,10 @@ export function createVaRuntime({ ctx, log, config }: {
             if (existing) {
               messageId = await service.sendMessage(caller, childId, prompt, { signal: requestSignal });
             } else {
+              // Match the host's delegation route: the latest request wins over creation options.
+              const route = caller.session.requestHeader?.()?.config ?? caller.options;
+              const effort = config?.vaReasoningEffort?.trim()
+                || (/^deepseek(?:[-_/]|$)/i.test(route?.model ?? '') ? 'off' : 'inherit');
               const activation = await service.startActivation({
                 provider: 'spawn', label: '词汇助手', childId, delivery: 'parent', signal: requestSignal,
                 request: { parent: caller, cwd, agentPreset: preset, prompt,

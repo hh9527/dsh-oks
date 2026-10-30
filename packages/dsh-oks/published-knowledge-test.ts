@@ -1,3 +1,4 @@
+import {queryKnowledge} from './src/knowledge-methods.ts';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -5,8 +6,6 @@ import { readBuildInformation } from './src/service-metadata.ts';
 import { derivePublishedKnowledge } from './src/published-knowledge.ts';
 import { collectProgrammedKnowledge } from './src/programmed-knowledge.ts';
 import { encodePart, resolveFact } from './src/knowledge-graph.ts';
-import { createJaqEngine } from './src/jaq.ts';
-import { builtinCode } from './src/knowledge-programs.ts';
 
 const leb = (n: number): number[] => n < 128 ? [n] : [(n % 128) | 128, ...leb(Math.floor(n / 128))];
 const header = [0,97,115,109,1,0,0,0];
@@ -60,18 +59,7 @@ const index = derivePublishedKnowledge(input);
 assert.equal(resolveFact(index.knowledge, `${ds}#dimensions/one`).projectable, false);
 assert.deepEqual((resolveFact(index.knowledge, group).referenced_by as any).bindings, [first, second]);
 assert.ok(index.keys.has(first) && index.keys.has(second));
-const engine = createJaqEngine(fileURLToPath(new URL('./lib/oks-wti.wasm', import.meta.url)));
-try {
-  const run = async (name: string, args: Record<string, unknown>) => {
-    const code = builtinCode(`builtin://knowledge/${name}.jq`, args);
-    const result = await engine.run(code.text, { input: { knowledge: index.knowledge }, timeoutMs: 5000, maxBytes: 65536, programFile: code.file });
-    assert.equal(result.ok, true, JSON.stringify(result)); return (result as any).data;
-  };
-  assert.equal((await run('search', { type: 'Entity' })).items[0].key, 'entities/customer');
-  assert.equal((await run('members', { key: ds, link: 'bindings', type: 'Binding' })).total, 2);
-  assert.equal(new Set((await run('references', { key: group, type: 'Binding' })).items.map((item: any) => item.key)).size, 2);
-  assert.equal((await run('read', { key: 'entities/customer' })).facts.referenced_by.roles[0], `${ds}#roles/customer`);
-} finally { engine.dispose(); }
+assert.equal((queryKnowledge(index.knowledge,'search',{query:'customer',type:'Entity'}) as any).items[0].key,'entities/customer');
 if (process.argv[2]) {
   const metadata = readBuildInformation(readFileSync(process.argv[2]));
   assert.ok(metadata && Object.hasOwn(metadata, 'ontology.knowledge'));
@@ -84,15 +72,8 @@ if (process.argv[2]) {
   }
   assert.ok(Object.keys(actual.knowledge.datasets).length >= 5);
   for (const root of ['entities', 'dimension_groups'] as const) assert.ok(Object.keys(actual.knowledge[root] ?? {}).length > 0, root);
-  const actualEngine = createJaqEngine(fileURLToPath(new URL('./lib/oks-wti.wasm', import.meta.url)));
-  try {
-    const dataset = Object.keys(actual.knowledge.datasets)[0];
-    for (const [name, args] of [['overview', {}], ['card', { id: dataset }], ['search', { type: 'DimensionGroup' }], ['nodes', { keys: [`datasets/${encodePart(dataset)}`], mode: 'both' }]] as [string, Record<string, unknown>][]) {
-      const code = builtinCode(`builtin://knowledge/${name}.jq`, args);
-      const result = await actualEngine.run(code.text, { input: { knowledge: actual.knowledge }, timeoutMs: 5000, maxBytes: 262144, programFile: code.file });
-      assert.equal(result.ok, true, JSON.stringify(result));
-    }
-  } finally { actualEngine.dispose(); }
+  const dataset=Object.keys(actual.knowledge.datasets)[0];
+  queryKnowledge(actual.knowledge,'card',{id:dataset});
   console.log(JSON.stringify({ artifact: process.argv[2], revision: actual.revision, counts: actual.meta.counts, facts: actual.keys.size, links: actual.links.length }));
 }
-console.log('static knowledge: no discovery calls, strict metadata, closed references, separate bindings and jq navigation passed');
+console.log('static knowledge: no discovery calls, strict metadata, closed references, separate bindings and JS navigation passed');

@@ -2,7 +2,7 @@ import { fromMarkdown } from 'mdast-util-from-markdown';
 import { DraftSyntaxError, parsePipeline } from '../src/draft/pipeline.ts';
 import type { PipelineNode, Position, Span } from '../src/draft/pipeline.ts';
 
-export type DraftAsset = { name: string; language: 'jq'; source: string; span: Span; body: Position };
+export type DraftAsset = { name: string; language: 'sql'; source: string; span: Span; body: Position };
 export type DraftDocument = { title?: string; nodes: PipelineNode[]; assets: Map<string, DraftAsset>; pipeline: Span;answers:string[];file:string };
 const MAX_SOURCE_BYTES = 256 * 1024;
 
@@ -56,11 +56,11 @@ export function parseMarkdownDraft(source: string): DraftDocument {
       pipeline = bodyOf(span);
     } else if (block.meta) {
       const match = /^name="([A-Za-z0-9_-][A-Za-z0-9_.-]*)"$/.exec(block.meta);
-      if (!match) fail('Asset attributes must be name="single-file.jq"', span);
+      if (!match) fail('Asset attributes must be name="single-file.sql"', span);
       const name = match![1];
       if (assets.has(name)) fail(`Duplicate asset ${name}`, span);
-      if (block.lang !== 'jq' || !name.endsWith(`.${block.lang}`)) fail('Asset language and extension must match jq', span);
-      assets.set(name, { ...bodyOf(span), name, language: block.lang as 'jq' });
+      if (block.lang !== 'sql' || !name.endsWith(`.${block.lang}`)) fail('Asset language and extension must match sql', span);
+      assets.set(name, { ...bodyOf(span), name, language: block.lang as 'sql' });
     }
   }
   if (!pipeline) return fail('A pipeline section with exactly one js block is required');

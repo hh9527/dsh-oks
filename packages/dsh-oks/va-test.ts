@@ -41,10 +41,27 @@ test('官方宿主首次创建、后续 sendMessage，工具只返回投递确�
   assert.equal(h.starts.length, 1); assert.equal(h.sends.length, 1);
   assert.equal(h.starts[0].delivery, 'parent'); assert.equal(h.starts[0].request.parent, parent);
   assert.equal(h.starts[0].request.agentPreset, 'oks-vocabulary');
-  assert.deepEqual(h.starts[0].request.agentOptions, { reasoningEffort: 'off' });
+  assert.equal(h.starts[0].request.agentOptions, undefined);
   assert.equal(h.sends[0].parent, parent); assert.equal(h.sends[0].childId, first.helper);
   assert.deepEqual(h.sends[0].prompt, [{ type: 'text', text: '端口' }]);
   assert.match(renderAsk({}, first)[0].text!, /answer will arrive as a subagent message/);
+});
+test('默认仅 DeepSeek 关闭推理，按当前请求路由判断并尊重显式配置', async () => {
+ for(const [model,expected] of [['deepseek-flash','off'],['deepseek-reasoner','off'],['qwen3.8-flash',undefined],['kimi-k3.1-pro',undefined],['unknown',undefined],['',undefined]]){
+  const h=harness(),parent=caller();parent.options={provider:'gateway',model};
+  await h.runtime.ask(parent,'parent','问题');
+  assert.deepEqual(h.starts[0].request.agentOptions,expected?{reasoningEffort:expected}:undefined,model);
+ }
+ for(const [created,current,expected] of [['deepseek-flash','qwen3.8-flash',undefined],['qwen3.8-flash','deepseek-flash','off']]){
+  const h=harness(),parent=caller();parent.options={model:created};parent.session.requestHeader=()=>({config:{provider:'gateway',model:current}});
+  await h.runtime.ask(parent,'parent','切换后问题');
+  assert.deepEqual(h.starts[0].request.agentOptions,expected?{reasoningEffort:expected}:undefined);
+ }
+ for(const [model,effort] of [['deepseek-flash','inherit'],['deepseek-flash','low'],['qwen3.8-flash','low']]){
+  const h=harness({config:{vaReasoningEffort:effort}}),parent=caller();parent.options={model};
+  await h.runtime.ask(parent,'parent','覆盖');
+  assert.deepEqual(h.starts[0].request.agentOptions,effort==='inherit'?undefined:{reasoningEffort:effort});
+ }
 });
 test('从父会话持久目录恢复已有词汇子会话', async () => {
   const h = harness({ children: [{ mode: 'continuable', id: 'session-va-existing', label: '词汇助手' }] });

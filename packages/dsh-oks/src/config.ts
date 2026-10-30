@@ -13,6 +13,7 @@ export const DEFAULTS = {
   // 只读查询的墙钟上限与被取回的最大行数（node:sqlite 是同步 API，卡住只能靠 terminate）。
   queryTimeoutMs: 30000,
   queryMaxRows: 200,
+  requireRunApproval: false,
 };
 
 /** 工作区 oks.json 里插件认得的声明。 */
@@ -24,6 +25,7 @@ export interface OksDeclaration {
   retryAcceptedSubset?: boolean;
   queryTimeoutMs?: number;
   queryMaxRows?: number;
+  requireRunApproval?: boolean;
 }
 
 /** 插件行 config 里可以覆盖的键（va 相关配置见 src/va.ts）。 */
@@ -43,6 +45,7 @@ export interface Settings {
   retryAcceptedSubset: boolean;
   queryTimeoutMs: number;
   queryMaxRows: number;
+  requireRunApproval: boolean;
   workspaceRoot: string;
   workspaceFile: string;
 }
@@ -110,6 +113,7 @@ export function resolveSettings(root: string, config: PluginConfig | undefined):
     retryAcceptedSubset: workspace.oks.retryAcceptedSubset ?? DEFAULTS.retryAcceptedSubset,
     queryTimeoutMs: workspace.oks.queryTimeoutMs ?? DEFAULTS.queryTimeoutMs,
     queryMaxRows: workspace.oks.queryMaxRows ?? DEFAULTS.queryMaxRows,
+    requireRunApproval: workspace.oks.requireRunApproval ?? DEFAULTS.requireRunApproval,
     workspaceRoot: workspace.root,
     workspaceFile: workspace.file,
   };
@@ -122,6 +126,8 @@ export function resolveSettings(root: string, config: PluginConfig | undefined):
   if (config?.retryAcceptedSubset !== undefined) settings.retryAcceptedSubset = config.retryAcceptedSubset;
   if (config?.queryTimeoutMs !== undefined) settings.queryTimeoutMs = config.queryTimeoutMs;
   if (config?.queryMaxRows !== undefined) settings.queryMaxRows = config.queryMaxRows;
+  if(config?.requireRunApproval!==undefined)settings.requireRunApproval=config.requireRunApproval;
+  if(typeof settings.requireRunApproval!=='boolean')throw new Error('requireRunApproval must be boolean');
   const missing: string[] = [];
   if (typeof settings.domain !== 'string' || settings.domain.length === 0) missing.push('domain');
   if (typeof settings.model !== 'string' || settings.model.length === 0) missing.push('model');
