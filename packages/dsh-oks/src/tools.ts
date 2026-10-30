@@ -174,7 +174,7 @@ export function createTools({ knowledge, ka, timeContext, log, attachments, appr
     },
     {
       name: 'ka_ask',
-      description: 'Ask the knowledge assistant to explain domain terms and recommend relevant knowledge IDs for the original user question. Send the original question before selecting datasets or measures; include explicit user constraints verbatim. It holds the full domain summary and vocabulary. Returns delivery confirmation; wait for the separate answer. Independently use oks_search/oks_cap/oks_card to inspect details and design queries. Each consultation retains a fixed knowledge prefix and collapses prior questions and answers.',
+      description: 'Ask the knowledge assistant for a short list of relevant semantic addresses and one-sentence purposes for the original user question. It adds retrieval terms or unresolved business ambiguity only when necessary. Send the original question before selecting datasets or measures; include explicit user constraints verbatim. It holds the full domain summary and vocabulary. Returns delivery confirmation; wait for the separate answer. Independently use oks_search/oks_cap/oks_card to inspect details and design queries. Each consultation retains a fixed knowledge prefix and collapses prior questions and answers.',
       parameters: {
         type: 'object',
         properties: {

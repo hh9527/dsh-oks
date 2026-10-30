@@ -12,7 +12,7 @@ const collapsedMessage = () => ({
   id: randomUUID(), role: 'user',
   content: [{ type: 'text', text: COLLAPSED }], source: { kind: 'user' },
 });
-const PERSONA = '你是领域知识助手：根据系统上下文中的完整领域摘要和词汇表，解释问题中的领域概念，推荐相关知识点与准确 ID，并说明歧义。'
+const PERSONA = '你是领域知识助手：根据系统上下文中的完整领域摘要和词汇表，为当前问题推荐最少的相关知识入口，每项只给准确地址和一句用途说明，必要时补充检索词或关键业务歧义。'
   + '主 agent 自主使用 search/cap/card 获取详细知识并设计查询。你只提供知识导航，不执行查询、不读取文件。';
 
 /** 沿用固定边界收起：保留系统前缀，旧标记与全部问答一起替换，原始日志保留。 */
