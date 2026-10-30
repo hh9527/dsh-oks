@@ -30,7 +30,7 @@ agent 先设计和检查分析稿，oks_run 检查后执行并返回事实，按
 助手保留完整领域摘要与词汇表的固定系统前缀，每轮把前缀之后的历史问答和旧标记收起为一个固定标记，
 再加入当前问题。模型上下文不随咨询次数增长，原始问答完整保留在会话日志中。
 工具面为空，权限为只读。
-主 agent 每次通过 `ka_ask` 发起咨询，工具返回子会话 ID 与消息 ID；
+主 agent 每次把用户原始问题与明确约束交给 `ka_ask`，工具返回子会话 ID 与消息 ID；
 答案由宿主作为子 agent 消息送回主 agent，收到后自主使用 search/cap/card 获取相关局部知识。
 首次调用使用 `startActivation`，续问使用 `sendMessage`，均采用官方宿主的原生生命周期。
 模型路由继承父会话当前请求。DeepSeek 模型的知识助手默认使用 `off`，其他模型默认继承推理档位；显式配置优先，模型须支持配置的档位。
@@ -93,7 +93,7 @@ report answer := Report [
 
 数据分析流程直接进入预制 prompt，并以同一份文本在 `oks://help/workflow.md` 提供：理解意图、发现词汇和知识、批量检查查询及列类型、建立后处理后执行、审视数据并形成报告。
 
-模型的全局领域摘要以 Markdown 与完整词汇表一起进入 KA 的固定系统上下文，覆盖全部 Entity、Dataset、查询能力数量与关系导航；主 agent 按需咨询 KA，自主使用 search/cap/card 读取局部知识。摘要不含反向连接，图表能力说明单独进入主 agent 上下文。摘要按模型缓存，不累积重复注入；`oks://domain/summary.md` 提供同源读取，`oks://domain/` 提供目录。局部 cap/card 保持结构化 JSON，携带事实与必要说明。
+模型的全局领域摘要以 Markdown 与完整词汇表一起进入 KA 的固定系统上下文，覆盖全部 Entity、Dataset、查询能力数量与关系导航；主 agent 按需咨询 KA，自主使用 search/cap/card 读取局部知识。摘要不含反向连接，图表能力说明单独进入主 agent 上下文。摘要按模型缓存，不累积重复注入；主 agent 通过 ka_ask 获得领域导航。局部 cap/card 保持结构化 JSON，携带事实与必要说明。
 
 ```js
 ka_ask({query:"业务说法"})
@@ -223,7 +223,6 @@ build/prepare/pretest 直接更新 lib，运行中的 link 安装需先暂停服
 
 - `oks://work/`：临时分析稿与工作文件，物理位置为 `.work/`，通过 oks_delete 显式清理
 - `oks://help/*.md`：独立的只读文本手册
-- `oks://domain/summary.md`：模型与插件自动生成的全局领域摘要
 - 图表和报告由宿主附件服务持久保存，回执返回附件引用与呈现指引
 
 agent 可检查稿件并通过 oks_run 运行；默认直接运行，配置 requireRunApproval=true 时先申请批准；result 直接返回最终输出，无独立结果读取工具。

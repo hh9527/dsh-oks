@@ -174,13 +174,13 @@ export function createTools({ knowledge, ka, timeContext, log, attachments, appr
     },
     {
       name: 'ka_ask',
-      description: 'Ask the knowledge assistant to explain domain terms and recommend relevant knowledge IDs for the current question. It holds the full domain summary and vocabulary. Returns delivery confirmation; wait for the separate answer. Independently use oks_search/oks_cap/oks_card to inspect details and design queries. Each consultation retains a fixed knowledge prefix and collapses prior questions and answers.',
+      description: 'Ask the knowledge assistant to explain domain terms and recommend relevant knowledge IDs for the original user question. Send the original question before selecting datasets or measures; include explicit user constraints verbatim. It holds the full domain summary and vocabulary. Returns delivery confirmation; wait for the separate answer. Independently use oks_search/oks_cap/oks_card to inspect details and design queries. Each consultation retains a fixed knowledge prefix and collapses prior questions and answers.',
       parameters: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'The user question or domain concepts needing knowledge navigation.',
+            description: 'The original user question, including explicit constraints. Preserve its scope rather than preselecting dataset or field IDs.',
           },
         },
         required: ['query'],

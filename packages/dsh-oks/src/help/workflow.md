@@ -1,7 +1,7 @@
 # 数据分析流程
 
 1. 理解用户意图，明确要回答的问题
-2. 用 ka_ask 理解领域词汇并获得相关知识点建议，自主用 oks_search / oks_cap / oks_card 获取局部知识
+2. 将用户原始问题（含明确约束）交给 ka_ask，获得领域词汇和相关知识点建议，自主用 oks_search / oks_cap / oks_card 获取局部知识
 3. 用 oks_cap / oks_card 详细读取相关领域知识
 4. 建立一份 `.dari` 分析稿，一次设计所需的多个 `query(...)`。用 oks_check 检查并获得返回列及类型，修正查询诊断
 5. 根据列类型用有类型的 select/select_one 设计后处理流程和需要的图表映射（语法见 oks://help/pipeline.md），再用 oks_check 检查，完成分析稿

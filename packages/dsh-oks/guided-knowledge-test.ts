@@ -47,12 +47,8 @@ assert(Buffer.byteLength(common.lines.map(l=>l.text).join('\n'))<3000);
 assert(help.files.some(f=>f.name==='oks://help/report.md'));
 
 assert(!help.files.some(f=>f.name.startsWith('oks://domain/')));
-const domainListing=await call('oks_list',{path:'oks://domain/'}) as {files:{name:string;bytes:number}[]};
-const domainRead=await call('oks_read',{path:DOMAIN_SUMMARY_URI}) as {lines:{text:string}[]};
-assert.equal(domainListing.files[0].name,DOMAIN_SUMMARY_URI);
-const domainText=renderDomainSummary(graph,'demo');
-assert.equal(domainListing.files[0].bytes,Buffer.byteLength(domainText));
-assert.equal(domainRead.lines.map(line=>line.text).join('\n')+'\n',domainText);
+await assert.rejects(call('oks_list',{path:'oks://domain/'}),/ka_ask/);
+await assert.rejects(call('oks_read',{path:DOMAIN_SUMMARY_URI}),/ka_ask/);
 await assert.rejects(call('oks_write',{path:DOMAIN_SUMMARY_URI,content:'edit'}));
 await assert.rejects(call('oks_delete',{path:DOMAIN_SUMMARY_URI}));
 await assert.rejects(call('oks_read',{path:'oks://domain/other.md'}));

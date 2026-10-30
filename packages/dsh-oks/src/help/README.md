@@ -17,4 +17,4 @@
 构建时将 Markdown 内联到单文件插件，运行时不依赖源码目录。源码测试通过 `scripts/markdown-loader.mjs` 加载 Markdown。
 组件映射、能力矩阵、报告正文白名单、方法签名以及反向引用由实现生成，避免与帮助内容分开维护。
 
-全局领域摘要由 `src/domain-summary.ts` 从模型事实生成，位于 `oks://domain/summary.md`；自动注入与主动读取使用同一份 Markdown。摘要同时列出图表形式和对应的单图表手册入口；局部知识通过 cap/card 提供 JSON。
+全局领域摘要由 `src/domain-summary.ts` 从模型事实生成，与完整词汇表一起进入 KA 的固定系统上下文。主 agent 通过 ka_ask 获取领域导航，再自主检索和读取 cap/card。图表形式和单图表手册入口单独进入主 agent 的系统上下文。

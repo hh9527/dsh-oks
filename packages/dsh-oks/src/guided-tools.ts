@@ -1,6 +1,5 @@
 import { queryKnowledge } from './knowledge-methods.ts';
 import { isRecord, type ToolDefinition, type ToolExec } from './host.ts';
-import { DOMAIN_SUMMARY_URI, readDomainSummary } from './domain-summary.ts';
 import type { Knowledge } from './knowledge.ts';
 import { readTextLines } from './results.ts';
 import { helpFiles, helpEntries } from './help-files.ts';
@@ -63,25 +62,14 @@ export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge)
   return [...definitions.filter(t => !['oks_project','oks_run_answer','oks_result','oks_show','renew_context'].includes(t.name)).map(t => {
     if (['oks_read','oks_list','oks_write','oks_edit','oks_delete'].includes(t.name)) return {
       ...t,
-      description: t.name === 'oks_read' ? 'Read the global domain summary at oks://domain/summary.md, method manuals at oks://help/*.md, or analysis source at oks://work/<file>. The domain summary is read in full by default; offset/limit optionally page lines. Other texts use line windows. List manuals with oks_list({path:"oks://help/"}).'
-        : t.name === 'oks_list' ? 'List oks://domain/ summary, oks://help/ method manuals or oks://work/ analysis files.' : 'Manage analysis source files under oks://work/. Use one DARI draft per business question.',
-      parameters: { ...t.parameters, properties: { ...(t.parameters.properties as object), ...(t.name === 'oks_read' ? {offset:{type:'number',description:'Optional first line, 1-based'},limit:{type:'number',description:'Optional line count for a partial read. Omit offset/limit to read the complete domain summary; other texts use normal line windows.'}} : {}), path: {type:'string',description:'oks://work/<file> or, for reading/listing, oks://help/ manuals and oks://domain/summary.md (directory: oks://domain/)'} } },
+      description: t.name === 'oks_read' ? 'Read method manuals at oks://help/*.md or analysis source at oks://work/<file>. Use ka_ask with the original user question for domain knowledge navigation. offset/limit select line windows. List manuals with oks_list({path:"oks://help/"}).'
+        : t.name === 'oks_list' ? 'List oks://help/ method manuals or oks://work/ analysis files.' : 'Manage analysis source files under oks://work/. Use one DARI draft per business question.',
+      parameters: { ...t.parameters, properties: { ...(t.parameters.properties as object), ...(t.name === 'oks_read' ? {offset:{type:'number',description:'Optional first line, 1-based'},limit:{type:'number',description:'Optional line count for a partial read.'}} : {}), path: {type:'string',description:'oks://work/<file> or, for reading/listing, oks://help/ manuals'} } },
       async execute(raw: never, exec: ToolExec) {
         const args = raw as Record<string,unknown>;
         const path = args.path;
-        if (t.name === 'oks_read' && path === DOMAIN_SUMMARY_URI) {
-          const text = await readDomainSummary(knowledge, exec);
-          if (args.offset !== undefined || args.limit !== undefined) return readTextLines(text, DOMAIN_SUMMARY_URI, args.offset, args.limit, 'oks_read');
-          const lines = text.split('\n');
-          if (lines.at(-1) === '') lines.pop();
-          return {path:DOMAIN_SUMMARY_URI,offset:1,totalLines:lines.length,lines:lines.map((text,index)=>({number:index+1,text}))};
-        }
-        if (t.name === 'oks_list' && path === 'oks://domain/') {
-          const text = await readDomainSummary(knowledge, exec);
-          return {ok:true,files:[{name:DOMAIN_SUMMARY_URI,bytes:Buffer.byteLength(text),modifiedAt:''}],count:1};
-        }
         if (t.name === 'oks_list' && (path === undefined || path === 'oks://help/')) return {ok:true,files:helpEntries(files),count:Object.keys(files).length};
-        if (typeof path !== 'string' || !(path.startsWith('oks://work/') || (t.name === 'oks_read' && Object.hasOwn(files,path)))) throw new Error('Use oks://work/ files, oks://help/ manuals or oks://domain/summary.md');
+        if (typeof path !== 'string' || !(path.startsWith('oks://work/') || (t.name === 'oks_read' && Object.hasOwn(files,path)))) throw new Error('Use oks://work/ files or oks://help/ manuals; use ka_ask for domain knowledge navigation');
         if (t.name === 'oks_read' && Object.hasOwn(files,path)) return readTextLines(files[path],path,args.offset,args.limit,'oks_read');
         return t.execute(raw, exec);
       },

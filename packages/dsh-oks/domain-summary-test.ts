@@ -43,15 +43,13 @@ const project:ToolDefinition={name:'oks_project',description:'internal',paramete
 const stubs=['oks_read','oks_list','oks_write','oks_edit','oks_delete'].map(name=>({...project,name}));
 const tools=guidedTools([project,...stubs],knowledge);
 const call=(name:string,args:object,domain='large')=>tools.find(t=>t.name===name)!.execute(args as never,exec(domain));
-const read=await call('oks_read',{path:DOMAIN_SUMMARY_URI}) as {lines:{text:string}[];totalLines:number};
-assert.equal(read.lines.map(l=>l.text).join('\n')+'\n',summary,'Read interface returns exactly the full injected summary');
-assert.equal(read.totalLines,read.lines.length);
-const page=await call('oks_read',{path:DOMAIN_SUMMARY_URI,offset:3,limit:7}) as {lines:{number:number;text:string}[]};
-assert.deepEqual(page.lines.map(l=>l.text),summary.split('\n').slice(2,9));
-assert.equal(page.lines[0].number,3);
-const other=await call('oks_read',{path:DOMAIN_SUMMARY_URI},'other') as {lines:{text:string}[]};
-assert(other.lines.some(l=>l.text.includes('different')));
-assert(!other.lines.some(l=>l.text.includes('dataset-89')));
+for(const domain of ['large','other']) {
+ await assert.rejects(call('oks_read',{path:DOMAIN_SUMMARY_URI},domain),/ka_ask/);
+ await assert.rejects(call('oks_list',{path:'oks://domain/'},domain),/ka_ask/);
+}
+for(const tool of tools)assert(!JSON.stringify({description:tool.description,parameters:tool.parameters}).includes('oks://domain/'));
+const other=await readDomainSummary(knowledge,exec('other'));
+assert(other.includes('different') && !other.includes('dataset-89'));
 const abort=new AbortController();abort.abort();
 await assert.rejects(readDomainSummary(knowledge,{...exec('large'),signal:abort.signal}),/abort/i);
 await assert.rejects(readDomainSummary(knowledge,exec('absent')),/no model/);
