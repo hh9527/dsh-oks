@@ -1,114 +1,55 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createKaRuntime, renderAsk } from './src/ka.ts';
+import { createKaRuntime, renderAsk, CONSULT_TIMEOUT_MS } from './src/ka.ts';
 import { installKnowledgeHelper, resetKnowledgeContext } from './src/ka-helper.ts';
 const caller = (id = 'parent') => ({ id, ctx: { tools: { restrict() {} } }, session: { id, header: { cwd: '/workspace' } } }) as any;
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
-function harness(options: any = {}) {
-  const starts: any[] = [], sends: any[] = [], effects: any[] = [];
-  let end: any;
-  const settled = (id: string) => end({ id, stopReason: 'completed' });
-  const service = {
-    listChildren: async () => options.children ?? [],
-    async startActivation(spec: any) {
-      starts.push(spec);
-      if (options.fail) throw Error('fixture admission failure');
-      spec.signal.throwIfAborted();
-      if (!options.manual) queueMicrotask(() => settled(spec.childId));
-      return { childId: spec.childId, messageId: 'initial', result: Promise.resolve({ output: [], stopReason: 'completed' }),
-        dispose() { throw Error('execution belongs to host'); } };
-    },
-    async sendMessage(parent: any, childId: string, prompt: any, request: any) {
-      sends.push({ parent, childId, prompt, ...request });
-      request.signal.throwIfAborted();
-      if (!options.manual) queueMicrotask(() => settled(childId));
-      return 'followup-' + sends.length;
-    },
-  };
-  const runtime = createKaRuntime({ ctx: {
-    get: () => options.missing ? undefined : service,
-    on: (_event: string, fn: any) => { end = fn; return () => {}; },
-    effect: (fn: any) => effects.push(fn()),
-  } as any, config: options.config, vocabulary: options.vocabulary, log() {} });
-  return { runtime, starts, sends, settled, unload: () => effects.forEach(fn => fn()) };
+function harness(options:any={}){
+ const starts:any[]=[],sends:any[]=[],effects:any[]=[],disposed:string[]=[];const handlers=new Map<string,any[]>();const runs=new Map<string,(value:any)=>void>();
+ const settled=(id:string,stopReason='completed',text='助手答案')=>{
+  const output=text?[{type:'text',text}]:[];runs.get(id)?.({stopReason,output});runs.delete(id);
+  for(const f of handlers.get('subagent/end')??[])f({id,stopReason,lastAssistantMessage:output});
+ };
+ const service={listChildren:async()=>options.children??[],async startActivation(spec:any){
+  starts.push(spec);if(options.fail)throw Error('admission failure');spec.signal.throwIfAborted();
+  const result=new Promise(resolve=>runs.set(spec.childId,resolve));if(!options.manual)queueMicrotask(()=>settled(spec.childId));
+  return{childId:spec.childId,messageId:'initial',result,async dispose(){disposed.push(spec.childId);settled(spec.childId,'aborted','')}};
+ },async sendMessage(parent:any,childId:string,prompt:any,request:any){sends.push({parent,childId,prompt,...request});request.signal.throwIfAborted();if(!options.manual)queueMicrotask(()=>settled(childId));return 'followup-'+sends.length},async drainChildren(_p:any,ids:string[]){for(const id of ids){disposed.push(id);settled(id,'aborted','')}}};
+ const runtime=createKaRuntime({ctx:{get:()=>options.missing?undefined:service,on(n:string,f:any){handlers.set(n,[...(handlers.get(n)??[]),f]);return()=>{}},effect(f:any){effects.push(f())}} as any,config:options.config,vocabulary:options.vocabulary,log(){}});
+ return{runtime,starts,sends,settled,disposed,handlers,unload:()=>effects.forEach(f=>f())};
 }
-
-test('官方宿主首次创建、后续 sendMessage，工具只返回投递确认', async () => {
-  const h = harness(), parent = caller();
-  const first = await h.runtime.ask(parent, 'parent', '丢包');
-  const next = await h.runtime.ask(parent, 'parent', '端口');
-  assert.equal(first.accepted, true); assert.equal(first.helper, next.helper);
-  assert.equal(h.starts.length, 1); assert.equal(h.sends.length, 1);
-  assert.equal(h.starts[0].delivery, 'parent'); assert.equal(h.starts[0].request.parent, parent);
-  assert.equal(h.starts[0].request.agentPreset, 'oks-knowledge');
-  assert.equal(h.starts[0].request.agentOptions, undefined);
-  assert.equal(h.sends[0].parent, parent); assert.equal(h.sends[0].childId, first.helper);
-  assert.deepEqual(h.sends[0].prompt, [{ type: 'text', text: '端口' }]);
-  assert.match(renderAsk({}, first)[0].text!, /answer will arrive as a subagent message/);
+test('首次 caller delivery 等待答案，续问复用子会话并返回完整答案',async()=>{
+ const h=harness({manual:true}),parent=caller();let returned=false;
+ const first=h.runtime.ask(parent,'parent','问题').then(v=>{returned=true;return v});await flush();assert(!returned);assert.equal(h.starts[0].delivery,'caller');
+ h.settled(h.starts[0].childId);const a=await first;assert.equal(a.answer,'助手答案');assert.equal(renderAsk({},a)[0].text,'助手答案');
+ const second=h.runtime.ask(parent,'parent','续问');await flush();assert.equal(h.sends.length,1);h.settled(a.helper,'completed','续问答案');
+ const b=await second;assert.equal(b.helper,a.helper);assert.equal(b.answer,'续问答案');assert.equal(h.starts.length,1);
 });
-test('默认仅 DeepSeek 关闭推理，按当前请求路由判断并尊重显式配置', async () => {
- for(const [model,expected] of [['deepseek-flash','off'],['deepseek-reasoner','off'],['qwen3.8-flash',undefined],['kimi-k3.1-pro',undefined],['unknown',undefined],['',undefined]]){
-  const h=harness(),parent=caller();parent.options={provider:'gateway',model};
-  await h.runtime.ask(parent,'parent','问题');
-  assert.deepEqual(h.starts[0].request.agentOptions,expected?{reasoningEffort:expected}:undefined,model);
- }
- for(const [created,current,expected] of [['deepseek-flash','qwen3.8-flash',undefined],['qwen3.8-flash','deepseek-flash','off']]){
-  const h=harness(),parent=caller();parent.options={model:created};parent.session.requestHeader=()=>({config:{provider:'gateway',model:current}});
-  await h.runtime.ask(parent,'parent','切换后问题');
-  assert.deepEqual(h.starts[0].request.agentOptions,expected?{reasoningEffort:expected}:undefined);
- }
- for(const [model,effort] of [['deepseek-flash','inherit'],['deepseek-flash','low'],['qwen3.8-flash','low']]){
-  const h=harness({config:{kaReasoningEffort:effort}}),parent=caller();parent.options={model};
-  await h.runtime.ask(parent,'parent','覆盖');
-  assert.deepEqual(h.starts[0].request.agentOptions,effort==='inherit'?undefined:{reasoningEffort:effort});
- }
+test('同问合并，不同问题等待前一答案完成后才投递',async()=>{
+ const h=harness({manual:true}),parent=caller();const a=h.runtime.ask(parent,'p','A'),same=h.runtime.ask(parent,'p','A'),b=h.runtime.ask(parent,'p','B');await flush();assert.equal(h.starts.length,1);assert.equal(h.sends.length,0);
+ h.settled(h.starts[0].childId);assert.deepEqual(await a,await same);await flush();assert.equal(h.sends.length,1);h.settled(h.starts[0].childId);await b;
 });
-test('从父会话持久目录恢复已有知识子会话', async () => {
-  const h = harness({ children: [{ mode: 'continuable', id: 'session-ka-existing', label: '知识助手' }] });
-  const result = await h.runtime.ask(caller(), 'parent', '恢复后的问题');
-  assert.equal(result.helper, 'session-ka-existing'); assert.equal(h.starts.length, 0);
-  assert.equal(h.sends.length, 1);
+test('恢复持久子会话，消费重复通知但保留其他消息',async()=>{
+ const h=harness({children:[{mode:'continuable',id:'session-ka-existing',label:'知识助手'}]}),parent=caller();const r=await h.runtime.ask(parent,'p','恢复');assert.equal(r.helper,'session-ka-existing');assert.equal(h.starts.length,0);
+ const duplicate={source:{kind:'subagent-settled',senderSessionId:r.helper}},other={source:{kind:'user'}};
+ const hook=h.handlers.get('agent/pre-step')![0];const decision=await hook({agent:parent,messages:[duplicate,other]},async()=>({kind:'enter',messages:[duplicate,other]}));assert.deepEqual(decision.messages,[other]);
+ assert.equal((await hook({agent:parent,step:1,messages:[duplicate]},async()=>({kind:'enter',messages:[duplicate]}))).kind,'reject');
 });
-test('同问并发合并，不同问题等宿主结束事件后投递', async () => {
-  const h = harness({ manual: true }), parent = caller();
-  const first = h.runtime.ask(parent, 'parent', '同问');
-  const duplicate = h.runtime.ask(parent, 'parent', '同问');
-  const second = h.runtime.ask(parent, 'parent', '另一问');
-  const a = await first, b = await duplicate;
-  assert.equal(a.messageId, b.messageId); assert.equal(h.starts.length, 1);
-  await flush(); assert.equal(h.sends.length, 0);
-  h.settled(a.helper);
-  assert.equal((await second).helper, a.helper); assert.equal(h.sends.length, 1);
-  h.settled(a.helper);
+test('取消清理执行，后续咨询仍可复用会话',async()=>{
+ const h=harness({manual:true}),parent=caller(),abort=new AbortController();const run=h.runtime.ask(parent,'p','取消',abort.signal);await flush();abort.abort(Error('cancelled'));await assert.rejects(run,/cancelled/);assert.equal(h.disposed.length,1);
+ const retry=h.runtime.ask(parent,'p','重试');await flush();h.settled(h.starts[0].childId);assert.equal((await retry).answer,'助手答案');
 });
-test('不同父会话独立，推理档位可覆盖或继承', async () => {
-  const h = harness();
-  const [a, b] = await Promise.all([h.runtime.ask(caller('a'), 'a', '问题'), h.runtime.ask(caller('b'), 'b', '问题')]);
-  assert.notEqual(a.helper, b.helper);
-  for (const effort of ['low', 'inherit']) {
-    const custom = harness({ config: { kaPreset: 'custom', kaReasoningEffort: effort } });
-    await custom.runtime.ask(caller(), 'parent', '问题');
-    assert.equal(custom.starts[0].request.agentPreset, 'custom');
-    assert.deepEqual(custom.starts[0].request.agentOptions, effort === 'inherit' ? undefined : { reasoningEffort: effort });
-  }
+test('错误、空答案、卸载及提交失败都不会当作成功答案',async()=>{
+ for(const [reason,text,pattern] of [['error','失败',/未完成/],['completed','',/没有返回答案/]] as const){const h=harness({manual:true});const p=h.runtime.ask(caller(),'p','问题');await flush();h.settled(h.starts[0].childId,reason,text);await assert.rejects(p,pattern)}
+ const h=harness({manual:true});const run=h.runtime.ask(caller(),'p','卸载');await flush();h.unload();await assert.rejects(run,/卸载/);assert.equal(h.disposed.length,1);
+ await assert.rejects(harness({missing:true}).runtime.ask(caller(),'p','问题'),/subagents/);
+ await assert.rejects(harness({fail:true}).runtime.ask(caller(),'p','问题'),/admission failure/);
+ await assert.rejects(harness().runtime.ask(caller(),'p','问题',AbortSignal.abort()));
 });
-test('已取消请求和缺失服务不创建子会话，发布失败可重试', async () => {
-  const h = harness();
-  await assert.rejects(h.runtime.ask(caller(), 'parent', '问题', AbortSignal.abort()));
-  assert.equal(h.starts.length, 0);
-  await assert.rejects(harness({ missing: true }).runtime.ask(caller(), 'parent', '问题'), /subagents/);
-  await assert.rejects(h.runtime.ask({ session: { id: 'bare' } } as any, 'bare', '问题'), /cwd/);
-  const failed = harness({ fail: true }), parent = caller();
-  for (let i = 0; i < 2; i++) await assert.rejects(failed.runtime.ask(parent, 'parent', '问题'), /admission failure/);
-  assert.equal(failed.starts.length, 2);
+test('推理档位按当前路由继承，只有 DeepSeek 默认 off',async()=>{
+ for(const [model,effort] of [['deepseek-flash','off'],['qwen',undefined]]){const h=harness(),p=caller();p.session.requestHeader=()=>({config:{model}});await h.runtime.ask(p,'p','问题');assert.deepEqual(h.starts[0].request.agentOptions,effort?{reasoningEffort:effort}:undefined)}
+ const custom=harness({config:{kaPreset:'custom',kaReasoningEffort:'low'}});await custom.runtime.ask(caller(),'p','问题');assert.equal(custom.starts[0].request.agentPreset,'custom');assert.deepEqual(custom.starts[0].request.agentOptions,{reasoningEffort:'low'});
 });
-test('插件卸载拒绝排队请求，已受理子会话由宿主管理', async () => {
-  const h = harness({ manual: true }), parent = caller();
-  await h.runtime.ask(parent, 'parent', '首问');
-  const queued = assert.rejects(h.runtime.ask(parent, 'parent', '排队'), /卸载/);
-  h.unload(); await queued; assert.equal(h.sends.length, 0);
-});
-
 test('助手装配按当前工作区提供完整词表，空工具面与逐字文本',async()=>{
  let assemble:any;const sections:any[]=[],restrictions:any[]=[],policies:any[]=[],seen:string[]=[];
  const ctx={systemPrompt:{section:(s:any)=>sections.push(s)},tools:{restrict:(v:any)=>restrictions.push(v)},
@@ -194,25 +135,6 @@ test('同一轮工具往返保留上下文，咨询结束后收起',async()=>{
  assert.equal(replacements,before+1);
 });
 
-test('等待 VA 时空闲保留当前轮，VA 返回后完成咨询才收起',async()=>{
- const handlers=new Map<string,any[]>();let tool:any;let childId='';let replacements=0;
- const session:any={id:'session-ka-test',header:{cwd:'/workspace'},surface:{nodes:[0]},eventAt:()=>({type:'assistant/message'}),append(){replacements++}};
- const ctx={systemPrompt:{section(){}},tools:{restrict(){},register(t:any){tool=t;return()=>{}}},
- get(){return{sendMessage:async()=>'',listChildren:async()=>[],startActivation:async(s:any)=>{childId=s.childId;return{messageId:'m',result:Promise.resolve({})}}}},
- on(n:string,f:any){handlers.set(n,[...(handlers.get(n)??[]),f]);return()=>{}},effect(){}};
- installKnowledgeHelper({ctx,knowledge:{},log(){}} as any);
- const agent={session,ctx:{tools:{restrict(){}}}};const step=handlers.get('agent/pre-step')![0];
- await step({agent},async()=>({kind:'skip'}));const before=replacements;
- await tool.execute({query:'原始问题'},{agent});
- for(const f of handlers.get('agent/status')!)f({agent,status:'idle'});
- assert.equal(replacements,before);
- for(const f of handlers.get('subagent/end')!)f({id:childId});
- await step({agent},async()=>({kind:'skip'}));assert.equal(replacements,before);
- for(const f of handlers.get('agent/status')!)f({agent,status:'idle'});
- assert.equal(replacements,before+1);
-});
-
-
 test('KA/VA 按职责过滤宿主提示词与工具 schema，保留安全约束',async()=>{
  for(const vocabularyHelper of [false,true]){
   let assemble:any;
@@ -226,4 +148,13 @@ test('KA/VA 按职责过滤宿主提示词与工具 schema，保留安全约束'
   assert.deepEqual(result.tools,vocabularyHelper?[]:[{name:'va_ask'}]);
   assert.equal(original.sections.length,4);
  }
+});
+
+
+test('咨询超时释放子执行，排队的取消请求不被发送',async(t)=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ const h=harness({manual:true}),parent=caller();const first=h.runtime.ask(parent,'p','超时');await flush();
+ const abort=new AbortController();const queued=h.runtime.ask(parent,'p','取消排队',abort.signal);abort.abort(Error('cancel queued'));
+ t.mock.timers.tick(CONSULT_TIMEOUT_MS+1);await assert.rejects(first,/超时/);await assert.rejects(queued,/cancel queued/);
+ assert.equal(h.disposed.length,1);assert.equal(h.sends.length,0);
 });

@@ -212,10 +212,10 @@ console.log('=== ka_ask：工具边界与宿主子会话调用 ===');
   const tool=tools.get('ka_ask');
   const caller={session:{id:'smoke-parent',header:{cwd:DEV_ROOT}}};
   const result=await tool.execute({query:'丢包'},{agent:caller});
-  ok('工具将调用方交给宿主管理',calls[0].request.parent===caller&&calls[0].delivery==='parent');
+  ok('工具将调用方交给宿主管理',calls[0].request.parent===caller&&calls[0].delivery==='caller');
   ok('使用专用知识预设',calls[0].request.agentPreset==='oks-knowledge');
-  ok('工具只返回投递确认，执行由宿主管理',result.accepted===true&&result.messageId==='initial'&&releases===0);
-  ok('模型可见结果说明回答由子会话消息送达',tool.output.render({},result)[0].text.includes('answer will arrive as a subagent message'));
+  ok('工具等待宿主执行并返回答案',result.answer==='词汇结果'&&result.messageId==='initial'&&releases===0);
+  ok('模型直接在工具结果中收到答案',tool.output.render({},result)[0].text==='词汇结果');
   ok('拒绝空问题',/需要一个问题/.test(await refusalOf(()=>tool.execute({query:' '},{agent:caller}))));
   ok('拒绝递归咨询',/不咨询自己/.test(await refusalOf(()=>tool.execute({query:'丢包'},{agent:{session:{id:'session-ka-self'}}}))));
 }

@@ -57,29 +57,17 @@ export function installKnowledgeHelper({ ctx, knowledge, log, config }: {
   if (!ctx.systemPrompt) throw new Error('知识助手需要 systemPrompt 服务。');
   const vocabulary = config?.vocabularyHelper === true;
   const template = (vocabulary ? VA_PROMPT_TEXT : KA_PROMPT_TEXT).trim();
-  const waiting = new WeakSet<object>();
-  const consultations = new Map<string, object>();
-  ctx.on('subagent/end', ({ id }) => {
-    const session = consultations.get(id);
-    if (session) waiting.delete(session);
-    consultations.delete(id);
-  });
   if (!vocabulary) {
     const va = createKaRuntime({ ctx, log, config, vocabulary: true });
     const dispose = ctx.tools.register({
       name: 'va_ask',
-      description: '将原始问题交给词汇助手，获取领域词汇、别名、规范值与所属知识地址。返回投递确认，等待子助手回答后沿关系地图选择阅读入口。',
+      timeoutMs: 125_000,
+      description: '将原始问题交给词汇助手，获取领域词汇、别名、规范值与所属知识地址。工具等待并返回词汇助手答案，再沿关系地图选择阅读入口。',
       parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false },
       output: { schema: { type: 'object' }, render: renderAsk },
       async execute(args: { query: string }, exec) {
         if (!exec.agent || !args.query?.trim()) throw new Error('va_ask 需要调用方及非空问题');
-        const session = exec.agent.session;
-        waiting.add(session);
-        try {
-          const accepted = await va.ask(exec.agent, session.id!, args.query.trim(), exec.signal);
-          consultations.set(accepted.helper, session);
-          return accepted;
-        } catch (error) { waiting.delete(session); throw error; }
+        return va.ask(exec.agent, exec.agent.session.id!, args.query.trim(), exec.signal);
       },
     });
     if (typeof dispose === 'function') ctx.effect(() => dispose);
@@ -108,7 +96,7 @@ export function installKnowledgeHelper({ ctx, knowledge, log, config }: {
     return decision;
   });
   ctx.on('agent/status', ({ agent, status }) => {
-    if (status === 'idle' && !waiting.has(agent.session)) { resetKnowledgeContext(agent.session); active.delete(agent.session); }
+    if (status === 'idle') { resetKnowledgeContext(agent.session); active.delete(agent.session); }
   });
   ctx.systemPrompt.section({ name: 'deployment:persona-prefix', order: 0, text: vocabulary ? '你是领域词汇助手，负责词汇对齐与归属定位。' : PERSONA });
   const initialized = new WeakSet<object>();

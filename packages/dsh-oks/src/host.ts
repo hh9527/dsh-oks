@@ -63,12 +63,13 @@ export interface SubagentActivation {
 
 export interface SubagentsService {
   listChildren(parentSessionId: string, signal?: AbortSignal): Promise<{ id: string; label?: string; mode: string }[]>;
+  drainChildren(parent: AgentLike, childIds: string[]): Promise<void>;
   sendMessage(parent: AgentLike, childId: string, prompt: ContentBlock[], options: { signal: AbortSignal }): Promise<string>;
   startActivation(spec: {
     provider: string;
     label: string;
     childId: string;
-    delivery: 'parent';
+    delivery: 'parent' | 'caller';
     signal: AbortSignal;
     request: {
       parent: AgentLike;
@@ -89,6 +90,7 @@ export interface PromptAssembly {
  *  render / presentationMeta / execute 的参数这里写成 never：定义方各自的具体签名都能装进来
  *  （逆变位置，never 可赋给任何参数类型），而插件自己从不调用它们。 */
 export interface ToolDefinition {
+  timeoutMs?: number;
   name: string;
   description: string;
   parameters: Record<string, unknown>;
@@ -137,7 +139,7 @@ export interface PluginContext {
   /** 需要某个服务时才装配（取不到就不装）：插件在无 web 的部署里照常工作。 */
   inject?(names: string[], run: (ctx: PluginContext) => void): void;
   on(event: 'agent/pre-step', handler: PreStepHandler): Disposable;
-  on(event: 'subagent/end', handler: (payload: { id: string; stopReason: string }) => void): Disposable;
+  on(event: 'subagent/end', handler: (payload: { id: string; stopReason: string; lastAssistantMessage?: ContentBlock[] }) => void): Disposable;
   on(event: 'agent/status', handler: (payload: { agent: AgentLike; status: string }) => void): Disposable;
   on(event: 'system-prompt/assemble', handler: (
     assembly: PromptAssembly,
@@ -157,6 +159,7 @@ export interface ContextMessageLike {
     kind?: string;
     rpcId?: string;
     clientTimeZone?: string;
+    senderSessionId?: string;
   } | null;
 }
 
@@ -166,6 +169,7 @@ export interface StepDecision {
 }
 
 export interface PreStepPayload {
+  step?: number;
   agent?: { session?: SessionLike } | null;
   messages?: readonly ContextMessageLike[] | null;
   signal?: AbortSignal;

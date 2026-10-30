@@ -12,29 +12,62 @@ const {loadLayeredEnv}=await load('@deepseek-ai/dsh-app-boot');const {LlmAdapter
 const home=process.env.DSH_HOME;const workspace=process.env.OKS_WORKSPACE;
 const preset=(id,config)=>({id:'test-'+id,name:'@deepseek-ai/dsh-agent-preset',config:{id,name:id,plugins:[{id:'oks',name:'@local/dsh-oks',config:{domain:'ic',model:process.env.OKS_MODEL,...config}}]}});
 writeFileSync(join(home,'profiles/headless/cordis.patch.yml'),JSON.stringify([{id:'session-title-llm',disabled:true},{id:'headless-startup',disabled:true},{id:'headless-runner',disabled:true},{insert:[{id:'agent-preset-registry',name:'@deepseek-ai/dsh-agent-preset-registry',config:{default:'oks'}},preset('oks',{}),preset('oks-knowledge',{knowledgeHelper:true,kaReasoningEffort:'off'}),preset('oks-vocabulary',{vocabularyHelper:true})]}]));
-const requests=[];class Local extends LlmAdapter{
+const requests=[];
+class Local extends LlmAdapter {
  async resolveModel(provider,id){return{provider,id,name:id,reasoning:{efforts:[{id:'off',name:'Off'}]}}}
  async *stream(options){
-  const names=options.tools?.map(t=>t.name)??[];const text=options.messages.filter(m=>m.role==='system').flatMap(m=>m.content).map(b=>b.text??'').join('\n');
-  assert(!text.includes('Prefer showing the primary results'));assert(!text.includes('The runtime context names the DeepSeek Harness implementation checkout'));
-  const isVA=text.includes('# 领域词汇对齐');
-  assert.deepEqual(names,isVA?[]:['va_ask']);
-  if(!isVA && requests.some(r=>r.role==='VA')) assert(options.messages.some(m=>m.content.some(b=>b.text?.includes('VA_ANCHOR'))),'KA must receive VA answer');
-  requests.push({role:isVA?'VA':'KA',tools:names});
-  yield{type:'block-start',index:0,blockType:'text'};yield{type:'text-delta',index:0,text:isVA?'VA_ANCHOR':'KA_CHECKED'};
-  yield{type:'block-end',index:0,block:{type:'text',text:isVA?'VA_ANCHOR':'KA_CHECKED'}};yield{type:'finish',reason:'stop'};
+  const names=options.tools?.map(t=>t.name)??[];
+  const system=options.messages.filter(m=>m.role==='system').flatMap(m=>m.content).map(b=>b.text??'').join('\n');
+  const role=system.includes('# 领域词汇对齐')?'VA':system.includes('# 领域知识导航')?'KA':'MAIN';
+  if(role!=='MAIN'){
+   assert(!system.includes('Prefer showing the primary results'));
+   assert(!system.includes('The runtime context names the DeepSeek Harness implementation checkout'));
+   assert.deepEqual(names,role==='VA'?[]:['va_ask']);
+  }else{assert(names.includes('ka_ask'));assert(!names.includes('va_ask'))}
+  const all=options.messages.flatMap(m=>m.content).map(b=>b.text??'').join('\n');
+  assert(!all.includes('Its closing message:'),'no duplicate settlement text in model input');
+  const round=[...all.matchAll(/ROUND_\d+/g)].at(-1)?.[0];assert(round,'current question must survive');
+  const expected=role==='MAIN'?'KA_ROUTE:'+round:'VA_ANCHOR:'+round;
+  const ready=role==='VA'||options.messages.some(m=>m.role==='tool'&&m.content.some(b=>b.text?.includes(expected)));
+  requests.push({role,round,phase:ready?'answer':'ask',tools:names});assert(requests.length<30,'no repeated exploration');
+  assert(!options.messages.some(m=>m.source?.kind==='subagent-settled'),'answer must arrive only through tool result');
+  if(role==='VA'&&round==='ROUND_3'){
+   await new Promise((_resolve,reject)=>{if(options.signal.aborted)reject(options.signal.reason);else options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true})});
+  }
+  if(!ready){
+   const block={type:'tool-call',id:'call-'+requests.length,name:role==='MAIN'?'ka_ask':'va_ask',arguments:JSON.stringify({query:'咨询问题 '+round})};
+   yield{type:'block-start',index:0,blockType:'tool-call'};
+   yield{type:'tool-call-delta',index:0,id:block.id,name:block.name,argumentsDelta:block.arguments};
+   yield{type:'block-end',index:0,block};yield{type:'finish',reason:{kind:'tool-calls'}};return;
+  }
+  const text=(role==='VA'?'VA_ANCHOR:':role==='KA'?'KA_ROUTE:':'MAIN_ANSWER:')+round;
+  yield{type:'block-start',index:0,blockType:'text'};yield{type:'text-delta',index:0,text};
+  yield{type:'block-end',index:0,block:{type:'text',text}};yield{type:'finish',reason:{kind:'stop'}};
  }
 }
-let ctx,ka,main;const timeout=async predicate=>{const deadline=Date.now()+20000;while(!predicate()){if(Date.now()>deadline)throw Error('timeout '+JSON.stringify(requests));await new Promise(r=>setTimeout(r,20))}};
+let ctx,main;
+const timeout=async predicate=>{const deadline=Date.now()+20000;while(!predicate()){if(Date.now()>deadline)throw Error('timeout '+JSON.stringify(requests));await new Promise(r=>setTimeout(r,20))}};
 try{
  ({ctx}=await runProfile({profile:'headless',patchFiles:[],args:[],environment:loadLayeredEnv('dsh')}));ctx.llm.registerAdapter(['oks-test'],new Local());
- const create=async(id,p)=>ctx.agents.create({sessionId:id,meta:{cwd:workspace,agentPreset:p},agentOptions:{provider:'oks-test',model:'local-fixture'},setup:async c=>{await ctx.agentPresets.mount(c,p)}});
- ka=await create('session-host-ka-check-'+Date.now(),'oks-knowledge');
- ka.agent.followup({id:'initial',role:'user',source:{kind:'user'},content:[{type:'text',text:'核对工具'}]});
- await timeout(()=>requests.length===1&&ka.agent.status==='idle');
- const vaTool=ctx.tools.get('va_ask',ka.agent);assert(vaTool,'KA registry missing va_ask');assert(!ctx.tools.get('ka_ask',ka.agent));
- const accepted=await vaTool.execute({query:'CPU 对应的规范名称和知识地址'},{agent:ka.agent});assert.match(accepted.helper,/^session-va-/);
- await timeout(()=>requests.some(r=>r.role==='VA')&&requests.filter(r=>r.role==='KA').length===2&&ka.agent.status==='idle');
- main=await create('session-host-main-check-'+Date.now(),'oks');assert(ctx.tools.get('ka_ask',main.agent));assert(!ctx.tools.get('va_ask',main.agent));
- console.log('HOST_RESULT',JSON.stringify({requests,helper:accepted.helper,mainHasKa:true,mainHasVa:false}));
-}finally{await main?.dispose();await ka?.dispose();await ctx?.fiber.dispose()}
+ main=await ctx.agents.create({sessionId:'session-host-wait-check-'+Date.now(),meta:{cwd:workspace,agentPreset:'oks'},agentOptions:{provider:'oks-test',model:'local-fixture'},setup:async c=>{await ctx.agentPresets.mount(c,'oks')}});
+ for(let i=1;i<=4;i++){
+  main.agent.followup({id:'question-'+i,role:'user',source:{kind:'user'},content:[{type:'text',text:'咨询问题 ROUND_'+i}]});
+  if(i===3){
+   await timeout(()=>requests.some(r=>r.role==='VA'&&r.round==='ROUND_3'));
+   main.agent.cancel({kind:'user'});
+   await timeout(()=>main.agent.status==='idle');
+   assert(!requests.some(r=>r.round==='ROUND_3'&&r.role!=='VA'&&r.phase==='answer'));
+   continue;
+  }
+  await timeout(()=>requests.some(r=>r.role==='MAIN'&&r.round==='ROUND_'+i&&r.phase==='answer')&&main.agent.status==='idle');
+  assert.deepEqual(requests.filter(r=>r.round==='ROUND_'+i).map(r=>r.role+':'+r.phase),['MAIN:ask','KA:ask','VA:answer','KA:answer','MAIN:answer']);
+  if(i===2){
+   const id=main.agent.id;await main.dispose();
+   main=await ctx.agents.resume({resumeSessionId:id,agentOptions:{provider:'oks-test',model:'local-fixture'},setup:async c=>{await ctx.agentPresets.mount(c,'oks')}});
+  }
+ }
+ const ka=await ctx.subagents.listChildren(main.agent.id);assert.equal(ka.length,1);assert.match(ka[0].id,/^session-ka-/);
+ const va=await ctx.subagents.listChildren(ka[0].id);assert.equal(va.length,1);assert.match(va[0].id,/^session-va-/);
+ assert(!ctx.agents.get(ka[0].id));assert(!ctx.agents.get(va[0].id));
+ console.log('HOST_RESULT',JSON.stringify({requests:requests.map(({role,round,phase})=>({role,round,phase})),ka:ka[0].id,va:va[0].id,successfulRounds:3,cancelledRounds:1,duplicateNotices:0}));
+}finally{await main?.dispose();await ctx?.fiber.dispose()}
