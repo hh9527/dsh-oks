@@ -62,7 +62,8 @@ export function installKnowledgeHelper({ ctx, knowledge, log, config }: {
     if (session) waiting.delete(session);
     consultations.delete(id);
   });
-  ctx.tools.restrict({ allow: vocabulary ? [] : ['va_ask'] });
+  // restrict 只过滤全局工具；本作用域注册的 va_ask 始终可见。
+  ctx.tools.restrict({ allow: [] });
   if (!vocabulary) {
     const va = createKaRuntime({ ctx, log, config, vocabulary: true });
     const dispose = ctx.tools.register({

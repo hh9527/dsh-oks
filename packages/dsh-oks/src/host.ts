@@ -108,6 +108,7 @@ export interface ApprovalService {
 
 export interface ToolsService {
   register(tool: ToolDefinition): Disposable | void;
+  /** 仅限制宿主全局工具；作用域内 register 的工具不受此过滤影响。 */
   restrict(options: { allow: string[] }): void;
 }
 

@@ -160,10 +160,10 @@ test('连续 100 轮收起问答后模型表面恒定，日志保留所有问答
 
 test('KA 只装配关系地图，VA 词汇独立，唯一工具为 va_ask',async()=>{
  let assemble:any;let allowed:any;const tools:any[]=[];
- const ctx={systemPrompt:{section(){}},tools:{restrict(v:any){allowed=v.allow},register(v:any){tools.push(v);return()=>{}}},get(){},on(n:string,f:any){if(n==='system-prompt/assemble')assemble=f;return()=>{}},effect(){}};
+ const ctx={systemPrompt:{section(){}},tools:{restrict(v:any){for(const name of v.allow) if(name!=='working_directory') throw Error('unknown global tool '+name);allowed=v.allow},register(v:any){tools.push(v);return()=>{}}},get(){},on(n:string,f:any){if(n==='system-prompt/assemble')assemble=f;return()=>{}},effect(){}};
  const knowledge={ensureWorkspace(){return{settings:{domain:'test'}}},async ensureIndex(){return{knowledge:{entities:{device:{}},datasets:{metrics:{roles:{device:{entity:'entities/device'}}}},relations:{}},terms:[{key:'secret',name:'VOCABULARY_ONLY',aliases:[],doc:''}]}}};
  installKnowledgeHelper({ctx,knowledge,log(){}} as any);
- assert.deepEqual(allowed,['va_ask']);assert.equal(tools[0].name,'va_ask');
+ assert.deepEqual(allowed,[]);assert.equal(tools[0].name,'va_ask');
  const parent=caller();parent.session.append=()=>{};
  const result=await assemble({},{agent:parent},async()=>({sections:[]}));
  assert.match(result.sections[0].text,/device/);assert.match(result.sections[0].text,/va_ask/);
