@@ -81,6 +81,7 @@ export interface SubagentsService {
 }
 
 export interface PromptAssembly {
+  tools?: { name: string; [key: string]: unknown }[];
   sections: { name: string; text: string; interpolate?: boolean }[];
 }
 
@@ -108,7 +109,7 @@ export interface ApprovalService {
 
 export interface ToolsService {
   register(tool: ToolDefinition): Disposable | void;
-  /** 仅限制宿主全局工具；作用域内 register 的工具不受此过滤影响。 */
+  /** 限制该作用域继承的工具；本作用域直接注册的工具不受过滤影响。 */
   restrict(options: { allow: string[] }): void;
 }
 
@@ -213,6 +214,7 @@ export interface SessionLike {
 
 /** 词汇咨询使用的调用方身份与工作区；其余执行行为由宿主管理。 */
 export interface AgentLike {
+  ctx?: { tools: ToolsService };
   options?: { provider?:string; model?:string };
   session: SessionLike;
 }

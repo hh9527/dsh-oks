@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createKaRuntime, renderAsk } from './src/ka.ts';
 import { installKnowledgeHelper, resetKnowledgeContext } from './src/ka-helper.ts';
-const caller = (id = 'parent') => ({ id, session: { id, header: { cwd: '/workspace' } } }) as any;
+const caller = (id = 'parent') => ({ id, ctx: { tools: { restrict() {} } }, session: { id, header: { cwd: '/workspace' } } }) as any;
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 function harness(options: any = {}) {
   const starts: any[] = [], sends: any[] = [], effects: any[] = [];
@@ -115,7 +115,7 @@ test('助手装配按当前工作区提供完整词表，空工具面与逐字�
  on(name:string,fn:any){if(name==='system-prompt/assemble')assemble=fn;return()=>{};},effect(fn:any){fn();}};
  const knowledge={ensureWorkspace({agent}:any){seen.push(agent.session.header.cwd);return {settings:{domain:agent.session.header.cwd}};},
  async ensureIndex(entry:any){const root=entry.settings.domain;return{knowledge:{entities:{[root]:{}},datasets:{},relations:{},items:[]},terms:[{key:'k',name:root+'$&',aliases:['{{literal}}'],doc:'说明'}]};}};
- installKnowledgeHelper({ctx,knowledge,log(){},config:{vocabularyHelper:true}} as any);assert.deepEqual(restrictions,[{allow:[]}]);assert.match(sections[0].text,/词汇助手/);
+ installKnowledgeHelper({ctx,knowledge,log(){},config:{vocabularyHelper:true}} as any);assert.deepEqual(restrictions,[]);assert.match(sections[0].text,/词汇助手/);
  const p=caller();p.session.append=(...args:any[])=>policies.push(args);
  const next=async()=>({sections:[{name:'platform',text:'platform'}],tools:[],variables:{}});
  const first=await assemble({},{agent:p},next);await assemble({},{agent:p},next);
@@ -163,9 +163,11 @@ test('KA 只装配关系地图，VA 词汇独立，唯一工具为 va_ask',async
  const ctx={systemPrompt:{section(){}},tools:{restrict(v:any){for(const name of v.allow) if(name!=='working_directory') throw Error('unknown global tool '+name);allowed=v.allow},register(v:any){tools.push(v);return()=>{}}},get(){},on(n:string,f:any){if(n==='system-prompt/assemble')assemble=f;return()=>{}},effect(){}};
  const knowledge={ensureWorkspace(){return{settings:{domain:'test'}}},async ensureIndex(){return{knowledge:{entities:{device:{}},datasets:{metrics:{roles:{device:{entity:'entities/device'}}}},relations:{}},terms:[{key:'secret',name:'VOCABULARY_ONLY',aliases:[],doc:''}]}}};
  installKnowledgeHelper({ctx,knowledge,log(){}} as any);
- assert.deepEqual(allowed,[]);assert.equal(tools[0].name,'va_ask');
+ assert.equal(allowed,undefined);assert.equal(tools[0].name,'va_ask');
  const parent=caller();parent.session.append=()=>{};
+ parent.ctx.tools.restrict=(v:any)=>{allowed=v.allow};
  const result=await assemble({},{agent:parent},async()=>({sections:[]}));
+ assert.deepEqual(allowed,['va_ask']);
  assert.match(result.sections[0].text,/device/);assert.match(result.sections[0].text,/va_ask/);
  assert(!result.sections[0].text.includes('VOCABULARY_ONLY'));
 });
@@ -185,7 +187,7 @@ test('同一轮工具往返保留上下文，咨询结束后收起',async()=>{
  const session:any={id:'ka',surface:{nodes:[0,1]},eventAt:(n:number)=>n===0?{type:'system/message',data:{message:{content:[{type:'text',text:'prefix'}]}}}:{type:'assistant/message'},append(){replacements++}};
  const ctx={systemPrompt:{section(){}},tools:{restrict(){},register(){return()=>{}}},get(){},on(n:string,f:any){handlers.set(n,[...(handlers.get(n)??[]),f]);return()=>{}},effect(){}};
  installKnowledgeHelper({ctx,knowledge:{},log(){}} as any);
- const step=handlers.get('agent/pre-step')![0];const agent={session};
+ const step=handlers.get('agent/pre-step')![0];const agent={session,ctx:{tools:{restrict(){}}}};
  await step({agent},async()=>({kind:'skip'}));const before=replacements;
  await step({agent},async()=>({kind:'skip'}));assert.equal(replacements,before);
  for(const status of handlers.get('agent/status')!)status({agent,status:'idle'});
@@ -199,7 +201,7 @@ test('等待 VA 时空闲保留当前轮，VA 返回后完成咨询才收起',as
  get(){return{sendMessage:async()=>'',listChildren:async()=>[],startActivation:async(s:any)=>{childId=s.childId;return{messageId:'m',result:Promise.resolve({})}}}},
  on(n:string,f:any){handlers.set(n,[...(handlers.get(n)??[]),f]);return()=>{}},effect(){}};
  installKnowledgeHelper({ctx,knowledge:{},log(){}} as any);
- const agent={session};const step=handlers.get('agent/pre-step')![0];
+ const agent={session,ctx:{tools:{restrict(){}}}};const step=handlers.get('agent/pre-step')![0];
  await step({agent},async()=>({kind:'skip'}));const before=replacements;
  await tool.execute({query:'原始问题'},{agent});
  for(const f of handlers.get('agent/status')!)f({agent,status:'idle'});
@@ -211,17 +213,17 @@ test('等待 VA 时空闲保留当前轮，VA 返回后完成咨询才收起',as
 });
 
 
-test('KA/VA 只过滤宿主交付与开发 section，保留安全约束和工具定义',async()=>{
+test('KA/VA 按职责过滤宿主提示词与工具 schema，保留安全约束',async()=>{
  for(const vocabularyHelper of [false,true]){
   let assemble:any;
   const ctx={systemPrompt:{section(){}},tools:{restrict(){},register(){return()=>{}}},get(){},on(n:string,f:any){if(n==='system-prompt/assemble')assemble=f;return()=>{}},effect(){}};
   const knowledge={ensureWorkspace(){return{settings:{domain:'test'}}},async ensureIndex(){return{knowledge:{},terms:[]}}};
   installKnowledgeHelper({ctx,knowledge,log(){},config:{vocabularyHelper}} as any);
   const agent=caller();agent.session.append=()=>{};
-  const original={sections:[{name:'safety',text:'keep safety'},{name:'ui:deliverable-file-references',text:'Prefer showing the primary results'},{name:'harness:source',text:'source checkout'},{name:'app:web-surface',text:'web development'}],tools:[{name:'va_ask'}]};
+  const original={sections:[{name:'safety',text:'keep safety'},{name:'ui:deliverable-file-references',text:'Prefer showing the primary results'},{name:'harness:source',text:'source checkout'},{name:'app:web-surface',text:'web development'}],tools:[{name:'va_ask'},{name:'bash'}]};
   const result=await assemble({},{agent},async()=>original);
   assert.deepEqual(result.sections.map((s:any)=>s.name),['safety','oks:knowledge-assistant']);
-  assert.equal(result.tools,original.tools);
+  assert.deepEqual(result.tools,vocabularyHelper?[]:[{name:'va_ask'}]);
   assert.equal(original.sections.length,4);
  }
 });

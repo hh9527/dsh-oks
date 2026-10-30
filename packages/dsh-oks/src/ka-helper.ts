@@ -64,8 +64,6 @@ export function installKnowledgeHelper({ ctx, knowledge, log, config }: {
     if (session) waiting.delete(session);
     consultations.delete(id);
   });
-  // restrict 只过滤全局工具；本作用域注册的 va_ask 始终可见。
-  ctx.tools.restrict({ allow: [] });
   if (!vocabulary) {
     const va = createKaRuntime({ ctx, log, config, vocabulary: true });
     const dispose = ctx.tools.register({
@@ -87,6 +85,13 @@ export function installKnowledgeHelper({ ctx, knowledge, log, config }: {
     if (typeof dispose === 'function') ctx.effect(() => dispose);
   }
   const active = new WeakSet<object>();
+  const toolScopes = new WeakSet<object>();
+  const prepareTools = (agent: import('./host.ts').AgentLike) => {
+    if (toolScopes.has(agent)) return;
+    if (!agent.ctx?.tools) throw new Error('知识助手需要 Agent 独立的工具作用域。');
+    agent.ctx.tools.restrict({ allow: vocabulary ? [] : ['va_ask'] });
+    toolScopes.add(agent);
+  };
   // pre-step 同样覆盖重启后恢复、上轮异常中断以及浏览器直接续问的情况。
   ctx.on('agent/pre-step', async (payload, next) => {
     const session = payload.agent?.session;
@@ -111,6 +116,7 @@ export function installKnowledgeHelper({ ctx, knowledge, log, config }: {
     const agent = context.agent;
     if (!agent) return next();
     context.signal?.throwIfAborted();
+    prepareTools(agent);
     if (!initialized.has(agent.session)) {
       agent.session.append('sandbox/mode', { mode: 'read-only', source: 'delegation' });
       agent.session.append('approval/policy', { policy: 'never', source: 'delegation' });
@@ -123,7 +129,8 @@ export function installKnowledgeHelper({ ctx, knowledge, log, config }: {
       .replace(MARKER, () => vocabulary ? renderWholeVocabulary(index) : '');
     const assembled = await next();
     log(vocabulary ? `[oks] vocabulary system prompt · ${index.terms.length} 条` : '[oks] knowledge relationship map');
-    return { ...assembled, sections: [
+    // 宿主在 assemble hook 前已收集 schema；同步裁剪本次请求，执行限制由 Agent scope 保证。
+    return { ...assembled, ...(assembled.tools ? { tools: assembled.tools.filter(tool => !vocabulary && tool.name === 'va_ask') } : {}), sections: [
       ...assembled.sections.filter(section => section.name !== 'oks:knowledge-assistant' && !UNRELATED_SECTIONS.has(section.name)),
       { name: 'oks:knowledge-assistant', text: feed, interpolate: false },
     ] };
