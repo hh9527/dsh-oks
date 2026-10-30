@@ -209,3 +209,19 @@ test('等待 VA 时空闲保留当前轮，VA 返回后完成咨询才收起',as
  for(const f of handlers.get('agent/status')!)f({agent,status:'idle'});
  assert.equal(replacements,before+1);
 });
+
+
+test('KA/VA 只过滤宿主交付与开发 section，保留安全约束和工具定义',async()=>{
+ for(const vocabularyHelper of [false,true]){
+  let assemble:any;
+  const ctx={systemPrompt:{section(){}},tools:{restrict(){},register(){return()=>{}}},get(){},on(n:string,f:any){if(n==='system-prompt/assemble')assemble=f;return()=>{}},effect(){}};
+  const knowledge={ensureWorkspace(){return{settings:{domain:'test'}}},async ensureIndex(){return{knowledge:{},terms:[]}}};
+  installKnowledgeHelper({ctx,knowledge,log(){},config:{vocabularyHelper}} as any);
+  const agent=caller();agent.session.append=()=>{};
+  const original={sections:[{name:'safety',text:'keep safety'},{name:'ui:deliverable-file-references',text:'Prefer showing the primary results'},{name:'harness:source',text:'source checkout'},{name:'app:web-surface',text:'web development'}],tools:[{name:'va_ask'}]};
+  const result=await assemble({},{agent},async()=>original);
+  assert.deepEqual(result.sections.map((s:any)=>s.name),['safety','oks:knowledge-assistant']);
+  assert.equal(result.tools,original.tools);
+  assert.equal(original.sections.length,4);
+ }
+});

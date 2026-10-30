@@ -10,6 +10,8 @@ import KA_PROMPT_TEXT from './ka-prompt-tpl.md';
 
 const MARKER = '<!-- 词表 -->';
 const DOMAIN_MARKER = '<!-- 领域摘要 -->';
+// 领域助手不承担文件交付或宿主开发职责；按宿主 section 身份过滤，保留其余约束。
+const UNRELATED_SECTIONS = new Set(['ui:deliverable-file-references', 'harness:source', 'app:web-surface']);
 const COLLAPSED = '（上文问答已收起）';
 const collapsedMessage = () => ({
   id: randomUUID(), role: 'user',
@@ -122,7 +124,7 @@ export function installKnowledgeHelper({ ctx, knowledge, log, config }: {
     const assembled = await next();
     log(vocabulary ? `[oks] vocabulary system prompt · ${index.terms.length} 条` : '[oks] knowledge relationship map');
     return { ...assembled, sections: [
-      ...assembled.sections.filter(section => section.name !== 'oks:knowledge-assistant'),
+      ...assembled.sections.filter(section => section.name !== 'oks:knowledge-assistant' && !UNRELATED_SECTIONS.has(section.name)),
       { name: 'oks:knowledge-assistant', text: feed, interpolate: false },
     ] };
   });
