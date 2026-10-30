@@ -1,7 +1,6 @@
 import { collectProgrammedKnowledge, programmedKnowledgeContract } from './programmed-knowledge.ts';
 import { derivePublishedKnowledge } from './published-knowledge.ts';
 import type { SemanticGraph } from './knowledge-graph.ts';
-import { oneLineText } from './text.ts';
 import { isRecord } from './host.ts';
 import type { LogFn } from './host.ts';
 import type { Settings } from './config.ts';
@@ -55,15 +54,16 @@ export async function buildRetrievalIndex(entry: IndexWorkspace, sha: string, lo
   return index;
 }
 
-/** 整份词汇一次性渲染：按 key 升序、一行一条 `"<key>" "<name>" [<aliases>] "<doc>"`（每个字段
- *  json 风格编码，aliases 是数组，doc 按词表原文给、只压成一行）。
- *  插件把它作为**一条消息**喂进助手的上下文——没有页眉页脚、没有分页、没有游标，模型不做任何搬运。 */
+/** 一行一条：- key:name,alias;doc。只转义结构分隔符和换行，保留原始词汇。 */
 export function renderWholeVocabulary(index: RetrievalIndex): string {
+  const escape = (text: string, separators: string) => text.replace(/[\\\r\n,:;]/g, char => {
+    if (char === '\\') return '\\\\';
+    if (char === '\n') return '\\n';
+    if (char === '\r') return '\\r';
+    return separators.includes(char) ? '\\' + char : char;
+  });
   const sorted = [...index.terms].sort((left, right) => left.key.localeCompare(right.key, 'en'));
-  return sorted.map((term) => [
-    JSON.stringify(term.key),
-    JSON.stringify(term.name),
-    JSON.stringify(term.aliases),
-    JSON.stringify(oneLineText(term.doc)),
-  ].join(' ')).join('\n');
+  return sorted.map(term => '- ' + escape(term.key, ':') + ':'
+    + [term.name, ...term.aliases].map(name => escape(name, ',;')).join(',')
+    + ';' + escape(term.doc, '')).join('\n');
 }

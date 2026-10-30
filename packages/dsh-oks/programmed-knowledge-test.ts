@@ -40,3 +40,9 @@ assert.deepEqual(await collectProgrammedKnowledge(publication),{graph,vocabulary
 assert.throws(()=>derivePublishedKnowledge(graph,undefined,[...vocabulary,...vocabulary]),/Invalid model vocabulary term/);
 assert.throws(()=>derivePublishedKnowledge(graph,undefined,[{...vocabulary[0],key:'types/missing'}]),/Invalid model vocabulary term/);
 console.log('static JavaScript knowledge: parsed data, new Function scope, reuse, vocabulary, presentation, errors and no runtime fallback passed');
+
+assert.equal(renderWholeVocabulary({terms:[{...vocabulary[0],key:'datasets/device',name:'设备',aliases:['终端','NE'],doc:'设备清单'}]} as any),'- datasets/device:设备,终端,NE;设备清单');
+assert.equal(renderWholeVocabulary({terms:[{...vocabulary[0],key:'types/a:b',name:'a,b;c',aliases:['"quoted"','x\\y','line\nnext'],doc:'first\r\nsecond;detail:literal,comma'}]} as any),
+  '- types/a\\:b:a\\,b\\;c,"quoted",x\\\\y,line\\nnext;first\\r\\nsecond;detail:literal,comma');
+assert.equal(renderWholeVocabulary({terms:[{...vocabulary[0],key:'z',name:'Z',aliases:[],doc:''},{...vocabulary[0],key:'a',name:'A',aliases:[],doc:''}]} as any),'- a:A;\n- z:Z;');
+assert.equal(renderWholeVocabulary({terms:[]} as any),'');
