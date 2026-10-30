@@ -88,6 +88,8 @@ elif args[0]=='plugin':
             self.assertEqual(patch.count('id: preset-oks-knowledge\n'), 1)
             self.assertIn('id: oks-knowledge\n', patch)
             self.assertIn('knowledgeHelper: true', patch)
+            self.assertEqual(patch.count('id: preset-oks-vocabulary\n'), 1)
+            self.assertIn('vocabularyHelper: true', patch)
             self.assertEqual(patch.count('id: agent-preset-registry\n'), 1)
             self.assertNotIn('\n[]\n', patch)
             self.assertIn('# user config', patch)

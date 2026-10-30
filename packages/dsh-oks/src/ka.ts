@@ -21,12 +21,15 @@ export function renderAsk(_args: unknown, value: AskResult | null | undefined): 
 }
 
 /** 每个父会话复用一个原生子会话；工具返回投递确认，回答由宿主投递给父会话。 */
-export function createKaRuntime({ ctx, log, config }: {
+export function createKaRuntime({ ctx, log, config, vocabulary = false }: {
   ctx: PluginContext;
   log: LogFn;
   config: PluginConfig | undefined;
+  vocabulary?: boolean;
 }): KaRuntime {
-  const preset = config?.kaPreset?.trim() || KA_PRESET;
+  const preset = vocabulary ? (config?.vaPreset?.trim() || 'oks-vocabulary') : (config?.kaPreset?.trim() || KA_PRESET);
+  const prefix = vocabulary ? 'session-va-' : KA_HELPER_PREFIX;
+  const label = vocabulary ? '词汇助手' : '知识助手';
   const states = new WeakMap<AgentLike, {
     childId?: string;
     discovered?: boolean;
@@ -69,12 +72,12 @@ export function createKaRuntime({ ctx, log, config }: {
           if (!owned.discovered) {
             const children = await service.listChildren(caller.session.id!, requestSignal);
             owned.childId = children.findLast(child => child.mode === 'continuable'
-              && child.label === '知识助手' && child.id.startsWith(KA_HELPER_PREFIX))?.id;
+              && child.label === label && child.id.startsWith(prefix))?.id;
             owned.discovered = true;
           }
           requestSignal.throwIfAborted();
           const existing = owned.childId;
-          const childId = existing ?? `${KA_HELPER_PREFIX}${randomUUID()}`;
+          const childId = existing ?? `${prefix}${randomUUID()}`;
           finished = new Promise(resolve => { pending.set(childId, resolve); });
           try {
             const prompt = [{ type: 'text', text: query }];
@@ -87,7 +90,7 @@ export function createKaRuntime({ ctx, log, config }: {
               const effort = config?.kaReasoningEffort?.trim()
                 || (/^deepseek(?:[-_/]|$)/i.test(route?.model ?? '') ? 'off' : 'inherit');
               const activation = await service.startActivation({
-                provider: 'spawn', label: '知识助手', childId, delivery: 'parent', signal: requestSignal,
+                provider: 'spawn', label, childId, delivery: 'parent', signal: requestSignal,
                 request: { parent: caller, cwd, agentPreset: preset, prompt,
                   ...(effort === 'inherit' ? {} : { agentOptions: { reasoningEffort: effort } }),
                 },

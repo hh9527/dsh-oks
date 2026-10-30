@@ -35,8 +35,8 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
 
   const knowledge = createKnowledge({ ctx, log, config });
   ctx.effect(() => knowledge.dispose);
-  if (config.knowledgeHelper === true) {
-    installKnowledgeHelper({ ctx, knowledge, log });
+  if (config.knowledgeHelper === true || config.vocabularyHelper === true) {
+    installKnowledgeHelper({ ctx, knowledge, log, config });
     return;
   }
 

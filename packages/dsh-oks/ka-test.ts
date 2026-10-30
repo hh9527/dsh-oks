@@ -29,7 +29,7 @@ function harness(options: any = {}) {
     get: () => options.missing ? undefined : service,
     on: (_event: string, fn: any) => { end = fn; return () => {}; },
     effect: (fn: any) => effects.push(fn()),
-  } as any, config: options.config, log() {} });
+  } as any, config: options.config, vocabulary: options.vocabulary, log() {} });
   return { runtime, starts, sends, settled, unload: () => effects.forEach(fn => fn()) };
 }
 
@@ -115,15 +115,15 @@ test('助手装配按当前工作区提供完整词表，空工具面与逐字�
  on(name:string,fn:any){if(name==='system-prompt/assemble')assemble=fn;return()=>{};},effect(fn:any){fn();}};
  const knowledge={ensureWorkspace({agent}:any){seen.push(agent.session.header.cwd);return {settings:{domain:agent.session.header.cwd}};},
  async ensureIndex(entry:any){const root=entry.settings.domain;return{knowledge:{entities:{[root]:{}},datasets:{},relations:{},items:[]},terms:[{key:'k',name:root+'$&',aliases:['{{literal}}'],doc:'说明'}]};}};
- installKnowledgeHelper({ctx,knowledge,log(){}} as any);assert.deepEqual(restrictions,[{allow:[]}]);assert.match(sections[0].text,/知识助手/);
+ installKnowledgeHelper({ctx,knowledge,log(){},config:{vocabularyHelper:true}} as any);assert.deepEqual(restrictions,[{allow:[]}]);assert.match(sections[0].text,/词汇助手/);
  const p=caller();p.session.append=(...args:any[])=>policies.push(args);
  const next=async()=>({sections:[{name:'platform',text:'platform'}],tools:[],variables:{}});
  const first=await assemble({},{agent:p},next);await assemble({},{agent:p},next);
  const other=caller('two');other.session.header.cwd='/other';other.session.append=()=>{};const second=await assemble({},{agent:other},next);
  assert.ok(first.sections[1].text.includes('/workspace$&'));assert.ok(first.sections[1].text.includes('{{literal}}'));assert.equal(first.sections[1].interpolate,false);
  assert.ok(second.sections[1].text.includes('/other$&'));assert.equal(first.sections.filter((s:any)=>s.name==='oks:knowledge-assistant').length,1);
- assert(first.sections[1].text.includes('# 全局领域摘要'));
- assert(first.sections[1].text.includes('领域：` /workspace `'));
+ assert(!first.sections[1].text.includes('# 全局领域摘要'));
+ assert(first.sections[1].text.includes('完整词汇表'));
  assert(!second.sections[1].text.includes('/workspace'));
  assert(!first.sections[1].text.includes('ColumnChart'));
  const again=await assemble({},{agent:p},async()=>first);
@@ -155,4 +155,57 @@ test('连续 100 轮收起问答后模型表面恒定，日志保留所有问答
  }
  assert.equal(events.filter(e=>e.type==='user/message' && e.data.content?.[0]?.text.startsWith('问题 ')).length,100);
  assert.equal(events.filter(e=>e.type==='assistant/message').length,100);
+});
+
+
+test('KA 只装配关系地图，VA 词汇独立，唯一工具为 va_ask',async()=>{
+ let assemble:any;let allowed:any;const tools:any[]=[];
+ const ctx={systemPrompt:{section(){}},tools:{restrict(v:any){allowed=v.allow},register(v:any){tools.push(v);return()=>{}}},get(){},on(n:string,f:any){if(n==='system-prompt/assemble')assemble=f;return()=>{}},effect(){}};
+ const knowledge={ensureWorkspace(){return{settings:{domain:'test'}}},async ensureIndex(){return{knowledge:{entities:{device:{}},datasets:{metrics:{roles:{device:{entity:'entities/device'}}}},relations:{}},terms:[{key:'secret',name:'VOCABULARY_ONLY',aliases:[],doc:''}]}}};
+ installKnowledgeHelper({ctx,knowledge,log(){}} as any);
+ assert.deepEqual(allowed,['va_ask']);assert.equal(tools[0].name,'va_ask');
+ const parent=caller();parent.session.append=()=>{};
+ const result=await assemble({},{agent:parent},async()=>({sections:[]}));
+ assert.match(result.sections[0].text,/device/);assert.match(result.sections[0].text,/va_ask/);
+ assert(!result.sections[0].text.includes('VOCABULARY_ONLY'));
+});
+
+
+test('VA 作为 KA 的独立子会话，复用自己的预设与前缀',async()=>{
+ const h=harness({vocabulary:true});const ka=caller('session-ka-parent');
+ const first=await h.runtime.ask(ka,ka.session.id,'CPU');
+ assert.match(first.helper,/^session-va-/);assert.equal(h.starts[0].label,'词汇助手');
+ assert.equal(h.starts[0].request.agentPreset,'oks-vocabulary');assert.equal(h.starts[0].request.parent,ka);
+ assert.equal((await h.runtime.ask(ka,ka.session.id,'内存')).helper,first.helper);
+});
+
+
+test('同一轮工具往返保留上下文，咨询结束后收起',async()=>{
+ const handlers=new Map<string,any[]>();let replacements=0;
+ const session:any={id:'ka',surface:{nodes:[0,1]},eventAt:(n:number)=>n===0?{type:'system/message',data:{message:{content:[{type:'text',text:'prefix'}]}}}:{type:'assistant/message'},append(){replacements++}};
+ const ctx={systemPrompt:{section(){}},tools:{restrict(){},register(){return()=>{}}},get(){},on(n:string,f:any){handlers.set(n,[...(handlers.get(n)??[]),f]);return()=>{}},effect(){}};
+ installKnowledgeHelper({ctx,knowledge:{},log(){}} as any);
+ const step=handlers.get('agent/pre-step')![0];const agent={session};
+ await step({agent},async()=>({kind:'skip'}));const before=replacements;
+ await step({agent},async()=>({kind:'skip'}));assert.equal(replacements,before);
+ for(const status of handlers.get('agent/status')!)status({agent,status:'idle'});
+ assert.equal(replacements,before+1);
+});
+
+test('等待 VA 时空闲保留当前轮，VA 返回后完成咨询才收起',async()=>{
+ const handlers=new Map<string,any[]>();let tool:any;let childId='';let replacements=0;
+ const session:any={id:'session-ka-test',header:{cwd:'/workspace'},surface:{nodes:[0]},eventAt:()=>({type:'assistant/message'}),append(){replacements++}};
+ const ctx={systemPrompt:{section(){}},tools:{restrict(){},register(t:any){tool=t;return()=>{}}},
+ get(){return{sendMessage:async()=>'',listChildren:async()=>[],startActivation:async(s:any)=>{childId=s.childId;return{messageId:'m',result:Promise.resolve({})}}}},
+ on(n:string,f:any){handlers.set(n,[...(handlers.get(n)??[]),f]);return()=>{}},effect(){}};
+ installKnowledgeHelper({ctx,knowledge:{},log(){}} as any);
+ const agent={session};const step=handlers.get('agent/pre-step')![0];
+ await step({agent},async()=>({kind:'skip'}));const before=replacements;
+ await tool.execute({query:'原始问题'},{agent});
+ for(const f of handlers.get('agent/status')!)f({agent,status:'idle'});
+ assert.equal(replacements,before);
+ for(const f of handlers.get('subagent/end')!)f({id:childId});
+ await step({agent},async()=>({kind:'skip'}));assert.equal(replacements,before);
+ for(const f of handlers.get('agent/status')!)f({agent,status:'idle'});
+ assert.equal(replacements,before+1);
 });

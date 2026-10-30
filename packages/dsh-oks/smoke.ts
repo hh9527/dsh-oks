@@ -424,7 +424,9 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     const text = readFileSync(join(alone, 'index.mjs'), 'utf8');
     ok('助手提示词也内联在产物里（占位符在同一份源码里）',
       text.includes('<!-- 词表 -->')
-      && readFileSync(new URL('./src/ka-prompt-tpl.md', import.meta.url), 'utf8').includes('<!-- 词表 -->'));
+      && readFileSync(new URL('./src/va-prompt-tpl.md', import.meta.url), 'utf8').includes('<!-- 词表 -->')
+      && text.includes('<!-- 领域摘要 -->')
+      && readFileSync(new URL('./src/ka-prompt-tpl.md', import.meta.url), 'utf8').includes('<!-- 领域摘要 -->'));
     // 产物自足：从空目录里真画一张图。echarts 已经打进 index.mjs，没有旁资产要读。
     const built = mod.buildOption([{ k: 'A', n: 1 }], {
       kind: 'bar', title: null, sourceLabel: 'agent 自主填写', x: 'k', value: 'n',
