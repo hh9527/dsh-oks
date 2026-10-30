@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createVaRuntime, renderAsk } from './src/va.ts';
-import { installVocabularyHelper, resetVocabularyContext } from './src/va-helper.ts';
+import { createKaRuntime, renderAsk } from './src/ka.ts';
+import { installKnowledgeHelper, resetKnowledgeContext } from './src/ka-helper.ts';
 const caller = (id = 'parent') => ({ id, session: { id, header: { cwd: '/workspace' } } }) as any;
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 function harness(options: any = {}) {
@@ -25,7 +25,7 @@ function harness(options: any = {}) {
       return 'followup-' + sends.length;
     },
   };
-  const runtime = createVaRuntime({ ctx: {
+  const runtime = createKaRuntime({ ctx: {
     get: () => options.missing ? undefined : service,
     on: (_event: string, fn: any) => { end = fn; return () => {}; },
     effect: (fn: any) => effects.push(fn()),
@@ -40,7 +40,7 @@ test('官方宿主首次创建、后续 sendMessage，工具只返回投递确�
   assert.equal(first.accepted, true); assert.equal(first.helper, next.helper);
   assert.equal(h.starts.length, 1); assert.equal(h.sends.length, 1);
   assert.equal(h.starts[0].delivery, 'parent'); assert.equal(h.starts[0].request.parent, parent);
-  assert.equal(h.starts[0].request.agentPreset, 'oks-vocabulary');
+  assert.equal(h.starts[0].request.agentPreset, 'oks-knowledge');
   assert.equal(h.starts[0].request.agentOptions, undefined);
   assert.equal(h.sends[0].parent, parent); assert.equal(h.sends[0].childId, first.helper);
   assert.deepEqual(h.sends[0].prompt, [{ type: 'text', text: '端口' }]);
@@ -58,15 +58,15 @@ test('默认仅 DeepSeek 关闭推理，按当前请求路由判断并尊重显�
   assert.deepEqual(h.starts[0].request.agentOptions,expected?{reasoningEffort:expected}:undefined);
  }
  for(const [model,effort] of [['deepseek-flash','inherit'],['deepseek-flash','low'],['qwen3.8-flash','low']]){
-  const h=harness({config:{vaReasoningEffort:effort}}),parent=caller();parent.options={model};
+  const h=harness({config:{kaReasoningEffort:effort}}),parent=caller();parent.options={model};
   await h.runtime.ask(parent,'parent','覆盖');
   assert.deepEqual(h.starts[0].request.agentOptions,effort==='inherit'?undefined:{reasoningEffort:effort});
  }
 });
-test('从父会话持久目录恢复已有词汇子会话', async () => {
-  const h = harness({ children: [{ mode: 'continuable', id: 'session-va-existing', label: '词汇助手' }] });
+test('从父会话持久目录恢复已有知识子会话', async () => {
+  const h = harness({ children: [{ mode: 'continuable', id: 'session-ka-existing', label: '知识助手' }] });
   const result = await h.runtime.ask(caller(), 'parent', '恢复后的问题');
-  assert.equal(result.helper, 'session-va-existing'); assert.equal(h.starts.length, 0);
+  assert.equal(result.helper, 'session-ka-existing'); assert.equal(h.starts.length, 0);
   assert.equal(h.sends.length, 1);
 });
 test('同问并发合并，不同问题等宿主结束事件后投递', async () => {
@@ -86,7 +86,7 @@ test('不同父会话独立，推理档位可覆盖或继承', async () => {
   const [a, b] = await Promise.all([h.runtime.ask(caller('a'), 'a', '问题'), h.runtime.ask(caller('b'), 'b', '问题')]);
   assert.notEqual(a.helper, b.helper);
   for (const effort of ['low', 'inherit']) {
-    const custom = harness({ config: { vaPreset: 'custom', vaReasoningEffort: effort } });
+    const custom = harness({ config: { kaPreset: 'custom', kaReasoningEffort: effort } });
     await custom.runtime.ask(caller(), 'parent', '问题');
     assert.equal(custom.starts[0].request.agentPreset, 'custom');
     assert.deepEqual(custom.starts[0].request.agentOptions, effort === 'inherit' ? undefined : { reasoningEffort: effort });
@@ -113,16 +113,23 @@ test('助手装配按当前工作区提供完整词表，空工具面与逐字�
  let assemble:any;const sections:any[]=[],restrictions:any[]=[],policies:any[]=[],seen:string[]=[];
  const ctx={systemPrompt:{section:(s:any)=>sections.push(s)},tools:{restrict:(v:any)=>restrictions.push(v)},
  on(name:string,fn:any){if(name==='system-prompt/assemble')assemble=fn;return()=>{};},effect(fn:any){fn();}};
- const knowledge={ensureWorkspace({agent}:any){seen.push(agent.session.header.cwd);return agent.session.header.cwd;},
- async ensureIndex(root:string){return{terms:[{key:'k',name:root+'$&',aliases:['{{literal}}'],doc:'说明'}]};}};
- installVocabularyHelper({ctx,knowledge,log(){}} as any);assert.deepEqual(restrictions,[{allow:[]}]);assert.match(sections[0].text,/词汇助手/);
+ const knowledge={ensureWorkspace({agent}:any){seen.push(agent.session.header.cwd);return {settings:{domain:agent.session.header.cwd}};},
+ async ensureIndex(entry:any){const root=entry.settings.domain;return{knowledge:{entities:{[root]:{}},datasets:{},relations:{},items:[]},terms:[{key:'k',name:root+'$&',aliases:['{{literal}}'],doc:'说明'}]};}};
+ installKnowledgeHelper({ctx,knowledge,log(){}} as any);assert.deepEqual(restrictions,[{allow:[]}]);assert.match(sections[0].text,/知识助手/);
  const p=caller();p.session.append=(...args:any[])=>policies.push(args);
  const next=async()=>({sections:[{name:'platform',text:'platform'}],tools:[],variables:{}});
  const first=await assemble({},{agent:p},next);await assemble({},{agent:p},next);
  const other=caller('two');other.session.header.cwd='/other';other.session.append=()=>{};const second=await assemble({},{agent:other},next);
  assert.ok(first.sections[1].text.includes('/workspace$&'));assert.ok(first.sections[1].text.includes('{{literal}}'));assert.equal(first.sections[1].interpolate,false);
- assert.ok(second.sections[1].text.includes('/other$&'));assert.equal(first.sections.filter((s:any)=>s.name==='oks:vocabulary').length,1);
- assert.deepEqual(policies.map(v=>v[0]),['sandbox/mode','approval/policy']);assert.deepEqual(await assemble({},{},next),await next());assert.equal(seen.length,3);
+ assert.ok(second.sections[1].text.includes('/other$&'));assert.equal(first.sections.filter((s:any)=>s.name==='oks:knowledge-assistant').length,1);
+ assert(first.sections[1].text.includes('# 全局领域摘要'));
+ assert(first.sections[1].text.includes('领域：` /workspace `'));
+ assert(!second.sections[1].text.includes('/workspace'));
+ assert(!first.sections[1].text.includes('ColumnChart'));
+ const again=await assemble({},{agent:p},async()=>first);
+ assert.equal(again.sections.filter((s:any)=>s.name==='oks:knowledge-assistant').length,1);
+ assert.equal(again.sections.at(-1).text,first.sections[1].text);
+ assert.deepEqual(policies.map(v=>v[0]),['sandbox/mode','approval/policy']);assert.deepEqual(await assemble({},{},next),await next());assert.equal(seen.length,4);
  await assert.rejects(assemble({},{agent:p,signal:AbortSignal.abort()},next));
 });
 
@@ -141,10 +148,10 @@ test('连续 100 轮收起问答后模型表面恒定，日志保留所有问答
  for(let i=0;i<100;i++){
   session.append('user/message',{content:[{type:'text',text:'问题 '+i}]});
   session.append('assistant/message',{message:{content:[{type:'text',text:'回答 '+i}]}});
-  resetVocabularyContext(session as any);
+  resetKnowledgeContext(session as any);
   assert.equal(nodes.length,2);assert.equal(nodes[0],0);
   assert.deepEqual(events[nodes[1]].data.content,[{type:'text',text:'（上文问答已收起）'}]);
-  const count=events.length;resetVocabularyContext(session as any);assert.equal(events.length,count);
+  const count=events.length;resetKnowledgeContext(session as any);assert.equal(events.length,count);
  }
  assert.equal(events.filter(e=>e.type==='user/message' && e.data.content?.[0]?.text.startsWith('问题 ')).length,100);
  assert.equal(events.filter(e=>e.type==='assistant/message').length,100);

@@ -3,7 +3,7 @@
 手写的工具用法集中在本目录；`src/skill.md` 保留任务、工作方法与帮助入口。
 
 - `workflow.md`：工作方法和纪律，与直接注入的预制 prompt 共用文本
-- `knowledge.md`：全局摘要、预制知识卡片与词汇助手。
+- `knowledge.md`：全局摘要、预制知识卡片与知识助手。
 - `draft.md`：DARI、有类型 Pipeline、设计检查与按配置申请批准的运行。
 - `pipeline.md`：关系 DSL、类型推导、Option、聚合与有限展开
 - `query.md`：查询意图语法与约束。

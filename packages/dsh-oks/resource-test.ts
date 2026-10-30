@@ -8,7 +8,7 @@ const root=mkdtempSync(join(process.env.TMPDIR||join(homedir(),'.cache','tmp'),'
 const graph={datasets:{d:{dimensions:{},measures:{},fields:{}}},items:[{key:'datasets/d',names:['Dataset'],doc:'fixture'}]};
 const entry={root,modelHash:'fixture',settings:{domain:'test',workspaceRoot:root}};
 const knowledge={ensureWorkspace:()=>entry,ensureIndex:async()=>({knowledge:graph})} as any;
-const definitions=createTools({knowledge,va:{} as any,timeContext:{zones:new Map()} as any,log(){},config:undefined});
+const definitions=createTools({knowledge,ka:{} as any,timeContext:{zones:new Map()} as any,log(){},config:undefined});
 const tools=guidedTools(definitions,knowledge),exec={agent:{session:{id:'resources'}}} as any;
 const call=(name:string,args:unknown)=>tools.find(t=>t.name===name)!.execute(args as never,exec) as Promise<any>;
 try{

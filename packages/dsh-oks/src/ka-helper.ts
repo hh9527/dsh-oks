@@ -1,23 +1,24 @@
+import { renderDomainSummary } from './domain-summary.ts';
 import { randomUUID } from 'node:crypto';
 import { renderWholeVocabulary } from './retrieval.ts';
 import type { Knowledge } from './knowledge.ts';
 import type { LogFn, PluginContext, SessionLike } from './host.ts';
-import VA_PROMPT_TEXT from './va-prompt-tpl.md';
+import KA_PROMPT_TEXT from './ka-prompt-tpl.md';
 
 const MARKER = '<!-- 词表 -->';
+const DOMAIN_MARKER = '<!-- 领域摘要 -->';
 const COLLAPSED = '（上文问答已收起）';
 const collapsedMessage = () => ({
   id: randomUUID(), role: 'user',
   content: [{ type: 'text', text: COLLAPSED }], source: { kind: 'user' },
 });
-const PERSONA = '你是这份词表的词汇助手：提问者给一个说法（一个词、一个短语或一句话，中英不限），'
-  + '你回答词表里有哪些等价或相近的说法（逐字原文）。词表就在你的系统提示词里，只读不改；'
-  + '你不回答业务问题，也不碰文件。';
+const PERSONA = '你是领域知识助手：根据系统上下文中的完整领域摘要和词汇表，解释问题中的领域概念，推荐相关知识点与准确 ID，并说明歧义。'
+  + '主 agent 自主使用 search/cap/card 获取详细知识并设计查询。你只提供知识导航，不执行查询、不读取文件。';
 
 /** 沿用固定边界收起：保留系统前缀，旧标记与全部问答一起替换，原始日志保留。 */
-export function resetVocabularyContext(session: SessionLike): void {
+export function resetKnowledgeContext(session: SessionLike): void {
   const nodes = session.surface?.nodes;
-  if (!nodes || !session.eventAt) throw new Error('词汇助手需要宿主的会话表面接口。');
+  if (!nodes || !session.eventAt) throw new Error('知识助手需要宿主的会话表面接口。');
   const ranges: number[][] = [];
   let range: number[] = [];
   for (const seq of nodes) {
@@ -41,20 +42,20 @@ export function resetVocabularyContext(session: SessionLike): void {
   }
 }
 
-/** 专用预设的提示词与权限。装配以当前子会话定位词表，诊断装配不访问工作区。 */
-export function installVocabularyHelper({ ctx, knowledge, log }: {
+/** 专用预设的提示词与权限。装配以当前子会话定位领域摘要与词表，诊断装配不访问工作区。 */
+export function installKnowledgeHelper({ ctx, knowledge, log }: {
   ctx: PluginContext;
   knowledge: Knowledge;
   log: LogFn;
 }): void {
-  if (!ctx.systemPrompt) throw new Error('词汇助手需要 systemPrompt 服务。');
-  const template = VA_PROMPT_TEXT.trim();
-  if (!template.includes(MARKER)) throw new Error('词汇助手提示词缺少词表占位符。');
+  if (!ctx.systemPrompt) throw new Error('知识助手需要 systemPrompt 服务。');
+  const template = KA_PROMPT_TEXT.trim();
+  if (!template.includes(MARKER) || !template.includes(DOMAIN_MARKER)) throw new Error('知识助手提示词缺少领域摘要或词表占位符。');
   ctx.tools.restrict({ allow: [] });
   // pre-step 同样覆盖重启后恢复、上轮异常中断以及浏览器直接续问的情况。
   ctx.on('agent/pre-step', async (payload, next) => {
     const session = payload.agent?.session;
-    if (session) resetVocabularyContext(session);
+    if (session) resetKnowledgeContext(session);
     const decision = await next();
     // 首轮也使用同一个固定标记；由宿主在系统前缀之后提交，保持所有轮次的输入形状一致。
     const hasMarker = session?.surface?.nodes?.some(seq => {
@@ -67,7 +68,7 @@ export function installVocabularyHelper({ ctx, knowledge, log }: {
     return decision;
   });
   ctx.on('agent/status', ({ agent, status }) => {
-    if (status === 'idle') resetVocabularyContext(agent.session);
+    if (status === 'idle') resetKnowledgeContext(agent.session);
   });
   ctx.systemPrompt.section({ name: 'deployment:persona-prefix', order: 0, text: PERSONA });
   const initialized = new WeakSet<object>();
@@ -83,12 +84,13 @@ export function installVocabularyHelper({ ctx, knowledge, log }: {
     const entry = knowledge.ensureWorkspace({ agent });
     const index = await knowledge.ensureIndex(entry);
     context.signal?.throwIfAborted();
-    const feed = template.replace(MARKER, () => renderWholeVocabulary(index));
+    const feed = template.replace(DOMAIN_MARKER, () => renderDomainSummary(index.knowledge, entry.settings.domain))
+      .replace(MARKER, () => renderWholeVocabulary(index));
     const assembled = await next();
     log(`[oks] vocabulary system prompt · ${index.terms.length} 条`);
     return { ...assembled, sections: [
-      ...assembled.sections,
-      { name: 'oks:vocabulary', text: feed, interpolate: false },
+      ...assembled.sections.filter(section => section.name !== 'oks:knowledge-assistant'),
+      { name: 'oks:knowledge-assistant', text: feed, interpolate: false },
     ] };
   });
   ctx.effect(() => dispose);

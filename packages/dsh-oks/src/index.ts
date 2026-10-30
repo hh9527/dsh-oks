@@ -15,8 +15,8 @@ import { installKnowledgeNavigation } from './knowledge-navigation.ts';
 import { createTimeContext } from './time-context.ts';
 import { guidedTools } from './guided-tools.ts';
 import { createTools } from './tools.ts';
-import { createVaRuntime } from './va.ts';
-import { installVocabularyHelper } from './va-helper.ts';
+import { createKaRuntime } from './ka.ts';
+import { installKnowledgeHelper } from './ka-helper.ts';
 import type { LogFn, PluginContext } from './host.ts';
 import type { PluginConfig } from './config.ts';
 
@@ -35,8 +35,8 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
 
   const knowledge = createKnowledge({ ctx, log, config });
   ctx.effect(() => knowledge.dispose);
-  if (config.vocabularyHelper === true) {
-    installVocabularyHelper({ ctx, knowledge, log });
+  if (config.knowledgeHelper === true) {
+    installKnowledgeHelper({ ctx, knowledge, log });
     return;
   }
 
@@ -46,9 +46,9 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
   const timeContext = createTimeContext({ ctx, log });
   timeContext.install();
 
-  const va = createVaRuntime({ ctx, log, config });
+  const ka = createKaRuntime({ ctx, log, config });
 
-  const definitions = createTools({ knowledge, va, timeContext, log, config, attachments:()=>ctx.get('attachments'), approval:()=>ctx.get('approval') });
+  const definitions = createTools({ knowledge, ka, timeContext, log, config, attachments:()=>ctx.get('attachments'), approval:()=>ctx.get('approval') });
   ctx.effect(() => definitions.dispose);
   for (const definition of guidedTools(definitions, knowledge)) {
     const dispose = ctx.tools.register(definition);

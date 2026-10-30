@@ -91,7 +91,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['oks_read', 'oks_write', 'oks_edit', 'oks_list', 'oks_delete', 'oks_check', 'oks_run', 'oks_cap', 'oks_card', 'oks_search', 'va_ask'];
+const EXPECTED_TOOLS = ['oks_read', 'oks_write', 'oks_edit', 'oks_list', 'oks_delete', 'oks_check', 'oks_run', 'oks_cap', 'oks_card', 'oks_search', 'ka_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -202,22 +202,22 @@ console.log('=== 检索层：并发的首次检索只派生一次索引 ===');
 }
 
 
-console.log('=== va_ask：工具边界与宿主子会话调用 ===');
+console.log('=== ka_ask：工具边界与宿主子会话调用 ===');
 {
   const calls=[];const tools=new Map();let releases=0;
   apply({...ctx,tools:{register(tool){tools.set(tool.name,tool);return()=>{};}},
     get(name){return name==='subagents'?{async listChildren(){return[];},async startActivation(spec){
       calls.push(spec);return{childId:spec.childId,messageId:'initial',result:Promise.resolve({stopReason:'completed',output:[{type:'text',text:'词汇结果'}]}),async dispose(){releases++;}};
     },async sendMessage(){throw Error('smoke does not send');}}:ctx.get(name);}},{});
-  const tool=tools.get('va_ask');
+  const tool=tools.get('ka_ask');
   const caller={session:{id:'smoke-parent',header:{cwd:DEV_ROOT}}};
   const result=await tool.execute({query:'丢包'},{agent:caller});
   ok('工具将调用方交给宿主管理',calls[0].request.parent===caller&&calls[0].delivery==='parent');
-  ok('使用专用词汇预设',calls[0].request.agentPreset==='oks-vocabulary');
+  ok('使用专用知识预设',calls[0].request.agentPreset==='oks-knowledge');
   ok('工具只返回投递确认，执行由宿主管理',result.accepted===true&&result.messageId==='initial'&&releases===0);
   ok('模型可见结果说明回答由子会话消息送达',tool.output.render({},result)[0].text.includes('answer will arrive as a subagent message'));
-  ok('拒绝空问题',/需要一个说法/.test(await refusalOf(()=>tool.execute({query:' '},{agent:caller}))));
-  ok('拒绝递归咨询',/不咨询自己/.test(await refusalOf(()=>tool.execute({query:'丢包'},{agent:{session:{id:'session-va-self'}}}))));
+  ok('拒绝空问题',/需要一个问题/.test(await refusalOf(()=>tool.execute({query:' '},{agent:caller}))));
+  ok('拒绝递归咨询',/不咨询自己/.test(await refusalOf(()=>tool.execute({query:'丢包'},{agent:{session:{id:'session-ka-self'}}}))));
 }
 
 console.log('=== 惰性初始化：single flight 的机制 ===');
@@ -257,7 +257,7 @@ report answer := Report(title = "集成冒烟") [
   p [ "返回组数 ", Value(data = total?.groups), ],
 ];`;
 await call('oks_write',{path:draftFile,content:draftSource});
-// 模拟真实宿主：用户 RPC 建立时区，词汇子会话的结果随后触发内部续跑。
+// 模拟真实宿主：用户 RPC 建立时区，知识子会话的结果随后触发内部续跑。
 const timeSession = sessionFor(DEV_ROOT).agent.session;
 for (const messages of [
   [{ source: { kind: 'user', rpcId: 'smoke-time', clientTimeZone: 'Asia/Shanghai' } }],
@@ -424,7 +424,7 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     const text = readFileSync(join(alone, 'index.mjs'), 'utf8');
     ok('助手提示词也内联在产物里（占位符在同一份源码里）',
       text.includes('<!-- 词表 -->')
-      && readFileSync(new URL('./src/va-prompt-tpl.md', import.meta.url), 'utf8').includes('<!-- 词表 -->'));
+      && readFileSync(new URL('./src/ka-prompt-tpl.md', import.meta.url), 'utf8').includes('<!-- 词表 -->'));
     // 产物自足：从空目录里真画一张图。echarts 已经打进 index.mjs，没有旁资产要读。
     const built = mod.buildOption([{ k: 'A', n: 1 }], {
       kind: 'bar', title: null, sourceLabel: 'agent 自主填写', x: 'k', value: 'n',

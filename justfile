@@ -190,22 +190,22 @@ install:
     YAML
     fi
 
-    # 词汇助手预设仅装配提示词和权限。
-    if ! grep -qE '^[[:space:]]*-[[:space:]]*id:[[:space:]]*preset-oks-vocabulary[[:space:]]*$' "$PATCH_FILE"; then
+    # 知识助手预设仅装配提示词和权限。
+    if ! grep -qE '^[[:space:]]*-[[:space:]]*id:[[:space:]]*preset-oks-knowledge[[:space:]]*$' "$PATCH_FILE"; then
       cat >> "$PATCH_FILE" <<'YAML'
 
     - insert:
-        - id: preset-oks-vocabulary
+        - id: preset-oks-knowledge
           name: "@deepseek-ai/dsh-agent-preset"
           config:
-            id: oks-vocabulary
-            name: OKS 词汇助手
-            description: 根据当前工作区的完整词表回答一次词汇咨询。
+            id: oks-knowledge
+            name: OKS 知识助手
+            description: 根据当前工作区的领域摘要与完整词汇表提供知识导航。
             plugins:
-              - id: oks-vocabulary
+              - id: oks-knowledge
                 name: "@local/dsh-oks"
                 config:
-                  vocabularyHelper: true
+                  knowledgeHelper: true
     YAML
     fi
 

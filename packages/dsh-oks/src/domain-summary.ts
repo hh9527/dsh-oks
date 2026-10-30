@@ -1,4 +1,3 @@
-import { presentationOverview } from './presentation-guide.ts';
 import { isRecord, type ToolExec } from './host.ts';
 import type { Knowledge } from './knowledge.ts';
 
@@ -55,7 +54,7 @@ export function renderDomainSummary(graph: object, domain: string): string {
   const summary = domainSummary(graph, domain);
   const note = (item: { name?: string; doc: string }) => [item.name, item.doc].filter(Boolean).map(value => prose(value!)).join('：');
   const lines = ['# 全局领域摘要', '', '领域：'+code(domain), '',
-    '本摘要概览领域对象、数据集、关系导航及图表能力，已在上下文中。具体字段、度量、身份映射、连接条件与约束按需通过 oks_cap / oks_card 获取；领域词汇与规范值通过 va_ask 获取。', '',
+    '本摘要概览领域对象、数据集、关系导航，由知识助手持有。具体字段、度量、身份映射、连接条件与约束按需通过 oks_cap / oks_card 获取；领域词汇与规范值通过 ka_ask 获取。', '',
     '局部入口：Dataset 使用 oks_cap({cq:{target:{dataset:ID}}}) 或 oks_card({id:ID})；Entity 使用 oks_card({key:"entities/ID"})。', '',
     '## 业务实体（Entity）', '',
     ...summary.entities.map(e=>'- '+code(e.id)+(note(e)?'：'+note(e):'')), '',
@@ -76,7 +75,6 @@ export function renderDomainSummary(graph: object, domain: string): string {
     neighbors.get(from)!.add(to);
   }
   for(const [from,to] of neighbors)lines.push('- '+code(from)+' → '+[...to].map(code).join('、'));
-  lines.push('', ...presentationOverview());
   return lines.join('\n')+'\n';
 }
 

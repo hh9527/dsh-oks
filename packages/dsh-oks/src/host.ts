@@ -3,7 +3,7 @@
 //
 // 三块：
 //   1. 插件上下文（ctx / agentCtx）与它取到的服务、工具定义；
-//   2. agent 句柄与**会话表面**（工具 exec 拿到的调用方与词汇子会话）；
+//   2. agent 句柄与**会话表面**（工具 exec 拿到的调用方与知识子会话）；
 //   3. 知识服务的响应形状——宿主之外的对端协议，同样只声明我们用到的字段；
 //      外加两个收窄小工具（isRecord / isArray）与错误转文本，供各模块共用。
 //
@@ -118,7 +118,7 @@ export interface ToolExec {
   agent?: AgentLike;
 }
 
-/** 定位工作区只需要会话这一层（工具 exec 与 va 装配时给的都是这个最小形状）。 */
+/** 定位工作区只需要会话这一层（工具 exec 与 ka 装配时给的都是这个最小形状）。 */
 export interface WorkspaceProbe {
   agent?: { session?: SessionLike } | null;
 }

@@ -28,12 +28,12 @@ export interface OksDeclaration {
   requireRunApproval?: boolean;
 }
 
-/** 插件行 config 里可以覆盖的键（va 相关配置见 src/va.ts）。 */
+/** 插件行 config 里可以覆盖的键（ka 相关配置见 src/ka.ts）。 */
 export interface PluginConfig extends OksDeclaration {
-  /** 专用词汇预设使用此模式，只贡献提示词与权限。 */
-  vocabularyHelper?: boolean;
-  vaPreset?: string;
-  vaReasoningEffort?: string;
+  /** 专用知识预设使用此模式，只贡献提示词与权限。 */
+  knowledgeHelper?: boolean;
+  kaPreset?: string;
+  kaReasoningEffort?: string;
 }
 
 /** 解析后的运行设置：domain / model 是必需非空字符串，其余都有落点。 */

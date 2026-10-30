@@ -8,8 +8,8 @@ import type { PluginConfig } from './config.ts';
 import type { ApprovalService, AttachmentsService, LogFn, ToolDefinition, ToolExec } from './host.ts';
 import type { Knowledge } from './knowledge.ts';
 import type { TimeContext } from './time-context.ts';
-import { renderAsk, VA_HELPER_PREFIX } from './va.ts';
-import type { VaRuntime } from './va.ts';
+import { renderAsk, KA_HELPER_PREFIX } from './ka.ts';
+import type { KaRuntime } from './ka.ts';
 import { OBJECT_OUTPUT, renderValue, renderWorkDelete, renderWorkEdit, renderWorkRead, renderWorkWrite } from './response.ts';
 import { deleteWorkFile, prepareWorkEdit, readWorkText, readTextLines, listWorkFiles, readWorkFile, WORK_DIR, writeWorkFile } from './results.ts';
 
@@ -40,11 +40,11 @@ interface AskArgs {
 }
 
 /** 注册宿主工具及其工作区／会话运行状态。 */
-export function createTools({ knowledge, va, timeContext, log, attachments, approval }: {
+export function createTools({ knowledge, ka, timeContext, log, attachments, approval }: {
   knowledge: Knowledge;
   attachments?:()=>AttachmentsService|undefined;
   approval?:()=>ApprovalService|undefined;
-  va: VaRuntime;
+  ka: KaRuntime;
   timeContext: TimeContext;
   log: LogFn;
   config: PluginConfig | undefined;
@@ -173,14 +173,14 @@ export function createTools({ knowledge, va, timeContext, log, attachments, appr
       },
     },
     {
-      name: 'va_ask',
-      description: 'Ask this session\'s vocabulary subagent about one paraphrase — a word, phrase or sentence in any language. Returns delivery confirmation; the subagent sends its answer separately through the host. Wait for its answer before using the vocabulary leads. Consultations reuse the same child with a fixed whole-vocabulary prefix and collapsed previous questions and answers. Verify returned expressions with oks_project and read the corresponding knowledge declarations.',
+      name: 'ka_ask',
+      description: 'Ask the knowledge assistant to explain domain terms and recommend relevant knowledge IDs for the current question. It holds the full domain summary and vocabulary. Returns delivery confirmation; wait for the separate answer. Independently use oks_search/oks_cap/oks_card to inspect details and design queries. Each consultation retains a fixed knowledge prefix and collapses prior questions and answers.',
       parameters: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'The paraphrase to consult about, e.g. "丢包" or "port pressure".',
+            description: 'The user question or domain concepts needing knowledge navigation.',
           },
         },
         required: ['query'],
@@ -189,16 +189,16 @@ export function createTools({ knowledge, va, timeContext, log, attachments, appr
       output: { schema: OBJECT_OUTPUT, render: renderAsk },
       async execute(args: AskArgs, exec: ToolExec) {
         const query = typeof args?.query === 'string' ? args.query.trim() : '';
-        if (query.length === 0) throw new Error('dsh-oks: va_ask 需要一个说法（query）。');
+        if (query.length === 0) throw new Error('dsh-oks: ka_ask 需要一个问题（query）。');
         const caller = exec?.agent;
         const key = caller?.session?.id;
-        if (typeof key === 'string' && key.startsWith(VA_HELPER_PREFIX)) {
-          throw new Error('dsh-oks: 词汇助手不咨询自己。');
+        if (typeof key === 'string' && key.startsWith(KA_HELPER_PREFIX)) {
+          throw new Error('dsh-oks: 知识助手不咨询自己。');
         }
         if (caller === undefined || typeof key !== 'string' || key.length === 0) {
-          throw new Error('dsh-oks: 无法确定调用方会话，va_ask 需要它来登记词汇子会话。');
+          throw new Error('dsh-oks: 无法确定调用方会话，ka_ask 需要它来登记知识子会话。');
         }
-        return va.ask(caller, key, query, exec?.signal);
+        return ka.ask(caller, key, query, exec?.signal);
       },
     },
   ];

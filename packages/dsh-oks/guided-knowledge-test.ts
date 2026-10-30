@@ -1,3 +1,4 @@
+import { presentationOverview } from './src/presentation-guide.ts';
 import assert from 'node:assert/strict';
 import { domainSummary, renderDomainSummary, DOMAIN_SUMMARY_URI } from './src/domain-summary.ts';
 import { guidedTools } from './src/guided-tools.ts';
@@ -18,10 +19,10 @@ assert.deepEqual(domainSummary(graph,'demo'),summary);
 const calls: unknown[] = [];
 const stub = (name:string):ToolDefinition => ({name,description:'stub',parameters:{type:'object'},output:{schema:{},render(){return [];}},async execute(args){calls.push(args);return args;}});
 const knowledge = {ensureWorkspace(){return {settings:{domain:'demo'}} as WorkspaceEntry;},async ensureIndex(){return {knowledge:graph};}} as unknown as Knowledge;
-const tools=guidedTools(['oks_project','oks_read','oks_list','oks_write','oks_edit','oks_delete','va_ask','oks_check','oks_run_answer','oks_run','oks_show','renew_context'].map(stub),knowledge);
+const tools=guidedTools(['oks_project','oks_read','oks_list','oks_write','oks_edit','oks_delete','ka_ask','oks_check','oks_run_answer','oks_run','oks_show','renew_context'].map(stub),knowledge);
 const call=(name:string,args:object)=>tools.find(t=>t.name===name)!.execute(args as never,{});
 assert(!tools.some(t=>t.name==='oks_project'));
-assert(tools.some(t=>t.name==='va_ask'));
+assert(tools.some(t=>t.name==='ka_ask'));
 await call('oks_cap',{cq:{target:{dataset:'d'}}});
 for(const [name,args] of [
  ['oks_cap',{cq:{},select:':keys'}],['oks_card',{id:'d',key:'entities/e'}],['oks_card',{key:'tools/pluginSecret'}],
@@ -34,7 +35,8 @@ const {COMPONENT_KINDS}=await import('./src/draft/components.ts');
 for(const [component,kind] of Object.entries(COMPONENT_KINDS)){
  const uri=`oks://help/figure-${kind}.md`;
  assert(help.files.some(f=>f.name===uri));
- assert(renderDomainSummary(graph,'demo').includes(uri));
+ assert(presentationOverview().join('\n').includes(uri));
+ assert(!renderDomainSummary(graph,'demo').includes(uri));
  const manual=await call('oks_read',{path:uri,limit:500}) as {lines:{text:string}[]};
  const text=manual.lines.map(l=>l.text).join('\n');
  assert(text.startsWith('# '+component));assert(text.includes('example'));

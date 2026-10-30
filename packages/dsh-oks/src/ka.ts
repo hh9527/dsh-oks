@@ -3,8 +3,8 @@ import { singleFlight } from './single-flight.ts';
 import type { AgentLike, LogFn, PluginContext, RenderBlock } from './host.ts';
 import type { PluginConfig } from './config.ts';
 
-export const VA_HELPER_PREFIX = 'session-va-';
-export const VA_PRESET = 'oks-vocabulary';
+export const KA_HELPER_PREFIX = 'session-ka-';
+export const KA_PRESET = 'oks-knowledge';
 
 export interface AskResult {
   helper: string;
@@ -12,21 +12,21 @@ export interface AskResult {
   accepted: true;
 }
 
-export interface VaRuntime {
+export interface KaRuntime {
   ask(caller: AgentLike, key: string, query: string, signal?: AbortSignal): Promise<AskResult>;
 }
 
 export function renderAsk(_args: unknown, value: AskResult | null | undefined): RenderBlock[] {
-  return [{ type: 'text', text: `Vocabulary consultation accepted by subagent ${value?.helper ?? ''}. The answer will arrive as a subagent message.\n` }];
+  return [{ type: 'text', text: `Knowledge consultation accepted by subagent ${value?.helper ?? ''}. The answer will arrive as a subagent message.\n` }];
 }
 
 /** 每个父会话复用一个原生子会话；工具返回投递确认，回答由宿主投递给父会话。 */
-export function createVaRuntime({ ctx, log, config }: {
+export function createKaRuntime({ ctx, log, config }: {
   ctx: PluginContext;
   log: LogFn;
   config: PluginConfig | undefined;
-}): VaRuntime {
-  const preset = config?.vaPreset?.trim() || VA_PRESET;
+}): KaRuntime {
+  const preset = config?.kaPreset?.trim() || KA_PRESET;
   const states = new WeakMap<AgentLike, {
     childId?: string;
     discovered?: boolean;
@@ -57,24 +57,24 @@ export function createVaRuntime({ ctx, log, config }: {
       return singleFlight(owned.flights, query, () => {
         let finished: Promise<void> = Promise.resolve();
         const admitted = owned.tail.then(async (): Promise<AskResult> => {
-          if (disposed) throw new Error('词汇助手插件已卸载');
+          if (disposed) throw new Error('知识助手插件已卸载');
           const requestSignal = signal ?? new AbortController().signal;
           requestSignal.throwIfAborted();
           const cwd = caller.session?.header?.cwd;
           if (typeof cwd !== 'string' || cwd.length === 0) throw new Error('dsh-oks: 调用方会话没有 cwd。');
           const service = ctx.get('subagents');
           if (!service?.startActivation || !service.sendMessage || !service.listChildren) {
-            throw new Error('dsh-oks: 词汇助手需要宿主 subagents 服务。');
+            throw new Error('dsh-oks: 知识助手需要宿主 subagents 服务。');
           }
           if (!owned.discovered) {
             const children = await service.listChildren(caller.session.id!, requestSignal);
             owned.childId = children.findLast(child => child.mode === 'continuable'
-              && child.label === '词汇助手' && child.id.startsWith(VA_HELPER_PREFIX))?.id;
+              && child.label === '知识助手' && child.id.startsWith(KA_HELPER_PREFIX))?.id;
             owned.discovered = true;
           }
           requestSignal.throwIfAborted();
           const existing = owned.childId;
-          const childId = existing ?? `${VA_HELPER_PREFIX}${randomUUID()}`;
+          const childId = existing ?? `${KA_HELPER_PREFIX}${randomUUID()}`;
           finished = new Promise(resolve => { pending.set(childId, resolve); });
           try {
             const prompt = [{ type: 'text', text: query }];
@@ -84,19 +84,19 @@ export function createVaRuntime({ ctx, log, config }: {
             } else {
               // Match the host's delegation route: the latest request wins over creation options.
               const route = caller.session.requestHeader?.()?.config ?? caller.options;
-              const effort = config?.vaReasoningEffort?.trim()
+              const effort = config?.kaReasoningEffort?.trim()
                 || (/^deepseek(?:[-_/]|$)/i.test(route?.model ?? '') ? 'off' : 'inherit');
               const activation = await service.startActivation({
-                provider: 'spawn', label: '词汇助手', childId, delivery: 'parent', signal: requestSignal,
+                provider: 'spawn', label: '知识助手', childId, delivery: 'parent', signal: requestSignal,
                 request: { parent: caller, cwd, agentPreset: preset, prompt,
                   ...(effort === 'inherit' ? {} : { agentOptions: { reasoningEffort: effort } }),
                 },
               });
               messageId = activation.messageId;
-              void activation.result.catch(error => log(`[oks] vocabulary subagent: ${String(error)}`));
+              void activation.result.catch(error => log(`[oks] knowledge subagent: ${String(error)}`));
             }
             owned.childId = childId;
-            log(`[oks] vocabulary subagent · ${childId}`);
+            log(`[oks] knowledge subagent · ${childId}`);
             return { helper: childId, messageId, accepted: true };
           } catch (error) {
             pending.get(childId)?.();

@@ -4,11 +4,11 @@
 
 ## 全局领域摘要
 
-全局领域摘要已随系统上下文提供，以 Markdown 组织全部 Entity、Dataset、维度与度量概览、关系端点和基数。用 `oks_read({path:"oks://domain/summary.md"})` 重新读取，用 `oks_list({path:"oks://domain/"})` 查看摘要目录。读取接口与自动注入使用同一份内容。摘要不含词汇表与反向连接，说明可能节选，具体约束通过卡片核实。
+全局领域摘要由 KA（知识助手）的固定系统上下文提供，以 Markdown 组织全部 Entity、Dataset、维度与度量概览、关系端点和基数。用 `oks_read({path:"oks://domain/summary.md"})` 重新读取，用 `oks_list({path:"oks://domain/"})` 查看摘要目录。读取接口与 KA 使用同一份内容。摘要不含词汇表与反向连接，说明可能节选，具体约束通过卡片核实。
 
 ## 关联知识点检索
 
-`va_ask` 提供领域词汇；`oks_search({query:"领域词汇",dataset:"device",take:10})` 检索 ID、名称和说明，返回关联知识点的语义地址。dataset 和 type 是可选筛选条件。用 oks_card 读取命中节点，oks_cap 获取其查询能力。
+`ka_ask` 解释领域词汇并推荐相关知识点；`oks_search({query:"领域词汇",dataset:"device",take:10})` 检索 ID、名称和说明，返回关联知识点的语义地址。dataset 和 type 是可选筛选条件。用 oks_card 读取命中节点，oks_cap 获取其查询能力。
 
 ## 局部知识（JSON）
 
@@ -29,7 +29,7 @@ cq 可提供 `select:[{dimension:"id"}]`、`measures:[{measure:"count"}]`、`win
 
 ## 词汇与手册
 
-`va_ask` 负责业务名词、别名和规范值定位。结果中的语义地址可用 oks_card 核实。
+`ka_ask` 负责领域知识导航及业务名词、别名和规范值定位；主 agent 自主调用 search/cap/card 读取详细知识。结果中的语义地址可用 oks_card 核实。
 
 `oks_list({path:"oks://help/"})` 列出独立文本手册，使用 oks_read 阅读。DARI 与查询见 draft.md、query.md，时间见 time.md，图表与报告见 figures.md。agent 使用 oks_check 检查分析稿，oks_run 检查后执行并返回结果；开启 requireRunApproval 时先申请用户批准。
 
