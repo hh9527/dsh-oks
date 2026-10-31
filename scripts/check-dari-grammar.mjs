@@ -1,0 +1,23 @@
+import assert from 'node:assert/strict';
+import {spawnSync} from 'node:child_process';
+import {readFileSync,readdirSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
+import {resolve} from 'node:path';
+import {parseDomDraft} from '../packages/dsh-oks/src/draft/dom.ts';
+const root=fileURLToPath(new URL('..',import.meta.url));
+const grammar=resolve(root,'tree-sitter-dari');
+const cli=resolve(grammar,'node_modules/tree-sitter-cli/cli.js');
+const run=(command,args,cwd)=>{
+ const result=spawnSync(command,args,{cwd,encoding:'utf8'});
+ if(result.error)throw result.error;
+ assert.equal(result.status,0,result.stderr+result.stdout);
+ return result.stdout;
+};
+run('npm',['run','check'],grammar);
+const examples=resolve(root,'packages/dsh-oks/examples');
+const files=readdirSync(examples).filter(x=>x.endsWith('.dari')).map(x=>resolve(examples,x));
+for(const file of files)parseDomDraft(readFileSync(file,'utf8'),file);
+const output=run(process.execPath,[cli,'parse','--quiet','--json-summary',...files],grammar);
+const stats=JSON.parse(output).cumulative_stats;
+assert.equal(stats.successful_parses,files.length);
+console.log(`Grammar corpus, recovery, incremental edits and highlights passed; ${files.length} current DARI examples accepted by both parsers`);

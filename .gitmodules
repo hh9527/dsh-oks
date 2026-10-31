@@ -1,0 +1,3 @@
+[submodule "tree-sitter-dari"]
+	path = tree-sitter-dari
+	url = https://github.com/hh9527/tree-sitter-dari.git

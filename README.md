@@ -37,3 +37,15 @@ just target=/srv/oks run
 首次使用新启动器时，先退出原进程，再运行 `start.sh`；之后可通过 `.ctrl` 触发重启。
 
 安装和工具说明见 [插件 README](packages/dsh-oks/README.md)。
+
+## DARI 编辑器语法
+
+[tree-sitter-dari](tree-sitter-dari/README.md) 以 Git submodule 固定版本，提供 DARI 的增量语法树、C parser 和高亮查询；运行期语义检查由插件解析器负责。
+
+```sh
+git submodule update --init --recursive
+npm --prefix tree-sitter-dari ci
+npm run check:dari-grammar
+```
+
+检查覆盖 grammar corpus、真实分析稿、错误恢复、增量编辑和高亮查询，并验证当前 IC/NS 示例可被 Tree-sitter 与插件解析器同时接受。更新语法时，在 grammar 仓库提交后更新本仓库的 submodule 指针。

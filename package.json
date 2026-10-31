@@ -3,5 +3,8 @@
   "private": true,
   "workspaces": [
     "packages/*"
-  ]
+  ],
+  "scripts": {
+    "check:dari-grammar": "node --import ./packages/dsh-oks/scripts/markdown-loader.mjs scripts/check-dari-grammar.mjs"
+  }
 }
