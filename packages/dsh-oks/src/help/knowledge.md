@@ -8,7 +8,7 @@ KA（知识助手）持有领域关系地图，VA（词汇助手）独立持有�
 
 ## 关联知识点检索
 
-`ka_ask` 解释领域词汇并推荐相关知识点；`oks_search({query:"领域词汇",dataset:"device",take:10})` 检索 ID、名称和说明，返回关联知识点的知识节点 ID。dataset 和 type 是可选筛选条件。用 oks_card 读取命中节点，oks_cap 获取其查询能力。
+`ka_ask` 解释领域词汇并推荐相关知识点；`oks_search({query:"领域词汇",dataset:"device",take:10})` 检索 ID、名称和说明，返回关联知识点的知识节点 ID。支持多词模糊检索：任一词匹配即可返回，覆盖更多词的节点优先，其次比较整句、精确度和 ID/名称/说明的匹配位置；支持部分词和英文标识符的轻微拼写错误，不做同义词语义推断。dataset 和 type 是可选筛选条件；type 不区分大小写，可用 Dimension/dimension/dimensions，未知类别会返回诊断。用 oks_card 读取命中节点，oks_cap 获取其查询能力。
 
 ## 局部知识（JSON）
 

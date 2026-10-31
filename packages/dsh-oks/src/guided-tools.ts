@@ -27,7 +27,7 @@ export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge)
   };
   const fixed: ToolDefinition[] = [
     {
-      name: 'oks_search', description: 'Find domain knowledge points by vocabulary, ID, name or documentation. Returns knowledge node IDs for oks_card; optional type and dataset restrict matches. Does not query business data.',
+      name: 'oks_search', description: 'Fuzzy lexical search over knowledge IDs, names and documentation. Multiple words match alternatives; results matching more words rank first. Supports partial words and small English spelling errors. Returns knowledge node IDs for oks_card; optional type (case-insensitive, e.g. Dimension) and short dataset name restrict matches. Does not query business data.',
       parameters: {type:'object',properties:{query:{type:'string'},type:{type:'string'},dataset:{type:'string'},...properties},required:['query'],additionalProperties:false},
       output: project.output,
       async execute(raw, exec) {

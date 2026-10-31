@@ -47,20 +47,47 @@ const kinds:Obj={entities:'Entity',datasets:'Dataset',types:'Ty',dimension_group
 const identity=(key:string)=>{const p=pathOf(key);return {key,type:kinds[p.at(-2)!]??null,id:p.at(-1)!,dataset:p[0]==='datasets'?p[1]:null};};
 const page=(items:any[],skip:number,take:number)=>({total:items.length,start:skip,items:items.slice(skip,skip+take),next:skip+take<items.length?skip+take:null});
 const windowPage=(items:any[],skip:number,take:number)=>({total:items.length,skip,take,truncated:skip>0||skip+take<items.length,next:skip+take<items.length?skip+take:null});
-const asciiLower=(s:string)=>s.replace(/[A-Z]/g,c=>c.toLowerCase());
+const normalize=(s:string)=>s.normalize('NFKC').toLowerCase();
+const searchWords=(s:string)=>normalize(s.replace(/([a-z])([A-Z])/g,'$1 $2')).match(/[\p{L}\p{N}]+/gu)??[];
+// A small lexical tolerance for English identifiers, not semantic inference.
+function nearWord(a:string,b:string):boolean {
+ if(a.length<4||b.length<4||!/^[a-z]+$/.test(a)||!/^[a-z]+$/.test(b)||Math.abs(a.length-b.length)>1)return false;
+ if(a.length===b.length){const ds=[...a].flatMap((c,i)=>c===b[i]?[]:[i]);return ds.length===1||ds.length===2&&ds[1]===ds[0]+1&&a[ds[0]]===b[ds[1]]&&a[ds[1]]===b[ds[0]];}
+ const [short,long]=a.length<b.length?[a,b]:[b,a];let i=0;while(i<short.length&&short[i]===long[i])i++;return short.slice(i)===long.slice(i+1);
+}
+const searchType=(value:string|undefined)=>{
+ if(value===undefined)return undefined;
+ const match=Object.entries(kinds).find(([category,kind])=>normalize(value)===normalize(category)||normalize(value)===normalize(kind));
+ if(!match)throw new Error('Unknown knowledge type: '+value+'; use '+unique(Object.values(kinds)).join(', '));
+ return match[1];
+};
 /** Fixed host methods over the already-built knowledge graph; no source evaluation or graph mutation. */
 export function queryKnowledge(g:Obj,name:string,rawArgs:unknown):unknown {
  const a=knowledgeArgs(name,rawArgs);
  const items:any[]=g.items??[];
  if(name==='search'){
   if(typeof a.query!=='string'||!a.query.trim())throw new Error('search requires nonempty query');
-  const query=asciiLower(a.query??'');
+  const phrase=normalize(a.query.trim()),terms=[...new Set(searchWords(a.query))],type=searchType(a.type);
+  if(!terms.length)throw new Error('search requires searchable words');
   const matches=items.flatMap(item=>{
    const id=identity(item.key);
-   if(a.type!=null&&a.type!==id.type||a.dataset!=null&&a.dataset!==id.dataset)return [];
-   const hits=[{field:'id',text:id.id,weight:4},...(item.names??[]).map((text:string)=>({field:'name',text,weight:3})),{field:'doc',text:item.doc??'',weight:1}].filter(x=>asciiLower(x.text).includes(query));
-   return hits.length?[{...id,label:item.names?.[0]??id.id,summary:[...(item.doc??'')].slice(0,160).join(''),matched:unique(hits.map(h=>h.field)),score:Math.max(...hits.map(h=>h.weight))}]:[];
-  }).sort((x,y)=>y.score-x.score||(x.key<y.key?-1:x.key>y.key?1:0));
+   if(type!=null&&type!==id.type||a.dataset!=null&&a.dataset!==id.dataset)return [];
+   const fields=[{field:'id',text:id.id,weight:4},...(a.query.includes('/')?[{field:'id',text:item.key.replace('#','/'),weight:4}]:[]),...(item.names??[]).map((text:string)=>({field:'name',text,weight:3})),{field:'doc',text:item.doc??'',weight:1}]
+    .map(f=>({...f,text:normalize(f.text),words:searchWords(f.text)}));
+   const hits=terms.flatMap(term=>{
+    const candidates=fields.flatMap(f=>{
+     const strength=f.text===term?3:f.text.includes(term)?2:f.words.some((word:string)=>nearWord(term,word))?1:0;
+     return strength?[{term,field:f.field,score:strength*10+f.weight}]:[];
+    });
+    return candidates.length?[{term,fields:unique(candidates.map(h=>h.field)),score:Math.max(...candidates.map(h=>h.score))}]:[];
+   });
+   if(!hits.length)return [];
+   // Coverage dominates phrase/exactness and field weight; alternatives still match.
+   const score=hits.length*1000+Math.max(...fields.map(f=>f.text===phrase?200:f.text.includes(phrase)?100:0))+hits.reduce((n,h)=>n+h.score,0)/terms.length;
+   return [{...id,label:item.names?.[0]??id.id,summary:[...(item.doc??'')].slice(0,160).join(''),matched:unique(hits.flatMap(h=>h.fields)),matched_terms:hits.map(h=>h.term),score}];
+  }).sort((x,y)=>y.score-x.score
+    ||Number(['Dataset','Entity','Dimension','Measure','Ty','Relation'].includes(y.type))-Number(['Dataset','Entity','Dimension','Measure','Ty','Relation'].includes(x.type))
+    ||(x.key<y.key?-1:x.key>y.key?1:0));
   return page(matches,a.skip,a.take);
  }
  if(name==='read'){
