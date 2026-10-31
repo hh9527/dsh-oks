@@ -204,13 +204,16 @@ export function createDraftTools(options: {
           const execute=tools.find(t=>t.name==='oks_run_answer')!;
           const run=await execute.execute({...args,answer:checked.answer} as never,exec) as Record<string,unknown>;
           const record=recordFor(entry,exec,read.file,false);
+          const delivery=isRecord(run.delivery)?run.delivery:undefined;
           let result:unknown;
           if(run.status==='complete'){
             // The final object defines the facts released by this run.
             const doc=parseDesign(read.text,read.file);
             if(doc.syntax==='dom'){
               // Data bindings stay internal. Release only the selected report's values and displayed figures.
-              if(checked.answer){
+              // A completed schedule can contain failed or blocked outputs. Only read a
+              // successfully selected report; otherwise preserve the root failure receipt.
+              if(checked.answer&&delivery?.status==='ready'){
                 const report=record.runtime.read(checked.answer,read.text).value;
                 const asset=doc.assets.get('@report/'+checked.answer);
                 const node=doc.nodes.find(n=>n.statement.kind==='binding'&&n.statement.name===checked.answer);
@@ -233,7 +236,6 @@ export function createDraftTools(options: {
               result=values;
             }
           }
-          const delivery=isRecord(run.delivery)?run.delivery:undefined;
           if(delivery?.status==='ready'&&typeof delivery.input==='string'&&options.attachments?.()){
             const show=tools.find(t=>t.name==='oks_show')!;
             const publication=await show.execute({input:delivery.input} as never,exec);
