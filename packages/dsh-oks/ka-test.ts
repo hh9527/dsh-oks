@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createKaRuntime, renderAsk, CONSULT_TIMEOUT_MS } from './src/ka.ts';
+import { createKaRuntime, createKnowledgeConsultation, renderAsk, CONSULT_TIMEOUT_MS } from './src/ka.ts';
 import { installKnowledgeHelper, resetKnowledgeContext } from './src/ka-helper.ts';
 const caller = (id = 'parent') => ({ id, ctx: { tools: { restrict() {} } }, session: { id, header: { cwd: '/workspace' } } }) as any;
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -99,17 +99,17 @@ test('连续 100 轮收起问答后模型表面恒定，日志保留所有问答
 });
 
 
-test('KA 只装配关系地图，VA 词汇独立，唯一工具为 va_ask',async()=>{
+test('KA 只装配关系地图，VA 词汇独立，工具清单为空',async()=>{
  let assemble:any;let allowed:any;const tools:any[]=[];
  const ctx={systemPrompt:{section(){}},tools:{restrict(v:any){for(const name of v.allow) if(name!=='working_directory') throw Error('unknown global tool '+name);allowed=v.allow},register(v:any){tools.push(v);return()=>{}}},get(){},on(n:string,f:any){if(n==='system-prompt/assemble')assemble=f;return()=>{}},effect(){}};
  const knowledge={ensureWorkspace(){return{settings:{domain:'test'}}},async ensureIndex(){return{knowledge:{entities:{device:{}},datasets:{metrics:{roles:{device:{entity:'entities/device'}}}},relations:{}},terms:[{key:'secret',name:'VOCABULARY_ONLY',aliases:[],doc:''}]}}};
  installKnowledgeHelper({ctx,knowledge,log(){}} as any);
- assert.equal(allowed,undefined);assert.equal(tools[0].name,'va_ask');
+ assert.equal(allowed,undefined);assert.equal(tools.length,0);
  const parent=caller();parent.session.append=()=>{};
  parent.ctx.tools.restrict=(v:any)=>{allowed=v.allow};
  const result=await assemble({},{agent:parent},async()=>({sections:[]}));
- assert.deepEqual(allowed,['va_ask']);
- assert.match(result.sections[0].text,/device/);assert.match(result.sections[0].text,/va_ask/);
+ assert.deepEqual(allowed,[]);
+ assert.match(result.sections[0].text,/device/);assert.match(result.sections[0].text,/vocabulary/);
  assert(!result.sections[0].text.includes('VOCABULARY_ONLY'));
 });
 
@@ -145,7 +145,7 @@ test('KA/VA 按职责过滤宿主提示词与工具 schema，保留安全约束'
   const original={sections:[{name:'safety',text:'keep safety'},{name:'ui:deliverable-file-references',text:'Prefer showing the primary results'},{name:'harness:source',text:'source checkout'},{name:'app:web-surface',text:'web development'}],tools:[{name:'va_ask'},{name:'bash'}]};
   const result=await assemble({},{agent},async()=>original);
   assert.deepEqual(result.sections.map((s:any)=>s.name),['safety','oks:knowledge-assistant']);
-  assert.deepEqual(result.tools,vocabularyHelper?[]:[{name:'va_ask'}]);
+  assert.deepEqual(result.tools,[]);
   assert.equal(original.sections.length,4);
  }
 });
@@ -157,4 +157,25 @@ test('咨询超时释放子执行，排队的取消请求不被发送',async(t)=
  const abort=new AbortController();const queued=h.runtime.ask(parent,'p','取消排队',abort.signal);abort.abort(Error('cancel queued'));
  t.mock.timers.tick(CONSULT_TIMEOUT_MS+1);await assert.rejects(first,/超时/);await assert.rejects(queued,/cancel queued/);
  assert.equal(h.disposed.length,1);assert.equal(h.sends.length,0);
+});
+
+
+test('固定先 VA 后 KA，同问合并，返回两份原始回答',async()=>{
+ const calls:any[]=[];let complete:any;
+ const va={ask:async(...args:any[])=>{calls.push(['va',...args]);return await new Promise<any>(resolve=>complete=resolve)}};
+ const ka={ask:async(...args:any[])=>{calls.push(['ka',...args]);return{helper:'ka',messageId:'m',answer:'datasets/kpi：指标'}}};
+ const runtime=createKnowledgeConsultation(ka,va),parent=caller(),signal=new AbortController().signal;
+ const first=runtime.ask(parent,'p','CPU 原始约束',signal),same=runtime.ask(parent,'p','CPU 原始约束',signal);
+ await flush();assert.equal(calls.length,1);assert.equal(calls[0][0],'va');
+ const vocabulary='[datasets/kpi]\n- CPU,cpu_usage;说明';complete({helper:'va',messageId:'v',answer:vocabulary});
+ const result=await first;assert.deepEqual(await same,result);assert.equal(calls.length,2);
+ assert.deepEqual(JSON.parse(calls[1][3]),{question:'CPU 原始约束',vocabulary});assert.equal(calls[1][4],signal);
+ assert.equal(result.vocabulary,vocabulary);assert.equal(result.readingList,'datasets/kpi：指标');
+ assert.equal(renderAsk({},result)[0].text,`## 阅读清单\n\ndatasets/kpi：指标\n\n## 词汇对照\n\n${vocabulary}`);
+});
+test('VA 失败或阶段间取消时不调用 KA',async()=>{
+ let called=false;const ka={ask:async()=>{called=true;throw Error('unexpected')}};
+ await assert.rejects(createKnowledgeConsultation(ka,{ask:async()=>{throw Error('VA failed')}}).ask(caller(),'p','问题'),/VA failed/);
+ const abort=new AbortController();const va={ask:async()=>{abort.abort(Error('cancelled'));return{helper:'v',messageId:'m',answer:'词汇'}}};
+ await assert.rejects(createKnowledgeConsultation(ka,va).ask(caller(),'p','问题',abort.signal),/cancelled/);assert.equal(called,false);
 });

@@ -1,4 +1,4 @@
-import {DraftSyntaxError,type PipelineNode,type Span,type Expr} from './pipeline.ts';
+import {DraftSyntaxError,type PipelineNode,type Span,type Expr,type SourceDiagnostic} from './pipeline.ts';
 import {parseTypedPipeline,type N} from './typed-syntax.ts';
 import {SourceFile} from './source.ts';
 import {componentKind} from './components.ts';
@@ -17,8 +17,8 @@ export function parseDomDraft(source:string,file:string){
   const childSpans=new WeakMap<Element,Map<number,Span>>();
   let title='Report';
   const location=(start:number,end=at)=>original.span(start,end);
-  const fail=(message:string,start=at,end=Math.min(source.length,start+1)):never=>{
-    const span=location(start,end);throw new DraftSyntaxError(message,span,[{file,stage:'syntax',message,span}]);
+  const fail=(message:string,start=at,end=Math.min(source.length,start+1),details:Partial<SourceDiagnostic>={}):never=>{
+    const span=location(start,end);throw new DraftSyntaxError(message,span,[{...details,file,stage:'syntax',message,span}]);
   };
   if(Buffer.byteLength(source)>256*1024)fail('Report exceeds 256 KiB',0);
   const whitespace=()=>{
@@ -29,7 +29,7 @@ export function parseDomDraft(source:string,file:string){
       break;
     }
   };
-  const eat=(text:string)=>{whitespace();if(!source.startsWith(text,at))fail('Expected '+JSON.stringify(text));at+=text.length;};
+  const eat=(text:string)=>{whitespace();if(!source.startsWith(text,at))fail('Expected '+JSON.stringify(text),at,Math.min(source.length,at+1),{expected:text,found:source[at]??'end of input'});at+=text.length;};
   const name=(tag=false)=>{
     whitespace();const match=(tag?/^[A-Za-z_$][A-Za-z0-9_$:-]*/:/^[A-Za-z_$][A-Za-z0-9_$]*/).exec(source.slice(at));
     if(!match)return fail('Expected '+(tag?'tag or attribute':'binding')+' name');at+=match[0].length;return match[0];
@@ -41,18 +41,24 @@ export function parseDomDraft(source:string,file:string){
   };
   /** Delimiters inside strings, comments, object literals and lambdas do not end an expression. */
   const expression=(stops:Set<string>)=>{
-    whitespace();const start=at,stack:string[]=[];
+    whitespace();const start=at,stack:{symbol:string;offset:number}[]=[];
     while(at<source.length){
       const ch=source[at];
       if(ch==='"'){string();continue;}
       if(source.startsWith('//',at)){while(at<source.length&&source[at]!=='\n')at++;continue;}
       if(source.startsWith('/*',at)){const end=source.indexOf('*/',at+2);if(end<0)fail('Unterminated block comment');at=end+2;continue;}
       if(!stack.length&&stops.has(ch))break;
-      if('([{'.includes(ch)){stack.push(ch);if(stack.length>128)fail('Expression nesting exceeds 128');}
-      else if(')]}'.includes(ch)){const open=stack.pop();if(open!=={')':'(',']':'[','}':'{'}[ch])fail('Unmatched '+ch);}
+      if('([{'.includes(ch)){stack.push({symbol:ch,offset:at});if(stack.length>128)fail('Expression nesting exceeds 128');}
+      else if(')]}'.includes(ch)){const open=stack.pop();if(open?.symbol!=={')':'(',']':'[','}':'{'}[ch]){
+        const expected=open?{'(':')','[':']','{':'}'}[open.symbol]:undefined;
+        fail('Unmatched '+ch+(expected?'; expected '+JSON.stringify(expected):'; no opening delimiter'),at,at+1,{...(expected?{expected}:{}),found:ch,...(open?{related:[{message:'Opening '+open.symbol+' requires '+expected,span:location(open.offset,open.offset+1)}]}:{})});
+      }}
       at++;
     }
-    if(stack.length)fail('Unterminated expression',start,at);
+    if(stack.length){
+      const open=stack.at(-1)!,expected={'(':')','[':']','{':'}'}[open.symbol]!;
+      fail('Unterminated expression; expected '+JSON.stringify(expected),at,at,{expected,found:'end of input',related:[{message:'Opening '+open.symbol+' requires '+expected,span:location(open.offset,open.offset+1)}]});
+    }
     const end=at;if(!source.slice(start,end).trim())fail('Expected an expression',start);
     return {start,end,text:source.slice(start,end)};
   };

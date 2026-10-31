@@ -1,0 +1,90 @@
+{
+  "domain": "ns",
+  "anchors": [
+    {
+      "id": "datasets/alarm-record",
+      "terms": [
+        "ar_severity",
+        "ar_count",
+        "ar_occur_ms"
+      ]
+    },
+    {
+      "id": "datasets/kpi-server-device",
+      "terms": [
+        "sede_cpu_usage",
+        "sede_mem_usage",
+        "sede_sample_time"
+      ]
+    },
+    {
+      "id": "datasets/physical-server",
+      "terms": [
+        "ps_name"
+      ]
+    }
+  ],
+  "disconnected": {
+    "from": "datasets/alarm-record",
+    "to": "datasets/dev-info",
+    "paths": [],
+    "truncated": false,
+    "status": "not_found_within_depth"
+  },
+  "baselineBytes": 173510,
+  "capBytes": 15597,
+  "selectedInfoBytes": 4685,
+  "totalBytes": 20282,
+  "reductionPercent": 88,
+  "indexedPoints": 230,
+  "readPoints": 10,
+  "capMs": 118.52,
+  "infoMs": 1.14,
+  "paths": [
+    {
+      "from": "datasets/alarm-record",
+      "to": "datasets/kpi-server-device",
+      "candidates": 0,
+      "truncated": false
+    },
+    {
+      "from": "datasets/alarm-record",
+      "to": "datasets/physical-server",
+      "candidates": 2,
+      "truncated": false
+    },
+    {
+      "from": "datasets/kpi-server-device",
+      "to": "datasets/physical-server",
+      "candidates": 4,
+      "truncated": false
+    }
+  ],
+  "transformAccepted": true,
+  "columns": [
+    [
+      {
+        "name": "n1_ps_name",
+        "nullable": true,
+        "type": "String"
+      },
+      {
+        "name": "n0_ar_count",
+        "nullable": false,
+        "type": "Int"
+      }
+    ],
+    [
+      {
+        "name": "n2_ps_name",
+        "nullable": true,
+        "type": "String"
+      },
+      {
+        "name": "n0_sede_cpu_usage",
+        "nullable": true,
+        "type": "Float"
+      }
+    ]
+  ]
+}

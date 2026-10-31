@@ -190,9 +190,9 @@ data winnerName := winner?.server_id;
 
 ## 时间和有限的数组组合
 
-context 返回固定类型的时间上下文。time_windows 返回 `Array(TimeWindow)`；窗口具有 label、zone、start、end，start/end 为 TimePoint。TimePoint.dateTimeUtc 为规范 DateTimeUtc，TimePoint.epochMillis 为 EpochMillis，rfc3339 为带本地偏移的展示文本。不允许时间类型与普通 Int/String 隐式混用；不能无声截掉精度。
+context 返回固定类型的时间上下文。分析实现使用固定时刻 `2026-01-15T12:00:00.000Z` 和当前配置的时区；执行实现独立捕获真实时间。检查阶段的时刻只用于参数计算和诊断，不作为报告事实。time_windows 返回 `Array(TimeWindow)`；窗口具有 label、zone、start、end，start/end 为 TimePoint。TimePoint.dateTimeUtc 为规范 DateTimeUtc，TimePoint.epochMillis 为 EpochMillis，rfc3339 为带本地偏移的展示文本。不允许时间类型与普通 Int/String 隐式混用；不能无声截掉精度。
 
-map 支持 `(item) => expr` 和 `(item,index) => expr`。首版用于检查期已知、有界数组的计划展开；例如 14 个时间窗口生成 14 个 query。每个展开的 query 都取得自己的 columns。普通的记录构造和时间函数也可以写在 map 内。
+map 支持 `(item) => expr` 和 `(item,index) => expr`。源码 AST 分别降低为分析程序和执行程序：分析程序保留 map 的元素类型及函数体结构，按元素类型检查一次函数体；执行程序对静态有界数组展开计划。若 query 参数依赖具体元素或索引，分析程序枚举这些参数组合并逐一调用 transform，合并兼容的 columns 后继续类型传播。枚举参数不会执行后处理或取得业务行。普通的记录构造和时间函数也可以写在 map 内；纯参数表达式可在需要时求值。空数组缺少可推导的元素类型时，不能检查其 map 函数体。
 
 ```text
 data daily := union_all(map(days, (day) => select({
@@ -233,9 +233,11 @@ winnerName : Option(String)
 
 ## 检查期与运行期
 
+同一份源码共享解析、命名解析、源码位置和类型规则，分别降低为分析程序与执行程序。分析后端具有独立入口，仅允许参数计算、transform 及 schema 上的 SQL prepare；业务取数和渲染只存在于执行入口。
+
 编译器为表达式记录阶段属性：Known 表示本次检查上下文中已知的值，Deferred 表示只知道类型或关系计划的值。这是内部分析属性，不要求用户写额外类型。
 
-- 字面量、参数记录和已冻结的时间上下文可以为 Known
+- 字面量、参数记录和固定的检查时间上下文可以为 Known
 - query 的 intent 和计划展开次数必须为 Known，结果的业务行始终为 Deferred
 - select 的结构、字段名、函数签名和类型在检查期确定，业务行仍为 Deferred
 - select_one 在检查期只有 Option(T) 类型，不伪造 None，也不伪造一行记录
@@ -273,7 +275,7 @@ select 可以成为视图、CTE 或物化表。计划优化、SQL 融合与物�
 
 源码位置不改变计算身份，来源按本次源码重新组装。主输入在 lowering 时映射到私有 source 槽位；当前函数参数和表别名仍保留在规范化 AST 中，语义等价的别名改写可能使派生缓存重算。进一步的 alpha 规范化属于优化，不影响查询缓存和结果语义。是否物化、生成的 t_a 名称不进入语义键。来源位置按当前源码重新组装，不沿用缓存条目的旧位置。数据刷新会产生新采集身份，不能仅凭 intent 未变化复用旧数据。
 
-check 与 run 共用冻结的上下文和计划身份；批准绑定源码、模型、数据配置及该上下文。refresh 创建新采集上下文并重新检查；开启 requireRunApproval 时申请批准。跨过日历边界或修改配置后，不能用一组边界检查再悄悄用另一组边界执行。
+check 使用固定时间上下文，run 捕获独立的真实时间上下文。运行时以真实参数重新 transform 后取得计划，再采集业务行，不复用固定检查时刻的查询计划。报告来源记录实际采集上下文；refresh 创建新采集批次。开启 requireRunApproval 时申请批准。检查通过表示源码结构和固定参数下的模型诊断通过，实际日期、资源预算、结果 schema、值与基数仍由运行期校验。
 
 表的完整性与行数限制分开。query 返回传输截断时，默认拒绝在其上完成后处理，避免局部数据冒充全集；用户显式的 select limit 是已设计的关系运算，不是传输截断。执行资源上限超出时明确失败，不静默把结果变成一个成功的完整表。
 

@@ -6,7 +6,7 @@ import type { PluginConfig } from './config.ts';
 export const KA_HELPER_PREFIX = 'session-ka-';
 export const KA_PRESET = 'oks-knowledge';
 export const CONSULT_TIMEOUT_MS = 120_000;
-export interface AskResult { helper: string; messageId: string; answer: string }
+export interface AskResult { helper: string; messageId: string; answer: string; readingList?: string; vocabulary?: string }
 export interface KaRuntime {
   ask(caller: AgentLike, key: string, query: string, signal?: AbortSignal): Promise<AskResult>;
 }
@@ -112,6 +112,25 @@ export function createKaRuntime({ ctx, log, config, vocabulary = false }: {
         });
         owned.tail = run.then(() => {}, () => {});
         return run;
+      });
+    },
+  };
+}
+
+/** 工具固定编排词汇对齐与关系导航，两个助手不互相调用。 */
+export function createKnowledgeConsultation(ka: KaRuntime, va: KaRuntime): KaRuntime {
+  const flights = new WeakMap<AgentLike, Map<string, Promise<AskResult>>>();
+  return {
+    ask(caller, key, query, signal) {
+      let pending = flights.get(caller);
+      if (!pending) { pending = new Map(); flights.set(caller, pending); }
+      return singleFlight(pending, query, async () => {
+        const vocabulary = await va.ask(caller, key, query, signal);
+        signal?.throwIfAborted();
+        const navigation = await ka.ask(caller, key,
+          JSON.stringify({ question: query, vocabulary: vocabulary.answer }), signal);
+        return { ...navigation, readingList: navigation.answer, vocabulary: vocabulary.answer,
+          answer: `## 阅读清单\n\n${navigation.answer}\n\n## 词汇对照\n\n${vocabulary.answer}` };
       });
     },
   };

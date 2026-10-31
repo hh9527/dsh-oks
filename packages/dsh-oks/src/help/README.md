@@ -17,4 +17,4 @@
 构建时将 Markdown 内联到单文件插件，运行时不依赖源码目录。源码测试通过 `scripts/markdown-loader.mjs` 加载 Markdown。
 组件映射、能力矩阵、报告正文白名单、方法签名以及反向引用由实现生成，避免与帮助内容分开维护。
 
-全局领域摘要由 `src/domain-summary.ts` 从模型事实生成，进入 KA 的固定系统上下文；完整词汇表独立进入 VA，KA 通过 va_ask 获取词汇锚点。主 agent 通过 ka_ask 获取领域导航，再自主检索和读取 cap/card。图表形式和单图表手册入口单独进入主 agent 的系统上下文。
+全局领域摘要由 `src/domain-summary.ts` 从模型事实生成，进入 KA 的固定系统上下文；完整词汇表独立进入 VA，ka_ask 内部先调用 VA，再将词汇锚点与原始问题交给 KA；KA 不调用工具。返回值分别保留阅读清单与词汇对照。主 agent 通过 ka_ask 获取领域导航，再自主检索和读取 cap/info。图表形式和单图表手册入口单独进入主 agent 的系统上下文。

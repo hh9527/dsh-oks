@@ -3,7 +3,7 @@ import type { FigureKind } from './components.ts';
 /** The draft language is parsed as data. Source text is never evaluated as JavaScript. */
 export type Position = { offset: number; line: number; column: number };
 export type Span = { start: Position; end: Position };
-export type Operator = 'data' | 'query' | 'exec_query' | 'sql' | 'typed_value' | 'relational' | 'relational_one' | 'table_union' | 'typed_table' | 'context' | 'render_figure' | 'render_report' | 'time_windows';
+export type Operator = 'data' | 'query' | 'exec_query' | 'sql' | 'typed_value' | 'relational' | 'relational_one' | 'table_union' | 'typed_table' | 'analysis_map' | 'context' | 'render_figure' | 'render_report' | 'time_windows';
 export type Expr = (
   | { kind: 'literal'; value: string | number | boolean | null }
   | { kind: 'array'; values: Expr[] }
@@ -18,6 +18,8 @@ export type Statement = (
 ) & { span: Span; motivation: string };
 export type AssetDependency = { name: string; language: 'sql'; span: Span };
 export type PipelineNode = {
+  /** Analysis lowering retains higher-order structure instead of executable expansion. */
+  analysis?:Expr;
   typed?:boolean;
   internal?: boolean;
   display?: { label: string; template: string; figureId?: string; component: string };
@@ -25,7 +27,7 @@ export type PipelineNode = {
   bindings: string[];
   assets: AssetDependency[];
 };
-export type SourceDiagnostic = {file?:string;stage:string;message:string;span:Span;asset?:string;related?:{message:string;span:Span}[]};
+export type SourceDiagnostic = {file?:string;stage:string;message:string;span:Span;asset?:string;expected?:string;found?:string;excerpt?:{line:number;column:number;text:string;marker:string};related?:{message:string;span:Span}[]};
 export class DraftSyntaxError extends Error {
   readonly span: Span;
   readonly diagnostics: SourceDiagnostic[];

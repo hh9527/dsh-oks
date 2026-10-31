@@ -33,7 +33,7 @@ export class TypedCompiler{
   if(n.k==='get'){
    const input=this.compile(n.input!,env),t=input.type;
    if(t.kind==='table')fail(n,'A Table has columns, not object fields; use a select row parameter');
-   if(t.kind==='array'){if(typeof n.key!=='number')fail(n,'Array projection requires a numeric index');if(t.length!==undefined&&n.key>=t.length)fail(n,'Array index out of bounds');if(!input.items)fail(n,'Use a statically known array');return input.items[n.key];}
+   if(t.kind==='array'){if(typeof n.key!=='number')fail(n,'Array projection requires a numeric index');if(t.length!==undefined&&n.key>=t.length)fail(n,'Array index out of bounds');if(!input.items){if(this.checking)return this.bind(t.element,undefined);fail(n,'Use a statically known array');}return input.items[n.key];}
    if(t.kind!=='record')fail(n,'Cannot project '+String(n.key)+' from '+show(t));
    if(t.nullable&&!n.optional)fail(n,'Use ?. to project from '+show(t));
    if(!Object.hasOwn(t.fields,n.key!))fail(n,'Unknown field '+String(n.key)+'; available fields: '+Object.keys(t.fields).join(', '));

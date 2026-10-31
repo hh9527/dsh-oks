@@ -55,8 +55,8 @@ export function renderDomainSummary(graph: object, domain: string): string {
   const summary = domainSummary(graph, domain);
   const note = (item: { name?: string; doc: string }) => [item.name, item.doc].filter(Boolean).map(value => prose(value!)).join('：');
   const lines = ['# 全局领域摘要', '', '领域：'+code(domain), '',
-    '本摘要概览领域对象、数据集、关系导航，由知识助手持有。具体字段、度量、身份映射、连接条件与约束按需通过 oks_cap / oks_card 获取；领域词汇与规范值通过 ka_ask 获取。', '',
-    '知识节点 ID 可直接交给 card；cap/query 使用短名称，不能使用节点路径。局部入口：Dataset 使用 oks_cap({dataset:ID}) 或 oks_card({id:"datasets/ID"})；Entity 使用 oks_card({id:"entities/ID"})。', '',
+    '本摘要概览领域对象、数据集、关系导航，由知识助手持有。具体字段、度量、身份映射、连接条件与约束按需通过 oks_cap / oks_info 获取；领域词汇与规范值通过 ka_ask 获取。', '',
+    '知识节点 ID 用于 cap 的 anchors 和 info 的 ids，query 使用 info 提供的短名称。联合发现：oks_cap({anchors:[{id:"datasets/ID",terms:[]}]})；精确读取：oks_info({ids:["entities/ID"]})。', '',
     '## 业务实体（Entity）', '',
     ...summary.entities.map(e=>'- '+code('entities/'+encodePart(e.id))+(note(e)?'：'+note(e):'')), '',
     '## 数据集与查询能力（Dataset）', '',

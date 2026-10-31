@@ -26,6 +26,9 @@ import type { Expr, Operator, Span, SourceDiagnostic } from './pipeline.ts';
 import type { DraftAsset, DraftDocument } from './document.ts';
 import type { CallContext, Computed, DraftBackend, DraftValue, QueryPlan } from './runtime.ts';
 
+/** Stable analysis fixture; execution always captures the real clock independently. */
+export const ANALYSIS_CONTEXT_TIME = Date.parse('2026-01-15T12:00:00.000Z');
+
 const UNKNOWN = Symbol('dynamic');
 const digest = (value: unknown) => createHash('sha256').update(canonicalJson(value)).digest('hex');
 const jsonPath = (path: (string | number)[]) => '.data' + path.map(key => `[${JSON.stringify(key)}]`).join('');
@@ -323,19 +326,18 @@ export function createDraftBackend(options: {
     }
     return diagnostics;
   };
-  const execute = async (ctx: CallContext): Promise<Computed> => {
-    if(['typed_value','relational','relational_one','table_union','typed_table'].includes(ctx.operator))return runTyped(ctx,sqlWorkspace,false);
-    if (ctx.operator === 'data') {
-      dataNature(ctx.args[1]?.data);
-      return { data: ctx.args[0].data };
-    }
-    if (ctx.operator === 'context') {
+  const contextValue = (now:number):Computed => {
       const { zone } = resolveZone(undefined, options.contextZone());
-      const encoded = encode(options.contextNow?.()??Date.now(), zone);
+      const encoded = encode(now, zone);
       return { data: {
         utc: { epochMillis: encoded.epochMillis, epochSeconds: Math.floor(encoded.epochMillis / 1000), rfc3339: new Date(encoded.epochMillis).toISOString() },
         tz: { client: { id: encoded.zone, offset: encoded.offset, offsetMinutes: encoded.offsetMinutes } },
       }, evidence: { acquiredAt: new Date(encoded.epochMillis).toISOString() } };
+  };
+  const parameterValue = async (ctx:CallContext):Promise<Computed> => {
+    if (ctx.operator === 'data') {
+      dataNature(ctx.args[1]?.data);
+      return { data: ctx.args[0].data };
     }
     if (ctx.operator === 'query') {
       const intent = ctx.args[0].data;
@@ -343,6 +345,18 @@ export function createDraftBackend(options: {
       const plan:QueryPlan={...lowered,intent,environment:digest(planEnvironment())};
       return {data:{columns:lowered.columns},evidence:{plan}};
     }
+    if (ctx.operator === 'time_windows') {
+      ctx.signal?.throwIfAborted();
+      const data=timeWindows(ctx.args[0].data,ctx.args[1].data);
+      const point=record({epochMillis:scalar('EpochMillis'),dateTimeUtc:scalar('DateTimeUtc'),rfc3339:scalar('String')});
+      return {data,logicalType:{kind:'array',element:record({label:scalar('String'),zone:scalar('String'),start:point,end:point}),length:data.length,nullable:false} satisfies Ty};
+    }
+    throw new DraftSyntaxError('Not a parameter operator: '+ctx.operator,ctx.span);
+  };
+  const execute = async (ctx: CallContext): Promise<Computed> => {
+    if(['typed_value','relational','relational_one','table_union','typed_table'].includes(ctx.operator))return runTyped(ctx,sqlWorkspace,false);
+    if(['data','time_windows','query'].includes(ctx.operator))return parameterValue(ctx);
+    if (ctx.operator === 'context') return contextValue(options.contextNow?.()??Date.now());
     if(ctx.operator==='exec_query') {
       const plan=ctx.args[0].plan;
       if(!plan)throw new Error('exec_query requires a complete plan returned by query(intent); JSON objects and projections are not executable plans');
@@ -370,12 +384,6 @@ export function createDraftBackend(options: {
       validateTypedRows(described.rows,lowered.columns);
       const data = { rows: described.rows, columns: lowered.columns ?? described.columns, truncated };
       return { data, evidence: { ...observed, acquiredAt, model: entry.modelHash, domain: entry.settings.domain, batch: ctx.batch, manifest } };
-    }
-    if (ctx.operator === 'time_windows') {
-      ctx.signal?.throwIfAborted();
-      const data=timeWindows(ctx.args[0].data,ctx.args[1].data);
-      const point=record({epochMillis:scalar('EpochMillis'),dateTimeUtc:scalar('DateTimeUtc'),rfc3339:scalar('String')});
-      return {data,logicalType:{kind:'array',element:record({label:scalar('String'),zone:scalar('String'),start:point,end:point}),length:data.length,nullable:false} satisfies Ty};
     }
     if(ctx.operator==='sql')return {data:await sqlWorkspace.execute(ctx.run,ctx.asset!.source,ctx.args[1].data,false,ctx.signal)};
     if (ctx.operator === 'render_figure') {
@@ -456,5 +464,13 @@ export function createDraftBackend(options: {
     return { logicalType:computed.logicalType, data: computed.data, sources: [{ origin, at: [], path: [], ...(evidence?.display ? { display: evidence.display } : {}) }],
       ...(ctx.operator==='query'?{plan:(computed.evidence as {plan:QueryPlan}).plan}:{}) };
   };
-  return { preflight, checkCall, checkTyped:ctx=>runTyped(ctx,sqlWorkspace,true), checkSql:async ctx=>({data:await sqlWorkspace.execute(ctx.run,ctx.asset!.source,ctx.args[1]?.data,true,ctx.signal)}),beginRun:run=>sqlWorkspace.beginRun(run), finishRun:async run=>sqlWorkspace.finishRun(run), dispose:()=>{void sqlWorkspace.clear();}, environment, execute, assemble, executionContext:()=>({hash:entry.modelHash??null,domain:entry.settings?.domain??null}) };
+  const analyze = async (ctx:CallContext):Promise<Computed> => {
+    if(ctx.operator==='context')return contextValue(ANALYSIS_CONTEXT_TIME);
+    if(['typed_value','relational','relational_one','table_union','typed_table'].includes(ctx.operator))return runTyped(ctx,sqlWorkspace,true);
+    if(ctx.operator==='sql')return {data:await sqlWorkspace.execute(ctx.run,ctx.asset!.source,ctx.args[1]?.data,true,ctx.signal)};
+    // These implementations only compute parameter values or transform an intent into a schema/plan.
+    if(['data','time_windows','query'].includes(ctx.operator))return parameterValue(ctx);
+    throw new DraftSyntaxError('Operator is not available during analysis: '+ctx.operator,ctx.span);
+  };
+  return { preflight, checkCall, analyze, beginRun:run=>sqlWorkspace.beginRun(run), finishRun:async run=>sqlWorkspace.finishRun(run), dispose:()=>{void sqlWorkspace.clear();}, environment, execute, assemble, executionContext:()=>({hash:entry.modelHash??null,domain:entry.settings?.domain??null}) };
 }

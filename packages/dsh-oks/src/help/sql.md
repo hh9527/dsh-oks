@@ -5,7 +5,7 @@
 ```dari
 <Dari>
 <Pipeline>
-base <- query({ /* 从 cap/card 取得查询意图，必填 limit */ });
+base <- query({ /* 从 cap/info 取得查询意图，必填 limit */ });
 current <- query({ /* 同一粒度的观察期查询 */ });
 comparison <- sql("compare.sql", {base,current});
 </Pipeline>

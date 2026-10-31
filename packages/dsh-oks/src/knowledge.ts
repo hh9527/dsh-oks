@@ -60,7 +60,7 @@ export function createKnowledge({ ctx, log, config }: {
       throw new Error(
         `dsh-oks: ${settings.workspaceFile} 没有声明 dataFile，pipeline 中的 query 无处可查。`
         + '需要 {"dataFile":"<相对 oks.json 的 .sqlite 路径>"}；'
-        + '领域知识可通过 oks_search、oks_card 和 oks_cap 获取。',
+        + '领域知识可通过 oks_search、oks_cap 和 oks_info 获取。',
       );
     }
     const existing = executors.get(dataFile);

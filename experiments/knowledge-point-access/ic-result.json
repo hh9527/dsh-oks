@@ -1,0 +1,83 @@
+{
+  "domain": "ic",
+  "anchors": [
+    {
+      "id": "datasets/current_alarm",
+      "terms": [
+        "alarm_severity",
+        "critical_alarm_count",
+        "alarm_occur_utc_raw"
+      ]
+    },
+    {
+      "id": "datasets/device_kpi",
+      "terms": [
+        "cpu_usage",
+        "memory_usage",
+        "device_kpi_ts_raw"
+      ]
+    },
+    {
+      "id": "datasets/tenant",
+      "terms": [
+        "tenant_name"
+      ]
+    }
+  ],
+  "baselineBytes": 162496,
+  "capBytes": 18371,
+  "selectedInfoBytes": 4875,
+  "totalBytes": 23246,
+  "reductionPercent": 86,
+  "indexedPoints": 275,
+  "readPoints": 11,
+  "capMs": 62.01,
+  "infoMs": 1.17,
+  "paths": [
+    {
+      "from": "datasets/current_alarm",
+      "to": "datasets/device_kpi",
+      "candidates": 4,
+      "truncated": false
+    },
+    {
+      "from": "datasets/current_alarm",
+      "to": "datasets/tenant",
+      "candidates": 2,
+      "truncated": false
+    },
+    {
+      "from": "datasets/device_kpi",
+      "to": "datasets/tenant",
+      "candidates": 4,
+      "truncated": false
+    }
+  ],
+  "transformAccepted": true,
+  "columns": [
+    [
+      {
+        "name": "n1_tenant_name",
+        "nullable": false,
+        "type": "String"
+      },
+      {
+        "name": "n0_critical_alarm_count",
+        "nullable": false,
+        "type": "Int"
+      }
+    ],
+    [
+      {
+        "name": "n2_tenant_name",
+        "nullable": false,
+        "type": "String"
+      },
+      {
+        "name": "n0_cpu_usage",
+        "nullable": true,
+        "type": "Float"
+      }
+    ]
+  ]
+}

@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import { renderWholeVocabulary } from './retrieval.ts';
 import type { Knowledge } from './knowledge.ts';
 import type { LogFn, PluginContext, SessionLike } from './host.ts';
-import { createKaRuntime, renderAsk } from './ka.ts';
 import type { PluginConfig } from './config.ts';
 import VA_PROMPT_TEXT from './va-prompt-tpl.md';
 import KA_PROMPT_TEXT from './ka-prompt-tpl.md';
@@ -18,7 +17,7 @@ const collapsedMessage = () => ({
   content: [{ type: 'text', text: COLLAPSED }], source: { kind: 'user' },
 });
 const PERSONA = '你是领域知识助手：根据关系地图和词汇助手提供的锚点，为当前问题推荐最少的相关知识入口，每项只给准确地址和一句用途说明。'
-  + '主 agent 自主使用 search/cap/card 获取详细知识并设计查询。你只提供知识导航，不执行查询、不读取文件。';
+  + '主 agent 自主使用 cap/info 获取详细知识并设计查询。你只提供知识导航，不执行查询、不读取文件。';
 
 /** 沿用固定边界收起：保留系统前缀，旧标记与全部问答一起替换，原始日志保留。 */
 export function resetKnowledgeContext(session: SessionLike): void {
@@ -57,27 +56,12 @@ export function installKnowledgeHelper({ ctx, knowledge, log, config }: {
   if (!ctx.systemPrompt) throw new Error('知识助手需要 systemPrompt 服务。');
   const vocabulary = config?.vocabularyHelper === true;
   const template = (vocabulary ? VA_PROMPT_TEXT : KA_PROMPT_TEXT).trim();
-  if (!vocabulary) {
-    const va = createKaRuntime({ ctx, log, config, vocabulary: true });
-    const dispose = ctx.tools.register({
-      name: 'va_ask',
-      timeoutMs: 125_000,
-      description: '将原始问题交给词汇助手，获取领域词汇、别名、规范值与所属知识地址。工具等待并返回词汇助手答案，再沿关系地图选择阅读入口。',
-      parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false },
-      output: { schema: { type: 'object' }, render: renderAsk },
-      async execute(args: { query: string }, exec) {
-        if (!exec.agent || !args.query?.trim()) throw new Error('va_ask 需要调用方及非空问题');
-        return va.ask(exec.agent, exec.agent.session.id!, args.query.trim(), exec.signal);
-      },
-    });
-    if (typeof dispose === 'function') ctx.effect(() => dispose);
-  }
   const active = new WeakSet<object>();
   const toolScopes = new WeakSet<object>();
   const prepareTools = (agent: import('./host.ts').AgentLike) => {
     if (toolScopes.has(agent)) return;
     if (!agent.ctx?.tools) throw new Error('知识助手需要 Agent 独立的工具作用域。');
-    agent.ctx.tools.restrict({ allow: vocabulary ? [] : ['va_ask'] });
+    agent.ctx.tools.restrict({ allow: [] });
     toolScopes.add(agent);
   };
   // pre-step 同样覆盖重启后恢复、上轮异常中断以及浏览器直接续问的情况。
@@ -118,7 +102,7 @@ export function installKnowledgeHelper({ ctx, knowledge, log, config }: {
     const assembled = await next();
     log(vocabulary ? `[oks] vocabulary system prompt · ${index.terms.length} 条` : '[oks] knowledge relationship map');
     // 宿主在 assemble hook 前已收集 schema；同步裁剪本次请求，执行限制由 Agent scope 保证。
-    return { ...assembled, ...(assembled.tools ? { tools: assembled.tools.filter(tool => !vocabulary && tool.name === 'va_ask') } : {}), sections: [
+    return { ...assembled, ...(assembled.tools ? { tools: [] } : {}), sections: [
       ...assembled.sections.filter(section => section.name !== 'oks:knowledge-assistant' && !UNRELATED_SECTIONS.has(section.name)),
       { name: 'oks:knowledge-assistant', text: feed, interpolate: false },
     ] };

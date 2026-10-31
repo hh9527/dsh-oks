@@ -17,7 +17,7 @@ report answer := Report [p ["Total: ",Value(data=summary?.n)],figure [Figure(ref
 try{
  const checked=await checkDesign(source,'answer.dari',backend);assert.equal(checked.ok,true,JSON.stringify(checked));assert.equal(executions,0);
  let run=await runtime.run(source);assert.equal(run.status,'complete',run.error);
- assert.equal(executions,1);assert.equal(validations,1);
+ assert.equal(executions,1);assert.equal(validations,2,'fixed analysis time and real execution time produce independently transformed intents');
  const report=runtime.read('answer',source).value;assert.match(report.sources[0].delivery!.html,/>42<\/span>/);assert.match(report.sources[0].delivery!.html,/<svg/);
  const windows=runtime.read('months',source).value;
  assert.equal(windows.data[1].end.dateTimeUtc,'2026-09-30T16:00:00.000Z');

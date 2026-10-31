@@ -174,8 +174,8 @@ export function createTools({ knowledge, ka, timeContext, log, attachments, appr
     },
     {
       name: 'ka_ask',
-      timeoutMs: 125_000,
-      description: 'Ask the knowledge assistant for a short list of relevant semantic addresses and one-sentence purposes for the original user question. It adds retrieval terms or unresolved business ambiguity only when necessary. Send the original question before selecting datasets or measures; include explicit user constraints verbatim. It holds the domain relationship map and consults a separate vocabulary assistant. Waits for and returns the assistant answer before subsequent knowledge retrieval. Independently use oks_search/oks_cap/oks_card to inspect details and design queries. Each consultation retains a fixed knowledge prefix and collapses prior questions and answers.',
+      timeoutMs: 245_000,
+      description: 'Ask the knowledge assistant for a short list of relevant semantic addresses and one-sentence purposes for the original user question. It adds retrieval terms or unresolved business ambiguity only when necessary. Send the original question before selecting datasets or measures; include explicit user constraints verbatim. The tool first consults VA, then supplies the original question and vocabulary result to KA for relationship navigation. KA has no tools. Waits for and returns the assistant answer before subsequent knowledge retrieval. Returns two natural-language sections: KA’s reading list and VA’s vocabulary alignment, each preserved verbatim. Select node IDs and terms from it to build oks_cap arguments, then read selected IDs with oks_info. Each consultation retains a fixed knowledge prefix and collapses prior questions and answers.',
       parameters: {
         type: 'object',
         properties: {

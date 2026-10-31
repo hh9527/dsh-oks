@@ -36,8 +36,8 @@ export interface DraftBackend {
   executionContext?(): ExecutionContext['model'];
   /** Deterministic checks must complete before execute is called for any node. */
   preflight(document: DraftDocument, signal?: AbortSignal): Promise<void>;
-  checkSql?(context:CallContext):Promise<Computed>;
-  checkTyped?(context:CallContext):Promise<Computed>;
+  /** Analysis-only interpretation: concrete parameters and schemas, never business acquisition. */
+  analyze?(context:CallContext):Promise<Computed>;
   beginRun?(run:string):void;
   finishRun?(run:string):Promise<void>;
   dispose?():void;

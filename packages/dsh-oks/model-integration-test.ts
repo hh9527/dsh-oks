@@ -28,19 +28,16 @@ async function scenario(run:boolean){
  try{
   const messages=[{source:{kind:'user',rpcId:'model-integration',clientTimeZone:'Asia/Shanghai'},content:[]}];
   await hooks.get('agent/pre-step')({agent:exec.agent,messages},async()=>({kind:'continue',messages}));
-  let started=performance.now();const cap=await call('oks_cap',{dataset});const capMs=performance.now()-started;
-  assert.equal(cap.data.target.dataset,dataset);assert.equal(cap.data.discovery.requires_transform,true);
-  started=performance.now();const card=await call('oks_card',{id:'datasets/'+encodeURIComponent(dataset)});const cardMs=performance.now()-started;assert.equal(card.data.dataset,dataset);
-  assert.equal(card.data.id,cap.data.target.knowledge_id);
+  const id='datasets/'+encodeURIComponent(dataset);
+  let started=performance.now();const cap=await call('oks_cap',{anchors:[{id}]});const capMs=performance.now()-started;
+  assert(cap.data.index.Dataset.includes(id));
+  started=performance.now();const info=await call('oks_info',{ids:[id]});const infoMs=performance.now()-started;
+  assert.equal(info.data.items[0].dataset,dataset);
   const found=await call('oks_search',{query:dataset,dataset});
-  for(const item of found.data.items) assert.equal((await call('oks_card',{id:item.id})).data.id,item.id);
-  for(const dim of card.data.dimensions??[]) {
-    assert.equal((await call('oks_card',{id:dim.id})).data.id,dim.id);
-    assert.equal(dim.dataset,dataset);
-  }
+  for(const item of found.data.items) assert.equal((await call('oks_info',{ids:[item.id]})).data.items[0].id,item.id);
   await call('oks_write',{path:src,content:source});
   started=performance.now();const checked=await call('oks_check',{src});const checkMs=performance.now()-started;assert.equal(checked.ok,true,JSON.stringify(checked));
-  if(!run)return {domain,mode:'check without database',capMs:Math.round(capMs),cardMs:Math.round(cardMs),checkMs:Math.round(checkMs),bindings:checked.queries.length};
+  if(!run)return {domain,mode:'check without database',capMs:Math.round(capMs),infoMs:Math.round(infoMs),checkMs:Math.round(checkMs),bindings:checked.queries.length};
   started=performance.now();const result=await call('oks_run',{src});const runMs=performance.now()-started;assert.equal(result.ok,true,JSON.stringify(result));assert.equal(result.approval,'not-required');assert.equal(approvalRequests,0);
   assert(Object.hasOwn(result.result,'values'));assert(Object.hasOwn(result.result,'figures'));
   started=performance.now();const cached=await call('oks_run',{src});const cachedRunMs=performance.now()-started;assert.equal(cached.ok,true);assert.equal(cached.counts.executed,0);

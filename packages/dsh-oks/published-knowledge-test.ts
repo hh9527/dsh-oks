@@ -77,3 +77,58 @@ if (process.argv[2]) {
   console.log(JSON.stringify({ artifact: process.argv[2], revision: actual.revision, counts: actual.meta.counts, facts: actual.keys.size, links: actual.links.length }));
 }
 console.log('static knowledge: no discovery calls, strict metadata, closed references, separate bindings and JS navigation passed');
+
+// Domain names and imported type addresses discard source namespaces.
+{
+ const canonical='a::b::Type1',key='types/'+encodePart(canonical),value=key+'#values/yes';
+ const source=publication([fact(key,{name:canonical}),fact(value,{name:'yes'},[key])],[{key,names:[canonical,'业务类型'],doc:''}]);
+ const vocabulary=[{key,kind:'Ty',name:canonical,doc:'',aliases:[canonical,'业务类型'],owner:null,ownerValue:null},{key:value,kind:'Value',name:'yes',doc:'',aliases:[],owner:'ty',ownerValue:canonical}];
+ for(const index of [derivePublishedKnowledge(source),derivePublishedKnowledge(source,undefined,vocabulary)]){
+  const term=index.terms.find(t=>t.key==='types/Type1')!;
+  assert.equal(term.name,'Type1');assert.deepEqual(term.aliases,['业务类型']);
+  assert.deepEqual(index.knowledge.items.find(t=>t.key==='types/Type1')!.names,['Type1','业务类型']);
+  assert.equal(index.terms.find(t=>t.key==='types/Type1#values/yes')!.name,'yes');
+  assert.equal(index.terms.find(t=>t.key==='types/Type1#values/yes')!.ownerValue,'Type1');
+  assert.equal(resolveFact(index.knowledge,'types/Type1').name,canonical);
+ }
+}
+
+// Allocate once at import; remap structural references, never business literals.
+{
+ const a='types/'+encodePart('a::Name'),b='types/'+encodePart('b::Name'),c='types/'+encodePart('c::Name-1');
+ const member=a+'#values/yes',field='datasets/sample#fields/value';
+ const source=publication([
+  fact(b,{name:'b::Name',field_types:[{name:'a',type:'Option('+a+')'}]},[a]),
+  fact(a,{name:'a::Name',reverse_references:true,arguments:[b],variants:[{name:'Some',payload:b}],representation:b},[b]),
+  fact(c,{name:'c::Name-1'}),fact('datasets/sample'),
+  fact(member,{wires:[a],value:a},[a]),
+  fact(field,{type:'Array(Option('+b+'))',canonical_values:[{id:a,wires:[a]}],doc:a,source:a},[b]),
+  fact('entities/thing',{identity:a},[a]),
+ ],[{key:a,names:['a::Name','业务名'],doc:'说明'},{key:member,names:['是'],doc:''}]);
+ const presentation={version:1,items:[{key:b,names:['另一个名字'],doc:'外部说明'}]};
+ const vocabulary=[{key:a,kind:'Ty',name:'a::Name',aliases:[],doc:'',owner:null,ownerValue:null},{key:member,kind:'Value',name:'yes',aliases:[],doc:'',owner:'ty',ownerValue:'a::Name'}];
+ const original=JSON.stringify({source,presentation,vocabulary});
+ const index=derivePublishedKnowledge(source,presentation,vocabulary),graph=index.knowledge;
+ assert.deepEqual(Object.keys(graph.types).sort(),['Name','Name-1','Name-2']);
+ assert.equal(resolveFact(graph,'types/Name').representation,'types/Name-2');
+ assert.deepEqual(resolveFact(graph,'types/Name').arguments,['types/Name-2']);
+ assert.deepEqual(resolveFact(graph,'types/Name').variants,[{name:'Some',payload:'types/Name-2'}]);
+ assert.deepEqual(resolveFact(graph,'types/Name-2').field_types,[{name:'a',type:'Option(types/Name)'}]);
+ assert.equal(resolveFact(graph,field).type,'Array(Option(types/Name-2))');
+ assert.equal(resolveFact(graph,'entities/thing').identity,'types/Name');
+ assert.deepEqual(resolveFact(graph,field).canonical_values,[{id:a,wires:[a]}]);
+ assert.equal(resolveFact(graph,field).doc,a);assert.equal(resolveFact(graph,field).source,a);
+ assert.deepEqual(resolveFact(graph,'types/Name#values/yes').wires,[a]);
+ assert.equal(resolveFact(graph,'types/Name#values/yes').value,a);
+ assert(index.keys.has('types/Name#values/yes'));assert(!index.keys.has(member));
+ assert.equal(index.terms.find(t=>t.kind==='Value')!.ownerValue,'Name');
+ assert.equal(index.terms.find(t=>t.kind==='Value')!.key,'types/Name#values/yes');
+ assert(index.knowledge.items.find(t=>t.key==='types/Name-2')!.names.includes('另一个名字'));
+ assert(index.links.every(e=>!e.source.includes('%3A')&&!e.target.includes('%3A')));
+ const reordered=derivePublishedKnowledge({...source as object,facts:[...(source as any).facts].reverse()},presentation,vocabulary);
+ for(const id of ['Name','Name-1','Name-2'])assert.equal(resolveFact(reordered.knowledge,'types/'+id).name,resolveFact(graph,'types/'+id).name);
+ assert.equal(JSON.stringify({source,presentation,vocabulary}),original);
+ assert.throws(()=>derivePublishedKnowledge(publication([fact(a),fact('datasets/x',{},['types/Name'])])),/Unresolved/);
+ assert.throws(()=>derivePublishedKnowledge(publication([fact(a)],[{key:'types/Name',names:[],doc:''}])) ,/presentation item/);
+ console.log('Plugin type IDs: deterministic names and collision suffixes, members, nested type expressions, navigation, vocabulary, presentation and business literal preservation passed');
+}

@@ -15,7 +15,7 @@ export function parseTypedPipeline(source:string,base:Position,options:{definiti
  let token=lex(),end=0;const take=()=>{const t=token;end=t.end;token=lex();return t;};
  const fail=(m:string,t=token):never=>{throw new DraftSyntaxError(m,{start:pos(t.start),end:pos(t.end)});};
  const is=(s:string)=>token.text===s;
- const eat=(s:string)=>{if(token.text!==s)fail('Expected '+JSON.stringify(s));return take();};
+ const eat=(s:string)=>{if(token.text!==s){const span={start:pos(token.start),end:pos(token.end)};throw new DraftSyntaxError('Expected '+JSON.stringify(s)+', got '+JSON.stringify(token.text||'end of input'),span,[{stage:'syntax',message:'Expected '+JSON.stringify(s)+', got '+JSON.stringify(token.text||'end of input'),span,expected:s,found:token.text||'end of input'}]);}return take();};
  const span=(start:number):Span=>({start:pos(start),end:pos(end)});
  const prec:Record<string,number>={'??':1,'||':2,'&&':3,'==':4,'!=':4,'<':5,'>':5,'<=':5,'>=':5,'+':6,'-':6,'*':7,'/':7,'%':7};
  const expr=(min=0,depth=0):N=>{if(depth>128)fail('Expression nesting exceeds 128');const start=token.start;let n:N;
@@ -37,23 +37,25 @@ export function parseTypedPipeline(source:string,base:Position,options:{definiti
  const arrayLength=(n:N,seen=new Set<string>()):number|undefined=>{if(n.k==='array')return n.a!.length;if(n.k==='ref'&&defs.has(n.name!)&&!seen.has(n.name!)){seen.add(n.name!);return arrayLength(defs.get(n.name!)!,seen);}if(n.k==='call'&&n.name==='time_windows'){const count=n.a?.[1]?.entries?.find(e=>e.key==='count')?.value;if(count?.k==='lit'&&Number.isInteger(count.v)&&count.v>=1&&count.v<=50)return count.v;}if(n.k==='call'&&n.name==='map')return arrayLength(n.a![0],seen);return undefined;};
  const literal=(value:any,s:Span):Expr=>({kind:'literal',value,span:s});
  const payload=(operator:string,n:N,inputs:{key:string;value:Expr}[]):Expr=>({kind:'call',operator:operator as Operator,args:[literal(JSON.stringify(n),n.s),{kind:'object',entries:inputs,span:n.s}],span:n.s});
- const lower=(n:N):Expr=>{
+ const lower=(n:N,phase:'analysis'|'execution'='execution'):Expr=>{
+  const child=(n:N)=>lower(n,phase);
   if(n.k==='lit')return literal(n.v,n.s);
   if(n.k==='ref')return {kind:'ref',name:n.name!,span:n.s};
-  if(n.k==='object')return {kind:'object',entries:n.entries!.map(e=>({key:e.key,value:lower(e.value)})),span:n.s};
-  if(n.k==='array')return {kind:'array',values:n.a!.map(lower),span:n.s};
-  if(n.k==='call'&&['query','context','time_windows','data'].includes(n.name!))return {kind:'call',operator:n.name as Operator,args:n.a!.map(lower),span:n.s};
+  if(n.k==='object')return {kind:'object',entries:n.entries!.map(e=>({key:e.key,value:child(e.value)})),span:n.s};
+  if(n.k==='array')return {kind:'array',values:n.a!.map(child),span:n.s};
+  if(n.k==='call'&&['query','context','time_windows','data'].includes(n.name!))return {kind:'call',operator:n.name as Operator,args:n.a!.map(child),span:n.s};
   if(n.k==='call'&&n.name==='map'){
    if(n.a!.length!==2||n.a![1].k!=='lambda'||![1,2].includes(n.a![1].params!.length))throw new DraftSyntaxError('map requires an array and (item,index?) => expression',n.s);
+   if(phase==='analysis')return {kind:'call',operator:'analysis_map',args:[child(n.a![0]),literal(JSON.stringify(n.a![1].params),n.s),child(n.a![1].body!)],span:n.s};
    const length=arrayLength(n.a![0]);if(length===undefined||length>50)throw new DraftSyntaxError('map requires an array with a statically known length <= 50',n.s);
-   const f=n.a![1];return {kind:'array',values:Array.from({length},(_,i)=>{const sub=new Map<string,N>([[f.params![0],{k:'get',input:n.a![0],key:i,s:n.s}]]);if(f.params![1])sub.set(f.params![1],{k:'lit',v:i,s:n.s});return lower(cloneSub(f.body!,sub));}),span:n.s};
+   const f=n.a![1];return {kind:'array',values:Array.from({length},(_,i)=>{const sub=new Map<string,N>([[f.params![0],{k:'get',input:n.a![0],key:i,s:n.s}]]);if(f.params![1])sub.set(f.params![1],{k:'lit',v:i,s:n.s});return child(cloneSub(f.body!,sub));}),span:n.s};
   }
-  if(n.k==='call'&&n.name==='table'){if(![1,2].includes(n.a!.length))throw new DraftSyntaxError('table requires rows and optional data nature',n.s);return {kind:'call',operator:'typed_table',args:[{kind:'call',operator:'data',args:n.a!.map(lower),span:n.s}],span:n.s};}
-  if(n.k==='call'&&n.name==='union_all'){if(n.a!.length!==1)throw new DraftSyntaxError('union_all requires one array of tables',n.s);return {kind:'call',operator:'table_union' as Operator,args:n.a!.map(lower),span:n.s};}
+  if(n.k==='call'&&n.name==='table'){if(![1,2].includes(n.a!.length))throw new DraftSyntaxError('table requires rows and optional data nature',n.s);return {kind:'call',operator:'typed_table',args:[{kind:'call',operator:'data',args:n.a!.map(child),span:n.s}],span:n.s};}
+  if(n.k==='call'&&n.name==='union_all'){if(n.a!.length!==1)throw new DraftSyntaxError('union_all requires one array of tables',n.s);return {kind:'call',operator:'table_union' as Operator,args:n.a!.map(child),span:n.s};}
   if(n.k==='call'&&['select','select_one'].includes(n.name!)){
    if(n.a!.length!==1||n.a![0].k!=='object')throw new DraftSyntaxError('select requires an object specification',n.s);
    const spec=n.a![0];const inputs:{key:string;value:Expr}[]=[];let seq=0;
-   const source=(obj:N):N=>{if(obj.k!=='object'||obj.entries!.length!==1)throw new DraftSyntaxError('source must contain exactly one table alias',obj.s);const e=obj.entries![0],key='__source'+seq++;inputs.push({key,value:lower(e.value)});return {...obj,entries:[{key:e.key,value:{k:'ref',name:key,s:e.value.s}}]};};
+   const source=(obj:N):N=>{if(obj.k!=='object'||obj.entries!.length!==1)throw new DraftSyntaxError('source must contain exactly one table alias',obj.s);const e=obj.entries![0],key='__source'+seq++;inputs.push({key,value:child(e.value)});return {...obj,entries:[{key:e.key,value:{k:'ref',name:key,s:e.value.s}}]};};
    const entries=spec.entries!.map(e=>{if(e.key==='from')return {...e,value:source(e.value)};if(e.key==='joins'){if(e.value.k!=='array')throw new DraftSyntaxError('joins must be an array',e.value.s);return {...e,value:{...e.value,a:e.value.a!.map(j=>{if(j.k!=='object')throw new DraftSyntaxError('join must be an object',j.s);return {...j,entries:j.entries!.map(x=>x.key==='source'?{...x,value:source(x.value)}:x)};})}};}return e;});
    const plan={...n,a:[{...spec,entries}]};
    for(const name of refs(plan))if(!name.startsWith('__source'))inputs.push({key:name,value:{kind:'ref',name,span:n.s}});
@@ -65,14 +67,14 @@ export function parseTypedPipeline(source:string,base:Position,options:{definiti
  if(options.expressionName!==undefined){
   const n=expr();if(token.kind!=='eof')fail('Unexpected content after expression');
   const dependencies=[...refs(n)];for(const ref of dependencies)if(!defs.has(ref))throw new DraftSyntaxError('Undefined or forward data binding '+ref,n.s);
-  const name=options.expressionName;defs.set(name,n);return [{typed:true,statement:{kind:'binding',name,value:lower(n),span:n.s,motivation:''},bindings:dependencies,assets:[]}];
+  const name=options.expressionName;defs.set(name,n);return [{typed:true,analysis:lower(n,'analysis'),statement:{kind:'binding',name,value:lower(n),span:n.s,motivation:''},bindings:dependencies,assets:[]}];
  }
  while(token.kind!=='eof'){
   if(nodes.length>=512)fail('Pipeline is limited to 512 statements');const head=token;let name:string|undefined,n:N;
   if(is('{')){n=expr();if(is(';'))take();if(token.kind!=='eof')fail('Output must be the final statement');}
   else{if(token.kind!=='id')fail('Expected binding name');name=take().text;if(calls.has(name)||name.startsWith('__'))fail('Reserved binding name '+name,head);if(defs.has(name))fail('Duplicate binding '+name,head);eat('<-');n=expr();eat(';');}
   const dependencies=[...refs(n)];for(const ref of dependencies)if(!defs.has(ref))throw new DraftSyntaxError('Undefined or forward binding '+ref,n.s);
-  const value=lower(n),s=span(head.start);nodes.push({typed:true,statement:name?{kind:'binding',name,value,span:s,motivation:head.comments.join('\n')}:{kind:'output',value,span:s,motivation:head.comments.join('\n')},bindings:dependencies,assets:[]});if(name)defs.set(name,n);
+  const value=lower(n),s=span(head.start);nodes.push({typed:true,analysis:lower(n,'analysis'),statement:name?{kind:'binding',name,value,span:s,motivation:head.comments.join('\n')}:{kind:'output',value,span:s,motivation:head.comments.join('\n')},bindings:dependencies,assets:[]});if(name)defs.set(name,n);
  }
  let acquisitions=0;const visit=(e:Expr)=>{if(e.kind==='call'){if(e.operator==='query')acquisitions++;e.args.forEach(visit);}else if(e.kind==='array')e.values.forEach(visit);else if(e.kind==='object')e.entries.forEach(x=>visit(x.value));else if(e.kind==='project')visit(e.input);};nodes.forEach(n=>visit(n.statement.value));if(acquisitions>128)throw new DraftSyntaxError('Pipeline exceeds 128 queries',nodes[0].statement.span);
  return nodes;

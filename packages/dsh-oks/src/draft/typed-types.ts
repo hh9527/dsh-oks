@@ -8,13 +8,22 @@ export const scalar=(name:string,nullable=false):Ty=>({kind:'scalar',name,nullab
 export const record=(fields:Record<string,Ty>,nullable=false):Ty=>({kind:'record',fields,nullable});
 export const optional=(t:Ty):Ty=>t.kind==='scalar'||t.kind==='record'?{...t,nullable:true}:t.kind==='null'?t:(()=>{throw new Error('Option requires scalar or record');})();
 export const present=(t:Ty):Ty=>t.kind==='scalar'||t.kind==='record'?{...t,nullable:false}:t;
-export const box=(type:Ty,value:unknown=UNKNOWN):Box=>({[TYPED]:type,value});
+export const box=(type:Ty,value:unknown=UNKNOWN):Box=>{
+ // Abstract tables retain their schema at the SQLite/figure boundary, without any rows.
+ if(type.kind==='table'&&value===UNKNOWN){const data={columns:type.columns,rows:UNKNOWN,truncated:UNKNOWN};return {...data,[TYPED]:type,value:data};}
+ return {[TYPED]:type,value};
+};
 export const isBox=(v:unknown):v is Box=>isRecord(v)&&TYPED in v;
 export function known(v:unknown):boolean{if(v===UNKNOWN)return false;if(isBox(v))return known(v.value);if(Array.isArray(v))return v.every(known);return !isRecord(v)||Object.values(v).every(known);}
 export function unbox(v:unknown):any{if(isBox(v))return unbox(v.value);if(Array.isArray(v))return v.map(unbox);if(isRecord(v))return Object.fromEntries(Object.entries(v).map(([k,v])=>[k,unbox(v)]));return v;}
 export function common(a:Ty,b:Ty):Ty{
  if(a.kind==='never')return b;if(b.kind==='never')return a;
  if(a.kind==='array'&&b.kind==='array')return {kind:'array',element:common(a.element,b.element),nullable:false,...(a.length===b.length&&a.length!==undefined?{length:a.length}:{})};
+ if(a.kind==='table'&&b.kind==='table'){
+  if(a.columns.length!==b.columns.length||a.columns.some((c,i)=>c.name!==b.columns[i].name))throw new Error('Incompatible table columns');
+  const columns=a.columns.map((c,i)=>{const t=common(scalar(c.type,c.nullable),scalar(b.columns[i].type,b.columns[i].nullable));if(t.kind!=='scalar')throw new Error('Invalid column type');return {name:c.name,type:t.name,nullable:t.nullable};});
+  return {kind:'table',columns};
+ }
  if(a.kind==='null')return optional(b);if(b.kind==='null')return optional(a);
  if(a.kind==='scalar'&&b.kind==='scalar'){if(a.name===b.name)return scalar(a.name,a.nullable||b.nullable);if(['Int','Float'].includes(a.name)&&['Int','Float'].includes(b.name))return scalar('Float',a.nullable||b.nullable);}
  if(a.kind==='record'&&b.kind==='record'&&Object.keys(a.fields).join('\0')===Object.keys(b.fields).join('\0'))return record(Object.fromEntries(Object.keys(a.fields).map(k=>[k,common(a.fields[k],b.fields[k])])),a.nullable||b.nullable);
