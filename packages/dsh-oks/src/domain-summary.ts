@@ -1,4 +1,4 @@
-import { presentationOverview } from './presentation-guide.ts';
+import { encodePart } from './knowledge-graph.ts';
 import { isRecord, type ToolExec } from './host.ts';
 import type { Knowledge } from './knowledge.ts';
 
@@ -15,7 +15,7 @@ export function domainSummary(graph: object, domain: string) {
     const name = Array.isArray(item.names) && typeof item.names[0] === 'string' ? item.names[0] : undefined;
     docs.set(item.key, { ...(name ? { name } : {}), doc: text.length > 180 ? text.slice(0, 180) + '…' : text });
   }
-  const description = (root: string, id: string) => docs.get(root + '/' + encodeURIComponent(id)) ?? { doc: '' };
+  const description = (root: string, id: string) => docs.get(root + '/' + encodePart(id)) ?? { doc: '' };
   const pick = <K extends string>(value: unknown, keys: K[]): Partial<Record<K, unknown>> => isRecord(value)
     ? Object.fromEntries(keys.filter(k => value[k] !== undefined).map(k => [k, value[k]])) as Partial<Record<K, unknown>> : {};
   const members = (value: unknown) => entries(value).map(([id]) => id);
@@ -55,10 +55,10 @@ export function renderDomainSummary(graph: object, domain: string): string {
   const summary = domainSummary(graph, domain);
   const note = (item: { name?: string; doc: string }) => [item.name, item.doc].filter(Boolean).map(value => prose(value!)).join('：');
   const lines = ['# 全局领域摘要', '', '领域：'+code(domain), '',
-    '本摘要概览领域对象、数据集、关系导航及图表能力，已在上下文中。具体字段、度量、身份映射、连接条件与约束按需通过 oks_cap / oks_card 获取；领域词汇与规范值通过 va_ask 获取。', '',
-    '局部入口：Dataset 使用 oks_cap({cq:{target:{dataset:ID}}}) 或 oks_card({id:ID})；Entity 使用 oks_card({key:"entities/ID"})。', '',
+    '本摘要概览领域对象、数据集、关系导航，由知识助手持有。具体字段、度量、身份映射、连接条件与约束按需通过 oks_cap / oks_card 获取；领域词汇与规范值通过 ka_ask 获取。', '',
+    '知识节点 ID 可直接交给 card；cap/query 使用短名称，不能使用节点路径。局部入口：Dataset 使用 oks_cap({dataset:ID}) 或 oks_card({id:"datasets/ID"})；Entity 使用 oks_card({id:"entities/ID"})。', '',
     '## 业务实体（Entity）', '',
-    ...summary.entities.map(e=>'- '+code(e.id)+(note(e)?'：'+note(e):'')), '',
+    ...summary.entities.map(e=>'- '+code('entities/'+encodePart(e.id))+(note(e)?'：'+note(e):'')), '',
     '## 数据集与查询能力（Dataset）', '',
     '每项保留粒度、对象和能力数量；字段角色（称谓、指代、分类、指标）及其完整定义在局部卡片。', ''];
   for(const d of summary.datasets){
@@ -66,7 +66,7 @@ export function renderDomainSummary(graph: object, domain: string): string {
     const parts=[note(d),d.kind===undefined?'':String(d.kind),d.grain===undefined?'':'粒度 '+JSON.stringify(d.grain),
       objects.length?'对象 '+objects.join('、'):'',
       `${d.dimensions.length} 维度 / ${d.measures.length} 度量`,d.time_roles.length?'支持时间分析':''].filter(Boolean);
-    lines.push('- '+code(d.id)+'：'+parts.map(prose).join('；'));
+    lines.push('- '+code('datasets/'+encodePart(d.id))+'：'+parts.map(prose).join('；'));
   }
   lines.push('', '## 关系导航', '', '按声明方向合并列出可关联的数据集；关系 ID、基数、连接键和覆盖范围通过相应 Dataset 的 relations 卡片或 cap 获取。', '');
   const neighbors=new Map<string,Set<string>>();
@@ -76,7 +76,6 @@ export function renderDomainSummary(graph: object, domain: string): string {
     neighbors.get(from)!.add(to);
   }
   for(const [from,to] of neighbors)lines.push('- '+code(from)+' → '+[...to].map(code).join('、'));
-  lines.push('', ...presentationOverview());
   return lines.join('\n')+'\n';
 }
 

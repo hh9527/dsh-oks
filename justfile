@@ -190,7 +190,25 @@ install:
     YAML
     fi
 
-    # 词汇助手预设仅装配提示词和权限。
+    # 知识助手预设仅装配提示词和权限。
+    if ! grep -qE '^[[:space:]]*-[[:space:]]*id:[[:space:]]*preset-oks-knowledge[[:space:]]*$' "$PATCH_FILE"; then
+      cat >> "$PATCH_FILE" <<'YAML'
+
+    - insert:
+        - id: preset-oks-knowledge
+          name: "@deepseek-ai/dsh-agent-preset"
+          config:
+            id: oks-knowledge
+            name: OKS 知识助手
+            description: 根据领域关系地图与词汇助手提供知识导航。
+            plugins:
+              - id: oks-knowledge
+                name: "@local/dsh-oks"
+                config:
+                  knowledgeHelper: true
+    YAML
+    fi
+
     if ! grep -qE '^[[:space:]]*-[[:space:]]*id:[[:space:]]*preset-oks-vocabulary[[:space:]]*$' "$PATCH_FILE"; then
       cat >> "$PATCH_FILE" <<'YAML'
 
@@ -200,7 +218,7 @@ install:
           config:
             id: oks-vocabulary
             name: OKS 词汇助手
-            description: 根据当前工作区的完整词表回答一次词汇咨询。
+            description: 完整领域词汇对齐与归属定位。
             plugins:
               - id: oks-vocabulary
                 name: "@local/dsh-oks"

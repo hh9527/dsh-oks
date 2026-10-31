@@ -1,3 +1,4 @@
+import { encodePart } from './knowledge-graph.ts';
 type Obj=Record<string,any>;
 const allowed:Record<string,string[]>={search:['query','type','dataset','skip','take'],read:['key'],card:['id','section','skip','take','docs'],cap:['cq','join_depth','skip','take']};
 const methodDefaults=(name:string):Obj=>({search:{skip:0,take:10},read:{},card:{section:'all',skip:0,take:20,docs:false},cap:{join_depth:1,skip:0,take:20}}[name]??{});
@@ -46,20 +47,47 @@ const kinds:Obj={entities:'Entity',datasets:'Dataset',types:'Ty',dimension_group
 const identity=(key:string)=>{const p=pathOf(key);return {key,type:kinds[p.at(-2)!]??null,id:p.at(-1)!,dataset:p[0]==='datasets'?p[1]:null};};
 const page=(items:any[],skip:number,take:number)=>({total:items.length,start:skip,items:items.slice(skip,skip+take),next:skip+take<items.length?skip+take:null});
 const windowPage=(items:any[],skip:number,take:number)=>({total:items.length,skip,take,truncated:skip>0||skip+take<items.length,next:skip+take<items.length?skip+take:null});
-const asciiLower=(s:string)=>s.replace(/[A-Z]/g,c=>c.toLowerCase());
+const normalize=(s:string)=>s.normalize('NFKC').toLowerCase();
+const searchWords=(s:string)=>normalize(s.replace(/([a-z])([A-Z])/g,'$1 $2')).match(/[\p{L}\p{N}]+/gu)??[];
+// A small lexical tolerance for English identifiers, not semantic inference.
+function nearWord(a:string,b:string):boolean {
+ if(a.length<4||b.length<4||!/^[a-z]+$/.test(a)||!/^[a-z]+$/.test(b)||Math.abs(a.length-b.length)>1)return false;
+ if(a.length===b.length){const ds=[...a].flatMap((c,i)=>c===b[i]?[]:[i]);return ds.length===1||ds.length===2&&ds[1]===ds[0]+1&&a[ds[0]]===b[ds[1]]&&a[ds[1]]===b[ds[0]];}
+ const [short,long]=a.length<b.length?[a,b]:[b,a];let i=0;while(i<short.length&&short[i]===long[i])i++;return short.slice(i)===long.slice(i+1);
+}
+const searchType=(value:string|undefined)=>{
+ if(value===undefined)return undefined;
+ const match=Object.entries(kinds).find(([category,kind])=>normalize(value)===normalize(category)||normalize(value)===normalize(kind));
+ if(!match)throw new Error('Unknown knowledge type: '+value+'; use '+unique(Object.values(kinds)).join(', '));
+ return match[1];
+};
 /** Fixed host methods over the already-built knowledge graph; no source evaluation or graph mutation. */
 export function queryKnowledge(g:Obj,name:string,rawArgs:unknown):unknown {
  const a=knowledgeArgs(name,rawArgs);
  const items:any[]=g.items??[];
  if(name==='search'){
   if(typeof a.query!=='string'||!a.query.trim())throw new Error('search requires nonempty query');
-  const query=asciiLower(a.query??'');
+  const phrase=normalize(a.query.trim()),terms=[...new Set(searchWords(a.query))],type=searchType(a.type);
+  if(!terms.length)throw new Error('search requires searchable words');
   const matches=items.flatMap(item=>{
    const id=identity(item.key);
-   if(a.type!=null&&a.type!==id.type||a.dataset!=null&&a.dataset!==id.dataset)return [];
-   const hits=[{field:'id',text:id.id,weight:4},...(item.names??[]).map((text:string)=>({field:'name',text,weight:3})),{field:'doc',text:item.doc??'',weight:1}].filter(x=>asciiLower(x.text).includes(query));
-   return hits.length?[{...id,label:item.names?.[0]??id.id,summary:[...(item.doc??'')].slice(0,160).join(''),matched:unique(hits.map(h=>h.field)),score:Math.max(...hits.map(h=>h.weight))}]:[];
-  }).sort((x,y)=>y.score-x.score||(x.key<y.key?-1:x.key>y.key?1:0));
+   if(type!=null&&type!==id.type||a.dataset!=null&&a.dataset!==id.dataset)return [];
+   const fields=[{field:'id',text:id.id,weight:4},...(a.query.includes('/')?[{field:'id',text:item.key.replace('#','/'),weight:4}]:[]),...(item.names??[]).map((text:string)=>({field:'name',text,weight:3})),{field:'doc',text:item.doc??'',weight:1}]
+    .map(f=>({...f,text:normalize(f.text),words:searchWords(f.text)}));
+   const hits=terms.flatMap(term=>{
+    const candidates=fields.flatMap(f=>{
+     const strength=f.text===term?3:f.text.includes(term)?2:f.words.some((word:string)=>nearWord(term,word))?1:0;
+     return strength?[{term,field:f.field,score:strength*10+f.weight}]:[];
+    });
+    return candidates.length?[{term,fields:unique(candidates.map(h=>h.field)),score:Math.max(...candidates.map(h=>h.score))}]:[];
+   });
+   if(!hits.length)return [];
+   // Coverage dominates phrase/exactness and field weight; alternatives still match.
+   const score=hits.length*1000+Math.max(...fields.map(f=>f.text===phrase?200:f.text.includes(phrase)?100:0))+hits.reduce((n,h)=>n+h.score,0)/terms.length;
+   return [{...id,label:item.names?.[0]??id.id,summary:[...(item.doc??'')].slice(0,160).join(''),matched:unique(hits.flatMap(h=>h.fields)),matched_terms:hits.map(h=>h.term),score}];
+  }).sort((x,y)=>y.score-x.score
+    ||Number(['Dataset','Entity','Dimension','Measure','Ty','Relation'].includes(y.type))-Number(['Dataset','Entity','Dimension','Measure','Ty','Relation'].includes(x.type))
+    ||(x.key<y.key?-1:x.key>y.key?1:0));
   return page(matches,a.skip,a.take);
  }
  if(name==='read'){
@@ -72,9 +100,9 @@ export function queryKnowledge(g:Obj,name:string,rawArgs:unknown):unknown {
  const doc=(key:string)=>ix.get(key)?.doc??'';
  if(name==='card'){
   const d=own(g.datasets,a.id);if(d==null)throw new Error('Unknown dataset id: '+a.id);
-  const key='datasets/'+encodeURIComponent(a.id);
+  const key='datasets/'+encodePart(a.id);
   const section=(cat:string,fn:(v:Obj)=>Obj)=>entries(d[cat]).map(([id,v])=>{
-   const ref=key+'#'+cat+'/'+encodeURIComponent(id);
+   const ref=key+'#'+cat+'/'+encodePart(id);
    return {id,key:ref,label:label(ref,id),...fn(v),...(a.docs?{doc:doc(ref)}:{})};
   });
   const pick=(v:Obj,keys:string[],defaults:Obj={})=>Object.fromEntries(keys.map(k=>[k,v[k]??defaults[k]??null]));
@@ -82,7 +110,7 @@ export function queryKnowledge(g:Obj,name:string,rawArgs:unknown):unknown {
   const measures=section('measures',v=>({...pick(v,['type','anchor_field','statistic','input','requires','binding','group','computed','predicate'],{requires:[]}),agg:v.aggregate??null,unit:v.sampling?.unit??null,sampling_role:v.sampling?.role??null}));
   const time_roles=section('time_roles',v=>pick(v,['field','encoding','semantics','authoritative']));
   const relations=(d.relations??[]).map((ref:string)=>{const r=fact(g,ref)??{},id=pathOf(ref).at(-1)!;return {id,key:ref,label:label(ref,id),from:r.from_dataset??null,to:r.to_dataset??null,cardinality:r.cardinality??null,key_fields:r.key??null,guard:r.guard??null,from_role:r.from_role??null,to_role:r.to_role??null,directions:['forward','reverse'],...(a.docs?{doc:doc(ref)}:{})};});
-  const raw=(cat:string)=>entries(d[cat]).map(([id,facts])=>({id,key:key+'#'+cat+'/'+encodeURIComponent(id),facts}));
+  const raw=(cat:string)=>entries(d[cat]).map(([id,facts])=>({id,key:key+'#'+cat+'/'+encodePart(id),facts}));
   const sections:Obj={fields:raw('fields'),dimensions,measures,time_roles,relations,roles:raw('roles'),bindings:raw('bindings'),business_links:raw('business_links')};
   const aggregates=unique(values(d.measures).map(v=>v.aggregate??null));
   const result:Obj={id:a.id,key,label:label(key,a.id),doc:doc(key),grain:d.grain??[],kind:d.kind??null,source:d.source??null,clock:d.clock??null,scope:d.scope??[],references:d.references??[],field_roles:entries(d.fields).filter(([,v])=>v.roles?.length).map(([field,v])=>({field,roles:v.roles})),row:d.row??null,business_links:sections.business_links.length,aggregates,sum_available:aggregates.includes('Sum'),has_time:time_roles.length>0,time_encoding:unique(values(d.time_roles).map(v=>v.encoding??null)),buckets:unique(values(d.dimensions).filter(v=>v.utc_bucket!=null).map(v=>v.utc_bucket.unit)),units:unique(values(d.measures).map(v=>v.sampling?.unit).filter(v=>v!=null)),counts:Object.fromEntries(entries(sections).map(([k,v])=>[k,v.length])),page:{skip:a.skip,take:a.take}};
@@ -91,13 +119,13 @@ export function queryKnowledge(g:Obj,name:string,rawArgs:unknown):unknown {
  }
  const cq=a.cq,node=cq.node??'d';
  const candidates:string[]=cq.target.dataset!=null?(own(g.datasets,cq.target.dataset)!=null?[cq.target.dataset]:[]):own(g.entities,cq.target.entity)!=null?unique((g.entities[cq.target.entity].roles??[]).flatMap((r:string)=>{const p=pathOf(r.split('#')[0]);return p[0]==='datasets'&&own(g.datasets,p[1])!=null?[p[1]]:[];})):[];
- const ds=candidates.length===1?candidates[0]:null,d=ds!==null?g.datasets[ds]:null,address=ds!==null?'datasets/'+encodeURIComponent(ds):null;
- const capabilities=(requested:any[],cat:string,field:string)=>requested.map(r=>({id:r[field],address:address?address+'#'+cat+'/'+encodeURIComponent(r[field]):null,facts:d?own(d[cat],r[field]):null}));
+ const ds=candidates.length===1?candidates[0]:null,d=ds!==null?g.datasets[ds]:null,address=ds!==null?'datasets/'+encodePart(ds):null;
+ const capabilities=(requested:any[],cat:string,field:string)=>requested.map(r=>({id:r[field],address:address?address+'#'+cat+'/'+encodePart(r[field]):null,facts:d?own(d[cat],r[field]):null}));
  const select=capabilities(cq.select??[],'dimensions','dimension'),measures=capabilities(cq.measures??[],'measures','measure');
  const dimension=d?own(d.dimensions,cq.window?.dimension):null;
- const time=cq.window==null?null:{requested:cq.window,dimension,roles:entries(d?.time_roles).filter(([,v])=>v.field!=null&&v.field===dimension?.field).map(([id,facts])=>({address:address+'#time_roles/'+encodeURIComponent(id),facts}))};
+ const time=cq.window==null?null:{requested:cq.window,dimension,roles:entries(d?.time_roles).filter(([,v])=>v.field!=null&&v.field===dimension?.field).map(([id,facts])=>({address:address+'#time_roles/'+encodePart(id),facts}))};
  const unresolved:any[]=[...(ds===null?[{field:'target',reason:candidates.length>1?'multiple_datasets':'not_found'}]:[]),...select.filter(v=>v.facts==null).map(v=>({field:'select',id:v.id,reason:'not_found'})),...measures.filter(v=>v.facts==null).map(v=>({field:'measures',id:v.id,reason:'not_found'})),...(cq.window!=null&&time?.dimension==null?[{field:'window.dimension',id:cq.window.dimension,reason:'not_found'}]:[]),...(cq.rank!=null&&own(d?.measures,cq.rank.measure)==null?[{field:'rank.measure',id:cq.rank.measure,reason:'not_found'}]:[])];
- const step=(id:string,r:Obj,direction:string)=>({relation:id,address:'relations/'+encodeURIComponent(id),direction,from:direction==='forward'?r.from_dataset:r.to_dataset,to:direction==='forward'?r.to_dataset:r.from_dataset,from_role:r.from_role??null,to_role:r.to_role??null,cardinality:r.cardinality??null,key:r.key??null,guard:r.guard??null});
+ const step=(id:string,r:Obj,direction:string)=>({relation:id,address:'relations/'+encodePart(id),direction,from:direction==='forward'?r.from_dataset:r.to_dataset,to:direction==='forward'?r.to_dataset:r.from_dataset,from_role:r.from_role??null,to_role:r.to_role??null,cardinality:r.cardinality??null,key:r.key??null,guard:r.guard??null});
  const outgoing=(from:string)=>entries(g.relations).flatMap(([id,r])=>[...(r.from_dataset===from?[step(id,r,'forward')]:[]),...(r.to_dataset===from?[step(id,r,'reverse')]:[])]);
  const one=ds===null||a.join_depth===0?[]:outgoing(address!).map(s=>({path:[address,s.to],steps:[s]}));
  const two=a.join_depth<2?[]:one.flatMap(p=>outgoing(p.path.at(-1)!).filter(s=>!p.path.includes(s.to)).map(s=>({path:[...p.path,s.to],steps:[...p.steps,s]})));

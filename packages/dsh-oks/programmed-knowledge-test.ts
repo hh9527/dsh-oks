@@ -40,3 +40,31 @@ assert.deepEqual(await collectProgrammedKnowledge(publication),{graph,vocabulary
 assert.throws(()=>derivePublishedKnowledge(graph,undefined,[...vocabulary,...vocabulary]),/Invalid model vocabulary term/);
 assert.throws(()=>derivePublishedKnowledge(graph,undefined,[{...vocabulary[0],key:'types/missing'}]),/Invalid model vocabulary term/);
 console.log('static JavaScript knowledge: parsed data, new Function scope, reuse, vocabulary, presentation, errors and no runtime fallback passed');
+
+const render = (terms: any[]) => renderWholeVocabulary({terms} as any);
+const term = (key: string, name: string, kind = 'Field', aliases: string[] = [], doc = '') =>
+  ({...vocabulary[0],key,name,kind,aliases,doc});
+assert.equal(render([term('datasets/device','设备','Dataset',['终端','NE'],'设备清单')]),
+  '[datasets/device]\n- 设备,终端,NE;设备清单');
+const dictionary = render([
+  term('datasets/a#fields/x','CPU'), term('datasets/a#dimensions/x','CPU'),
+  term('datasets/b#fields/x','CPU'),
+  term('datasets/a#bindings/%7Bsecret%7D','{"value":"x"}','Binding'),
+  term('datasets/a#bindings/generated','["sample"]','Binding',['业务别名']),
+  term('datasets/a#roles/role_63','role_63','Role'),
+  term('types/level#values/0','0','Value'),
+  term('types/level#values/major','major','Value',[],'重要'),
+  term('dimension_groups/'+'a'.repeat(64),'a'.repeat(64),'DimensionGroup',['ns/dimension/0']),
+  term('measure_groups/'+'b'.repeat(64),'b'.repeat(64),'MeasureGroup',['流量']),
+]);
+assert.equal(dictionary.match(/- CPU;/g)?.length,2); // 同上下文去重，跨上下文保留。
+assert.match(dictionary,/- 业务别名;/);
+assert.match(dictionary,/- 0;/);
+assert.match(dictionary,/- major;重要/);
+assert.match(dictionary,/\[分组 流量\]/);
+assert.doesNotMatch(dictionary,/secret|sample|role_63|ns\/dimension|[ab]{64}|#fields/);
+assert.equal(render([term('types/a:b','a,b;c','Ty',['"quoted"','x\\y','line\nnext'],'first\r\nsecond;detail:literal,comma')]),
+  '[types/a:b]\n- a b c,"quoted",x y,line next;first second detail literal comma');
+assert.match(render([term('types/checksum#values/hex','c'.repeat(64),'Value')]), /c{64}/);
+assert.equal(render([]),'');
+console.log('VA dictionary: context deduplication, business aliases, enum values and generated-identity filtering passed');

@@ -3,7 +3,7 @@
 //
 // 三块：
 //   1. 插件上下文（ctx / agentCtx）与它取到的服务、工具定义；
-//   2. agent 句柄与**会话表面**（工具 exec 拿到的调用方与词汇子会话）；
+//   2. agent 句柄与**会话表面**（工具 exec 拿到的调用方与知识子会话）；
 //   3. 知识服务的响应形状——宿主之外的对端协议，同样只声明我们用到的字段；
 //      外加两个收窄小工具（isRecord / isArray）与错误转文本，供各模块共用。
 //
@@ -63,12 +63,13 @@ export interface SubagentActivation {
 
 export interface SubagentsService {
   listChildren(parentSessionId: string, signal?: AbortSignal): Promise<{ id: string; label?: string; mode: string }[]>;
+  drainChildren(parent: AgentLike, childIds: string[]): Promise<void>;
   sendMessage(parent: AgentLike, childId: string, prompt: ContentBlock[], options: { signal: AbortSignal }): Promise<string>;
   startActivation(spec: {
     provider: string;
     label: string;
     childId: string;
-    delivery: 'parent';
+    delivery: 'parent' | 'caller';
     signal: AbortSignal;
     request: {
       parent: AgentLike;
@@ -81,6 +82,7 @@ export interface SubagentsService {
 }
 
 export interface PromptAssembly {
+  tools?: { name: string; [key: string]: unknown }[];
   sections: { name: string; text: string; interpolate?: boolean }[];
 }
 
@@ -88,6 +90,7 @@ export interface PromptAssembly {
  *  render / presentationMeta / execute 的参数这里写成 never：定义方各自的具体签名都能装进来
  *  （逆变位置，never 可赋给任何参数类型），而插件自己从不调用它们。 */
 export interface ToolDefinition {
+  timeoutMs?: number;
   name: string;
   description: string;
   parameters: Record<string, unknown>;
@@ -108,6 +111,7 @@ export interface ApprovalService {
 
 export interface ToolsService {
   register(tool: ToolDefinition): Disposable | void;
+  /** 限制该作用域继承的工具；本作用域直接注册的工具不受过滤影响。 */
   restrict(options: { allow: string[] }): void;
 }
 
@@ -118,7 +122,7 @@ export interface ToolExec {
   agent?: AgentLike;
 }
 
-/** 定位工作区只需要会话这一层（工具 exec 与 va 装配时给的都是这个最小形状）。 */
+/** 定位工作区只需要会话这一层（工具 exec 与 ka 装配时给的都是这个最小形状）。 */
 export interface WorkspaceProbe {
   agent?: { session?: SessionLike } | null;
 }
@@ -135,7 +139,7 @@ export interface PluginContext {
   /** 需要某个服务时才装配（取不到就不装）：插件在无 web 的部署里照常工作。 */
   inject?(names: string[], run: (ctx: PluginContext) => void): void;
   on(event: 'agent/pre-step', handler: PreStepHandler): Disposable;
-  on(event: 'subagent/end', handler: (payload: { id: string; stopReason: string }) => void): Disposable;
+  on(event: 'subagent/end', handler: (payload: { id: string; stopReason: string; lastAssistantMessage?: ContentBlock[] }) => void): Disposable;
   on(event: 'agent/status', handler: (payload: { agent: AgentLike; status: string }) => void): Disposable;
   on(event: 'system-prompt/assemble', handler: (
     assembly: PromptAssembly,
@@ -155,6 +159,7 @@ export interface ContextMessageLike {
     kind?: string;
     rpcId?: string;
     clientTimeZone?: string;
+    senderSessionId?: string;
   } | null;
 }
 
@@ -164,6 +169,7 @@ export interface StepDecision {
 }
 
 export interface PreStepPayload {
+  step?: number;
   agent?: { session?: SessionLike } | null;
   messages?: readonly ContextMessageLike[] | null;
   signal?: AbortSignal;
@@ -212,6 +218,7 @@ export interface SessionLike {
 
 /** 词汇咨询使用的调用方身份与工作区；其余执行行为由宿主管理。 */
 export interface AgentLike {
+  ctx?: { tools: ToolsService };
   options?: { provider?:string; model?:string };
   session: SessionLike;
 }

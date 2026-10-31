@@ -3,7 +3,7 @@
 // 缓存，失败则让下一次调用可以重新触发。
 //
 // 两处并发合并都用它：检索层按模型内容的 sha 派生词汇表与引用图（src/knowledge.ts）、
-// 词汇助手合并同一调用方的相同并发咨询（src/va.ts）。
+// 知识助手合并同一调用方的相同并发咨询（src/ka.ts）。
 
 /** 取（或触发）某个键上正在进行的初始化；`start` 只在没有在飞时被调用一次。 */
 export function singleFlight<T>(map: Map<string, Promise<T>>, key: string, start: () => Promise<T>): Promise<T> {

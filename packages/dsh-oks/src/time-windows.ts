@@ -1,6 +1,6 @@
 import {Temporal} from '@js-temporal/polyfill';
 import {isRecord} from './host.ts';
-export const TIME_WINDOWS_VERSION=1;
+export const TIME_WINDOWS_VERSION=2;
 type Unit='year'|'quarter'|'month'|'week'|'day';
 export type TimeWindowOptions={unit:Unit;count:number;mode:'complete'|'current'|'rolling'};
 export function timeWindowOptions(raw:unknown):TimeWindowOptions {
@@ -25,7 +25,7 @@ export function timeWindows(context:unknown,raw:unknown){
  const duration=(n:number)=>a.unit==='year'?{years:n}:a.unit==='quarter'?{months:n*3}:a.unit==='month'?{months:n}:a.unit==='week'?{weeks:n}:{days:n};
  const shifted=(n:number)=>a.mode==='rolling'?now.add(duration(n),{overflow:'constrain'}):date.add(duration(n),{overflow:'constrain'}).toZonedDateTime(zone);
  const local=(z:Temporal.ZonedDateTime)=>z.toPlainDateTime().toString({fractionalSecondDigits:z.millisecond?3:0})+z.offset;
- const boundary=(z:Temporal.ZonedDateTime)=>({epochMillis:z.epochMilliseconds,dateTimeUtc:z.toInstant().toString(),rfc3339:local(z)});
+ const boundary=(z:Temporal.ZonedDateTime)=>({epochMillis:z.epochMilliseconds,dateTimeUtc:z.toInstant().toString({fractionalSecondDigits:3}),rfc3339:local(z)});
  return Array.from({length:a.count},(_,i)=>{
   const n=i-a.count+(a.mode==='current'?1:0),start=shifted(n),end=shifted(n+1);
   if(start.epochMilliseconds>=end.epochMilliseconds)throw new Error('time_windows interval has no elapsed time in timezone '+zone+'; choose another calendar range');

@@ -32,32 +32,16 @@ const knowledge = {
   },
   async ensureIndex(entry: WorkspaceEntry) { return { knowledge: graphs[entry.root as keyof typeof graphs] }; },
 } as unknown as Knowledge;
-let assemble: ((assembly: PromptAssembly, context: { agent?: AgentLike; signal?: AbortSignal }, next: () => Promise<PromptAssembly>) => Promise<PromptAssembly>) | undefined;
-const disposers: (() => void)[] = [];
-const ctx = { systemPrompt: {}, on(name: string, handler: typeof assemble) { assert.equal(name, 'system-prompt/assemble'); assemble = handler; return () => {}; }, effect(fn: () => () => void) { disposers.push(fn()); } } as unknown as PluginContext;
-installKnowledgeNavigation({ ctx, knowledge, log: text => logs.push(text) });
-const exec = (domain: string) => ({ agent: { session: { header: { cwd: domain } } } }) as ToolExec;
-const base = { sections: [{ name: 'original', text: 'preserve' }, { name: 'oks:knowledge-navigation', text: 'stale' }] };
-const summary = (text: string) => JSON.parse(text.match(/```json\n([\s\S]*?)\n```/)![1]);
-const resultA = await assemble!(base, exec('alpha'), async () => base);
-const resultB = await assemble!(base, exec('beta'), async () => base);
-assert.equal(resultA.sections.length, 2);
-assert.equal(resultA.sections[0].text, 'preserve');
-assert(resultA.sections[1].text.includes('领域：` alpha `'));
-assert(resultA.sections[1].text.includes('- ` a `'));
-assert(!resultA.sections[1].text.includes('oks_project'));
-assert(resultB.sections[1].text.includes('领域：` beta `'));
-assert(resultB.sections[1].text.includes('- ` only `'));
-assert.equal(resultA.sections[1].interpolate, false);
-assert.equal(base.sections[1].text, 'stale', 'No process-wide prompt mutation');
-const missing = await assemble!(base, exec('missing'), async () => base);
-assert.deepEqual(missing.sections, [base.sections[0]], 'Failure does not preserve another model’s navigation');
-const before = loads;
-await assemble!(base, {}, async () => base);
-assert.equal(loads, before, 'Diagnostic assembly does not load a workspace');
-const abort = new AbortController(); abort.abort();
-await assert.rejects(assemble!(base, { ...exec('alpha'), signal: abort.signal }, async () => base), /abort/i);
-const tools = createTools({ knowledge, log: text => logs.push(text), config: {}, va: { ask: async () => { throw new Error('unused'); } }, timeContext: { zones: new Map(), install() {} } });
+const sections:any[]=[];
+const ctx={systemPrompt:{section:(s:any)=>sections.push(s)}} as unknown as PluginContext;
+installKnowledgeNavigation({ctx,knowledge,log:text=>logs.push(text)});
+assert.equal(loads,0,'Main prompt does not load domain knowledge');
+assert.equal(sections[0].name,'oks:presentation');
+assert(sections[0].text.includes('ColumnChart'));
+assert(!sections[0].text.includes('alpha'));
+const exec = (domain:string)=>({agent:{session:{header:{cwd:domain}}}} as ToolExec);
+const summary = (text:string)=>JSON.parse(text.match(/```json\n([\s\S]*?)\n```/)![1]);
+const tools = createTools({ knowledge, log: text => logs.push(text), config: {}, ka: { ask: async () => { throw new Error('unused'); } }, timeContext: { zones: new Map(), install() {} } });
 const tool = (name: string) => tools.find(t => t.name === name)!;
 try {
   const read = await tool('oks_read').execute({ path: 'oks://help/knowledge.md' } as never, exec('alpha')) as { lines: { text: string }[] };
@@ -72,4 +56,4 @@ try {
   assert(logs.some(line => line.includes('unavailable')));
   assert.equal(JSON.stringify(graphs), original, 'Navigation does not modify knowledge facts');
   console.log('Adaptive navigation: unknown/empty roots, selectors, session isolation, cancellation, dynamic help and exact listing sizes passed');
-} finally { tools.dispose(); disposers.forEach(fn => fn()); }
+} finally { tools.dispose(); }

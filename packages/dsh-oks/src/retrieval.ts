@@ -1,7 +1,6 @@
 import { collectProgrammedKnowledge, programmedKnowledgeContract } from './programmed-knowledge.ts';
 import { derivePublishedKnowledge } from './published-knowledge.ts';
 import type { SemanticGraph } from './knowledge-graph.ts';
-import { oneLineText } from './text.ts';
 import { isRecord } from './host.ts';
 import type { LogFn } from './host.ts';
 import type { Settings } from './config.ts';
@@ -55,15 +54,31 @@ export async function buildRetrievalIndex(entry: IndexWorkspace, sha: string, lo
   return index;
 }
 
-/** 整份词汇一次性渲染：按 key 升序、一行一条 `"<key>" "<name>" [<aliases>] "<doc>"`（每个字段
- *  json 风格编码，aliases 是数组，doc 按词表原文给、只压成一行）。
- *  插件把它作为**一条消息**喂进助手的上下文——没有页眉页脚、没有分页、没有游标，模型不做任何搬运。 */
+/** VA 专用领域词典；检索索引仍保留全部成员地址和原始词条。 */
 export function renderWholeVocabulary(index: RetrievalIndex): string {
-  const sorted = [...index.terms].sort((left, right) => left.key.localeCompare(right.key, 'en'));
-  return sorted.map((term) => [
-    JSON.stringify(term.key),
-    JSON.stringify(term.name),
-    JSON.stringify(term.aliases),
-    JSON.stringify(oneLineText(term.doc)),
-  ].join(' ')).join('\n');
+  const plain = (text: string) => text.replace(/[\\,:;\s]+/g, ' ').trim();
+  const hash = /^[a-f0-9]{64}$/i;
+  const groups = new Map<string, Map<string, string>>();
+  for (const term of index.terms) {
+    const generated = (word: string) => (['DimensionGroup', 'MeasureGroup'].includes(term.kind) && hash.test(word))
+      || (term.kind === 'Role' && /^role_\d+$/.test(word))
+      || (['DimensionGroup', 'MeasureGroup'].includes(term.kind)
+        && (/^ns\/(dimension|sample)\/\d+$/.test(word) || ['search', 'exact', 'epoch_millis'].includes(word)));
+    // Binding 的默认名称是序列化的执行表达式，不是领域词汇。
+    const names = [...(term.kind === 'Binding' ? [] : [term.name]), ...term.aliases]
+      .filter(word => !generated(word)).map(plain).filter(Boolean);
+    const words = [...new Set(names)];
+    if (!words.length) continue;
+    const root = term.key.split('#', 1)[0];
+    const rootId = root.slice(root.indexOf('/') + 1);
+    // 无业务名字的生成分组已被排除；具名分组以名字作为检索上下文，不暴露哈希。
+    const context = hash.test(rootId) ? '分组 ' + words.join(',') : root;
+    let entries = groups.get(context);
+    if (!entries) groups.set(context, entries = new Map());
+    const line = '- ' + words.join(',') + ';' + plain(term.doc);
+    entries.set(line, line);
+  }
+  return [...groups].sort(([a], [b]) => a.localeCompare(b, 'en'))
+    .map(([context, entries]) => '[' + context + ']\n'
+      + [...entries.values()].sort((a, b) => a.localeCompare(b, 'en')).join('\n')).join('\n\n');
 }

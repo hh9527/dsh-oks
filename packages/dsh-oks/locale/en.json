@@ -1,4 +1,4 @@
 {
   "title": "Knowledge service (OKS)",
-  "description": "Normalize vocabulary with va_ask, discover knowledge with oks_knowledge, and edit Markdown answer drafts under .work/. oks_run_answer executes queries, processing, debug and rendering; oks_project reads existing outputs. Reports archive data and provenance. The workspace oks.json declares the model, domain and read-only data source."
+  "description": "Normalize vocabulary with ka_ask, discover knowledge with oks_knowledge, and edit Markdown answer drafts under .work/. oks_run_answer executes queries, processing, debug and rendering; oks_project reads existing outputs. Reports archive data and provenance. The workspace oks.json declares the model, domain and read-only data source."
 }

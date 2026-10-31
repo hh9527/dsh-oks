@@ -1,5 +1,5 @@
-import { readDomainSummary } from './domain-summary.ts';
-import { isRecord, errorText } from './host.ts';
+import { presentationOverview } from './presentation-guide.ts';
+import { isRecord } from './host.ts';
 import type { PluginContext, LogFn } from './host.ts';
 import type { Knowledge } from './knowledge.ts';
 
@@ -40,25 +40,7 @@ export function renderKnowledgeHelp(source: string, graph: object, domain: strin
   return source.slice(0, at) + '\n\n## 当前工作区\n\n' + renderKnowledgeNavigation(graph, domain) + '\n' + source.slice(at);
 }
 
-/** Per-session tool navigation; never mutate a process-wide tool description. */
-export function installKnowledgeNavigation({ ctx, knowledge, log }: { ctx: PluginContext; knowledge: Knowledge; log: LogFn }): void {
-  if (!ctx.systemPrompt) return;
-  const dispose = ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
-    const prior = await next();
-    const assembled = { ...prior, sections: prior.sections.filter(section => section.name !== 'oks:knowledge-navigation') };
-    if (!context.agent) return assembled;
-    context.signal?.throwIfAborted();
-    try {
-      const text = await readDomainSummary(knowledge, { agent: context.agent, signal: context.signal });
-      return { ...assembled, sections: [
-        ...assembled.sections.filter(section => section.name !== 'oks:knowledge-navigation'),
-        { name: 'oks:knowledge-navigation', text, interpolate: false },
-      ] };
-    } catch (error) {
-      context.signal?.throwIfAborted();
-      log('[oks] knowledge navigation unavailable: ' + errorText(error));
-      return { ...assembled, sections: assembled.sections.filter(section => section.name !== 'oks:knowledge-navigation') };
-    }
-  });
-  ctx.effect(() => dispose);
+/** Main agent receives presentation capabilities; domain knowledge lives in KA. */
+export function installKnowledgeNavigation({ ctx }: { ctx: PluginContext; knowledge: Knowledge; log: LogFn }): void {
+  ctx.systemPrompt?.section({name:'oks:presentation',order:110,text:presentationOverview().join('\n'),interpolate:false});
 }

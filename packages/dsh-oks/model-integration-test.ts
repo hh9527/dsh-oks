@@ -28,10 +28,16 @@ async function scenario(run:boolean){
  try{
   const messages=[{source:{kind:'user',rpcId:'model-integration',clientTimeZone:'Asia/Shanghai'},content:[]}];
   await hooks.get('agent/pre-step')({agent:exec.agent,messages},async()=>({kind:'continue',messages}));
-  let started=performance.now();const cap=await call('oks_cap',{cq:{target:{dataset}}});const capMs=performance.now()-started;
+  let started=performance.now();const cap=await call('oks_cap',{dataset});const capMs=performance.now()-started;
   assert.equal(cap.data.target.dataset,dataset);assert.equal(cap.data.discovery.requires_transform,true);
-  started=performance.now();const card=await call('oks_card',{id:dataset});const cardMs=performance.now()-started;assert.equal(card.data.id,dataset);
-  assert.equal((await call('oks_card',{key:'datasets/'+encodeURIComponent(dataset)})).data.key,'datasets/'+encodeURIComponent(dataset));
+  started=performance.now();const card=await call('oks_card',{id:'datasets/'+encodeURIComponent(dataset)});const cardMs=performance.now()-started;assert.equal(card.data.dataset,dataset);
+  assert.equal(card.data.id,cap.data.target.knowledge_id);
+  const found=await call('oks_search',{query:dataset,dataset});
+  for(const item of found.data.items) assert.equal((await call('oks_card',{id:item.id})).data.id,item.id);
+  for(const dim of card.data.dimensions??[]) {
+    assert.equal((await call('oks_card',{id:dim.id})).data.id,dim.id);
+    assert.equal(dim.dataset,dataset);
+  }
   await call('oks_write',{path:src,content:source});
   started=performance.now();const checked=await call('oks_check',{src});const checkMs=performance.now()-started;assert.equal(checked.ok,true,JSON.stringify(checked));
   if(!run)return {domain,mode:'check without database',capMs:Math.round(capMs),cardMs:Math.round(cardMs),checkMs:Math.round(checkMs),bindings:checked.queries.length};

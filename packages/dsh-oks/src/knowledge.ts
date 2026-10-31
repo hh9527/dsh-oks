@@ -13,7 +13,7 @@ import { errorText } from './host.ts';
 import type { LogFn, PluginContext, WorkspaceProbe } from './host.ts';
 
 /** 进程级的检索层缓存：模型内容摘要 + 外部说明摘要 + domain -> 知识原文、词汇表与反向引用索引。
- *  词汇助手是另一个 agent 作用域里的实例，它和主 agent 共用这一份，不重爬引用图。 */
+ *  知识助手是另一个 agent 作用域里的实例，它和主 agent 共用这一份，不重爬引用图。 */
 const INDEX_BY_ARTIFACT = new Map<string, RetrievalIndex>();
 
 /** 一个工作区的运行环境：设置 + wasm 宿主 + 惰性建立的检索层。
@@ -112,7 +112,7 @@ export function createKnowledge({ ctx, log, config }: {
 
   // 词汇表与引用图按**产物**持有：同一份产物被多个工作区、多个会话声明时只派生一次。
   // 身份用模型内容摘要 + 外部说明摘要 + domain（服务的 revision 字符串在两次不同构建之间可能不变，不能当身份）。
-  // 缓存放在**模块级**：词汇助手是另一个 agent 作用域里的实例，它要用同一份数据模型，
+  // 缓存放在**模块级**：知识助手是另一个 agent 作用域里的实例，它要用同一份数据模型，
   // 而不是把整棵引用图再爬一遍。
   const indexes = INDEX_BY_ARTIFACT;
 

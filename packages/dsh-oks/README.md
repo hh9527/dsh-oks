@@ -7,7 +7,7 @@
 
 | 工具 | 职责 |
 | --- | --- |
-| `va_ask({query})` | 发起词汇咨询；子 agent 回答送达后，核实词汇线索 |
+| `ka_ask({query})` | 咨询领域概念与知识入口；主 agent 自主检索和读取详情 |
 | `oks_search({query,type?,dataset?,skip?,take?})` | 按领域词汇检索关联知识点 |
 | `oks_cap({cq,join_depth?,skip?,take?})` | 获取目标的查询能力、关联候选与待校验骨架 |
 | `oks_card({id?,key?,section?,skip?,take?})` | 按预制卡片核实数据集或精确领域节点 |
@@ -16,34 +16,34 @@
 | `oks_read/write/edit/list/delete` | 管理逻辑源码地址；read 支持独立文本手册，list 用 path 指定目录 |
 
 
-摘要直接进入系统上下文。预制工具完整返回其结果，输出规模由查询范围、分页和工具内部结构控制。
+领域摘要与词汇表进入 KA 的固定系统上下文，主 agent 保留工作方法和图表能力。预制工具完整返回其结果，输出规模由查询范围、分页和工具内部结构控制。
 
 agent 先设计和检查分析稿，oks_run 检查后执行并返回事实，按配置申请本次批准。内部宿主运行器保留执行、缓存、来源和呈现能力。
 
-## 词汇子会话
+## 知识子会话
 
-`va_ask` 为每个父会话复用一个宿主管理的 `spawn` 子会话，使用 `oks-vocabulary`
+`ka_ask` 为每个父会话复用一个宿主管理的 `spawn` 子会话，使用 `oks-knowledge`
 预设。父会话的子会话目录保留咨询标签和历史记录；执行完成、失败或取消后释放运行实例，
 下次咨询恢复同一个子会话。父会话恢复后从持久目录找回它。
 同一父会话同时发起的相同问题共享一次执行，不同问题串行执行。
 
-助手保留完整词表的固定系统前缀，每轮把前缀之后的历史问答和旧标记收起为一个固定标记，
+助手保留完整领域摘要与词汇表的固定系统前缀，每轮把前缀之后的历史问答和旧标记收起为一个固定标记，
 再加入当前问题。模型上下文不随咨询次数增长，原始问答完整保留在会话日志中。
 工具面为空，权限为只读。
-主 agent 每次通过 `va_ask` 发起咨询，工具返回子会话 ID 与消息 ID；
-答案由宿主作为子 agent 消息送回主 agent，收到后再使用其中的词汇线索。
+主 agent 每次把用户原始问题与明确约束交给 `ka_ask`，工具返回子会话 ID 与消息 ID；
+答案由宿主作为子 agent 消息送回主 agent，收到后自主使用 search/cap/card 获取相关局部知识。
 首次调用使用 `startActivation`，续问使用 `sendMessage`，均采用官方宿主的原生生命周期。
-模型路由继承父会话当前请求。DeepSeek 模型的词汇助手默认使用 `off`，其他模型默认继承推理档位；显式配置优先，模型须支持配置的档位。
+模型路由继承父会话当前请求。DeepSeek 模型的知识助手默认使用 `off`，其他模型默认继承推理档位；显式配置优先，模型须支持配置的档位。
 这些选项写在父预设的 OKS 插件行 `config` 中：
 
 ```yaml
-vaPreset: oks-vocabulary
+kaPreset: oks-knowledge
 # 可选覆盖：inherit 表示沿用父会话档位
-# vaReasoningEffort: "inherit"
+# kaReasoningEffort: "inherit"
 ```
 
-安装器会注册助手预设。手工配置时，注册 ID 为 `oks-vocabulary` 的 agent preset，
-其中只装配 `@local/dsh-oks`，插件行配置为 `vocabularyHelper: true`。
+安装器会注册助手预设。手工配置时，注册 ID 为 `oks-knowledge` 的 agent preset，
+其中只装配 `@local/dsh-oks`，插件行配置为 `knowledgeHelper: true`。
 工作区 `oks.json` 负责模型和数据源声明。
 
 宿主使用官方 DSH `0.2.1-rc.2`，无需源码补丁。咨询的执行、结果投递、中断和释放由宿主管理。
@@ -93,13 +93,13 @@ report answer := Report [
 
 数据分析流程直接进入预制 prompt，并以同一份文本在 `oks://help/workflow.md` 提供：理解意图、发现词汇和知识、批量检查查询及列类型、建立后处理后执行、审视数据并形成报告。
 
-模型的全局领域摘要以 Markdown 在系统上下文中一次性提供，覆盖全部 Entity、Dataset、维度、度量与关系概览；词汇表、反向连接和插件手册独立提供。摘要按模型缓存，不累积重复注入；`oks://domain/summary.md` 提供同源读取，`oks://domain/` 提供目录。局部 cap/card 保持结构化 JSON，携带事实与必要说明。
+模型的全局领域摘要以 Markdown 与完整词汇表一起进入 KA 的固定系统上下文，覆盖全部 Entity、Dataset、查询能力数量与关系导航；主 agent 按需咨询 KA，自主使用 search/cap/card 读取局部知识。摘要不含反向连接，图表能力说明单独进入主 agent 上下文。摘要按模型缓存，不累积重复注入；主 agent 通过 ka_ask 获得领域导航。局部 cap/card 保持结构化 JSON，携带事实与必要说明。
 
 ```js
-va_ask({query:"业务说法"})
+ka_ask({query:"业务说法"})
 oks_cap({cq:{target:{dataset:"目标数据集"}},take:20})
 oks_card({id:"目标数据集",section:"dimensions",skip:0,take:20})
-oks_card({key:"词汇助手返回的语义地址"})
+oks_card({key:"知识助手返回的语义地址"})
 oks_list({path:"oks://help/"})
 ```
 
@@ -148,8 +148,8 @@ const { graph, vocabulary } = buildKnowledge(publication.data);
 ```
 
 插件信任模型代码，直接同步执行。静态 JS 负责模型结构、规范地址、Group 哈希、Map／Set 去重和事实合并；插件验证最终 v4 图和词条，再派生导航与反向链接。
-vocabulary 决定 `va_ask` 的业务词条；`<model>.knowledge-items.json` 可补充名称、别名和说明。
-成功索引按模型内容、domain 及展示文件摘要缓存，知识工具和词汇助手共享它；编译、执行或验证错误拒绝加载且不进入缓存。
+vocabulary 决定 `ka_ask` 的业务词条；`<model>.knowledge-items.json` 可补充名称、别名和说明。
+成功索引按模型内容、domain 及展示文件摘要缓存，知识工具和知识助手共享它；编译、执行或验证错误拒绝加载且不进入缓存。
 
 ## 快照怎么来
 
@@ -179,13 +179,13 @@ bin/telora -C <模型目录> build <模型名> --staged \
   包升成 profile 的 bundle 层，本包自带的 `cordis.patch.yml`（一行顶层 `oks`）跟着生效。
 - **只把工具面放进 preset**：`dsh.profile.bundles` 里不列本包，改在一个 preset 行
   （`@deepseek-ai/dsh-agent-preset`，`config.plugins` 里含 `"@local/dsh-oks"`）里挂载。
-  此时 `oks_*` / `va_ask` 只属于该 preset 的作用域，其它 preset 的会话没有
-  这些工具。`just install` 配好这个形态并注册 `oks-vocabulary` 助手预设，可重复执行。
-  手工安装也须按“词汇子会话”一节注册助手预设。
+  此时 `oks_*` / `ka_ask` 只属于该 preset 的作用域，其它 preset 的会话没有
+  这些工具。`just install` 配好这个形态并注册 `oks-knowledge` 助手预设，可重复执行。
+  手工安装也须按“知识子会话”一节注册助手预设。
 - 用 `link:` 而不是 `file:`：前者是符号链接（改源码重启即生效），后者会被 pnpm
   硬链接成拷贝，插件页能显示但源码改动不再生效。
 - 卸载：从 `dsh.profile.bundles` 去掉包名并 `dsh plugin --profile web remove @local/dsh-oks`；
-  preset 形态先从 `cordis.patch.yml` 删掉 `preset-oks` 与 `preset-oks-vocabulary`，再执行同一条 `remove`。
+  preset 形态先从 `cordis.patch.yml` 删掉 `preset-oks` 与 `preset-oks-knowledge`，再执行同一条 `remove`。
 
 ## 开发与验收
 
@@ -223,14 +223,13 @@ build/prepare/pretest 直接更新 lib，运行中的 link 安装需先暂停服
 
 - `oks://work/`：临时分析稿与工作文件，物理位置为 `.work/`，通过 oks_delete 显式清理
 - `oks://help/*.md`：独立的只读文本手册
-- `oks://domain/summary.md`：模型与插件自动生成的全局领域摘要
 - 图表和报告由宿主附件服务持久保存，回执返回附件引用与呈现指引
 
 agent 可检查稿件并通过 oks_run 运行；默认直接运行，配置 requireRunApproval=true 时先申请批准；result 直接返回最终输出，无独立结果读取工具。
 
 ### 按需读取工具用法
 
-入口提示词保留任务和工作方法。工具帮助是 oks://help/*.md 只读文本文件，用 oks_list({path:"oks://help/"}) 列出，再用 oks_read({path:"oks://help/draft.md"}) 阅读，offset/limit 按行分页。knowledge.md 解释摘要、预制卡片和词汇助手，draft.md、query.md、time.md 和 figures.md 分别提供分析稿、查询、时间与呈现的方法。
+入口提示词保留任务和工作方法。工具帮助是 oks://help/*.md 只读文本文件，用 oks_list({path:"oks://help/"}) 列出，再用 oks_read({path:"oks://help/draft.md"}) 阅读，offset/limit 按行分页。knowledge.md 解释摘要、预制卡片和知识助手，draft.md、query.md、time.md 和 figures.md 分别提供分析稿、查询、时间与呈现的方法。
 
 工具帮助统一维护在 `src/help/*.md`，作为普通 Markdown 文本在构建时内联，不转换为结构化知识。图表和报告的结构化能力与示例直接维护在 `src/presentation-facts.ts`；组件、能力矩阵和白名单由实现生成。维护约定见 `src/help/README.md`。
 

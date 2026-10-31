@@ -1,6 +1,6 @@
 # 图表通用语法
 
-支持的图表形式与适用场景已在全局摘要中。选定形式后读取 `oks://help/figure-<kind>.md`，例如柱状图 `figure-column.md`、折线图 `figure-line.md`、表格 `figure-table.md`。
+支持的图表形式与适用场景已在主 agent 的图表能力说明中。选定形式后读取 `oks://help/figure-<kind>.md`，例如柱状图 `figure-column.md`、折线图 `figure-line.md`、表格 `figure-table.md`。
 
 ## 绑定与映射
 

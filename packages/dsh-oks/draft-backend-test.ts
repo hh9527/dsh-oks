@@ -20,7 +20,7 @@ try{
  assert.equal(executions,1);assert.equal(validations,1);
  const report=runtime.read('answer',source).value;assert.match(report.sources[0].delivery!.html,/>42<\/span>/);assert.match(report.sources[0].delivery!.html,/<svg/);
  const windows=runtime.read('months',source).value;
- assert.equal(windows.data[1].end.dateTimeUtc,'2026-09-30T16:00:00Z');
+ assert.equal(windows.data[1].end.dateTimeUtc,'2026-09-30T16:00:00.000Z');
  const timeNode=Object.values(windows.sources[0].origin.nodes).find(n=>n.method==='pipeline'&&n.snip?.includes('time_windows'))!;
  assert(timeNode);assert.equal(timeNode.snipFile,undefined);assert.deepEqual(Object.keys(timeNode.inputs!),['ctx']);
  run=await runtime.run(source);assert.equal(run.status,'complete');assert.equal(executions,1);

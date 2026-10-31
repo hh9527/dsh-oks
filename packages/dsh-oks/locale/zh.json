@@ -1,4 +1,4 @@
 {
   "title": "知识服务查询 (OKS)",
-  "description": "通过 va_ask 规整词汇，以 oks_knowledge 发现知识，在 .work/ 中编辑 Markdown 回答源码。oks_run_answer 执行查询、加工、调试与渲染，oks_project 只读已有输出；报告保存数据与完整来源。模型、领域和只读数据源由工作区 oks.json 声明。"
+  "description": "通过 ka_ask 规整词汇，以 oks_knowledge 发现知识，在 .work/ 中编辑 Markdown 回答源码。oks_run_answer 执行查询、加工、调试与渲染，oks_project 只读已有输出；报告保存数据与完整来源。模型、领域和只读数据源由工作区 oks.json 声明。"
 }
