@@ -54,11 +54,31 @@ export async function buildRetrievalIndex(entry: IndexWorkspace, sha: string, lo
   return index;
 }
 
-/** 一行一条：- key:name,alias;doc。地址保留原文，词汇中的分隔符和换行归一为空格。 */
+/** VA 专用领域词典；检索索引仍保留全部成员地址和原始词条。 */
 export function renderWholeVocabulary(index: RetrievalIndex): string {
   const plain = (text: string) => text.replace(/[\\,:;\s]+/g, ' ').trim();
-  const sorted = [...index.terms].sort((left, right) => left.key.localeCompare(right.key, 'en'));
-  return sorted.map(term => '- ' + term.key + ':'
-    + [term.name, ...term.aliases].map(plain).join(',')
-    + ';' + plain(term.doc)).join('\n');
+  const hash = /^[a-f0-9]{64}$/i;
+  const groups = new Map<string, Map<string, string>>();
+  for (const term of index.terms) {
+    const generated = (word: string) => (['DimensionGroup', 'MeasureGroup'].includes(term.kind) && hash.test(word))
+      || (term.kind === 'Role' && /^role_\d+$/.test(word))
+      || (['DimensionGroup', 'MeasureGroup'].includes(term.kind)
+        && (/^ns\/(dimension|sample)\/\d+$/.test(word) || ['search', 'exact', 'epoch_millis'].includes(word)));
+    // Binding 的默认名称是序列化的执行表达式，不是领域词汇。
+    const names = [...(term.kind === 'Binding' ? [] : [term.name]), ...term.aliases]
+      .filter(word => !generated(word)).map(plain).filter(Boolean);
+    const words = [...new Set(names)];
+    if (!words.length) continue;
+    const root = term.key.split('#', 1)[0];
+    const rootId = root.slice(root.indexOf('/') + 1);
+    // 无业务名字的生成分组已被排除；具名分组以名字作为检索上下文，不暴露哈希。
+    const context = hash.test(rootId) ? '分组 ' + words.join(',') : root;
+    let entries = groups.get(context);
+    if (!entries) groups.set(context, entries = new Map());
+    const line = '- ' + words.join(',') + ';' + plain(term.doc);
+    entries.set(line, line);
+  }
+  return [...groups].sort(([a], [b]) => a.localeCompare(b, 'en'))
+    .map(([context, entries]) => '[' + context + ']\n'
+      + [...entries.values()].sort((a, b) => a.localeCompare(b, 'en')).join('\n')).join('\n\n');
 }

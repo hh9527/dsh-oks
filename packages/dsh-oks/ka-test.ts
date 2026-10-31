@@ -64,7 +64,7 @@ test('助手装配按当前工作区提供完整词表，空工具面与逐字�
  assert.ok(first.sections[1].text.includes('/workspace$&'));assert.ok(first.sections[1].text.includes('{{literal}}'));assert.equal(first.sections[1].interpolate,false);
  assert.ok(second.sections[1].text.includes('/other$&'));assert.equal(first.sections.filter((s:any)=>s.name==='oks:knowledge-assistant').length,1);
  assert(!first.sections[1].text.includes('# 全局领域摘要'));
- assert(first.sections[1].text.includes('完整词汇表'));
+ assert(first.sections[1].text.includes('领域词典'));
  assert(!second.sections[1].text.includes('/workspace'));
  assert(!first.sections[1].text.includes('ColumnChart'));
  const again=await assemble({},{agent:p},async()=>first);
