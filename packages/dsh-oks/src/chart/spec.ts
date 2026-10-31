@@ -49,8 +49,8 @@ export const chartTitle = (spec: ChartSpec): string => {
 /** 解析并校验排版覆盖项：每一项都可选，给了就必须在合理范围内——
  *  越界的值（比如 4pt 的字）画出来是废图，不如直接报错让 agent 重来。 */
 const parseLayout = (raw: unknown): { layout: LayoutOverrides } | { error: string } => {
-  if (raw === undefined || raw === null) return { layout: {} };
-  if (typeof raw !== 'object' || Array.isArray(raw)) {
+  if (raw === undefined) return { layout: {} };
+  if (!isRecord(raw)) {
     return { error: 'spec.layout 必须是对象：labelFont / titleFont / height / rowHeight / slantTicks 都可选' };
   }
   const record = raw as Record<string, unknown>;
@@ -69,6 +69,7 @@ const parseLayout = (raw: unknown): { layout: LayoutOverrides } | { error: strin
     if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
       return { error: `spec.layout.${name} 要在 ${min}..${max} 之间，收到 ${JSON.stringify(value)}` };
     }
+    if (name === 'tickCount' && !Number.isInteger(value)) return { error: 'spec.layout.tickCount must be an integer' };
     (layout as Record<string, unknown>)[name] = value;
   }
   if (record.slantTicks !== undefined) {
@@ -77,15 +78,8 @@ const parseLayout = (raw: unknown): { layout: LayoutOverrides } | { error: strin
     }
     layout.slantTicks = record.slantTicks;
   }
-  const unknown = Object.keys(record).filter((key) => !['labelFont', 'titleFont', 'height', 'rowHeight', 'slantTicks', 'tickCount'].includes(key));
-  if (unknown.length > 0) {
-    // agent 常把表达开关写进排版参数：直接告诉它该放哪，比让它再猜一次好。
-    const misplaced = unknown.filter((key) => EXPRESSION_KEYS.includes(key));
-    const where = misplaced.length > 0
-      ? `。${misplaced.join(' / ')} 属于 spec.style（表达开关）`
-      : '（layout 只管排版：labelFont / titleFont / height / rowHeight / slantTicks / tickCount）';
-    return { error: `spec.layout 里不认识的项：${unknown.join(', ')}${where}` };
-  }
+  const error = unknownFields(record, LAYOUT_KEYS, 'spec.layout');
+  if (error) return { error };
   return { layout };
 };
 
@@ -145,6 +139,9 @@ const parseSecond = (raw: unknown, kind: ChartKind): { second: SecondMetric | nu
   const unknown = Object.keys(record).filter((key) => !['value', 'kind', 'label', 'unit'].includes(key));
   if (unknown.length > 0) return { error: `spec.second 里不认识的项：${unknown.join(', ')}`
     + '（second 收的字段是 value / kind / label / unit）' };
+  for (const key of ['label', 'unit']) {
+    if (record[key] !== undefined && record[key] !== null && typeof record[key] !== 'string') return { error: `spec.second.${key} must be a string` };
+  }
   return {
     second: {
       value: record.value,
@@ -171,6 +168,8 @@ const parseMarks = (raw: unknown, kind: ChartKind): { marks: MarkLine[] } | { er
     if (typeof record.value !== 'number' && typeof record.value !== 'string') {
       return { error: `spec.marks 的 value 必须是数字或类别名，收到 ${JSON.stringify(record.value)}` };
     }
+    if (typeof record.value === 'number' && !Number.isFinite(record.value)) return { error: 'spec.marks.value must be finite' };
+    if (record.label !== undefined && record.label !== null && typeof record.label !== 'string') return { error: 'spec.marks.label must be a string' };
     if (record.axis !== undefined && record.axis !== 'x' && record.axis !== 'y') {
       return { error: `spec.marks 的 axis 只能是 x 或 y，收到 ${JSON.stringify(record.axis)}` };
     }
@@ -185,15 +184,27 @@ const parseMarks = (raw: unknown, kind: ChartKind): { marks: MarkLine[] } | { er
   return { marks };
 };
 
-/** 两层的键名清单：agent 放错层时，报错要能指出正确的位置。 */
-const EXPRESSION_KEYS = ['sort', 'labels', 'colors', 'stack', 'size', 'bins', 'second', 'marks'];
+/** 顶层与嵌套对象的键名清单：错误层级诊断指向正确路径。 */
+const STYLE_KEYS = ['sort', 'labels', 'colors'];
+const SPEC_KEYS = ['kind', 'title', 'x', 'value', 'series', 'xType', 'xLabel', 'valueLabel', 'unit', 'stack', 'size', 'second', 'marks', 'bins', 'donut', 'connectNulls', 'entityColor', 'style', 'layout'];
 const LAYOUT_KEYS = ['labelFont', 'titleFont', 'height', 'rowHeight', 'slantTicks', 'tickCount'];
+
+/** Reject misplaced fields and point to their accepted path before normalizing values. */
+const unknownFields = (record: Record<string, unknown>, keys: readonly string[], path: string): string | null => {
+  const unknown = Object.keys(record).filter(key => !keys.includes(key));
+  if (!unknown.length) return null;
+  return unknown.map(key => {
+    const destination = LAYOUT_KEYS.includes(key) ? `spec.layout.${key}`
+      : STYLE_KEYS.includes(key) ? `spec.style.${key}` : SPEC_KEYS.includes(key) ? `spec.${key}` : undefined;
+    return `${path}.${key} is not supported${destination ? `; use ${destination}` : `; allowed fields: ${keys.join(', ')}`}`;
+  }).join('; ');
+};
 
 /** 解析并校验通用表达开关：每一项都可选，给了就必须在合理范围内。
  *  越界的值画出来是废图，不如直接报错让 agent 重来。 */
 const parseStyle = (raw: unknown): { style: StyleOverrides } | { error: string } => {
-  if (raw === undefined || raw === null) return { style: {} };
-  if (typeof raw !== 'object' || Array.isArray(raw)) {
+  if (raw === undefined) return { style: {} };
+  if (!isRecord(raw)) {
     return { error: 'spec.style 必须是对象：sort / labels / colors 都可选' };
   }
   const record = raw as Record<string, unknown>;
@@ -215,20 +226,14 @@ const parseStyle = (raw: unknown): { style: StyleOverrides } | { error: string }
       return { error: 'spec.style.colors 必须是 1–12 个颜色字符串的数组' };
     }
     for (const color of record.colors) {
-      if (typeof color !== 'string' || !/^#[0-9a-fA-F]{3,8}$/.test(color)) {
+      if (typeof color !== 'string' || !/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(color)) {
         return { error: `spec.style.colors 只接受 #rrggbb 这类颜色值，收到 ${JSON.stringify(color)}` };
       }
     }
     style.colors = record.colors as string[];
   }
-  const unknown = Object.keys(record).filter((key) => !['sort', 'labels', 'colors'].includes(key));
-  if (unknown.length > 0) {
-    const misplaced = unknown.filter((key) => LAYOUT_KEYS.includes(key));
-    const where = misplaced.length > 0
-      ? `。${misplaced.join(' / ')} 属于 spec.layout（排版参数）`
-      : '（style 只管表达：sort / labels / colors）';
-    return { error: `spec.style 里不认识的项：${unknown.join(', ')}${where}` };
-  }
+  const error = unknownFields(record, STYLE_KEYS, 'spec.style');
+  if (error) return { error };
   return { style };
 };
 
@@ -241,6 +246,15 @@ export const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: str
   const kind = record.kind;
   if (typeof kind !== 'string' || !(CHART_KINDS as readonly string[]).includes(kind)) {
     return { error: `spec.kind 必须是 ${CHART_KINDS.join(' / ')} 之一，收到 ${JSON.stringify(kind)}` };
+  }
+  const error = unknownFields(record, SPEC_KEYS, 'spec');
+  if (error) return { error };
+  for (const key of ['title', 'x', 'value', 'series', 'xLabel', 'valueLabel', 'unit', 'size']) {
+    if (record[key] !== undefined && record[key] !== null && typeof record[key] !== 'string') return { error: `spec.${key} must be a string` };
+  }
+  if (record.xType !== undefined && record.xType !== null) {
+    if (record.xType !== 'number' && record.xType !== 'time') return { error: 'spec.xType must be number or time' };
+    if (kind !== 'line' && kind !== 'area') return { error: `spec.xType is only supported by line / area (${kind} does not use it)` };
   }
   const text = (name: string): string | null => {
     const value = record[name];

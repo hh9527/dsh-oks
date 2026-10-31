@@ -13,6 +13,8 @@ figure daily := ColumnChart(spec = spec, data = rows);
 
 组件标签确定类型，spec 省略 kind。data 引用 data 绑定的 Table(T)。x/value/series 指向检查返回的列名；series 的含义由图表类型决定。先在 query/select 中完成聚合；图表不自动汇总重复单元。
 
+规格各层级严格检查字段名与类型。排版使用 `layout:{height:300,rowHeight:20}`，排序和数值标签使用 `style:{sort:"desc",labels:true}`；未知或放错层级的字段会在 oks_check 中报错，并提示正确路径。
+
 时间轴 xType=time 接受 RFC3339 或 epoch 毫秒；数值与时间 x 在每个序列内须非递减。窗口的自然日时区来自 context，与存储时标格式分别表达。
 
 ## 按需读取

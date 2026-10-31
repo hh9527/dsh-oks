@@ -102,3 +102,60 @@ console.log('Syntax diagnostics: original line, caret, expected delimiter and op
  }finally{rt.dispose();}
  console.log('Analysis/execution: fixed check clock, single map body, concrete transform validation, pure parameter maps, no business acquisition and real runtime clock passed');
 }
+
+// Figure specifications are checked before acquiring any business rows.
+{
+ const {parseChartSpec,parseTableSpec}=await import('./src/chart/spec.ts');
+ const before=reads;
+ const base={x:'n',value:'n'};
+ const invalid:[Record<string,unknown>,RegExp][]=[
+  [{...base,height:200},/spec\.height.*spec\.layout\.height/],
+  [{...base,rowHeight:16},/spec\.rowHeight.*spec\.layout\.rowHeight/],
+  [{...base,labels:true},/spec\.labels.*spec\.style\.labels/],
+  [{...base,sort:'desc'},/spec\.sort.*spec\.style\.sort/],
+  [{...base,unknown:true},/spec\.unknown.*allowed fields/],
+  [{...base,title:12},/spec\.title.*string/],
+  [{...base,x:[]},/spec\.x.*string/],
+  [{...base,series:42},/spec\.series.*string/],
+  [{...base,valueLabel:false},/spec\.valueLabel.*string/],
+  [{...base,unit:42},/spec\.unit.*string/],
+  [{...base,size:4},/spec\.size.*string/],
+  [{...base,xType:'category'},/spec\.xType.*number or time/],
+  [{...base,xType:'time'},/spec\.xType.*line \/ area/],
+  [{...base,layout:null},/spec\.layout.*对象/],
+  [{...base,layout:[]},/spec\.layout.*对象/],
+  [{...base,layout:{sort:'desc'}},/spec\.layout\.sort.*spec\.style\.sort/],
+  [{...base,layout:{stack:'total'}},/spec\.layout\.stack.*spec\.stack/],
+  [{...base,layout:{height:'200'}},/spec\.layout\.height/],
+  [{...base,layout:{tickCount:3.5}},/tickCount.*integer/],
+  [{...base,layout:{slantTicks:'yes'}},/slantTicks/],
+  [{...base,style:null},/spec\.style.*对象/],
+  [{...base,style:{height:200}},/spec\.style\.height.*spec\.layout\.height/],
+  [{...base,style:{stack:'total'}},/spec\.style\.stack.*spec\.stack/],
+  [{...base,style:{labels:1}},/spec\.style\.labels/],
+  [{...base,style:{colors:['#12345']}},/spec\.style\.colors/],
+  [{...base,second:{value:'n',label:3}},/spec\.second\.label.*string/],
+  [{...base,second:{value:'n',unit:3}},/spec\.second\.unit.*string/],
+  [{...base,second:{value:'n',typo:true}},/spec\.second.*typo/],
+  [{...base,marks:[{value:3,label:9}]},/spec\.marks\.label.*string/],
+  [{...base,marks:[{value:3,typo:true}]},/spec\.marks.*typo/],
+ ];
+ for(const [spec,pattern] of invalid){
+  const parsed=parseChartSpec({kind:'bar',...spec});assert('error' in parsed,JSON.stringify(spec));assert.match(parsed.error,pattern);
+  const source=`data rows := query({limit:5});\ndata spec := ${JSON.stringify(spec)};\nfigure chart := BarChart(spec=spec,data=rows);`;
+  const checked=await check(source);assert.equal(checked.ok,false,JSON.stringify(spec));
+  const diagnostic=checked.diagnostics.find(d=>pattern.test(d.message));assert(diagnostic,JSON.stringify(checked.diagnostics));assert.equal(diagnostic.file,'test.dari');
+  assert(diagnostic.span.start.line>=2&&diagnostic.span.start.line<=3);
+  const rt=new DraftRuntime(backend,{file:'test.dari',parse:parseExecutableDesign});
+  try{const run=await rt.run(source);assert.equal(run.status,'invalid',JSON.stringify(spec));assert.match(run.error!,pattern);}finally{rt.dispose();}
+ }
+ assert.equal(reads,before,'invalid figure specs never acquire business rows in checking or execution');
+ const good={...base,layout:{height:300,rowHeight:20,tickCount:5},style:{labels:true,sort:'desc',colors:['#123','#1234','#123456','#12345678']}};
+ const checked=await check(`data rows := query({limit:5});data spec := ${JSON.stringify(good)};figure chart := BarChart(spec=spec,data=rows);`);
+ assert.equal(checked.ok,true,JSON.stringify(checked));assert.equal(reads,before);
+ assert('spec' in parseChartSpec({kind:'line',x:'n',value:'n',xType:'time'}));
+ const nonfinite=parseChartSpec({kind:'bar',...base,marks:[{value:Infinity}]});assert('error' in nonfinite);assert.match(nonfinite.error,/finite/);
+ assert.throws(()=>parseTableSpec({columns:['n'],height:200}),/Unknown table spec fields/);
+ assert.throws(()=>parseTableSpec({columns:['n'],title:42}),/title must be a string/);
+ console.log(`Strict figure specs: ${invalid.length} invalid shapes rejected by shared parsing, semantic checking and runtime preflight without SQL; valid nested options accepted`);
+}
