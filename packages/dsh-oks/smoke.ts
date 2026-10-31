@@ -193,8 +193,8 @@ const refusalOf = async (run) => {
 console.log('=== 检索层：并发的首次检索只派生一次索引 ===');
 {
   const [left, right] = await Promise.all([
-    call('oks_card', { id: datasetId }),
-    call('oks_cap', { cq: {target:{dataset:datasetId}} }),
+    call('oks_card', { id: "datasets/"+encodeURIComponent(datasetId) }),
+    call('oks_cap', {dataset:datasetId}),
   ]);
   ok('并发两次首次检索只派生一次索引',
     logs.filter((line) => line.includes('build-time knowledge')).length === 1);
@@ -244,10 +244,10 @@ console.log('=== 惰性初始化：single flight 的机制 ===');
 }
 
 console.log('=== 知识发现与文档运行 ===');
-const member={id:datasetId};
-await call('oks_card',{id:datasetId});
+const member={dataset:datasetId};
+await call('oks_card',{id:"datasets/"+encodeURIComponent(datasetId)});
 if(!member)throw new Error('没有发现数据集');
-const countIntent={op:'Graph',root:'x',nodes:[{id:'x',entity:member.id}],edges:[],select:[],count:'x',limit:5};
+const countIntent={op:'Graph',root:'x',nodes:[{id:'x',entity:member.dataset}],edges:[],select:[],count:'x',limit:5};
 const draftFile='.work/smoke_answer.dari';
 const draftSource=`data ctx := context();
 data months := time_windows(ctx,{unit:"month",count:2,mode:"complete"});
@@ -302,11 +302,11 @@ writeFileSync(join(nested,'oks.json'),JSON.stringify({...baseConfig,model:relati
 writeFileSync(join(nested,draftFile),draftSource.replace('data ctx := context();','').replace('data months := time_windows(ctx,{unit:"month",count:2,mode:"complete"});',''));
 ok('模型与数据源相对 oks.json 解析',(await call('oks_check',{src:draftFile},nested)).value.ok===true);
 const bare=join(SCRATCH,'bare');mkdirSync(bare,{recursive:true});
-ok('缺工作区配置明确拒绝',!!await refusalOf(()=>call('oks_card',{id:datasetId},bare)));
+ok('缺工作区配置明确拒绝',!!await refusalOf(()=>call('oks_card',{id:"datasets/"+encodeURIComponent(datasetId)},bare)));
 const badModel=join(SCRATCH,'bad-model');mkdirSync(badModel,{recursive:true});
 writeFileSync(join(badModel,'empty.wasm'),Buffer.from([0,97,115,109,1,0,0,0]));
 writeFileSync(join(badModel,'oks.json'),JSON.stringify({...baseConfig,model:'empty.wasm',dataFile:settings.dataFile}));
-ok('缺快照模型明确拒绝',!!await refusalOf(()=>call('oks_card',{id:datasetId},badModel)));
+ok('缺快照模型明确拒绝',!!await refusalOf(()=>call('oks_card',{id:"datasets/"+encodeURIComponent(datasetId)},badModel)));
 const help=(await call('oks_read',{path:'oks://help/query.md',limit:2000},bare)).value;
 ok('帮助是无需配置的文本文件',help.lines.map((line:any)=>line.text).join('\n').includes('ontology-intent-v1'));
 for(const args of [{load:{}},{input:draftFile+'#total',save:{}},{input:draftFile+'#total',jq:{src:'.work/nope.jq'}}])

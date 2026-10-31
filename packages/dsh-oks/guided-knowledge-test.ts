@@ -23,7 +23,7 @@ const tools=guidedTools(['oks_project','oks_read','oks_list','oks_write','oks_ed
 const call=(name:string,args:object)=>tools.find(t=>t.name===name)!.execute(args as never,{});
 assert(!tools.some(t=>t.name==='oks_project'));
 assert(tools.some(t=>t.name==='ka_ask'));
-await call('oks_cap',{cq:{target:{dataset:'d'}}});
+await call('oks_cap',{dataset:'d'});
 for(const [name,args] of [
  ['oks_cap',{cq:{},select:':keys'}],['oks_card',{id:'d',key:'entities/e'}],['oks_card',{key:'tools/pluginSecret'}],
  ['oks_read',{path:'oks://builtin/tools/ktools.lib.jq'}],['oks_write',{path:'oks://memory/tools/ktools.lib.jq'}],
@@ -74,9 +74,18 @@ try {
 } finally { disposers.reverse().forEach(d=>d()); }
 console.log('Public tool results preserve full data beyond 16 KiB');
 
-const card=await call('oks_card',{id:'d',section:'fields'}) as any;
-assert.equal(card.data.id,'d');assert.deepEqual(card.data.fields,[]);
+const card=await call('oks_card',{id:'datasets/d',section:'fields'}) as any;
+assert.equal(card.data.id,'datasets/d');assert.equal(card.data.dataset,'d');assert.deepEqual(card.data.fields,[]);
 const found=await call('oks_search',{query:'Dataset',dataset:'d',take:3}) as any;
-assert.equal(found.data.items[0].key,'datasets/d');
+assert.equal(found.data.items[0].id,'datasets/d');
 await assert.rejects(call('oks_search',{query:' '}),/nonempty/);
 await assert.rejects(call('oks_search',{query:'device',select:':keys'}));
+
+const cap=await call('oks_cap',{dataset:'d',select:[{dimension:'id'}]}) as any;
+assert.equal(cap.data.candidate_intent.nodes[0].entity,'d');
+assert.equal(cap.data.candidate_intent.select[0].dimension,'id');
+assert.equal((await call('oks_card',{id:cap.data.select[0].knowledge_id}) as any).data.id,'datasets/d/dimensions/id');
+await assert.rejects(call('oks_cap',{dataset:'d',entity:'e'}));
+await assert.rejects(call('oks_cap',{}));
+await assert.rejects(call('oks_card',{id:'d'}),/knowledge node ID/);
+assert.equal((await call('oks_card',{id:'entities/e'}) as any).data.entity,'e');

@@ -55,6 +55,6 @@ await assert.rejects(readDomainSummary(knowledge,{...exec('large'),signal:abort.
 await assert.rejects(readDomainSummary(knowledge,exec('absent')),/no model/);
 const oddId='odd`id|[x]';
 const odd=renderDomainSummary({datasets:{[oddId]:{dimensions:{[oddId]:{}}}},items:[{key:'datasets/'+encodeURIComponent(oddId),names:['**label**'],doc:'line1\n# line2'}]},'odd');
-assert(odd.includes('`` '+oddId+' ``'));
+assert(odd.includes('` datasets/'+encodeURIComponent(oddId)+' `'));
 assert(!odd.includes('\n# line2'));
 console.log('Three knowledge layers: same-source prompt/manual, full Markdown summary, resource paging, isolation and cancellation passed');

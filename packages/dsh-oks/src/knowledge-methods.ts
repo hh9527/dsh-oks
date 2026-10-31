@@ -1,3 +1,4 @@
+import { encodePart } from './knowledge-graph.ts';
 type Obj=Record<string,any>;
 const allowed:Record<string,string[]>={search:['query','type','dataset','skip','take'],read:['key'],card:['id','section','skip','take','docs'],cap:['cq','join_depth','skip','take']};
 const methodDefaults=(name:string):Obj=>({search:{skip:0,take:10},read:{},card:{section:'all',skip:0,take:20,docs:false},cap:{join_depth:1,skip:0,take:20}}[name]??{});
@@ -72,9 +73,9 @@ export function queryKnowledge(g:Obj,name:string,rawArgs:unknown):unknown {
  const doc=(key:string)=>ix.get(key)?.doc??'';
  if(name==='card'){
   const d=own(g.datasets,a.id);if(d==null)throw new Error('Unknown dataset id: '+a.id);
-  const key='datasets/'+encodeURIComponent(a.id);
+  const key='datasets/'+encodePart(a.id);
   const section=(cat:string,fn:(v:Obj)=>Obj)=>entries(d[cat]).map(([id,v])=>{
-   const ref=key+'#'+cat+'/'+encodeURIComponent(id);
+   const ref=key+'#'+cat+'/'+encodePart(id);
    return {id,key:ref,label:label(ref,id),...fn(v),...(a.docs?{doc:doc(ref)}:{})};
   });
   const pick=(v:Obj,keys:string[],defaults:Obj={})=>Object.fromEntries(keys.map(k=>[k,v[k]??defaults[k]??null]));
@@ -82,7 +83,7 @@ export function queryKnowledge(g:Obj,name:string,rawArgs:unknown):unknown {
   const measures=section('measures',v=>({...pick(v,['type','anchor_field','statistic','input','requires','binding','group','computed','predicate'],{requires:[]}),agg:v.aggregate??null,unit:v.sampling?.unit??null,sampling_role:v.sampling?.role??null}));
   const time_roles=section('time_roles',v=>pick(v,['field','encoding','semantics','authoritative']));
   const relations=(d.relations??[]).map((ref:string)=>{const r=fact(g,ref)??{},id=pathOf(ref).at(-1)!;return {id,key:ref,label:label(ref,id),from:r.from_dataset??null,to:r.to_dataset??null,cardinality:r.cardinality??null,key_fields:r.key??null,guard:r.guard??null,from_role:r.from_role??null,to_role:r.to_role??null,directions:['forward','reverse'],...(a.docs?{doc:doc(ref)}:{})};});
-  const raw=(cat:string)=>entries(d[cat]).map(([id,facts])=>({id,key:key+'#'+cat+'/'+encodeURIComponent(id),facts}));
+  const raw=(cat:string)=>entries(d[cat]).map(([id,facts])=>({id,key:key+'#'+cat+'/'+encodePart(id),facts}));
   const sections:Obj={fields:raw('fields'),dimensions,measures,time_roles,relations,roles:raw('roles'),bindings:raw('bindings'),business_links:raw('business_links')};
   const aggregates=unique(values(d.measures).map(v=>v.aggregate??null));
   const result:Obj={id:a.id,key,label:label(key,a.id),doc:doc(key),grain:d.grain??[],kind:d.kind??null,source:d.source??null,clock:d.clock??null,scope:d.scope??[],references:d.references??[],field_roles:entries(d.fields).filter(([,v])=>v.roles?.length).map(([field,v])=>({field,roles:v.roles})),row:d.row??null,business_links:sections.business_links.length,aggregates,sum_available:aggregates.includes('Sum'),has_time:time_roles.length>0,time_encoding:unique(values(d.time_roles).map(v=>v.encoding??null)),buckets:unique(values(d.dimensions).filter(v=>v.utc_bucket!=null).map(v=>v.utc_bucket.unit)),units:unique(values(d.measures).map(v=>v.sampling?.unit).filter(v=>v!=null)),counts:Object.fromEntries(entries(sections).map(([k,v])=>[k,v.length])),page:{skip:a.skip,take:a.take}};
@@ -91,13 +92,13 @@ export function queryKnowledge(g:Obj,name:string,rawArgs:unknown):unknown {
  }
  const cq=a.cq,node=cq.node??'d';
  const candidates:string[]=cq.target.dataset!=null?(own(g.datasets,cq.target.dataset)!=null?[cq.target.dataset]:[]):own(g.entities,cq.target.entity)!=null?unique((g.entities[cq.target.entity].roles??[]).flatMap((r:string)=>{const p=pathOf(r.split('#')[0]);return p[0]==='datasets'&&own(g.datasets,p[1])!=null?[p[1]]:[];})):[];
- const ds=candidates.length===1?candidates[0]:null,d=ds!==null?g.datasets[ds]:null,address=ds!==null?'datasets/'+encodeURIComponent(ds):null;
- const capabilities=(requested:any[],cat:string,field:string)=>requested.map(r=>({id:r[field],address:address?address+'#'+cat+'/'+encodeURIComponent(r[field]):null,facts:d?own(d[cat],r[field]):null}));
+ const ds=candidates.length===1?candidates[0]:null,d=ds!==null?g.datasets[ds]:null,address=ds!==null?'datasets/'+encodePart(ds):null;
+ const capabilities=(requested:any[],cat:string,field:string)=>requested.map(r=>({id:r[field],address:address?address+'#'+cat+'/'+encodePart(r[field]):null,facts:d?own(d[cat],r[field]):null}));
  const select=capabilities(cq.select??[],'dimensions','dimension'),measures=capabilities(cq.measures??[],'measures','measure');
  const dimension=d?own(d.dimensions,cq.window?.dimension):null;
- const time=cq.window==null?null:{requested:cq.window,dimension,roles:entries(d?.time_roles).filter(([,v])=>v.field!=null&&v.field===dimension?.field).map(([id,facts])=>({address:address+'#time_roles/'+encodeURIComponent(id),facts}))};
+ const time=cq.window==null?null:{requested:cq.window,dimension,roles:entries(d?.time_roles).filter(([,v])=>v.field!=null&&v.field===dimension?.field).map(([id,facts])=>({address:address+'#time_roles/'+encodePart(id),facts}))};
  const unresolved:any[]=[...(ds===null?[{field:'target',reason:candidates.length>1?'multiple_datasets':'not_found'}]:[]),...select.filter(v=>v.facts==null).map(v=>({field:'select',id:v.id,reason:'not_found'})),...measures.filter(v=>v.facts==null).map(v=>({field:'measures',id:v.id,reason:'not_found'})),...(cq.window!=null&&time?.dimension==null?[{field:'window.dimension',id:cq.window.dimension,reason:'not_found'}]:[]),...(cq.rank!=null&&own(d?.measures,cq.rank.measure)==null?[{field:'rank.measure',id:cq.rank.measure,reason:'not_found'}]:[])];
- const step=(id:string,r:Obj,direction:string)=>({relation:id,address:'relations/'+encodeURIComponent(id),direction,from:direction==='forward'?r.from_dataset:r.to_dataset,to:direction==='forward'?r.to_dataset:r.from_dataset,from_role:r.from_role??null,to_role:r.to_role??null,cardinality:r.cardinality??null,key:r.key??null,guard:r.guard??null});
+ const step=(id:string,r:Obj,direction:string)=>({relation:id,address:'relations/'+encodePart(id),direction,from:direction==='forward'?r.from_dataset:r.to_dataset,to:direction==='forward'?r.to_dataset:r.from_dataset,from_role:r.from_role??null,to_role:r.to_role??null,cardinality:r.cardinality??null,key:r.key??null,guard:r.guard??null});
  const outgoing=(from:string)=>entries(g.relations).flatMap(([id,r])=>[...(r.from_dataset===from?[step(id,r,'forward')]:[]),...(r.to_dataset===from?[step(id,r,'reverse')]:[])]);
  const one=ds===null||a.join_depth===0?[]:outgoing(address!).map(s=>({path:[address,s.to],steps:[s]}));
  const two=a.join_depth<2?[]:one.flatMap(p=>outgoing(p.path.at(-1)!).filter(s=>!p.path.includes(s.to)).map(s=>({path:[...p.path,s.to],steps:[...p.steps,s]})));

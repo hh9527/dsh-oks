@@ -17,7 +17,7 @@ try{
  await call('oks_edit',{path:'oks://work/a.dari',old_string:'1',new_string:'2'});
  assert((await call('oks_read',{path:'oks://work/a.dari'})).lines[0].text.includes('2'));
  for(const path of ['oks://memory/tools/ktools.lib.jq','oks://builtin/tools/ktools.lib.jq','oks://work/../oks.json'])await assert.rejects(call('oks_write',{path,content:'invalid'}));
- assert.equal((await call('oks_card',{id:'d'})).data.id,'d');
+ assert.equal((await call('oks_card',{id:'datasets/d'})).data.id,'datasets/d');
  assert((await call('oks_list',{path:'oks://help/'})).files.length>0);
  await call('oks_delete',{path:'oks://work/a.dari'});assert.equal((await call('oks_list',{path:'oks://work/'})).files.length,0);
  console.log('Source resources: work editing, fixed knowledge, manuals and retired library boundaries passed');
