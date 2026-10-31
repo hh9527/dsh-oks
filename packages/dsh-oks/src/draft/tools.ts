@@ -4,7 +4,7 @@ import type {ChartSpec} from '../chart/spec.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { createProjector } from '../project.ts';
 import type { JsonValue } from '../project.ts';
-import type { ApprovalService, AttachmentsService, FileAttachmentRef, ToolDefinition, ToolExec } from '../host.ts';
+import type { ApprovalService, AttachmentsService, ToolDefinition, ToolExec } from '../host.ts';
 import { isRecord } from '../host.ts';
 import type { Knowledge, WorkspaceEntry } from '../knowledge.ts';
 import type { TimeContext } from '../time-context.ts';
@@ -146,6 +146,33 @@ export function createDraftTools(options: {
     const backend=createDraftBackend({knowledge,entry,file,contextZone:()=>zone,contextNow:()=>record.contextTime});
     return checkDesign(text,file,backend,signal,selection);
   };
+  const publish = async (record:RecordState,sourceText:string,name:string,exec:ToolExec) => {
+    const retained=record.runtime.read(name,sourceText);
+    const source=retained.value.sources.length===1?retained.value.sources[0]:undefined;
+    if(!source||source.at.length||source.path.length)throw new Error('Selected output is not a complete presentation');
+    const attachments=options.attachments?.();
+    if(!attachments)throw new Error('The host attachments service is unavailable');
+    let html:string,title:string,kind:string;
+    if(source.delivery){html=source.delivery.html;title=source.delivery.title;kind='report';}
+    else if(source.display){
+      const data=retained.value.data;
+      title=isRecord(data)&&isRecord(data.spec)
+        ? source.display.kind==='chart'?chartTitle(data.spec as unknown as ChartSpec):typeof data.spec.title==='string'?data.spec.title:name.slice(name.indexOf('.')+1)
+        :name.slice(name.indexOf('.')+1);
+      kind=source.display.kind;
+      const body=kind==='chart'?source.display.content:renderMarkdown(source.display.content,(_info,text)=>`<pre><code>${escapeHtml(text)}</code></pre>`);
+      html=`<!doctype html><html><head><meta charset="utf-8"><style>body{margin:12px;font:14px sans-serif;color:#222}svg{max-width:100%;height:auto}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:6px;text-align:left}h2{font-size:16px}</style></head><body><h2>${escapeHtml(title)}</h2>${body}</body></html>`;
+    }else throw new Error('Selected output has no presentation');
+    const content=kind==='chart'?embedChartInput(source.display!.content.replace(/<svg[^>]*>/,open=>open+`<title>${escapeHtml(title)}</title>`),{origin:source.origin,data:retained.value.data as never}):html;
+    const extension=kind==='chart'?'.svg':kind==='report'?'.report.html':'.html';
+    if(exec.signal?.aborted)throw new Error('aborted');
+    const attachment=await attachments.saveFile({data:Buffer.from(content),name:name.slice(name.indexOf('.')+1)+extension});
+    const path=attachments.fileHostPath(attachment);
+    const label=title.replace(/[\r\n]/g,' ').replace(/[\\[\]]/g,'\\$&');
+    if(!path)throw new Error('The host attachment has no displayable path');
+    const target=encodeURI(path).replaceAll('(','%28').replaceAll(')','%29').replaceAll('#','%23').replaceAll('?','%3F');
+    return {embedded:kind==='chart'?`![${label}](${target})`:`[${label}](${target})`};
+  };
   const tools: ToolDefinition[] = [
     {
       name:'oks_check',
@@ -162,86 +189,81 @@ export function createDraftTools(options: {
       },
     },
     {
-      name:'oks_run',
-      description:'Check and run a DARI draft, returning final facts and a selected report. Runs directly by default. When requireRunApproval is enabled in configuration, each call requests native DSH user approval for that exact source and run options; rejection, cancellation or missing approval service prevent execution.',
-      parameters:{type:'object',properties:{src:{type:'string'},answer:{type:'string'},refresh:{type:'boolean'}},required:['src'],additionalProperties:false},
-      output:{schema:OBJECT,render:(_args:unknown,value:unknown)=>{
-        const attachment=isRecord(value)&&isRecord(value.delivery)&&isRecord(value.delivery.publication)?value.delivery.publication.attachment:undefined;
-        return [{type:'text',text:JSON.stringify(value)},...(attachment?[{type:'file',attachment:attachment as FileAttachmentRef}]:[])];
-      }},
-      async execute(args:{src?:unknown;answer?:unknown;refresh?:unknown},exec:ToolExec){
-        assertKeys(args,['src','answer','refresh']);
+      name:'oks_resolve',
+      description:'Check a DARI source and resolve explicitly selected data, figures and reports. Executes only their dependencies and reuses cached computations. data returns structured binding values; figures and reports return objects keyed by binding name, each containing {embedded: "Markdown"}. Copy embedded verbatim into the answer to display the selected artifact. At least one binding must be selected. requireRunApproval controls native user approval; refresh starts a fresh acquisition batch.',
+      parameters:{type:'object',properties:{src:{type:'string'},data:{type:'array',items:{type:'string'}},figures:{type:'array',items:{type:'string'}},reports:{type:'array',items:{type:'string'}},refresh:{type:'boolean'}},required:['src'],additionalProperties:false},output,
+      async execute(args:{src?:unknown;data?:unknown;figures?:unknown;reports?:unknown;refresh?:unknown},exec:ToolExec){
+        assertKeys(args,['src','data','figures','reports','refresh']);
         if(typeof args.src!=='string'||!args.src.endsWith('.dari'))throw new Error('src must be an oks://work/*.dari path');
-        if(args.answer!==undefined&&typeof args.answer!=='string')throw new Error('answer must be a Report binding name');
+        const selection={data:[] as string[],figures:[] as string[],reports:[] as string[]};
+        for(const kind of ['data','figures','reports'] as const){
+          const names=args[kind];
+          if(names!==undefined&&(!Array.isArray(names)||names.some(n=>typeof n!=='string'||!n.length)))throw new Error(`${kind} must be an array of binding names`);
+          selection[kind]=[...new Set(names as string[]|undefined)];
+        }
+        const targets=Object.values(selection).flat();
+        if(!targets.length)throw new Error('Select at least one data, figure or report binding');
         if(args.refresh!==undefined&&typeof args.refresh!=='boolean')throw new Error('refresh must be boolean');
-        if(!exec.agent?.session)throw new Error('oks_run requires a caller session');
+        if(!exec.agent?.session)throw new Error('oks_resolve requires a caller session');
         const entry=options.knowledge.ensureWorkspace(exec);
-        const requiresApproval=entry.settings.requireRunApproval===true;
-        const approval=requiresApproval?options.approval?.():undefined;
-        if(requiresApproval&&!approval)return {ok:false,status:'approval-unavailable',execution:'not performed'};
-        const read=readWorkText(entry.root,args.src,'oks_run');
+        const read=readWorkText(entry.root,args.src,'oks_resolve');
         const key=keyFor(entry,exec,read.file);
         if(pending.has(key))throw new Error('This draft is already awaiting approval or running');
         pending.add(key);
         const signal=AbortSignal.any([shutdown.signal,...(exec.signal?[exec.signal]:[])]);
         try{
           signal.throwIfAborted();
-          if(args.refresh===true)recordFor(entry,exec,read.file,true).contextTime=Date.now();
-          const checked=await checkSource(entry,read.file,read.text,exec,AbortSignal.any([signal,AbortSignal.timeout(120000)]),{answer:args.answer as string|undefined,requireSelection:true});
+          const checked=await checkSource(entry,read.file,read.text,exec,AbortSignal.any([signal,AbortSignal.timeout(120000)]));
           if(!checked.ok)return {...checked,execution:'not performed'};
+          const doc=parseDesign(read.text,read.file);
+          const reports=new Set(doc.answers);
+          const figures=new Set(Object.values(doc.authoring?.figures??{}).map(f=>f.binding));
+          const bindings=new Set(doc.nodes.filter(n=>!n.internal&&n.statement.kind==='binding').map(n=>n.statement.kind==='binding'?n.statement.name:''));
+          const diagnostics=[];
+          for(const kind of ['data','figures','reports'] as const)for(const name of selection[kind]){
+            const node=doc.nodes.find(n=>n.statement.kind==='binding'&&n.statement.name===name);
+            // Pipeline chart bindings can directly call render_figure.
+            const figure=figures.has(name)||node?.statement.value.kind==='call'&&node.statement.value.operator==='render_figure';
+            const valid=bindings.has(name)&&(kind==='reports'?reports.has(name):kind==='figures'?figure:!reports.has(name)&&!figure);
+            if(!valid)diagnostics.push({file:read.file,stage:'selection',message:`Unknown ${kind} binding or wrong kind: ${name}`,span:node?.statement.span??doc.pipeline});
+          }
+          if(diagnostics.length)return {ok:false,status:'invalid',diagnostics,execution:'not performed'};
+          const requiresApproval=entry.settings.requireRunApproval===true;
+          const approval=requiresApproval?options.approval?.():undefined;
+          if(requiresApproval&&!approval)return {ok:false,status:'approval-unavailable',execution:'not performed'};
           const sourceHash=sha(read.text);
-          const environment=canonicalJson([entry.modelHash,entry.settings.domain,entry.settings.dataFile,entry.settings.queryMaxRows,entry.settings.requireRunApproval??false,options.timeContext.zones.get(exec.agent!.session!)??null]);
+          const environment=()=>canonicalJson([entry.modelHash,entry.settings.domain,entry.settings.dataFile,entry.settings.queryMaxRows,entry.settings.requireRunApproval??false,options.timeContext.zones.get(exec.agent!.session!)??null]);
+          const approvedEnvironment=environment();
           let approvalStatus:'allowed-once'|'not-required'='not-required';
           if(requiresApproval){
-            const reason=`${args.refresh===true?'刷新并运行':'运行'}分析稿 ${read.file.split('/').at(-1)}`;
-            const decision=await approval!.request({agent:exec.agent,toolName:'oks_run',...(exec.callId?{callId:exec.callId}:{}),reason,signal});
+            const reason=`${args.refresh===true?'刷新并解析':'解析'}分析稿 ${read.file.split('/').at(-1)}`;
+            const decision=await approval!.request({agent:exec.agent,toolName:'oks_resolve',...(exec.callId?{callId:exec.callId}:{}),reason,signal});
             signal.throwIfAborted();
             if(decision!=='allowed-once')return {ok:false,status:decision==='rejected'?'approval-rejected':decision==='cancelled'?'approval-cancelled':'approval-unavailable',execution:'not performed',sourceHash};
             approvalStatus='allowed-once';
           }
-          if(environment!==canonicalJson([entry.modelHash,entry.settings.domain,entry.settings.dataFile,entry.settings.queryMaxRows,entry.settings.requireRunApproval??false,options.timeContext.zones.get(exec.agent!.session!)??null]))return {ok:false,status:'environment-changed',execution:'not performed',sourceHash};
-          if(readWorkText(entry.root,args.src,'oks_run').text!==read.text)return {ok:false,status:'source-changed',execution:'not performed',sourceHash,message:'Draft changed before execution; check and run again.'};
-          const execute=tools.find(t=>t.name==='oks_run_answer')!;
-          const run=await execute.execute({...args,answer:checked.answer} as never,exec) as Record<string,unknown>;
-          const record=recordFor(entry,exec,read.file,false);
-          const delivery=isRecord(run.delivery)?run.delivery:undefined;
-          let result:unknown;
-          if(run.status==='complete'){
-            // The final object defines the facts released by this run.
-            const doc=parseDesign(read.text,read.file);
-            if(doc.syntax==='dom'){
-              // Data bindings stay internal. Release only the selected report's values and displayed figures.
-              // A completed schedule can contain failed or blocked outputs. Only read a
-              // successfully selected report; otherwise preserve the root failure receipt.
-              if(checked.answer&&delivery?.status==='ready'){
-                const report=record.runtime.read(checked.answer,read.text).value;
-                const asset=doc.assets.get('@report/'+checked.answer);
-                const node=doc.nodes.find(n=>n.statement.kind==='binding'&&n.statement.name===checked.answer);
-                const figures:Record<string,unknown>={};
-                if(node?.statement.value.kind==='call'){
-                  const inputs=node.statement.value.args[1];
-                  if(inputs?.kind==='object')for(const input of inputs.entries)if(asset?.references?.[input.key]?.kind==='figure'&&input.value.kind==='ref'){
-                    figures[input.value.name]=record.runtime.read(input.value.name,read.text).value.data;
-                  }
-                }
-                result={values:report.reportValues??{},figures};
-              }
-            }else if(doc.nodes.some(n=>n.statement.kind==='output')) {
-              try{result=record.runtime.read('output',read.text).value.data;}catch{/* Failed final output is represented in the run diagnostics. */}
-            }else{
-              const values:Record<string,unknown>={};
-              for(const node of doc.nodes)if(!node.internal&&node.statement.kind==='binding'){
-                try{values[node.statement.name]=record.runtime.read(node.statement.name,read.text).value.data;}catch{/* Failed bindings are represented in the run diagnostics. */}
-              }
-              result=values;
-            }
-          }
-          if(delivery?.status==='ready'&&typeof delivery.input==='string'&&options.attachments?.()){
-            const show=tools.find(t=>t.name==='oks_show')!;
-            const publication=await show.execute({input:delivery.input} as never,exec);
-            return {...run,...(result!==undefined?{result}:{}),warnings:checked.warnings,approval:approvalStatus,delivery:{status:'ready',mode:'attachment',publication}};
-          }
-          return {...run,...(result!==undefined?{result}:{}),warnings:checked.warnings,approval:approvalStatus,...(delivery?.status==='exploring'?{delivery:{status:'complete',mode:'facts'}}:delivery?.status==='ready'?{delivery:{status:'unavailable',error:'Host attachments service is unavailable; final facts are returned in result.'}}:{})};
+          if(approvedEnvironment!==environment())return {ok:false,status:'environment-changed',execution:'not performed',sourceHash};
+          if(readWorkText(entry.root,args.src,'oks_resolve').text!==read.text)return {ok:false,status:'source-changed',execution:'not performed',sourceHash};
+          if((selection.figures.length||selection.reports.length)&&!options.attachments?.())throw new Error('The host attachments service is unavailable');
+          const record=recordFor(entry,exec,read.file,true);
+          if(record.active)throw new Error('This draft is already running; wait for it to finish');
+          record.active=true;record.touched=Date.now();
+          record.zone=structuredClone(options.timeContext.zones.get(exec.agent.session)??{kind:'missing'});
+          if(args.refresh===true)record.contextTime=Date.now();
+          try{
+            const run=await record.runtime.run(read.text,{targets,refresh:args.refresh===true,signal:AbortSignal.any([signal,AbortSignal.timeout(120000)])});
+            const base=receipt(run,read.file);
+            if(!base.ok)return {...base,approval:approvalStatus};
+            const data:Record<string,unknown>=Object.create(null);
+            const figures:Record<string,{embedded:string}>=Object.create(null);
+            const reports:Record<string,{embedded:string}>=Object.create(null);
+            for(const name of selection.data)data[name]=record.runtime.read(name,read.text).value.data;
+            for(const name of selection.figures)figures[name]=await publish(record,read.text,name,exec);
+            for(const name of selection.reports)reports[name]=await publish(record,read.text,name,exec);
+            // Receipts describe failures, not unrequested values or intermediate bindings.
+            return {ok:true,run:run.id,sourceHash:run.sourceHash,batch:run.batch,counts:base.counts,approval:approvalStatus,
+              ...(selection.data.length?{data:{...data}}:{}),...(selection.figures.length?{figures:{...figures}}:{}),...(selection.reports.length?{reports:{...reports}}:{})};
+          }finally{record.active=false;record.touched=Date.now();if(closed)record.runtime.dispose();}
         }finally{pending.delete(key);}
       },
     },
@@ -283,55 +305,12 @@ export function createDraftTools(options: {
           const [name, value] = selected;
           const source = value.sources.length === 1 ? value.sources[0] : undefined;
           if (!source?.delivery || source.at.length || source.path.length) return { ...base, delivery: { status: 'unavailable', error: 'Selected output is not a complete Report' } };
-          return {...base,delivery:{status:'ready',mode:'retained',answer:name,input:`${args.src}#${name}`,show:'oks_show'}};
+          return {...base,delivery:{status:'ready',mode:'retained',answer:name,input:`${args.src}#${name}`}};
         } finally {
           record.active = false;
           record.touched = Date.now();
           if (closed) record.runtime.dispose();
         }
-      },
-    },
-    {
-      name: 'oks_show',
-      description: 'Publish an existing DARI figure or report as a durable host attachment and return its reference and presentation instructions. input is oks://work/analysis.dari#figures.name or #reports.name. Reads the latest retained output in this session; never executes SQL, runs a draft, refreshes context or saves a business report. Include the returned markdown verbatim in the answer to show SVG inline; for reports and tables call the host present tool with the returned present object to show a native file card. Report HTML includes the complete DARI source structure and retained execution context; these are available under the report output dari/context fields through oks_project. Bytes stay outside model context. Edited sources are marked stale.',
-      parameters: {type:'object',properties:{input:{type:'string'}},required:['input'],additionalProperties:false},
-      output: {
-        schema: OBJECT,
-        render: (_args:unknown,value:{attachment:FileAttachmentRef}) => [{type:'text',text:JSON.stringify(value)},{type:'file',attachment:value.attachment}],
-        presentationMeta: (_args:unknown,value:{attachment:FileAttachmentRef}) => ({attachment:value.attachment}),
-      },
-      async execute(args:{input?:unknown},exec:ToolExec){
-        assertKeys(args,['input']);
-        const match=typeof args.input==='string' ? /^((?:oks:\/\/work\/|\.work\/).+\.dari)#((?:(?:figures|reports)\.)?[A-Za-z_$][A-Za-z0-9_$]*)$/.exec(args.input) : null;
-        if(!match)throw new Error('input must select a figure or report binding, e.g. #cpu or #answer in an oks://work/*.dari source');
-        const entry=options.knowledge.ensureWorkspace(exec);
-        const read=readWorkText(entry.root,match[1],'oks_show');
-        const record=recordFor(entry,exec,read.file,false);
-        const retained=record.runtime.read(match[2],read.text);
-        const source=retained.value.sources.length===1?retained.value.sources[0]:undefined;
-        if(!source||source.at.length||source.path.length)throw new Error('Selected output is not a complete presentation');
-        const attachments=options.attachments?.();
-        if(!attachments)throw new Error('The host attachments service is unavailable');
-        let html:string,title:string,kind:string;
-        if(source.delivery){html=source.delivery.html;title=source.delivery.title;kind='report';}
-        else if(source.display){
-          const data=retained.value.data;
-          title=isRecord(data)&&isRecord(data.spec)
-            ? source.display.kind==='chart'?chartTitle(data.spec as unknown as ChartSpec):typeof data.spec.title==='string'?data.spec.title:match[2].slice(match[2].indexOf('.')+1)
-            :match[2].slice(match[2].indexOf('.')+1);
-          kind=source.display.kind;
-          const body=kind==='chart'?source.display.content:renderMarkdown(source.display.content,(_info,text)=>`<pre><code>${escapeHtml(text)}</code></pre>`);
-          html=`<!doctype html><html><head><meta charset="utf-8"><style>body{margin:12px;font:14px sans-serif;color:#222}svg{max-width:100%;height:auto}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:6px;text-align:left}h2{font-size:16px}</style></head><body><h2>${escapeHtml(title)}</h2>${body}</body></html>`;
-        }else throw new Error('Selected output has no presentation');
-        const content=kind==='chart'?embedChartInput(source.display!.content.replace(/<svg[^>]*>/,open=>open+`<title>${escapeHtml(title)}</title>`),{origin:source.origin,data:retained.value.data as never}):html;
-        const extension=kind==='chart'?'.svg':kind==='report'?'.report.html':'.html';
-        if(exec.signal?.aborted)throw new Error('aborted');
-        const attachment=await attachments.saveFile({data:Buffer.from(content),name:match[2].slice(match[2].indexOf('.')+1)+extension});
-        const path=attachments.fileHostPath(attachment);
-        const label=title.replace(/[\r\n]/g,' ').replace(/[\\[\]]/g,'\\$&');
-        const markdown=path&&kind==='chart'?`![${label}](${encodeURI(path).replaceAll('(','%28').replaceAll(')','%29').replaceAll('#','%23').replaceAll('?','%3F')})`:undefined;
-        const present=path&&kind!=='chart'?{files:[{path,description:title}]}:undefined;
-        return {ok:true,input:args.input,run:retained.run,sourceHash:retained.sourceHash,stale:retained.stale,kind,title,attachment,...(path?{path}:{}),...(markdown?{markdown}:{}),...(present?{present}:{})};
       },
     },
     {

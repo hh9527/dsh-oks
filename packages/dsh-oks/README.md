@@ -11,14 +11,14 @@
 | `oks_search({query,type?,dataset?,skip?,take?})` | 按领域词汇检索关联知识点 |
 | `oks_cap({cq,join_depth?,skip?,take?})` | 获取目标的查询能力、关联候选与待校验骨架 |
 | `oks_card({id?,key?,section?,skip?,take?})` | 按预制卡片核实数据集或精确领域节点 |
-| `oks_run({src,answer?,refresh?})` | 检查后执行整稿，返回事实和选中的报告附件；按 requireRunApproval 配置申请批准 |
+| `oks_resolve({src,data?,figures?,reports?,refresh?})` | 检查后解析所选绑定及依赖，返回数据和 Markdown 展示引用；按 requireRunApproval 配置申请批准 |
 | `oks_check({src})` | 检查分析稿，返回查询列类型、诊断和待运行期检查项；不执行 SQL |
 | `oks_read/write/edit/list/delete` | 管理逻辑源码地址；read 支持独立文本手册，list 用 path 指定目录 |
 
 
 领域摘要与词汇表进入 KA 的固定系统上下文，主 agent 保留工作方法和图表能力。预制工具完整返回其结果，输出规模由查询范围、分页和工具内部结构控制。
 
-agent 先设计和检查分析稿，oks_run 检查后执行并返回事实，按配置申请本次批准。内部宿主运行器保留执行、缓存、来源和呈现能力。
+agent 先设计和检查分析稿，oks_resolve 按 data/figures/reports 显式选择绑定，仅执行其依赖并返回产物，按配置申请本次批准。内部宿主运行器保留执行、缓存、来源和呈现能力。
 
 ## 知识子会话
 
@@ -121,7 +121,7 @@ unit 为 year/quarter/month/week/day，count 为 1..50。周从周一开始，�
 
 oks_check 返回 queries（模型查询及关系节点的列）、types（各绑定的推导类型）、diagnostics 和 deferred。query columns 在本次检查内参与所有后续类型推导；检查不读业务数据库，不把未知事实折叠成空表、零或 None。业务值决定下一次 query 的写法会被拒绝。
 
-oks_run 重新检查当前稿件，冻结检查与执行共享的时间上下文，按配置申请本次用户批准后执行。修改后处理不会重新采集未变化的 query；refresh 创建新采集上下文。运行期验证真实 schema、值域、来源与单行守卫，并返回事实和可用的报告附件。
+oks_resolve 重新检查当前稿件，冻结检查与执行共享的时间上下文，按配置申请本次用户批准后执行。修改后处理不会重新采集未变化的 query；refresh 创建新采集上下文。运行期验证真实 schema、值域、来源与单行守卫，只返回所选 data 的事实，以及所选 figures/reports 的 Markdown 展示引用。
 
 ## 工作区与运行配置
 
@@ -225,7 +225,7 @@ build/prepare/pretest 直接更新 lib，运行中的 link 安装需先暂停服
 - `oks://help/*.md`：独立的只读文本手册
 - 图表和报告由宿主附件服务持久保存，回执返回附件引用与呈现指引
 
-agent 可检查稿件并通过 oks_run 运行；默认直接运行，配置 requireRunApproval=true 时先申请批准；result 直接返回最终输出，无独立结果读取工具。
+agent 可检查稿件并通过 oks_resolve 运行；默认直接运行，配置 requireRunApproval=true 时先申请批准；data 返回显式选择的结构化值；figures/reports 按绑定名返回 `{embedded}`，其中 embedded 为可原样嵌入回答的 Markdown 字符串。
 
 ### 按需读取工具用法
 
@@ -240,7 +240,7 @@ agent 可检查稿件并通过 oks_run 运行；默认直接运行，配置 requ
 
 DARI 报告 HTML 在非执行元数据中保留 `{version:1,context,dari}`。context 是本次运行与实际采集的快照；dari 包含完整 source、title、notes、assets、pipeline、reports，以及所有图表的 code、binding、status 和成功时的实际 data。dari.values 以规范化投影 code 为键，保存正文实际引用的标量，例如 `{"summary.total":42}`；相同投影跨报告去重。归档只保存图表数据与正文引用值，不保存全部中间绑定。整稿源码可完整恢复，导出不会刷新时间或执行查询。
 
-宿主内部可按需读取归档，agent 通过获准的 oks_run 获取结果。图表与报告无依赖的分支执行结束后也纳入归档；失败分支保留状态。归档受运行存储预算约束。
+宿主内部可按需读取归档，agent 通过获准的 oks_resolve 获取结果。只执行所选产物的依赖；归档中的其他图表标为 unavailable，失败分支保留状态。归档受运行存储预算约束。
 
 
 ### 有类型 Pipeline 验收
@@ -252,7 +252,7 @@ DARI 报告 HTML 在非执行元数据中保留 `{version:1,context,dari}`。con
 
 ### 运行批准配置
 
-requireRunApproval 默认为 false，oks_run 完成检查后直接执行。设为 true 时，每次运行（含缓存复用与刷新）通过宿主申请一次性批准；批准服务不可用、拒绝或取消时不执行。
+requireRunApproval 默认为 false，oks_resolve 完成检查后直接执行。设为 true 时，每次运行（含缓存复用与刷新）通过宿主申请一次性批准；批准服务不可用、拒绝或取消时不执行。
 
 该字段可写在工作区 oks.json 或插件 config 中。优先级为插件显式配置 > 工作区配置 > 默认值，例如：
 

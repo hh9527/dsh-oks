@@ -168,7 +168,7 @@ export class DraftRuntime {
     return this.batch;
   }
 
-  async run(source: string, options: { refresh?: boolean; signal?: AbortSignal } = {}): Promise<DraftRun> {
+  async run(source: string, options: { targets?: string[]; refresh?: boolean; signal?: AbortSignal } = {}): Promise<DraftRun> {
     if (this.active) throw new Error('This draft is already running; wait for that run to finish');
     this.collect();
     this.active = true;
@@ -309,8 +309,15 @@ export class DraftRuntime {
           run.outputs.set(name, { status: error instanceof Blocked ? 'blocked' : 'failed', error: `${this.file}:${location.start.line}:${location.start.column}: ${message(error)}`, span: location,internal:node.internal,...(node.display?{display:node.display}:{}), ...(context?{context}:{}) });
         }
       };
+      const required=options.targets?new Set(options.targets):undefined;
+      if(required){
+        const nodes=new Map(document.nodes.map(node=>[node.statement.kind==='binding'?node.statement.name:'output',node]));
+        const visit=(name:string)=>{const node=nodes.get(name);if(!node)throw new Error(`Unknown binding ${name}`);for(const dep of node.bindings)if(!required.has(dep)){required.add(dep);visit(dep);}};
+        for(const name of options.targets!)visit(name);
+      }
       for(const node of document.nodes){
         const name=node.statement.kind==='binding'?node.statement.name:'output';
+        if(required&&!required.has(name))continue;
         const job=Promise.resolve().then(async()=>{
           await Promise.all(node.bindings.map(binding=>jobs.get(binding)));
           await executeNode(node);

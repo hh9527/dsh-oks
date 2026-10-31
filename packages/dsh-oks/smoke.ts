@@ -91,7 +91,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['oks_read', 'oks_write', 'oks_edit', 'oks_list', 'oks_delete', 'oks_check', 'oks_run', 'oks_cap', 'oks_info', 'oks_search', 'ka_ask'];
+const EXPECTED_TOOLS = ['oks_read', 'oks_write', 'oks_edit', 'oks_list', 'oks_delete', 'oks_check', 'oks_resolve', 'oks_cap', 'oks_info', 'oks_search', 'ka_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -271,7 +271,7 @@ const checked=await call('oks_check',{src:draftFile});
 ok('设计检查返回真实模型列类型',checked.value.ok && checked.value.queries.length===2 && checked.value.queries[0].columns.length>0);
 ok('真实数据后处理留到运行期',checked.value.deferred.some(d=>d.operator==='render_report'));
 for(const name of ['oks_run_answer','oks_result','oks_show','renew_context','oks_project']) ok('agent 不暴露运行与结果入口',!registered.has(name));
-const runResult=await call('oks_run',{src:draftFile});
+const runResult=await call('oks_resolve',{src:draftFile,data:['total'],reports:['answer']});
 if(modelSettings.requireRunApproval) {
  ok('开启批准后缺少服务时禁止运行',runResult.value.status==='approval-unavailable');
 } else {

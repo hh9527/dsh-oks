@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import {parseDesign} from './src/draft/design.ts';
+import {testAttachments} from './test-attachments.ts';
 import {mkdtempSync,writeFileSync,readFileSync,rmSync,cpSync,readdirSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {join,resolve} from 'node:path';
@@ -17,12 +19,15 @@ const collected=await collectProgrammedKnowledge(metadata['ontology.knowledge'])
 const graph=derivePublishedKnowledge((collected as any).graph,undefined,(collected as any).vocabulary).knowledge;
 const dataset=Object.keys(graph.datasets).find(k=>!k.startsWith('source_'))!;
 const source=readFileSync(example,'utf8');
+const doc=parseDesign(source,example);
+const reports=doc.answers;
+const selection=reports.length?{reports}:{data:doc.nodes.filter(n=>!n.internal&&n.statement.kind==='binding').map(n=>n.statement.kind==='binding'?n.statement.name:'')};
 async function scenario(run:boolean){
  const cwd=join(root,run?'run':'check');
  const {mkdirSync}=await import('node:fs');mkdirSync(cwd);writeFileSync(join(cwd,'oks.json'),'{}');
  let approvalRequests=0;
  const tools=new Map<string,any>(),hooks=new Map<string,any>(),disposers:(()=>void)[]=[];
- apply({logger:{info(){}},get(name:string){return name==='approval'?{async request(){approvalRequests++;return 'allowed-once';}}:undefined;},tools:{register(t:any){tools.set(t.name,t);return()=>{};}},effect(fn:()=>any){const dispose=fn();if(dispose)disposers.push(dispose);},on(name:string,fn:any){hooks.set(name,fn);return()=>{};}},{domain,model:resolve(model),dataFile:run?resolve(database):join(cwd,'missing.sqlite')});
+ apply({logger:{info(){}},get(name:string){return name==='attachments'?testAttachments(cwd):name==='approval'?{async request(){approvalRequests++;return 'allowed-once';}}:undefined;},tools:{register(t:any){tools.set(t.name,t);return()=>{};}},effect(fn:()=>any){const dispose=fn();if(dispose)disposers.push(dispose);},on(name:string,fn:any){hooks.set(name,fn);return()=>{};}},{domain,model:resolve(model),dataFile:run?resolve(database):join(cwd,'missing.sqlite')});
  const exec={agent:{session:{id:'model-integration',header:{cwd}}}},src='oks://work/answer.dari';
  const call=(name:string,args:unknown)=>tools.get(name).execute(args,exec);
  try{
@@ -38,10 +43,10 @@ async function scenario(run:boolean){
   await call('oks_write',{path:src,content:source});
   started=performance.now();const checked=await call('oks_check',{src});const checkMs=performance.now()-started;assert.equal(checked.ok,true,JSON.stringify(checked));
   if(!run)return {domain,mode:'check without database',capMs:Math.round(capMs),infoMs:Math.round(infoMs),checkMs:Math.round(checkMs),bindings:checked.queries.length};
-  started=performance.now();const result=await call('oks_run',{src});const runMs=performance.now()-started;assert.equal(result.ok,true,JSON.stringify(result));assert.equal(result.approval,'not-required');assert.equal(approvalRequests,0);
-  assert(Object.hasOwn(result.result,'values'));assert(Object.hasOwn(result.result,'figures'));
-  started=performance.now();const cached=await call('oks_run',{src});const cachedRunMs=performance.now()-started;assert.equal(cached.ok,true);assert.equal(cached.counts.executed,0);
-  return {domain,mode:'run',checkMs:Math.round(checkMs),runMs:Math.round(runMs),cachedRunMs:Math.round(cachedRunMs),figures:Object.keys(result.result.figures).length,counts:result.counts};
+  started=performance.now();const result=await call('oks_resolve',{src,...selection});const runMs=performance.now()-started;assert.equal(result.ok,true,JSON.stringify(result));assert.equal(result.approval,'not-required');assert.equal(approvalRequests,0);
+  assert(reports.length?Object.hasOwn(result,'reports'):Object.hasOwn(result,'data'));
+  started=performance.now();const cached=await call('oks_resolve',{src,...selection});const cachedRunMs=performance.now()-started;assert.equal(cached.ok,true);assert.equal(cached.counts.executed,0);
+  return {domain,mode:'run',checkMs:Math.round(checkMs),runMs:Math.round(runMs),cachedRunMs:Math.round(cachedRunMs),figures:Object.keys(result.figures??{}).length,counts:result.counts};
  }finally{disposers.reverse().forEach(fn=>fn());}
 }
 try{console.log(JSON.stringify(await scenario(false)));console.log(JSON.stringify(await scenario(true)));}

@@ -1,6 +1,6 @@
 # DARI 分析稿
 
-一个业务问题使用一份 `.dari`。`data` 定义不可变的取数与后处理，`figure` 定义图表，`report` 定义可交付报告。用 oks_write/oks_edit 编辑，oks_check 检查；oks_run 检查后整稿执行；默认直接运行，requireRunApproval=true 时先申请宿主用户批准。
+一个业务问题使用一份 `.dari`。`data` 定义不可变的取数与后处理，`figure` 定义图表，`report` 定义可交付报告。用 oks_write/oks_edit 编辑，oks_check 检查；oks_resolve 检查后解析显式选择的产物及其依赖；默认直接运行，requireRunApproval=true 时先申请宿主用户批准。
 
 ## 声明与节点
 
@@ -47,8 +47,19 @@ figure 绑定右侧是图表组件或 Table，data 直接接受 Table(T)，无�
 
 ## 批准与交付
 
-完成整稿检查后调用 `oks_run({src:"oks://work/<问题>.dari"})`。默认检查后直接运行。设置 requireRunApproval=true 时，每次运行通过 DSH 原生批准机制，批准绑定本稿源码、模型、数据配置和冻结的上下文。拒绝或取消时不执行；等待中源码或配置变化会拒绝继续。
+完成整稿检查后，显式选择要获得的绑定，至少选择一项：
 
-只有一个 report 时自动交付；多个 report 使用 `answer:"报告绑定名"` 选择。结果的 `values` 包含报告 Value 引用的标量，`figures` 包含该报告实际展示的图表事实；data 绑定作为内部计算保留，不自动全部返回。报告附件使用运行回执的 `delivery.publication.present` 参数调用宿主 present 工具交付。
+```js
+oks_resolve({
+    src: "oks://work/<问题>.dari",
+    data: ["summary"],
+    figures: ["counts"],
+    reports: ["answer"]
+})
+```
 
-普通重跑复用查询和后处理缓存，改后处理不重新取数；refresh:true 创建新的采集上下文。运行后解读获准返回的事实。
+三个列表均可省略，名称必须对应声明种类。data 返回绑定的结构化值，包括表、对象、标量和 null。figures/reports 返回以绑定名为键的对象，每项包含 Markdown 字符串 `embedded`；把该字符串原样加入回答流即可展示图表或报告入口。展示产物不重复返回业务事实；需要解读的值通过 data 显式选择。图表可以独立交付，不要求编写 report。
+
+只执行所选产物的依赖，共享计算与缓存。普通重复解析复用查询和后处理缓存，改后处理不重新取数；refresh:true 创建新的采集上下文。
+
+默认检查后直接解析。设置 requireRunApproval=true 时，每次解析通过 DSH 原生批准机制，批准绑定本稿源码、模型、数据配置和冻结的上下文。拒绝或取消时不执行；等待中源码或配置变化会拒绝继续。根据显式返回的事实解读。

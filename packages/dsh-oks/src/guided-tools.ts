@@ -51,7 +51,7 @@ export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge)
     },
 
   ];
-  return [...definitions.filter(t => !['oks_card','oks_project','oks_run_answer','oks_result','oks_show','renew_context'].includes(t.name)).map(t => {
+  return [...definitions.filter(t => !['oks_card','oks_project','oks_run_answer','oks_result','renew_context'].includes(t.name)).map(t => {
     if (['oks_read','oks_list','oks_write','oks_edit','oks_delete'].includes(t.name)) return {
       ...t,
       description: t.name === 'oks_read' ? 'Read method manuals at oks://help/*.md or analysis source at oks://work/<file>. Use ka_ask with the original user question for domain knowledge navigation. offset/limit select line windows. List manuals with oks_list({path:"oks://help/"}).'

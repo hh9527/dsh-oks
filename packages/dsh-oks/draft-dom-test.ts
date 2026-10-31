@@ -99,13 +99,15 @@ try{
  const call=async(name:string,args:object)=>drafts.tools.find(t=>t.name===name)!.execute(args as never,caller) as Promise<any>;
  try{
   const before=reads;assert.equal((await call('oks_check',{src})).ok,true);assert.equal(reads,before);assert.equal(approvals,0);
-  let result=await call('oks_run',{src});assert.equal(result.ok,true,JSON.stringify(result));assert.equal(approvals,1);
-  assert.equal(result.delivery.publication.kind,'report');assert(readFileSync(result.delivery.publication.path,'utf8').includes('CPU &amp;'));
-  assert.deepEqual(result.result.values,{'winner?.name':'A&B <x>','round(winner?.cpu, 1)':30});
-  assert.deepEqual(Object.keys(result.result.figures),['cpu']);assert(!Object.hasOwn(result.result,'facts'));assert(!JSON.stringify(result.result).includes('__dom'));
+  let result=await call('oks_resolve',{src,data:['winner'],figures:['cpu'],reports:['answer']});assert.equal(result.ok,true,JSON.stringify(result));assert.equal(approvals,1);
+  assert.match(result.figures.cpu.embedded,/^!\[/);
+  const artifact=(embedded:string)=>decodeURI(embedded.slice(embedded.indexOf('](')+2,-1));
+  assert(readFileSync(artifact(result.reports.answer.embedded),'utf8').includes('CPU &amp;'));
+  assert.deepEqual(result.data.winner,{name:'A&B <x>',cpu:30});
+  assert.deepEqual(Object.keys(result.figures),['cpu']);assert.deepEqual(Object.keys(result.figures.cpu),['embedded']);assert(!JSON.stringify(result).includes('__dom'));
   writeFileSync(path,source+'\nreport other := Report(title = "其他报告") [p ["另一份"],];');
-  const approved=approvals;result=await call('oks_run',{src});assert.equal(result.ok,false);assert.equal(approvals,approved);
-  result=await call('oks_run',{src,answer:'other'});assert.equal(result.ok,true,JSON.stringify(result));assert.deepEqual(result.result,{values:{},figures:{}});assert.equal(result.delivery.publication.title,'其他报告');
+  result=await call('oks_resolve',{src,reports:['answer','other']});assert.equal(result.ok,true,JSON.stringify(result));assert.deepEqual(Object.keys(result.reports),['answer','other']);
+  assert.equal(result.data,undefined);
  }finally{drafts.dispose();}
  console.log('DOM DARI: grammar, original spans, types, Option, inline attributes, escaping, scopes, charts, report archives, one-shot approval and selected report facts passed');
 }finally{rmSync(root,{recursive:true,force:true});}

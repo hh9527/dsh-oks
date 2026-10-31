@@ -93,7 +93,7 @@ export function createTools({ knowledge, ka, timeContext, log, attachments, appr
     },
     {
       name: 'oks_write',
-      description: 'Write UTF-8 analysis source to oks://work/<file>. Check a DARI draft with oks_check, then execute it with oks_run; approval is controlled by configuration.',
+      description: 'Write UTF-8 analysis source to oks://work/<file>. Check a DARI draft with oks_check, then select data/figures/reports with oks_resolve; approval is controlled by configuration.',
       parameters: {
         type: 'object',
         properties: {

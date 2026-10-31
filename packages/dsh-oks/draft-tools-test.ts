@@ -53,7 +53,8 @@ try {
   write(source+'\n');assert.equal((await call('oks_project',{input:file+'#total'})).stale,true);assert.equal(queries,1);
   write(source);
   result=await call('oks_run_answer',{src:file});assert.equal(result.delivery.status,'ready');assert.equal(writes,0);assert.equal(queries,1);
-  const shown=await call('oks_show',{input:file+'#answer'});savedPath=shown.path;assert.deepEqual((await call('oks_show',{input:file+'#answer'})).attachment,shown.attachment);
+  write(source.replace('total <-facts.rows[0].n','one <-select_one({from:{f:facts},fields:r=>({n:r.f.n}),order_by:o=>[asc(o.n)],limit:1}); total <-one?.n'));
+  const shown=await call('oks_resolve',{src:file,reports:['answer']});assert(shown.ok,JSON.stringify(shown));const embedded=shown.reports.answer.embedded;savedPath=decodeURI(embedded.slice(embedded.indexOf('](')+2,-1));assert.equal((await call('oks_resolve',{src:file,reports:['answer']})).counts.executed,0);
   await assert.rejects(call('oks_project',{input:'output-1.html'}),/Unknown structured resource/);
   write(source.replace('</Dari>','<Template name="second"><article><Value data={total}/></article></Template></Dari>'));
   result=await call('oks_run_answer',{src:file});assert.equal(result.delivery.status,'selection_required');

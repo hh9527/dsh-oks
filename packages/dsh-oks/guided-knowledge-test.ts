@@ -19,7 +19,7 @@ assert.deepEqual(domainSummary(graph,'demo'),summary);
 const calls: unknown[] = [];
 const stub = (name:string):ToolDefinition => ({name,description:'stub',parameters:{type:'object'},output:{schema:{},render(){return [];}},async execute(args){calls.push(args);return args;}});
 const knowledge = {ensureWorkspace(){return {settings:{domain:'demo'}} as WorkspaceEntry;},async ensureIndex(){return {knowledge:graph};}} as unknown as Knowledge;
-const tools=guidedTools(['oks_project','oks_read','oks_list','oks_write','oks_edit','oks_delete','ka_ask','oks_check','oks_run_answer','oks_run','oks_show','renew_context'].map(stub),knowledge);
+const tools=guidedTools(['oks_project','oks_read','oks_list','oks_write','oks_edit','oks_delete','ka_ask','oks_check','oks_run_answer','oks_resolve','renew_context'].map(stub),knowledge);
 const call=(name:string,args:object)=>tools.find(t=>t.name===name)!.execute(args as never,{});
 assert(!tools.some(t=>t.name==='oks_project'));
 assert(tools.some(t=>t.name==='ka_ask'));
@@ -56,7 +56,7 @@ await assert.rejects(call('oks_read',{path:'oks://domain/other.md'}));
 assert(!help.files.some(f=>f.name.endsWith('/project.md')));
 for(const name of ['oks_project','oks_result','oks_run_answer','oks_show','renew_context']) assert(!tools.some(t=>t.name===name));
 assert(tools.some(t=>t.name==='oks_check'));
-assert(tools.some(t=>t.name==='oks_run'));
+assert(tools.some(t=>t.name==='oks_resolve'));
 
 console.log('Guided knowledge: summary, constraints, immutable graph, fixed tools and resource boundaries passed');
 
@@ -65,7 +65,8 @@ const registered: ToolDefinition[] = [];
 const disposers: (() => void)[] = [];
 apply({get(){return undefined;},logger:{info(){}},tools:{register(t){registered.push(t);}},effect(fn){const d=fn();if(d)disposers.push(d);},on(){return ()=>{};}} as never,{});
 try {
-  assert(registered.some(t=>t.name==='oks_run'));
+  assert(registered.some(t=>t.name==='oks_resolve'));
+  assert(!registered.some(t=>['oks_run','oks_show'].includes(t.name)));
   const value = {ok:true,data:{text:'x'.repeat(20000)}};
   for (const name of ['oks_cap','oks_info','oks_check']) {
     const definition = registered.find(t=>t.name===name)!;

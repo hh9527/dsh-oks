@@ -41,7 +41,9 @@ const chart=async({spec,data,nodes}:any)=>{
  writeFileSync(join(DEV_ROOT,file),source);
  const result=await call('oks_run_answer',{src:file});
  if(result.delivery.status!=='ready')throw new Error(JSON.stringify(result));
- const shown=await call('oks_show',{input:file+'#figure'});
+ const publication=await call('oks_resolve',{src:file,figures:['figure']});assert(publication.ok,JSON.stringify(publication));
+ const embedded=publication.figures.figure.embedded;const path=decodeURI(embedded.slice(embedded.indexOf('](')+2,-1));
+ const shown={path,markdown:embedded,title:embedded.slice(2,embedded.indexOf(']('))};
  const figure=await call('oks_project',{input:file+'#figure'});
  return {value:{ok:true,asset:shown.path,rowCount:figure.data.rows.length,spec:figure.data.spec,title:shown.title},text:shown.markdown};
 };
@@ -618,7 +620,9 @@ try {
   for(const parent of Object.values(graphRoot.inputs!))assert.ok(graphInput.origin.nodes[parent]);
   const archived=await call('oks_run_answer',{src:'.work/chart.dari'});
   assert.equal(archived.delivery.status,'ready');
-  const graphReport=readReportPage(readFileSync((await call('oks_show',{input:'.work/chart.dari#answer'})).path,'utf8'));
+  const publication=await call('oks_resolve',{src:'.work/chart.dari',reports:['answer']});assert(publication.ok,JSON.stringify(publication));
+  const embedded=publication.reports.answer.embedded;
+  const graphReport=readReportPage(readFileSync(decodeURI(embedded.slice(embedded.indexOf('](')+2,-1)),'utf8'));
   assert.ok(!('error' in graphReport));
   assert.deepEqual((graphReport.dari.figures.rendered.data as any).nodeRows,graphNodes);
   assert.deepEqual((graphReport.dari.figures.rendered.data as any).rows,graphEdges);

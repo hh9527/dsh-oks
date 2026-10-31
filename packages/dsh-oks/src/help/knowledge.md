@@ -26,4 +26,4 @@ Field 的 roles 标记称谓（Appellation）、指代（Reference）、分类�
 
 `oks_search({query:"领域词汇",dataset:"device",take:10})` 模糊检索知识 ID、名称和说明；多词按覆盖度排序，支持部分词与英文轻微拼写错误，不推断同义词。dataset 与 type 是可选筛选，命中 ID 交给 oks_info。
 
-`oks_list({path:"oks://help/"})` 列出文本手册，oks_read 按需阅读。DARI、查询、时间、图表分别见 draft.md、query.md、time.md、figures.md。oks_check 检查设计与列类型，oks_run 执行整稿并返回事实。
+`oks_list({path:"oks://help/"})` 列出文本手册，oks_read 按需阅读。DARI、查询、时间、图表分别见 draft.md、query.md、time.md、figures.md。oks_check 检查设计与列类型，oks_resolve 按 data/figures/reports 选择绑定并解析其依赖。
