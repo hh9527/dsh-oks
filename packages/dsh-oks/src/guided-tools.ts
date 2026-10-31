@@ -66,6 +66,16 @@ export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge)
         return t.execute(raw, exec);
       },
     };
+    if (['oks_check','oks_resolve'].includes(t.name)) return {
+      ...t,
+      async execute(raw: never, exec: ToolExec) {
+        const result = await t.execute(raw, exec);
+        // Only the public tool boundary turns domain failures into host tool errors.
+        // Keep the complete receipt in the message: DSH exposes only Error.message to the agent.
+        if (isRecord(result) && result.ok === false) throw new Error(`${t.name} failed:\n${JSON.stringify(result, null, 2)}`);
+        return result;
+      },
+    };
     return {...t, description:t.description.replace('Verify returned expressions with oks_project and read the corresponding knowledge declarations.', 'Read precise definitions with oks_info and discover connections with oks_cap.').replaceAll('oks_project','oks_result')};
   }), ...fixed];
 }

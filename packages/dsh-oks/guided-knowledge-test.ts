@@ -89,3 +89,24 @@ assert.equal((await call('oks_info',{ids:cap.data.index.Dimension}) as any).data
 await assert.rejects(call('oks_cap',{dataset:'d'}));
 await assert.rejects(call('oks_cap',{}));
 assert.equal((await call('oks_info',{ids:['entities/e']}) as any).data.items[0].entity,'e');
+
+// Public tools throw failed receipts; internal definitions keep structured results.
+for (const name of ['oks_check','oks_resolve']) {
+  const failure = {ok:false,status:'invalid',diagnostics:[{file:'oks://work/test.dari',stage:'type',message:'Expected number',span:{start:{line:3,column:4,offset:20},end:{line:3,column:5,offset:21}}}]};
+  let result: unknown = failure;
+  const internal = {...stub(name),async execute(){return result;}};
+  const surface = guidedTools([stub('oks_project'),internal],knowledge).find(t=>t.name===name)!;
+  assert.equal(await internal.execute(),failure);
+  await assert.rejects(surface.execute({} as never,{}),(error:unknown)=>{
+    assert(error instanceof Error);
+    assert(error.message.startsWith(`${name} failed:\n`));
+    assert.deepEqual(JSON.parse(error.message.slice(error.message.indexOf('\n')+1)),failure);
+    return true;
+  });
+  result = {ok:true,columns:[{name:'n',type:'Int'}]};
+  assert.equal(await surface.execute({} as never,{}),result,'Success receipts pass through unchanged');
+  const existing = new Error('aborted');
+  const throwing = guidedTools([stub('oks_project'),{...internal,async execute(){throw existing;}}],knowledge).find(t=>t.name===name)!;
+  await assert.rejects(throwing.execute({} as never,{}),error=>error===existing,'Existing exceptions pass through unchanged');
+}
+console.log('Public DARI failures throw complete receipts; internal results and successes are unchanged');
