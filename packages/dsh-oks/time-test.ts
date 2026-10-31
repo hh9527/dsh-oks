@@ -6,7 +6,7 @@ let checks = 0;
 const run=async(args:unknown,value:unknown=ctx)=>{checks++;return timeWindows(value,args);};
 const verify = (rows:any[]) => {
   for (const [i,row] of rows.entries()) {
-    for (const b of [row.start,row.end]) {assert.equal(Date.parse(b.rfc3339), b.epochMillis);assert.equal(Date.parse(b.dateTimeUtc),b.epochMillis);assert.match(b.dateTimeUtc,/Z$/);}
+    for (const b of [row.start,row.end]) {assert.equal(Date.parse(b.rfc3339), b.epochMillis);assert.equal(Date.parse(b.dateTimeUtc),b.epochMillis);assert.match(b.dateTimeUtc,/\.\d{3}Z$/);}
     assert.ok(row.start.epochMillis < row.end.epochMillis);
     if (i > 0) assert.deepEqual(rows[i-1].end,row.start);
   }
@@ -16,12 +16,14 @@ try {
   assert.deepEqual(complete.map(w=>w.label),['2026-07','2026-08','2026-09']);
   assert.equal(complete[2].end.rfc3339,'2026-10-01T00:00:00+08:00');
   assert.equal(complete[2].end.epochMillis,1790784000000);
+  assert.equal(complete[2].end.dateTimeUtc,'2026-09-30T16:00:00.000Z');
   const current = await run({unit:'month',count:5,mode:'current'});
   assert.deepEqual(current.map(w=>w.label),['2026-06','2026-07','2026-08','2026-09','2026-10']);
   assert.equal(current[4].end.rfc3339,'2026-11-01T00:00:00+08:00');
   const rolling = await run({unit:'month',count:1,mode:'rolling'});
   assert.equal(rolling[0].start.rfc3339,'2026-09-19T11:41:03.456+08:00');
   assert.equal(rolling[0].end.epochMillis,ctx.utc.epochMillis);
+  assert.equal(rolling[0].end.dateTimeUtc,'2026-10-19T03:41:03.456Z');
   const week = await run({unit:'week',count:2,mode:'complete'});
   assert.deepEqual(week.map(w=>w.label),['2026-10-05','2026-10-12']);
   const quarter = await run({unit:'quarter',count:2,mode:'current'});

@@ -19,7 +19,7 @@ complete 返回最近 N 个已完成日历周期。current 包含当前周期，
 每个窗口包含 label、zone、start 和 end。start/end 是 TimePoint，直接提供三种字段：
 
 - epochMillis：EpochMillis，UTC epoch 毫秒
-- dateTimeUtc：DateTimeUtc，规范 UTC 文本，以 Z 结尾
+- dateTimeUtc：DateTimeUtc，固定三位毫秒的规范 UTC 文本，格式 YYYY-MM-DDTHH:MM:SS.SSSZ
 - rfc3339：String，带本地偏移的展示文本
 
 根据领域维度声明的逻辑类型选择 epochMillis 或 dateTimeUtc。时间角色 ID 说明语义，query.time_windows.dimension 使用实际维度 ID。
