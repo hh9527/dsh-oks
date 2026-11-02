@@ -290,15 +290,14 @@ try {
     throw new Error(`留余量用的上限不该出现在刻度上，实际刻度：${JSON.stringify(pctTicks)}`);
   }
   console.log('  百分比堆叠：刻度 ' + JSON.stringify(pctTicks) + '（上限被隐掉，顶部留了余量）');
-  // 描边要比填充深一档：同色叠同色时，堆叠最上层那条外缘线会整个消失
-  //（层与层之间因为有别的颜色垫着还看得出来，所以只有最上面那条出问题）。
+  // 序列颜色统一用于图例、描边与填充；面积用透明度区分描边。
   const strokeColors = [...new Set([...pctSvg.matchAll(/stroke="(#[0-9a-fA-F]{6})"[^>]*stroke-width="2"/g)].map((m) => m[1]))];
-  const fillColors = new Set([...pctSvg.matchAll(/fill="(#[0-9a-fA-F]{6})"/g)].map((m) => m[1]));
-  const sameColor = strokeColors.filter((color) => fillColors.has(color));
-  if (sameColor.length > 0) {
-    throw new Error(`描边不该与填充同色（同色等于看不见），发现：${JSON.stringify(sameColor)}`);
+  assert.deepEqual(strokeColors, SERIES_COLORS.slice(0, 3));
+  for (const color of strokeColors) {
+    assert.ok(pctSvg.includes(`fill="${color}"`), `图例与填充应共享描边颜色 ${color}`);
   }
-  console.log('  描边与填充不同色：' + JSON.stringify(strokeColors));
+  assert.ok(pctSvg.includes('fill-opacity="0.7"'), '面积用透明度保留描边对比');
+  console.log('  图例、描边、填充共享序列颜色：' + JSON.stringify(strokeColors));
   // 时间轴 + stack='percent'：归一化不能被时间轴分支覆盖。这条曾经让总和线一路爬出绘图区，
   // 真机上看起来就是"图被截断了"——比数值错更难发现，因为图还画得出来。
   const timePctRows = ['a', 'b', 'c'].flatMap((s2, j) =>

@@ -22,7 +22,6 @@ import {
   toNumber,
   valueAxisLabel,
   type ChartKind,
-  darken,
   type LayoutOverrides,
   type MarkLine,
   type Row,
@@ -688,11 +687,13 @@ export const buildOption = (
     const color = colorAt(name, index);
     const base = {
       name: name === '' ? axisName(spec.valueLabel, spec.unit) ?? 'value' : name,
-      data,
-      itemStyle: {
-        // 负值换区分色：柱状图里正负同轴时更好读。
-        color: (params: { value: number | null }) => (params.value !== null && params.value < 0 ? NEGATIVE_COLOR : color),
-      },
+      // With a categorical legend, color always identifies the series.
+      // Sign coloring is reserved for bars without a categorical legend.
+      data: data.map((value) => legend === undefined && spec.second == null
+        && (spec.kind === 'bar' || spec.kind === 'column') && value !== null && value < 0
+        ? { value, itemStyle: { color: NEGATIVE_COLOR } }
+        : value),
+      itemStyle: { color },
       connectNulls,
       // 堆叠只在 column / area 上有意义：同一个 stack 名的序列会叠在一起。
       stack: stack === undefined ? undefined : 'total',
@@ -707,8 +708,8 @@ export const buildOption = (
         smooth: false,
         symbol: 'circle',
         symbolSize: 6,
-        // 描边比填充深一档：同色叠同色时，最上面那条外缘线会整个消失。
-        lineStyle: { width: 2, color: darken(color) },
+        // Lines, symbols and legend swatches share the series identity color.
+        lineStyle: { width: 2, color },
         areaStyle: spec.kind === 'area' ? { color, opacity: stack === undefined ? 0.18 : 0.7 } : undefined,
       };
     }
@@ -891,7 +892,7 @@ export const buildOption = (
       name: name === '' ? axisName(spec.valueLabel, spec.unit) ?? 'value' : name,
       value: categories.map((category) => points.get(name)?.get(category) ?? null),
       itemStyle: { color: colorAt(name, index) },
-      lineStyle: { width: 2, color: darken(colorAt(name, index)) },
+      lineStyle: { width: 2, color: colorAt(name, index) },
       areaStyle: { color: colorAt(name, index), opacity: 0.12 },
       label: showLabels
         ? { show: true, fontSize: Math.max(9, labelFont - 2), color: '#3d4d5c' }
