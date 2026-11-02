@@ -26,7 +26,7 @@ badSpec <- {columns:["missing"]};
 <ColumnChart name="unused" spec={spec} data={rows} />
 <Table name="bad" spec={badSpec} data={rows} />
 </Figures>
-<Report name="answer"><article><h1>报告</h1><p><Value data={rows[0].n}/></p><figure><Figure ref="used"/><figcaption>说明</figcaption></figure></article></Report>
+<Report name="answer"><article><h1>报告</h1><p><Value data={rows[0].n}/></p><UseFigure ref="used" caption="说明"/></article></Report>
 <Report name="other"><article><p>独立报告</p><Value data={ rows [ 0 ] ["n"] }/></article></Report>
 </Dari>`;
 const read=(current=source)=>runtime.read('reports.answer',current);
@@ -72,9 +72,10 @@ try{
  assert.throws(()=>withReportArchive('<html/>',first.archive!),/元数据/);
  const invalidPage=withReportArchive(page,{...first.archive!,version:2} as any);
  assert.match((readReportPage(invalidPage) as {error:string}).error,/版本/);
- const inline=source.replace('<Report name="other"><article><p>独立报告</p><Value data={ rows [ 0 ] ["n"] }/></article></Report>','<Template name="other"><article><figure id="inline-chart"><Table spec={badSpec} data={rows}/></figure></article></Template>');
- const inlineRun=await runtime.run(inline);assert.equal(inlineRun.status,'complete',inlineRun.error);const inlineArchive=runtime.read('reports.answer',inline).value.data as any;
- assert.ok(Object.values(inlineArchive.dari.figures).some((f:any)=>f.status==='failed'&&f.code.includes('<Table spec={badSpec}')));
+ const failedReference=source.replace('<p>独立报告</p><Value data={ rows [ 0 ] ["n"] }/>','<UseFigure ref="bad"/>');
+ const failedRun=await runtime.run(failedReference);assert.equal(failedRun.status,'complete',failedRun.error);
+ assert.equal(failedRun.outputs.get('reports.other')?.status,'blocked');
+ assert.equal((runtime.read('reports.answer',failedReference).value.data as any).dari.figures.bad.status,'failed');
  const huge=source.replace('保留原始口径与注释','长'.repeat(40000)),limited=new DraftRuntime(backend,{maxOutputBytes:120000});
  const over=await limited.run(huge);assert.equal(over.archive,undefined);assert.match(over.outputs.get('reports.other')!.error!,/budget/);
  assert.throws(()=>limited.read('reports.other',huge),/budget/);limited.dispose();

@@ -39,13 +39,11 @@ assert(!summary.includes('ColumnChart'));
 assert(summary.includes('identity'));
 for(const forbidden of ['forbidden reverse','vocabulary-only','local-only','referenced_by'])assert(!summary.includes(forbidden));
 assert.equal(await readDomainSummary(knowledge,exec('large')),summary);
-const project:ToolDefinition={name:'oks_project',description:'internal',parameters:{},output:{schema:{},render(){return [];}},async execute(){throw Error('not used');}};
-const stubs=['oks_read','oks_list','oks_write','oks_edit','oks_delete'].map(name=>({...project,name}));
-const tools=guidedTools([project,...stubs],knowledge);
+const tools=guidedTools([],knowledge);
 const call=(name:string,args:object,domain='large')=>tools.find(t=>t.name===name)!.execute(args as never,exec(domain));
 for(const domain of ['large','other']) {
- await assert.rejects(call('oks_read',{path:DOMAIN_SUMMARY_URI},domain),/ka_ask/);
- await assert.rejects(call('oks_list',{path:'oks://domain/'},domain),/ka_ask/);
+ await assert.rejects(call('oks_read',{path:DOMAIN_SUMMARY_URI},domain),/built-in manuals/);
+
 }
 for(const tool of tools)assert(!JSON.stringify({description:tool.description,parameters:tool.parameters}).includes('oks://domain/'));
 const other=await readDomainSummary(knowledge,exec('other'));

@@ -17,7 +17,7 @@ import type { ContextTimeZone } from '../time.ts';
 import { tableMarkdown } from '../view/table.ts';
 import { buildOption, CHART_WIDTH } from '../chart/option.ts';
 import { renderEchartsSvg } from '../chart/echarts.ts';
-import { applyInferredXType, chartTitle, missingColumns, parseChartSpec, parseTableSpec, shapeProblem } from '../chart/spec.ts';
+import { chartTitle, missingColumns, parseChartSpec, parseTableSpec, shapeProblem } from '../chart/spec.ts';
 import { assembleReport } from '../report/assemble.ts';
 import type { ReportBinding } from '../report/assemble.ts';
 import { restoreAssets } from '../report/page.ts';
@@ -280,6 +280,11 @@ export function createDraftBackend(options: {
             const t=typeOf(second.data);const value=typeof spec.value==='string'?spec.value:undefined;
             const column=t.kind==='table'?t.columns.find(c=>c.name===value):undefined;
             if(column&&!['Int','Float'].includes(column.type))throw new Error(`Figure value ${value} requires a numeric column, got ${column.type}`);
+            if(t.kind==='table'&&(spec.kind==='line'||spec.kind==='area')){
+              const x=t.columns.find(c=>c.name===spec.x);
+              const compatible:Record<string,string[]>={Int:['Int'],Float:['Int','Float'],String:['String'],Rfc3339:['String','DateTimeUtc'],EpochMillis:['Int','EpochMillis']};
+              if(x&&!compatible[String(spec.xType)]?.includes(x.type))throw new Error(`Figure x ${spec.x} with xType ${spec.xType} has incompatible column type ${x.type}`);
+            }
           }
         }
         if(!known(second.data))return;
@@ -404,7 +409,6 @@ export function createDraftBackend(options: {
       const columns = [...new Set(rows.flatMap(row => Object.keys(row)))];
       const missing = missingColumns(parsed.spec, columns, rows.length);
       if (missing.length) throw new Error(`Missing figure columns: ${missing.join(', ')}`);
-      applyInferredXType(parsed.spec, rows);
       const issue = shapeProblem(rows, parsed.spec);
       if (issue) throw new Error(issue);
       const nodeRows = parsed.spec.kind === 'graph' ? rowsOf(input.nodes, 'render_figure.nodes') : undefined;

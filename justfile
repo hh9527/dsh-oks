@@ -13,8 +13,8 @@ export OKS_WORKSPACE := absolute_path(workspace)
 default:
     @just --list
 
-# 构建插件并安装预设；运行环境全部放在 target 下。
-install:
+# 构建插件并安装完整 Web profile，包含主 Agent 文件工具。
+install-profile:
     #!/usr/bin/env bash
     set -euo pipefail
     REPO_DIR="$PWD"
@@ -23,8 +23,8 @@ install:
     PATCH_ID='preset-oks'
     PROFILE="$DSH_PROFILE"
     DSH_HOME_DIR="$DSH_HOME"
-    fail() { printf 'just install: %s\n' "$*" >&2; exit 1; }
-    say() { printf 'just install: %s\n' "$*"; }
+    fail() { printf 'install-profile: %s\n' "$*" >&2; exit 1; }
+    say() { printf 'install-profile: %s\n' "$*"; }
     [[ "$OKS_INSTALL_PORT" =~ ^[1-9][0-9]{0,4}$ ]] && (( OKS_INSTALL_PORT <= 65535 )) || fail 'port 必须是 1..65535 的整数'
     [[ "$PROFILE" =~ ^[a-zA-Z0-9_-]+$ ]] || fail 'profile 只能包含字母、数字、下划线与连字符'
     [ -f "$OKS_WORKSPACE/oks.json" ] || fail "工作区没有 oks.json：$OKS_WORKSPACE"
@@ -44,7 +44,13 @@ install:
     elif command -v dsh >/dev/null 2>&1; then
       DSH_ARR=(dsh)
     elif command -v pnpm >/dev/null 2>&1; then
-      DSH_ARR=(pnpm dlx @deepseek-ai/dsh)
+      DSH_ARR=(pnpm dlx -y
+        --allow-build @deepseek-ai/dsh-subprocess-local
+        --allow-build @google/genai
+        --allow-build koffi
+        --allow-build node-pty
+        --allow-build protobufjs
+        @deepseek-ai/dsh)
     else
       fail 'PATH 里既没有 dsh 也没有 pnpm：装一个，或用 DSH_CMD 给出调用方式（例如 DSH_CMD="pnpm dlx @deepseek-ai/dsh"）'
     fi
@@ -52,7 +58,7 @@ install:
 
     # 在临时源码副本中构建，发布件与运行依赖留在目标目录。
     command -v pnpm >/dev/null 2>&1 || fail '构建与安装需要 pnpm'
-    BUILD_DIR="$(mktemp -d)"
+    BUILD_DIR="$(mktemp -d "${TMPDIR:-$HOME/.cache/tmp}/oks-profile.XXXXXX")"
     trap 'rm -rf -- "$BUILD_DIR"' EXIT
     tar -C "$REPO_DIR" --exclude=.git --exclude=node_modules --exclude=target --exclude=lib -cf - . | tar -C "$BUILD_DIR" -xf -
     (
@@ -190,6 +196,45 @@ install:
     YAML
     fi
 
+    # File tools belong only to the main agent. Reinstalling also upgrades
+    # an existing managed preset without replacing its user configuration.
+    PATCH_FILE="$PATCH_FILE" node --input-type=module <<'JS'
+    import {readFileSync,writeFileSync} from 'node:fs';
+    const file=process.env.PATCH_FILE;
+    let text=readFileSync(file,'utf8');
+    const marker=/^([ \t]*)- id: preset-oks[ \t]*$/m.exec(text);
+    if(!marker)throw new Error('Missing managed OKS preset');
+    const start=marker.index;
+    const remainder=text.slice(start);
+    const next=/^-[ \t]/m.exec(remainder);
+    const end=next?start+next.index:text.length;
+    let block=text.slice(start,end);
+    const plugins=/^([ \t]*)plugins:[ \t]*$/m.exec(block);
+    if(!plugins)throw new Error('Missing OKS preset plugins');
+    const indent=plugins[1]+'  ';
+    const required=[
+     ['fs-observation-policy','@deepseek-ai/dsh-fs-observation-policy'],
+     ['tool-fs','@deepseek-ai/dsh-tool-fs'],
+     ['tool-fs-search','@deepseek-ai/dsh-tool-fs-search'],
+    ];
+    const missing=required.filter(([,name])=>!block.includes('name: "'+name+'"')&&!block.includes("name: '"+name+"'"));
+    const entries=missing.map(([id,name])=>`${indent}- id: ${id}\n${indent}  name: "${name}"`).join('\n');
+    if(entries){const at=plugins.index+plugins[0].length;block=block.slice(0,at)+'\n'+entries+block.slice(at);}
+    // Host preset validation requires this value even when the plugin has defaults.
+    const lines=block.split('\n');
+    const search=lines.findIndex(line=>/name: ['"]@deepseek-ai\/dsh-tool-fs-search['"]/.test(line));
+    if(search<0)throw new Error('Missing file search tool');
+    let stop=search+1;
+    while(stop<lines.length&&!lines[stop].startsWith(indent+'- '))stop++;
+    const settings=lines.slice(search+1,stop);
+    if(!settings.some(line=>/^\s*sampleOverCapGlobResults:/.test(line))){
+      const config=settings.findIndex(line=>line.trim()==='config:');
+      if(config<0)lines.splice(search+1,0,indent+'  config:',indent+'    sampleOverCapGlobResults: false');
+      else lines.splice(search+2+config,0,indent+'    sampleOverCapGlobResults: false');
+    }
+    block=lines.join('\n');text=text.slice(0,start)+block+text.slice(end);writeFileSync(file,text);
+    JS
+
     # 知识助手预设仅装配提示词和权限。
     if ! grep -qE '^[[:space:]]*-[[:space:]]*id:[[:space:]]*preset-oks-knowledge[[:space:]]*$' "$PATCH_FILE"; then
       cat >> "$PATCH_FILE" <<'YAML'
@@ -270,26 +315,26 @@ install:
       say "      只想保留 preset 就把它从 bundles 里删掉（本脚本不动 bundles）。"
     fi
 
-    # 启动器保存安装参数，just run 使用同一运行环境。
-    START_FILE="$DSH_HOME_DIR/start.sh" WORKSPACE="$OKS_WORKSPACE" PORT="$OKS_INSTALL_PORT" node --input-type=module - "${DSH_ARR[@]}" "$PROFILE" <<'JS'
+    # 运行目录只生成 justfile：run-dsh 直接运行，run 监听 .ctrl 后调用 run-dsh。
+    WORKSPACE="$OKS_WORKSPACE" PORT="$OKS_INSTALL_PORT" node --input-type=module - "${DSH_ARR[@]}" "$PROFILE" <<'JS'
     import {writeFileSync} from 'node:fs';
+    import {join} from 'node:path';
     const quote=value=>"'"+value.replaceAll("'", "'\\''")+"'";
     const command=process.argv.slice(2).map(quote).join(' ');
-    writeFileSync(process.env.START_FILE,
-      '#!/usr/bin/env bash\nset -euo pipefail\nexport DSH_HOME='+quote(process.env.DSH_HOME)+
-      '\nCTRL_FILE="$DSH_HOME/.ctrl"\ntouch "$CTRL_FILE"\ncd -- '+quote(process.env.WORKSPACE)+
-      '\nexec watchexec --restart --ignore-nothing --shell=none -w "$CTRL_FILE" -- '+command+' --port '+quote(process.env.PORT)+' "$@"\n',
-      {mode:0o755});
+    const home=process.env.DSH_HOME;
+    const runtime=join(home,'justfile');
+    writeFileSync(runtime,
+      'default:\n    @just --list\n\n[positional-arguments]\nrun-dsh *args:\n'+
+      '    #!/usr/bin/env bash\n    set -euo pipefail\n    export DSH_HOME='+quote(home)+
+      '\n    cd -- '+quote(process.env.WORKSPACE)+
+      '\n    exec '+command+' --port '+quote(process.env.PORT)+' "$@"\n\n'+
+      '[positional-arguments]\nrun *args:\n'+
+      '    #!/usr/bin/env bash\n    set -euo pipefail\n    export DSH_HOME='+quote(home)+
+      '\n    CTRL_FILE="$DSH_HOME/.ctrl"\n    touch "$CTRL_FILE"\n'+
+      '    exec watchexec --restart --ignore-nothing --shell=none -w "$CTRL_FILE" -- just --justfile '+quote(runtime)+' run-dsh "$@"\n');
     JS
-    say "启动：$DSH_HOME_DIR/start.sh（端口 $OKS_INSTALL_PORT，工作区 $OKS_WORKSPACE）"
-
-# 从安装时指定的工作区启动；透传 Web 应用参数。
-[positional-arguments]
-run *args:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    exec "$DSH_HOME/start.sh" "$@"
+    say "启动：just --justfile $DSH_HOME_DIR/justfile run（端口 $OKS_INSTALL_PORT，工作区 $OKS_WORKSPACE）"
 
 # 隔离核验安装和启动，不构建真实插件、不启动服务。
 test-install:
-    python3 tests/install-preset.test.py
+    python3 tests/install-profile.test.py

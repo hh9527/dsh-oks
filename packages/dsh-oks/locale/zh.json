@@ -1,4 +1,4 @@
 {
   "title": "知识服务查询 (OKS)",
-  "description": "通过 ka_ask 规整词汇，以 oks_knowledge 发现知识，在 .work/ 中编辑 Markdown 回答源码。oks_run_answer 执行查询、加工、调试与渲染，oks_project 只读已有输出；报告保存数据与完整来源。模型、领域和只读数据源由工作区 oks.json 声明。"
+  "description": "通过 ka_ask、oks_search、oks_cap、oks_info 获取领域知识，使用宿主文件工具编写 DARI；dari_check 检查全稿，dari_resolve 获取所选数据与展示引用，dari_renew_context 更新采集上下文。oks_read 只读内置手册。"
 }

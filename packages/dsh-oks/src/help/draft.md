@@ -1,6 +1,8 @@
 # DARI 分析稿
 
-一个业务问题使用一份 `.dari`。`data` 定义不可变的取数与后处理，`figure` 定义图表，`report` 定义可交付报告。用 oks_write/oks_edit 编辑，oks_check 检查；oks_resolve 检查后解析显式选择的产物及其依赖；默认直接运行，requireRunApproval=true 时先申请宿主用户批准。
+不要为了探索能力单独开分析稿，而是一个问题一个分析稿，直接在分析稿内进行尝试。 一个业务问题使用一份 `.dari`。`data` 定义不可变的取数与后处理，`figure` 定义图表，`report` 定义可交付报告。用 宿主内置文件工具 编辑，dari_check 检查；dari_resolve 检查后解析显式选择的产物及其依赖；默认直接运行，requireRunApproval=true 时先申请宿主用户批准。
+
+源码使用本地文件路径，src 可以是工作区相对路径或工作区内的绝对路径；缓存按会话和文件的真实路径隔离。用宿主内置工具读取、创建和编辑文件。`dari_check({src:"analysis.dari"})` 检查全稿，只接收 src。`oks_read` 只读取内置手册。
 
 ## 声明与节点
 
@@ -26,14 +28,11 @@ figure counts := ColumnChart(spec = {x:"name",value:"count"}, data = grouped);
 report answer := Report [
   h1 [ "对象统计" ],
   p [ "总数：", Value(data = summary?.total), ],
-  figure [
-    Figure(ref = counts),
-    figcaption [ "类别分布" ],
-  ],
+  UseFigure(ref = counts, caption = "类别分布"),
 ];
 ```
 
-figure 绑定右侧是图表组件或 Table，data 直接接受 Table(T)，无需 `.rows`。report 绑定右侧是 Report，直接写正文节点。`Figure(ref = counts)` 中 ref 是已经声明的 figure 绑定；`FigureRef(ref = counts)` 显示本报告对应的图/表编号。
+figure 绑定右侧是图表组件或 Table，data 直接接受 Table(T)，无需 `.rows`。report 绑定右侧是 Report，直接写正文节点。`UseFigure(ref = counts, caption = "说明")` 中 ref 是已经声明的 figure 绑定，caption 为可选的静态文字说明。表格使用 Table 图表组件，通过 UseFigure 嵌入；`FigureRef(ref = counts)` 显示本报告对应的图/表编号。
 
 图表属性与 Value.data 接受有类型表达式，例如 `Value(data = round(summary?.cpu,2))`。普通排版节点的属性使用静态字符串，例如 `p(class = "lead")`。业务数值通过 Value 引用；静态业务参数可以直接写入标题或正文。显式字面文本使用 `Lit ["1.2"]`；其子节点只接受字符串。Lit 声明静态文字，观测得到的业务值仍通过 Value 引用。
 
@@ -50,8 +49,8 @@ figure 绑定右侧是图表组件或 Table，data 直接接受 Table(T)，无�
 完成整稿检查后，显式选择要获得的绑定，至少选择一项：
 
 ```js
-oks_resolve({
-    src: "oks://work/<问题>.dari",
+dari_resolve({
+    src: "<问题>.dari",
     data: ["summary"],
     figures: ["counts"],
     reports: ["answer"]
@@ -60,6 +59,6 @@ oks_resolve({
 
 三个列表均可省略，名称必须对应声明种类。data 返回绑定的结构化值，包括表、对象、标量和 null。figures/reports 返回以绑定名为键的对象，每项包含 Markdown 字符串 `embedded`；把该字符串原样加入回答流即可展示图表或报告入口。展示产物不重复返回业务事实；需要解读的值通过 data 显式选择。图表可以独立交付，不要求编写 report。
 
-只执行所选产物的依赖，共享计算与缓存。普通重复解析复用查询和后处理缓存，改后处理不重新取数；refresh:true 创建新的采集上下文。
+只执行所选产物的依赖，共享计算与缓存。普通重复解析复用查询和后处理缓存，改后处理不重新取数；dari_renew_context({src}) 创建新的采集上下文，下一次解析重新取数。
 
 默认检查后直接解析。设置 requireRunApproval=true 时，每次解析通过 DSH 原生批准机制，批准绑定本稿源码、模型、数据配置和冻结的上下文。拒绝或取消时不执行；等待中源码或配置变化会拒绝继续。根据显式返回的事实解读。

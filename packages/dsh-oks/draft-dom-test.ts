@@ -28,7 +28,7 @@ report answer := Report(title = "CPU & memory") [
  p [ "<!--普通文本-->" ],
  p [ "版本：", Lit ["1.2"], ],
  p [ "参考 ", FigureRef(ref = cpu), ],
- figure [ Figure(ref = cpu), figcaption [ "窗口平均值" ], ],
+ UseFigure(ref = cpu, caption = "窗口平均值"),
 ];`;
 try{
  const {presentationManuals}=await import('./src/presentation-guide.ts');
@@ -80,8 +80,8 @@ try{
   ['report r := Report [p(class="x",class="y") ["x"],];',/Duplicate attribute/],
   ['figure f := Report [];',/requires a chart/],
   ['report r := BarChart();',/requires Report/],
-  ['report r := Report [figure [Figure(ref=f),],];figure f := BarChart();',/Undefined or forward figure/],
-  ['data x := 1; report r := Report [figure [Figure(ref=x),],];',/figure binding/],
+  ['report r := Report [UseFigure(ref = f),];figure f := BarChart();',/Undefined or forward figure/],
+  ['data x := 1; report r := Report [UseFigure(ref = x),];',/figure binding/],
   ['figure f := BarChart(spec={},data=missing);',/Undefined or forward/],
   ['report r := Report [Script ["bad"],];',/Unknown DARI component/],
   ['report r := Report [p(onclick="bad") ["x"],];',/Unsupported report attribute/],
@@ -93,20 +93,20 @@ try{
  assert.equal(parseDraft('/*hi*/ data x := {s:";}",a:[1,2]}; // trailing').nodes.length,1);
  const many='data items := [1,2];data qs := map(items,(x)=>query({limit:10,x:x}));';
  assert.equal((await checkDesign(many,'dom.dari',backend)).ok,true);
- const src='oks://work/test.dari',path=join(root,'.work/test.dari');writeFileSync(path,source);
+ const src='.work/test.dari',path=join(root,'.work/test.dari');writeFileSync(path,source);
  const drafts=createDraftTools({knowledge,attachments:()=>testAttachments(root),timeContext:{zones:new Map()} as TimeContext,approval:()=>({async request(){approvals++;return 'allowed-once';}})});
  const caller={callId:'dom-run',agent:{session:{id:'dom'}}} as ToolExec;
  const call=async(name:string,args:object)=>drafts.tools.find(t=>t.name===name)!.execute(args as never,caller) as Promise<any>;
  try{
-  const before=reads;assert.equal((await call('oks_check',{src})).ok,true);assert.equal(reads,before);assert.equal(approvals,0);
-  let result=await call('oks_resolve',{src,data:['winner'],figures:['cpu'],reports:['answer']});assert.equal(result.ok,true,JSON.stringify(result));assert.equal(approvals,1);
+  const before=reads;assert.equal((await call('dari_check',{src})).ok,true);assert.equal(reads,before);assert.equal(approvals,0);
+  let result=await call('dari_resolve',{src,data:['winner'],figures:['cpu'],reports:['answer']});assert.equal(result.ok,true,JSON.stringify(result));assert.equal(approvals,1);
   assert.match(result.figures.cpu.embedded,/^!\[/);
   const artifact=(embedded:string)=>decodeURI(embedded.slice(embedded.indexOf('](')+2,-1));
   assert(readFileSync(artifact(result.reports.answer.embedded),'utf8').includes('CPU &amp;'));
   assert.deepEqual(result.data.winner,{name:'A&B <x>',cpu:30});
   assert.deepEqual(Object.keys(result.figures),['cpu']);assert.deepEqual(Object.keys(result.figures.cpu),['embedded']);assert(!JSON.stringify(result).includes('__dom'));
   writeFileSync(path,source+'\nreport other := Report(title = "其他报告") [p ["另一份"],];');
-  result=await call('oks_resolve',{src,reports:['answer','other']});assert.equal(result.ok,true,JSON.stringify(result));assert.deepEqual(Object.keys(result.reports),['answer','other']);
+  result=await call('dari_resolve',{src,reports:['answer','other']});assert.equal(result.ok,true,JSON.stringify(result));assert.deepEqual(Object.keys(result.reports),['answer','other']);
   assert.equal(result.data,undefined);
  }finally{drafts.dispose();}
  console.log('DOM DARI: grammar, original spans, types, Option, inline attributes, escaping, scopes, charts, report archives, one-shot approval and selected report facts passed');

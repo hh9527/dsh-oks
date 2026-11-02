@@ -120,8 +120,8 @@ console.log('Syntax diagnostics: original line, caret, expected delimiter and op
   [{...base,valueLabel:false},/spec\.valueLabel.*string/],
   [{...base,unit:42},/spec\.unit.*string/],
   [{...base,size:4},/spec\.size.*string/],
-  [{...base,xType:'category'},/spec\.xType.*number or time/],
-  [{...base,xType:'time'},/spec\.xType.*line \/ area/],
+  [{...base,xType:'category'},/spec\.xType.*line \/ area/],
+  [{...base,xType:"Rfc3339"},/spec\.xType.*line \/ area/],
   [{...base,layout:null},/spec\.layout.*对象/],
   [{...base,layout:[]},/spec\.layout.*对象/],
   [{...base,layout:{sort:'desc'}},/spec\.layout\.sort.*spec\.style\.sort/],
@@ -153,7 +153,7 @@ console.log('Syntax diagnostics: original line, caret, expected delimiter and op
  const good={...base,layout:{height:300,rowHeight:20,tickCount:5},style:{labels:true,sort:'desc',colors:['#123','#1234','#123456','#12345678']}};
  const checked=await check(`data rows := query({limit:5});data spec := ${JSON.stringify(good)};figure chart := BarChart(spec=spec,data=rows);`);
  assert.equal(checked.ok,true,JSON.stringify(checked));assert.equal(reads,before);
- assert('spec' in parseChartSpec({kind:'line',x:'n',value:'n',xType:'time'}));
+ assert('spec' in parseChartSpec({kind:'line',x:'n',value:'n',xType:"Rfc3339"}));
  const nonfinite=parseChartSpec({kind:'bar',...base,marks:[{value:Infinity}]});assert('error' in nonfinite);assert.match(nonfinite.error,/finite/);
  assert.throws(()=>parseTableSpec({columns:['n'],height:200}),/Unknown table spec fields/);
  assert.throws(()=>parseTableSpec({columns:['n'],title:42}),/title must be a string/);

@@ -26,7 +26,5 @@ report answer := Report(title = "NS 网元分类概览") [
     Value(data = summary?.element_count),
     " 个网元。",
   ],
-  figure [
-    Figure(ref = classChart),
-  ],
+  UseFigure(ref = classChart),
 ];

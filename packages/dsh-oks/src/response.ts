@@ -27,7 +27,7 @@ export interface NamedIntentView {
   intent: unknown;
 }
 
-/** oks_check_query_intent 渲染读到的值。 */
+/** dari_check_query_intent 渲染读到的值。 */
 export interface CheckValue {
   trace?: readonly TraceStep[] | null;
   intents?: readonly NamedIntentView[] | null;
@@ -153,37 +153,10 @@ export function renderWorkRead(args:{limit?:unknown},value:ReadResult):RenderBlo
   return [{type:'text',text:formatRead(value,args.limit)}];
 }
 
-/** oks_write / oks_edit：落点与尺寸。 */
-export interface WorkWriteValue {
-  ok?: boolean;
-  file?: string;
-  bytes?: number;
-  created?: boolean;
-  replaced?: number;
-}
-
-export function renderWorkWrite(_args: unknown, value: WorkWriteValue | null | undefined): RenderBlock[] {
-  if (value?.ok !== true) return textBlock([JSON.stringify(value ?? { ok: false, error: { code: 'work_unwritable' } })]);
-  return textBlock([`${value.file ?? ''} · ${value.created === true ? '已创建' : '已覆盖'} · ${value.bytes ?? 0} B`]);
-}
-
-export function renderWorkEdit(_args: unknown, value: WorkWriteValue | null | undefined): RenderBlock[] {
-  if (value?.ok !== true) return textBlock([JSON.stringify(value ?? { ok: false, error: { code: 'work_unwritable' } })]);
-  return textBlock([`${value.file ?? ''} · 已替换 ${value.replaced ?? 0} 处 · 现在 ${value.bytes ?? 0} B`]);
-}
-
 /** 加工读取回执。 */
 export interface TransformValue {
   ok?: boolean;
   data: unknown;
-}
-
-/** oks_delete 渲染删除结果。 */
-export function renderWorkDelete(_args: unknown, value: { ok?: boolean; file?: string; remaining?: number } | null | undefined): RenderBlock[] {
-  if (value?.ok !== true) {
-    return textBlock([JSON.stringify(value ?? { ok: false, error: { code: 'work_unwritable' } })]);
-  }
-  return textBlock([`${value.file ?? ''} · 已删除 · 代码区还剩 ${value.remaining ?? 0} 个文件`]);
 }
 
 /** 将结构化值渲染成 JSON。 */
@@ -302,7 +275,7 @@ const rejectedIndexes = (diagnostics: readonly DiagnosticEntry[] | null | undefi
     .filter((item) => item?.diagnostic?.severity === 'Error')
     .map((item) => item.index))].sort((left, right) => left - right);
 
-/** oks_check_query_intent 的模型可见渲染：结论按名字给，通过项带 key，**没有 SQL**。 */
+/** dari_check_query_intent 的模型可见渲染：结论按名字给，通过项带 key，**没有 SQL**。 */
 export function renderCheck(_args: unknown, value: CheckValue | null | undefined): RenderBlock[] {
   const items = value?.intents ?? [];
   const results = value?.results ?? [];
@@ -333,7 +306,7 @@ export function renderCheck(_args: unknown, value: CheckValue | null | undefined
   const runnable = value?.queryCount ?? 0;
   lines.push('', results.length > 0 && accepted.length === results.length
     ? `校验结论：${results.length} 个 Intent 全部可用（${runnable} 个查询可执行）。用 oks_exec_query_intent 带同一批名字与各自的 key 提交就能拿到结果。`
-    : `校验结论：${accepted.length}/${results.length} 可用（${runnable} 个查询可执行）。用 oks_project 读取 input="oks://knowledge"，按返回的 key 核实声明再修；查询语法通过 oks://help/query.md 读取，保持业务含义不变。`);
+    : `校验结论：${accepted.length}/${results.length} 可用（${runnable} 个查询可执行）。用 oks_info 按知识 ID 核实声明再修；查询语法通过 oks://help/query.md 读取，保持业务含义不变。`);
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 
@@ -387,7 +360,7 @@ export function renderQuery(_args: unknown, value: QueryValue | null | undefined
         + `${result.truncated ? `（已到行数上限 ${value!.queryMaxRows}，结果还有更多）` : ''}`);
       lines.push(`asset:  ${result.asset}`);
       lines.push(`columns:  ${result.columns.map((column) => `${column.name}:${column.types.join('|')}`).join(', ')}`);
-      lines.push('（数据行与语句都不在回执里：数据按需用 oks_project 取，语句在执行记录里）');
+      lines.push('（数据行与语句都不在回执里：数据按需用 dari_resolve 选择绑定获取，语句在执行记录里）');
       if (result.rowCount === 0 && value?.window) {
         lines.push(`提示：这份数据的窗口是 [${value.window.start}, ${value.window.endExclusive})，被过滤掉的可能是时间落在窗口之外。`);
       }
@@ -494,7 +467,7 @@ export function renderJqTransform(args: unknown, value: TransformValue | null | 
   return renderValue(args, value);
 }
 
-/** oks_project：完整渲染结构化值，最终回执由工具预算约束。 */
+/** 完整渲染结构化值。 */
 export function renderJqResult(args: unknown, value: unknown): RenderBlock[] {
   return renderJqTransform(args,value as TransformValue);
 }

@@ -10,7 +10,7 @@ import {parseDraft} from './src/draft/document.ts';
 import type {Knowledge,WorkspaceEntry} from './src/knowledge.ts';
 import type {TimeContext} from './src/time-context.ts';
 const root=mkdtempSync(join(tmpdir(),'oks-figures-'));mkdirSync(join(root,'.work'));
-const file='oks://work/analysis.dari',physical=join(root,'.work/analysis.dari');
+const file='.work/analysis.dari',physical=join(root,'.work/analysis.dari');
 let queries=0,renders=0;let failSave=false;
 const attachments={async saveFile({data,name}:{data:Uint8Array;name:string}){
  if(failSave)throw new Error('attachment store failed');
@@ -28,10 +28,10 @@ rows <-data([{level:"major",n:3},{level:"minor",n:2}]);
 spec <-{x:"level",value:"n",title:"级别分布"};table <-{columns:["level","n"]};
 </Pipeline><Figures><PieChart name="severity" spec={spec} data={rows} /><Table name="details" spec={table} data={rows} /></Figures>`;
 const report=(name:string,body:string)=>`<Report name="${name}"><article>${body}</article></Report>`;
-const fig=(name:string)=>`<figure><Figure ref="${name}"/><figcaption>说明</figcaption></figure>`;
+const fig=(name:string)=>`<UseFigure ref="${name}" caption="说明"/>`;
 const write=(s:string)=>writeFileSync(physical,s);
 const pathOf=(embedded:string)=>decodeURI(embedded.slice(embedded.indexOf('](')+2,-1));
-const resolve=(selection:object,exec=caller)=>call('oks_resolve',{src:file,...selection},exec);
+const resolve=(selection:object,exec=caller)=>call('dari_resolve',{src:file,...selection},exec);
 try{
  assert(!drafts.tools.some(t=>['oks_run','oks_show'].includes(t.name)));
  write(base+'</Dari>');
@@ -57,7 +57,7 @@ try{
  await assert.rejects(resolve({}),/at least one/);await assert.rejects(resolve({data:'rows'}),/array/);
  assert.throws(()=>parseDraft(base.replace('name="details"','name="severity"')+'</Dari>'),/Duplicate figure/);
  assert.throws(()=>parseDraft(base+report('broken',fig('unknown'))+'</Dari>'),/Unknown figure/);
- assert.throws(()=>parseDraft(base+report('broken','<p><FigureRef ref="severity"/></p>')+'</Dari>'),/requires a Figure/);
+ assert.throws(()=>parseDraft(base+report('broken','<p><FigureRef ref="severity"/></p>')+'</Dari>'),/requires a UseFigure/);
  write(base.replace('"level","n"','"missing"')+report('broken',fig('details'))+'</Dari>');
  const bad=await resolve({reports:['reports.broken']});assert.equal(bad.ok,false);assert.equal(bad.execution,'not performed');
  // DOM bindings: shared dependency closure, optional/scalar/table values and no Report requirement.
@@ -67,7 +67,7 @@ data absent := null;
 data scalar := 7;
 data bad := select_one({from:{r:rows},fields:r=>({n:r.r.n})});
 figure chart := BarChart(spec={x:"name",value:"n"},data=rows);
-report answer := Report [p [Value(data=summary?.n)],figure [Figure(ref=chart)]];`);
+report answer := Report [p [Value(data=summary?.n)],UseFigure(ref = chart)];`);
  const modern=await resolve({data:['summary','absent','scalar','rows'],figures:['chart'],reports:['answer']});assert.equal(modern.ok,true,JSON.stringify(modern));assert.deepEqual(modern.data.summary,{n:5});assert.equal(modern.data.absent,null);assert.equal(modern.data.scalar,7);
  assert.equal(modern.counts.failed,0,'unselected cardinality failure is never executed');
  assert.deepEqual(Object.keys(modern.figures),['chart']);assert.deepEqual(Object.keys(modern.reports),['answer']);
@@ -75,7 +75,7 @@ report answer := Report [p [Value(data=summary?.n)],figure [Figure(ref=chart)]];
  // Data-only outputs need neither report nor attachment service; large values are returned intact.
  write('data big := '+JSON.stringify('x'.repeat(20000))+';');
  const large=await resolve({data:['big']});assert.equal(large.data.big.length,20000);
- const tool=drafts.tools.find(t=>t.name==='oks_resolve')!;assert.equal(JSON.parse((tool.output.render as Function)({},large)[0].text).data.big.length,20000);
+ const tool=drafts.tools.find(t=>t.name==='dari_resolve')!;assert.equal(JSON.parse((tool.output.render as Function)({},large)[0].text).data.big.length,20000);
  write('data value := 42;');const other=await resolve({data:['value']},{agent:{session:{id:'other'}}});assert.equal(other.ok,true);assert.equal(other.data.value,42,'each session resolves independently');
  rmSync(physical);assert.equal(readFileSync(pathOf(image.embedded),'utf8'),original);assert.equal(readFileSync(pathOf(embedded),'utf8'),archived);
  assert.equal(queries,0);assert.equal(existsSync(join(root,'artifacts')),false);assert.equal(existsSync(join(root,'.oks')),false);

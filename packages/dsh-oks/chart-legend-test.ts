@@ -15,7 +15,7 @@ for (const kind of ['column', 'bar', 'line', 'area'] as const) {
         { tenant: 'B', severity: 'major', n: -6 },
       ], {
         kind, title: null, sourceLabel: 'fixture', x: 'tenant', value: 'n', series: 'severity',
-        xType: null, xLabel: null, valueLabel: null, unit: null,
+        xType: kind==='line'||kind==='area'?'String':null, xLabel: null, valueLabel: null, unit: null,
         stack: 'total', style, entityColor,
       });
       const svg = renderEchartsSvg(built.option, CHART_WIDTH, built.height);

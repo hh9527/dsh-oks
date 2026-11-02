@@ -10,7 +10,7 @@
 - `time.md`：时间上下文和日历窗口。
 - `figures.md`：图表通用语法与按需读取入口。单图表、Report 和通用规格手册从结构化能力生成。
 
-帮助文档是普通 Markdown 文本，标题与代码块仅用于阅读，不承担知识字段或结构化值的编码。通过 oks://help/*.md 直接读取，oks_list 可列出文件。
+帮助文档是普通 Markdown 文本，标题与代码块仅用于阅读，不承担知识字段或结构化值的编码。通过 oks://help/*.md 直接读取，oks_read({path:"oks://help/"}) 可列出手册。
 
 模型知识保留结构化事实；图表与报告的结构化能力、约束和示例维护在 `src/presentation-facts.ts`，由单图表手册、report.md 和 figure-options.md 按主题提供规格。文本帮助按主题解释用法，不参与结构化知识生成。
 

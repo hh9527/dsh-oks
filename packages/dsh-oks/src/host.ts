@@ -131,6 +131,7 @@ export interface WorkspaceProbe {
  *  `get` 按已知服务名给具体类型，其余回落成 unknown，取到后各调用处照旧自己判断。 */
 export interface PluginContext {
   logger?: LoggerLike | null;
+  get(name: 'sandboxPolicy'): import('./remove-file.ts').FilePolicyService | undefined;
   get(name: 'approval'): ApprovalService | undefined;
   get(name: 'attachments'): AttachmentsService | undefined;
   get(name: 'skills'): SkillsService | undefined;

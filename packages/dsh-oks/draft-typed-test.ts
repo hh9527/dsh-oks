@@ -21,7 +21,7 @@ summary <- select_one({from:{s:comparison},group_by:(r)=>({}),fields:(g,rows)=>(
 spec <- {columns:["server_id","delta"]};
 {comparison,winner,summary}
 </Pipeline><Figures><Table name="comparison" spec={spec} data={comparison}/></Figures>
-<Report name="answer"><article><p>首名 <Value data={winner?.server_id}/></p><figure><Figure ref="comparison"/></figure></article></Report></Dari>`;
+<Report name="answer"><article><p>首名 <Value data={winner?.server_id}/></p><UseFigure ref="comparison"/></article></Report></Dari>`;
 let checked=await checkDesign(source,'typed.dari',backend);
 assert.equal(checked.ok,true,JSON.stringify(checked));assert.equal(reads,0);
 assert.deepEqual(JSON.parse(JSON.stringify(checked)),checked);

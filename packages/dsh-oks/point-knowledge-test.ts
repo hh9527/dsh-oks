@@ -33,9 +33,8 @@ for(const a of [{ids:[]},{ids:[1]},{ids:Array(65).fill('datasets/a')}])assert.th
 // Dense direct alternatives are bounded and explicitly marked, not silently lost.
 const dense=structuredClone(graph);for(let i=0;i<10;i++)dense.relations['direct'+i]={from_dataset:'datasets/a',to_dataset:'datasets/b'};
 const paths=discoverPoints(dense,args).connections[0];assert.equal(paths.paths.length,8);assert.equal(paths.truncated,true);
-const stub:any={name:'oks_project',description:'stub',parameters:{},output:{schema:{},render(){return[]}},async execute(){}};
 const knowledge={ensureWorkspace(){return{}},async ensureIndex(){return{knowledge:graph}}} as unknown as Knowledge;
-const tools=guidedTools([stub],knowledge),call=(name:string,args:any)=>tools.find(t=>t.name===name)!.execute(args,{});
+const tools=guidedTools([],knowledge),call=(name:string,args:any)=>tools.find(t=>t.name===name)!.execute(args,{});
 assert.deepEqual((await call('oks_cap',args) as any).data,result);
 assert.equal((await call('oks_info',{ids:['datasets/a/dimensions/name']}) as any).data.items[0].facts.filterable,false);
 console.log('Point knowledge: anchors, evidence, exact batches, intermediary paths, limits, no recursive navigation, preserved semantics and immutable graph passed');

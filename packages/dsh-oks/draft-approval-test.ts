@@ -8,7 +8,7 @@ import type {Knowledge,WorkspaceEntry} from './src/knowledge.ts';
 import type {TimeContext} from './src/time-context.ts';
 
 const root=mkdtempSync('/opt/userhome/h00629578/.cache/tmp/oks-approval-');mkdirSync(join(root,'.work'));
-const path=join(root,'.work/test.dari'),src='oks://work/test.dari';
+const path=join(root,'.work/test.dari'),src='.work/test.dari';
 const source='<Dari><Pipeline>facts <-query({limit:5});{facts}</Pipeline></Dari>';
 let executions=0,requests=0;
 const columns=[{name:'n',type:'Int',nullable:false}];
@@ -16,13 +16,13 @@ const entry={root,modelHash:'test',settings:{domain:'test',queryMaxRows:100,requ
 const knowledge={ensureWorkspace:()=>entry,executorFor(){executions++;return {manifest:null,executor:{async send(){return {rows:[{n:7}],columns:['n'],truncated:false};},dispose(){}}};}} as unknown as Knowledge;
 let decide:ApprovalService['request']=async()=> 'rejected';
 let available=true;
-const approval:ApprovalService={async request(req){requests++;assert.equal(req.toolName,'oks_resolve');assert.equal(req.callId,'call-1');assert.match(req.reason,/^(刷新并)?解析分析稿 test\.dari$/);assert(req.reason.length<60);return decide(req);}};
+const approval:ApprovalService={async request(req){requests++;assert.equal(req.toolName,'dari_resolve');assert.equal(req.callId,'call-1');assert.match(req.reason,/^(刷新并)?解析分析稿 test\.dari$/);assert(req.reason.length<60);return decide(req);}};
 const drafts=createDraftTools({attachments:()=>testAttachments(root),knowledge,timeContext:{zones:new Map()} as TimeContext,approval:()=>available?approval:undefined});
 const caller={callId:'call-1',agent:{session:{id:'test'}}} as ToolExec;
-const call=(args:object={src,data:['facts']},exec=caller)=>drafts.tools.find(t=>t.name==='oks_resolve')!.execute(args as never,exec) as Promise<any>;
+const call=(args:object={src,data:['facts']},exec=caller)=>drafts.tools.find(t=>t.name==='dari_resolve')!.execute(args as never,exec) as Promise<any>;
 try{
  writeFileSync(path,source);
- const checked=await drafts.tools.find(t=>t.name==='oks_check')!.execute({src} as never,caller) as any;
+ const checked=await drafts.tools.find(t=>t.name==='dari_check')!.execute({src} as never,caller) as any;
  assert.equal(checked.ok,true);assert.deepEqual(JSON.parse(JSON.stringify(checked)),checked);assert.equal(requests,0);assert.equal(executions,0);
  for(const outcome of ['rejected','cancelled','unavailable','rogue'] as const){
   decide=async()=>outcome as any;
@@ -38,7 +38,8 @@ try{
  let r=await call();assert.equal(r.ok,true,JSON.stringify(r));assert.equal(r.approval,'allowed-once');assert.equal(executions,1);
  assert.deepEqual(r.data,{facts:{rows:[{n:7}],columns,truncated:false}});
  const beforeCached=requests;r=await call();assert.equal(r.ok,true);assert.equal(requests,beforeCached+1);assert.equal(executions,1);
- await call({src,data:['facts'],refresh:true});assert.equal(executions,2);
+ await drafts.tools.find(t=>t.name==='dari_renew_context')!.execute({src} as never,caller);
+ await call({src,data:['facts']});assert.equal(executions,2);
  decide=async()=> 'rejected';r=await call();assert.equal(r.execution,'not performed');assert.equal(executions,2,'Prior approval cannot authorize a cached result read');
  const invalid=source.replace('limit:5','limit:0');writeFileSync(path,invalid);const beforeInvalid=requests;
  r=await call();assert.equal(r.status,'invalid');assert.equal(requests,beforeInvalid);assert.equal(executions,2);writeFileSync(path,source);
@@ -52,6 +53,7 @@ try{
  decide=async()=>{entered();return new Promise(resolve=>{release=resolve;});};
  const pending=call();await waiting;
  await assert.rejects(call(),/already awaiting approval/);
+ await assert.rejects(drafts.tools.find(t=>t.name==='dari_renew_context')!.execute({src} as never,caller),/already awaiting approval/);
  release('allowed-once');assert.equal((await pending).ok,true);assert.equal(executions,2);
  await assert.rejects(call({src,data:['facts'],approved:true}),/Expected only/);
  decide=async()=> 'allowed-once';
@@ -70,7 +72,7 @@ try{
  writeFileSync(path,source);
  const direct=createDraftTools({knowledge,timeContext:{zones:new Map()} as TimeContext,approval:()=>{throw new Error('Approval service must not be consulted by default');}});
  try{
-  const execute=direct.tools.find(t=>t.name==='oks_resolve')!;
+  const execute=direct.tools.find(t=>t.name==='dari_resolve')!;
   let value=await execute.execute({src,data:['facts']} as never,caller) as any;
   assert.equal(value.ok,true,JSON.stringify(value));assert.equal(value.approval,'not-required');assert.equal(requests,beforeDefaultRequests);assert.equal(executions,beforeDefaultExecutions+1);
   value=await execute.execute({src,data:['facts']} as never,caller) as any;assert.equal(value.ok,true);assert.equal(executions,beforeDefaultExecutions+1);
@@ -80,7 +82,7 @@ try{
  const withoutService=createDraftTools({knowledge,timeContext:{zones:new Map()} as TimeContext});
  try{
   writeFileSync(path,source);
-  const value=await withoutService.tools.find(t=>t.name==='oks_resolve')!.execute({src,data:['facts']} as never,caller) as any;
+  const value=await withoutService.tools.find(t=>t.name==='dari_resolve')!.execute({src,data:['facts']} as never,caller) as any;
   assert.equal(value.ok,true,JSON.stringify(value));assert.equal(value.approval,'not-required');
  }finally{withoutService.dispose();entry.settings.requireRunApproval=true;}
  console.log('Native approval: no SQL before grant, reject/cancel/unavailable, source/model changes, one-shot cached reruns, refresh, concurrency and cancellation passed');

@@ -124,7 +124,7 @@ data summary := select_one({
 });
 
 data summarySpec := {columns:["name","tenant","base_cpu","current_cpu","delta"]};
-data dailySpec := {x:"date",value:"cpu",series:"server"};
+data dailySpec := {xType:"String",x:"date",value:"cpu",series:"server"};
 data alarmSpec := {columns:["name","tenant","base_count","current_count","change"]};
 
 figure summaryTable := Table(spec = summarySpec, data = tableRows);
@@ -151,16 +151,7 @@ report answer := Report(title = "CPU 两期比较：有类型 Pipeline 设计示
     Value(data = winner?.delta),
     " 个百分点。",
   ],
-  figure [
-    Figure(ref = summaryTable),
-    figcaption [ "两期平均 CPU 与差值" ],
-  ],
-  figure [
-    Figure(ref = dailyChart),
-    figcaption [ "逐日平均 CPU，缺失不按零处理" ],
-  ],
-  figure [
-    Figure(ref = alarmTable),
-    figcaption [ "同一批服务器的两期严重告警数量" ],
-  ],
+  UseFigure(ref = summaryTable, caption = "两期平均 CPU 与差值"),
+  UseFigure(ref = dailyChart, caption = "逐日平均 CPU，缺失不按零处理"),
+  UseFigure(ref = alarmTable, caption = "同一批服务器的两期严重告警数量"),
 ];

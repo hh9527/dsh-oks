@@ -231,7 +231,6 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
     const attr=el.attrs.get(key);if(attr?.kind!=='reference')fail(`${el.name}.${key} requires a pipeline reference`,el.span.start.offset,el.span.end.offset);
     return attr as Extract<Attribute,{kind:'reference'}>;
   };
-  let internal=0;
   const answers:string[]=[];
   for(const node of nodes)if(node.statement.kind==='binding'&&node.statement.value.kind==='call'&&node.statement.value.operator==='render_report')answers.push(node.statement.name);
   const authoring:DariAuthoring={source,title,notes:notes??'',pipeline:pipeline!.body,
@@ -262,8 +261,8 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
     const figureAliases=new Map<string,string>();const figureNumbers=new Map<string,string>();
     let chartNumber=0,tableNumber=0;
     const scan=(el:Element):void=>{
-      if(el.name==='Figure'){
-        only(el.attrs,['ref']);if(!el.selfClosing)fail('Figure must be self-closing',el.span.start.offset);
+      if(el.name==='UseFigure'){
+        only(el.attrs,['ref','caption']);if(!el.selfClosing)fail('UseFigure must be self-closing',el.span.start.offset);
         const key=literal(el.attrs,'ref')!;const chart=figures.get(key);
         if(!chart)fail(`Unknown figure ${key}`,el.span.start.offset);
         if(!figureNumbers.has(key))figureNumbers.set(key,componentKind(chart!.name)==='table'?`表 ${++tableNumber}`:`图 ${++chartNumber}`);
@@ -294,7 +293,7 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
       if(el.name==='FigureRef'){
         only(el.attrs,['ref']);if(!el.selfClosing)fail('FigureRef must be self-closing',el.span.start.offset);
         const key=literal(el.attrs,'ref')!;const number=figureNumbers.get(key);
-        if(!number)fail(`FigureRef ${key} requires a Figure in this Report`,el.span.start.offset);
+        if(!number)fail(`FigureRef ${key} requires a UseFigure in this Report`,el.span.start.offset);
         return reportElement('span',{'data-oks-lit':''},[{kind:'text',text:number!,span:el.span}],el.span);
       }
       if(el.name==='Lit'){
@@ -308,37 +307,18 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
         inputs.push({key:alias,value:refExpr(ref)});bindings.add(ref.binding);refs[alias]={kind:'value',span:ref.span,code:ref.code??ref.path.reduce<string>((code,key,i)=>code+(ref.optional?.includes(i)?'?':'')+projectionCode('',[key]),ref.binding)};
         return reportElement('span',{'data-oks-ref':alias},[],el.span);
       }
-      if(el.name==='figure'){
-        const children=el.children.filter(child=>typeof child!=='string'||child.trim()!=='');
-        only(el.attrs,['id','class','title','lang']);const attrs=attrsOf(el);
-        if(children[0]&&typeof children[0]!=='string'&&children[0].name==='Figure'){
-          const chart=children[0];only(chart.attrs,['ref']);
-          if(children.length>2||children.length===2&&(typeof children[1]==='string'||children[1].name!=='figcaption'))fail('figure contains Figure followed by optional figcaption',el.span.start.offset);
-          const key=literal(chart.attrs,'ref')!;const alias=figureInput(key,chart.span);
-          const caption=children[1]&&typeof children[1]!=='string'?lower(children[1]):reportElement('figcaption',{},[],el.span);
-          return reportElement('figure',{...attrs,'data-oks-ref':alias},[caption],el.span);
-        }
-        if(!template.legacy)fail('Report figures reference named figures with Figure(ref = name);',el.span.start.offset);
-        const charts=children.filter((child):child is Element=>typeof child!=='string'&&componentKind(child.name)!==undefined);
-        if(charts.length!==1)fail('figure requires exactly one chart component or Table',el.span.start.offset,el.span.end.offset);
-        const chart=charts[0];
-        if(children[0]!==chart||children.length>2||children.length===2&&(typeof children[1]==='string'||children[1].name!=='figcaption'))fail('figure contains a chart component followed by an optional figcaption',el.span.start.offset,el.span.end.offset);
-        const kind=componentKind(chart.name)!;
-        only(chart.attrs,kind==='graph'?['spec','data','nodes']:['spec','data']);
-        if(!chart.selfClosing)fail(`${chart.name} must be self-closing`,chart.span.start.offset,chart.span.end.offset);
-        const spec=requiredRef(chart,'spec'),data=requiredRef(chart,'data');const nodeRef=chart.attrs.has('nodes')?requiredRef(chart,'nodes'):undefined;
-        const name=`@figure/${++internal}`;const location=chart.span;
-        const entries=[{key:'data',value:refExpr(data)},...nodeRef?[{key:'nodes',value:refExpr(nodeRef)}]:[]];
-        const value:Expr={kind:'call',operator:'render_figure',figureKind:kind,args:[refExpr(spec),objectExpr(entries,location)],span:location};
-        const figureId=attrs.id;
-        const display={template:template.name,component:chart.name,...(figureId?{figureId}:{}),label:`${template.name}${figureId?'#'+figureId:':'+location.start.line+':'+location.start.column}（${chart.name}）`};
-        nodes.push({internal:true,display,statement:{kind:'binding',name,value,span:location,motivation:''},bindings:[...new Set([spec.binding,data.binding,...nodeRef?[nodeRef.binding]:[]])],assets:[]});
-        const alias=`figure_${internal}`;inputs.push({key:alias,value:{kind:'ref',name,span:location}});bindings.add(name);refs[alias]={kind:'figure',span:location};
-        const caption=children[1]&&typeof children[1]!=='string'?lower(children[1]):reportElement('figcaption',{},[],el.span);
-        return reportElement('figure',{...attrs,'data-oks-ref':alias},[caption],el.span);
+      if(el.name==='UseFigure'){
+        only(el.attrs,['ref','caption']);
+        if(!el.selfClosing)fail('UseFigure must be self-closing',el.span.start.offset);
+        const key=literal(el.attrs,'ref')!;const alias=figureInput(key,el.span);
+        const captionAttr=el.attrs.get('caption');
+        const caption=literal(el.attrs,'caption',false);
+        const captionNode=reportElement('figcaption',{},caption===undefined?[]:[textNode(caption,captionAttr!.span)],el.span);
+        return reportElement('figure',{'data-oks-ref':alias},[captionNode],el.span);
       }
-      if(el.name==='Figure')fail('Figure must be a direct child of figure',el.span.start.offset);
-      if(componentKind(el.name)!==undefined)fail(`${el.name} must be a direct child of figure`,el.span.start.offset,el.span.end.offset);
+      if(['Figure','figure','figurecaption','figcaption','table','caption','thead','tbody','tfoot','tr','td','th'].includes(el.name))
+        fail(`Unsupported report element ${el.name}; use UseFigure(ref = name, caption = "...") with a declared chart or Table`,el.span.start.offset,el.span.end.offset);
+      if(componentKind(el.name)!==undefined)fail(`${el.name} must be declared with a figure binding and referenced with UseFigure`,el.span.start.offset,el.span.end.offset);
       if(/^[A-Z]/.test(el.name))fail(`Unknown DARI component ${el.name}`,el.span.start.offset,el.span.end.offset);
       if(['br','hr'].includes(el.name)&&!el.selfClosing)fail(`${el.name} must be self-closing`,el.span.start.offset);
       return reportElement(el.name,attrsOf(el),childrenOf(el),el.span);

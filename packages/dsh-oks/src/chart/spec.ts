@@ -1,7 +1,11 @@
+import {Temporal} from '@js-temporal/polyfill';
 /** Shared figure specification validation, independent of saved-file and draft entry points. */
 import { isRecord } from '../host.ts';
-import { CHART_KINDS, inferXType, supportedKinds, supports, toNumber } from './shared.ts';
+import { CHART_KINDS, supportedKinds, supports, toNumber } from './shared.ts';
 import type { ChartKind, ExpressionSwitch, LayoutOverrides, MarkLine, SecondMetric, StyleOverrides } from './shared.ts';
+
+export const X_TYPES = ['Int','Float','String','Rfc3339','EpochMillis'] as const;
+export type XType = typeof X_TYPES[number];
 
 export interface ChartSpec {
   donut?: boolean | null;
@@ -14,7 +18,7 @@ export interface ChartSpec {
   x: string;
   value: string;
   series: string | null;
-  xType: 'number' | 'time' | null;
+  xType: XType | null;
   xLabel: string | null;
   valueLabel: string | null;
   unit: string | null;
@@ -252,10 +256,9 @@ export const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: str
   for (const key of ['title', 'x', 'value', 'series', 'xLabel', 'valueLabel', 'unit', 'size']) {
     if (record[key] !== undefined && record[key] !== null && typeof record[key] !== 'string') return { error: `spec.${key} must be a string` };
   }
-  if (record.xType !== undefined && record.xType !== null) {
-    if (record.xType !== 'number' && record.xType !== 'time') return { error: 'spec.xType must be number or time' };
-    if (kind !== 'line' && kind !== 'area') return { error: `spec.xType is only supported by line / area (${kind} does not use it)` };
-  }
+  if (kind === 'line' || kind === 'area') {
+    if (!(X_TYPES as readonly unknown[]).includes(record.xType)) return {error:'spec.xType is required for line / area and must be Int / Float / String / Rfc3339 / EpochMillis'};
+  } else if (record.xType !== undefined) return {error:`spec.xType is only supported by line / area (${kind} does not use it)`};
   const text = (name: string): string | null => {
     const value = record[name];
     return typeof value === 'string' && value.length > 0 ? value : null;
@@ -266,7 +269,7 @@ export const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: str
     x: text('x') ?? '',
     value: text('value') ?? '',
     series: text('series'),
-    xType: record.xType === 'number' || record.xType === 'time' ? record.xType : null,
+    xType: (X_TYPES as readonly unknown[]).includes(record.xType) ? record.xType as XType : null,
     xLabel: text('xLabel'),
     valueLabel: text('valueLabel'),
     unit: text('unit'),
@@ -390,33 +393,29 @@ export const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: str
   return { spec };
 };
 
-/** 折线的前置检查：每行都要有横轴值、每个序列的横轴非递减、数值是有限数值或 null。
- *  （渲染在客户端；这些是规格层面的错，要在工具里就挡掉。） */
-/** 给没写 xType 的规格补上推断结果。
- *
- *  原来 line / area 必须显式写 xType，而 column / bar 不用——同一个概念一半要写一半不用写，
- *  agent 每次都要踩一遍。现在改成"可选覆盖"：不写就从这一列的值推断。
- *  返回值说明推断成了什么，好让它出现在回执里（猜错了 agent 看得见）。
- */
-export const applyInferredXType = (spec: ChartSpec, rows: readonly Record<string, unknown>[]): 'number' | 'time' | 'category' | null => {
-  if (spec.kind !== 'line' && spec.kind !== 'area') return null;
-  if (spec.xType !== null) return spec.xType;
-  const inferred = inferXType(rows.map((row) => row[spec.x]));
-  // 推断成类目时留空：渲染层见到 null 就走类目轴。
-  spec.xType = inferred === 'category' ? null : inferred;
-  return inferred;
-};
+/** Deterministic axis conversion shared by validation and rendering. */
+export function axisValue(value:unknown,type:XType):number|string|null {
+  if(type==='String')return typeof value==='string'&&value.length>0?value:null;
+  if(type==='Rfc3339'){
+    if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(value))return null;
+    try{return Temporal.Instant.from(value).epochMilliseconds;}catch{return null;}
+  }
+  if(typeof value!=='number'||!Number.isFinite(value))return null;
+  if((type==='Int'||type==='EpochMillis')&&!Number.isSafeInteger(value))return null;
+  if(type==='EpochMillis'&&Math.abs(value)>8640000000000000)return null;
+  return value;
+}
 
 const lineProblem = (rows: readonly Record<string, unknown>[], spec: ChartSpec): string | null => {
   const xColumn = spec.x;
   const valueColumn = spec.value;
-  // 类目轴（没给 xType，数据也不是数值 / 时间）：顺序由数据本身决定，
+  // String 类别轴的顺序由数据本身决定，
   // 既不要求横轴是数值，也不要求递增——类目折线是常见形状。
-  if (spec.xType === null) {
+  if (spec.xType === 'String') {
     for (const row of rows) {
       const raw = row[xColumn];
-      if (raw === null || raw === undefined || raw === '') {
-        return `横轴列 ${xColumn} 有空值：折线要求每行都有横轴值`;
+      if (axisValue(raw,'String')===null) {
+        return `横轴列 ${xColumn} 的值 ${JSON.stringify(raw)} 不是有效的 String`;
       }
     }
     return null;
@@ -428,10 +427,10 @@ const lineProblem = (rows: readonly Record<string, unknown>[], spec: ChartSpec):
     if (rawX === null || rawX === undefined || rawX === '') {
       return `横轴列 ${xColumn} 有空值：折线要求每行都有横轴值`;
     }
-    const x = spec.xType === 'time' ? toEpochMillis(rawX) : Number(rawX);
-    if (x === null || !Number.isFinite(x)) {
+    const x = spec.xType===null?null:axisValue(rawX,spec.xType);
+    if (typeof x !== 'number' || !Number.isFinite(x)) {
       return `横轴列 ${xColumn} 的值 ${JSON.stringify(rawX)} 不是有效的`
-        + `${spec.xType === 'time' ? '时间（RFC 3339 文本或 epoch 毫秒）' : '数值'}`;
+        + `${spec.xType}`;
     }
     const previous = lastX.get(seriesKey);
     if (previous !== undefined && x < previous) {
@@ -450,7 +449,7 @@ const lineProblem = (rows: readonly Record<string, unknown>[], spec: ChartSpec):
 /** 数据形状不满足图元的要求时报错：规格写对了、数据不对，同样画不出那张图。
  *  render_figure 是唯一的出图入口，这份判断也只此一处。 */
 export const shapeProblem = (rows: readonly Record<string, unknown>[], spec: ChartSpec): string | null => {
-  if (spec.kind === 'line') return lineProblem(rows, spec);
+  if (spec.kind === 'line' || spec.kind === 'area') return lineProblem(rows, spec);
   if (spec.kind !== 'radar' || rows.length === 0) return null;
   // 雷达的轴就是指标：少于三根轴围不出形状，画出来像一张坏掉的折线。
   const indicators = [...new Set(rows.map((row) => String(row[spec.x] ?? '')))];
@@ -480,16 +479,6 @@ export const shapeProblem = (rows: readonly Record<string, unknown>[], spec: Cha
     return `radar 要求每个对象在每个指标上都有值，缺 ${gaps.length} 处（${shown}${gaps.length > 3 ? ' …' : ''}）：`
       + '缺的顶点会被画在圆心，看起来像"这一维是 0"。要表达 0 就把那一行写进数据，'
       + '否则把指标拆成不同的图，或换 column / heatmap。';
-  }
-  return null;
-};
-
-/** time 横轴的取值：epoch 毫秒原样用，RFC 3339 文本按 Date.parse 换算。 */
-const toEpochMillis = (value: unknown): number | null => {
-  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-  if (typeof value === 'string') {
-    const parsed = Date.parse(value);
-    return Number.isNaN(parsed) ? null : parsed;
   }
   return null;
 };

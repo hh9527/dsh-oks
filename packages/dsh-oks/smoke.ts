@@ -91,7 +91,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['oks_read', 'oks_write', 'oks_edit', 'oks_list', 'oks_delete', 'oks_check', 'oks_resolve', 'oks_cap', 'oks_info', 'oks_search', 'ka_ask'];
+const EXPECTED_TOOLS = ['oks_read','dari_check','dari_resolve','dari_renew_context','oks_cap','oks_info','oks_search','ka_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -116,7 +116,6 @@ const sessionFor = (cwd) => {
 };
 const call = async (name, args, cwd = DEV_ROOT) => {
   args = { ...args };
-  for (const key of ['path','input','src']) if (typeof args[key] === 'string' && args[key].startsWith('.work/')) args[key] = 'oks://work/' + args[key].slice(6);
   const tool = registered.get(name);
   if (!tool) throw new Error(`tool ${name} was not registered`);
   const value = await tool.execute(args, { signal: new AbortController().signal, ...sessionFor(cwd) });
@@ -249,6 +248,7 @@ const member={dataset:datasetId};
 await call('oks_info',{ids:["datasets/"+encodeURIComponent(datasetId)]});
 if(!member)throw new Error('没有发现数据集');
 const countIntent={op:'Graph',root:'x',nodes:[{id:'x',entity:member.dataset}],edges:[],select:[],count:'x',limit:5};
+mkdirSync(join(DEV_ROOT,'.work'),{recursive:true});
 const draftFile='.work/smoke_answer.dari';
 const draftSource=`data ctx := context();
 data months := time_windows(ctx,{unit:"month",count:2,mode:"complete"});
@@ -257,7 +257,7 @@ data total := select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({g
 report answer := Report(title = "集成冒烟") [
   p [ "返回组数 ", Value(data = total?.groups), ],
 ];`;
-await call('oks_write',{path:draftFile,content:draftSource});
+writeFileSync(join(DEV_ROOT,draftFile),draftSource);
 // 模拟真实宿主：用户 RPC 建立时区，知识子会话的结果随后触发内部续跑。
 const timeSession = sessionFor(DEV_ROOT).agent.session;
 for (const messages of [
@@ -267,11 +267,11 @@ for (const messages of [
   await waterfall(listenersOf(events, 'agent/pre-step'), { agent: { session: timeSession }, messages },
     () => Promise.resolve({ kind: 'enter', messages }));
 }
-const checked=await call('oks_check',{src:draftFile});
+const checked=await call('dari_check',{src:draftFile});
 ok('设计检查返回真实模型列类型',checked.value.ok && checked.value.queries.length===2 && checked.value.queries[0].columns.length>0);
 ok('真实数据后处理留到运行期',checked.value.deferred.some(d=>d.operator==='render_report'));
 for(const name of ['oks_run_answer','oks_result','oks_show','renew_context','oks_project']) ok('agent 不暴露运行与结果入口',!registered.has(name));
-const runResult=await call('oks_resolve',{src:draftFile,data:['total'],reports:['answer']});
+const runResult=await call('dari_resolve',{src:draftFile,data:['total'],reports:['answer']});
 if(modelSettings.requireRunApproval) {
  ok('开启批准后缺少服务时禁止运行',runResult.value.status==='approval-unavailable');
 } else {
@@ -279,11 +279,10 @@ if(modelSettings.requireRunApproval) {
 }
 for(const limit of [undefined,0,501,1.5]){
  const intent={...countIntent,limit};
- await call('oks_write',{path:draftFile,content:draftSource.replace(JSON.stringify(countIntent),JSON.stringify(intent))});
- const invalid=await call('oks_check',{src:draftFile});
- ok('非法 limit 在检查时拒绝',invalid.value.status==='invalid');
+ writeFileSync(join(DEV_ROOT,draftFile),draftSource.replace(JSON.stringify(countIntent),JSON.stringify(intent)));
+ ok('非法 limit 在检查时以工具异常拒绝',!!await refusalOf(()=>call('dari_check',{src:draftFile})));
 }
-await call('oks_write',{path:draftFile,content:draftSource});
+writeFileSync(join(DEV_ROOT,draftFile),draftSource);
 // Workspace configuration and executor failures must surface through the current tools.
 const settings=resolveSettings(DEV_ROOT,undefined);
 const baseConfig=JSON.parse(readFileSync(join(DEV_ROOT,'oks.json'),'utf8'));
@@ -295,13 +294,13 @@ for(const [name,patch] of [
  writeFileSync(join(SCRATCH,'not-sqlite'),'not a database');
  writeFileSync(join(dir,'oks.json'),JSON.stringify({...baseConfig,model:settings.model,...patch}));
  writeFileSync(join(dir,draftFile),draftSource.replace('data ctx := context();','').replace('data months := time_windows(ctx,{unit:"month",count:2,mode:"complete"});',''));
- const result=await call('oks_check',{src:draftFile},dir);
+ const result=await call('dari_check',{src:draftFile},dir);
  ok('设计检查不依赖业务数据库',result.value.ok===true);
 }
 const nested=join(SCRATCH,'nested');mkdirSync(join(nested,'.work'),{recursive:true});
 writeFileSync(join(nested,'oks.json'),JSON.stringify({...baseConfig,model:relative(nested,settings.model),dataFile:relative(nested,settings.dataFile)}));
 writeFileSync(join(nested,draftFile),draftSource.replace('data ctx := context();','').replace('data months := time_windows(ctx,{unit:"month",count:2,mode:"complete"});',''));
-ok('模型与数据源相对 oks.json 解析',(await call('oks_check',{src:draftFile},nested)).value.ok===true);
+ok('模型与数据源相对 oks.json 解析',(await call('dari_check',{src:draftFile},nested)).value.ok===true);
 const bare=join(SCRATCH,'bare');mkdirSync(bare,{recursive:true});
 ok('缺工作区配置明确拒绝',!!await refusalOf(()=>call('oks_info',{ids:["datasets/"+encodeURIComponent(datasetId)]},bare)));
 const badModel=join(SCRATCH,'bad-model');mkdirSync(badModel,{recursive:true});
@@ -311,10 +310,10 @@ ok('缺快照模型明确拒绝',!!await refusalOf(()=>call('oks_info',{ids:["da
 const help=(await call('oks_read',{path:'oks://help/query.md',limit:2000},bare)).value;
 ok('帮助是无需配置的文本文件',help.lines.map((line:any)=>line.text).join('\n').includes('ontology-intent-v1'));
 for(const args of [{load:{}},{input:draftFile+'#total',save:{}},{input:draftFile+'#total',jq:{src:'.work/nope.jq'}}])
- ok('只读入口拒绝加工与写入参数',!!await refusalOf(()=>call('oks_check',args)));
+ ok('只读入口拒绝加工与写入参数',!!await refusalOf(()=>call('dari_check',args)));
 if(process.env.OKS_TOOLS_MODULE){
  const host=await import(pathToFileURL(resolve(process.env.OKS_TOOLS_MODULE)).href);
- for(const name of ['oks_check']){
+ for(const name of ['dari_check']){
   host.assertSupportedJsonSchema(registered.get(name).parameters);
   ok(`${name} schema 属于宿主支持的子集`,true);
  }
@@ -374,31 +373,6 @@ console.log('=== 产物自述 ===');
 
   console.log(`  自述：${back?.title} · at=${back?.at}`);
 }
-console.log('=== oks_delete：代码区删除 ===');
-{
-  await call('oks_write', { path: '.work/doomed.jq', content: '. | length\n' });
-  await call('oks_write', { path: '.work/kept.jq', content: '.\n' });
-  const removed = await call('oks_delete', { path: '.work/doomed.jq' });
-  ok('删掉一份程序：回执给删了哪个、还剩几个',
-    removed.value.ok === true && /doomed\.jq$/.test(String(removed.value.file))
-    && typeof removed.value.remaining === 'number');
-  ok('文件确实没了，另一份还在',
-    !existsSync(join(DEV_ROOT, '.work', 'doomed.jq')) && existsSync(join(DEV_ROOT, '.work', 'kept.jq')));
-  const fails = async (args: unknown): Promise<string> => {
-    try { await call('oks_delete', args); return ''; } catch (cause) { return String((cause as Error).message); }
-  };
-  mkdirSync(join(DEV_ROOT, '.work', 'subdir'), { recursive: true });
-  const missing = await fails({ path: '.work/nope.jq' });
-  const isDir = await fails({ path: '.work/subdir' });
-  const escape = await fails({ path: '../evil.jq' });
-  console.log(`  oks_delete 的三种拒绝 → ${missing.slice(0, 60)} / ${isDir.slice(0, 40)} / ${escape.slice(0, 40)}`);
-  ok('删除不存在的文件时只说找不到，不倒清单', /找不到/.test(missing) && !/kept\.jq/.test(missing));
-  ok('目标是目录时明确拒绝', /只能删文件/.test(isDir));
-  ok('越界被拒', !!escape);
-  rmSync(join(DEV_ROOT, '.work', 'subdir'), { recursive: true, force: true });
-  await call('oks_delete', { path: '.work/kept.jq' });
-}
-
 console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
 {
   mkdirSync(SCRATCH, { recursive: true });
@@ -486,10 +460,10 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
   ];
   const gapSpec = (extra: Record<string, unknown>) => ({
     kind: 'line', title: null, x: 'd', value: 'w', series: 's',
-    xType: null, xLabel: null, valueLabel: null, unit: null, ...extra,
+    xType: 'String', xLabel: null, valueLabel: null, unit: null, ...extra,
   });
   const gapSegments = (spec: Record<string, unknown>): number[] => {
-    const built = buildOption(gapRows, spec as never);
+    const built = buildOption(spec.xType==='Rfc3339'?gapRows.map(r=>({...r,d:r.d+'T00:00:00Z'})):gapRows, spec as never);
     const svg = renderEchartsSvg(built.option, CHART_WIDTH, built.height);
     return [...svg.matchAll(/<path d="([^"]*)"[^>]*stroke-linejoin="bevel"/g)]
       .map(([, d]) => ((d ?? '').match(/M/g) ?? []).length)
@@ -501,8 +475,8 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     JSON.stringify(gapSegments(gapSpec({ connectNulls: true }))) === '[1,1]');
   // 时间轴走另一条数据装配路（[时间, 值]）：过去这里把缺的那一行整个删掉，缺口就消失了。
   ok('断点：时间轴上的缺失点同样断开，不连过去',
-    JSON.stringify(gapSegments(gapSpec({ xType: 'time' }))) === '[1,2]'
-    && JSON.stringify(gapSegments(gapSpec({ xType: 'time', connectNulls: true }))) === '[1,1]');
+    JSON.stringify(gapSegments(gapSpec({ xType: 'Rfc3339' }))) === '[1,2]'
+    && JSON.stringify(gapSegments(gapSpec({ xType: 'Rfc3339', connectNulls: true }))) === '[1,1]');
 
   // 颜色跟实体：颜色由名字决定，同一个机房在饼图与折线图里同色，颜色能跨图对照；
   // 不打开则照旧按序列序号取色（既有图的样子不变）。
@@ -521,10 +495,10 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
     Object.fromEntries(
       (buildOption(rows, {
         kind: 'line', title: null, x: 'd', value: 'w', series: 's',
-        xType: null, xLabel: null, valueLabel: null, unit: null, entityColor,
+        xType: 'String', xLabel: null, valueLabel: null, unit: null, entityColor,
       } as never)
-        .option as { series: Array<{ name: string; itemStyle: { color: (params: { value: number }) => string } }> })
-        .series.map((one) => [one.name, one.itemStyle.color({ value: 1 })]));
+        .option as { series: Array<{ name: string; itemStyle: { color: string } }> })
+        .series.map((one) => [one.name, one.itemStyle.color]));
   const namedPie = pieColorOf(true);
   const namedLine = lineColorOf(entityLine, true);
   ok('颜色跟实体：同一个实体在饼图与折线图里同色',
@@ -617,22 +591,16 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
   ok('sankey：不给 value 时每条边计 1',
     sankeyDefault.series[0]!.links.every((link) => link.value === 1));
 
-console.log('=== 文件路径与符号链接边界 ===');
-for(const path of ['short.jq','.work/../bad.jq','.work/./bad.jq','.work//bad.jq','.work\\bad.jq',' .work/bad.jq','.work/bad.jq ','/tmp/bad.jq'])
- ok('完整路径严格校验',!!await refusalOf(()=>call('oks_write',{path,content:'.'})));
-const outside=mkdtempSync(join(tmpdir(),'oks-boundary-'));
-writeFileSync(join(outside,'protected.jq'),'original');
+console.log('=== DARI 路径与符号链接边界 ===');
+const outside=mkdtempSync(join(tmpdir(),'dari-boundary-'));
+writeFileSync(join(outside,'protected.dari'),'data n := 1;');
 symlinkSync(outside,resolve(DEV_ROOT,'.work/escape-test'),'dir');
-try{
- for(const [name,args] of [
-  ['oks_read',{path:'.work/escape-test/protected.jq'}],
-  ['oks_edit',{path:'.work/escape-test/protected.jq',old_string:'original',new_string:'changed'}],
-  ['oks_delete',{path:'.work/escape-test/protected.jq'}],
-  ['oks_write',{path:'.work/escape-test/new-dir/new.jq',content:'.'}],
-  ['oks_check',{src:'.work/escape-test/protected.jq'}],
- ])ok('文件与执行入口拒绝符号链接逃逸',!!await refusalOf(()=>call(name,args)));
- ok('拒绝后外部文件不变',readFileSync(join(outside,'protected.jq'),'utf8')==='original' && !existsSync(join(outside,'new-dir')));
-}finally{rmSync(resolve(DEV_ROOT,'.work/escape-test'));rmSync(outside,{recursive:true,force:true});}
+try {
+ for(const name of ['dari_check','dari_renew_context'])
+  ok('执行入口拒绝符号链接逃逸',!!await refusalOf(()=>call(name,{src:'.work/escape-test/protected.dari'})));
+ ok('内置读取拒绝本地文件',!!await refusalOf(()=>call('oks_read',{path:'.work/escape-test/protected.dari'})));
+ ok('拒绝后外部文件不变',readFileSync(join(outside,'protected.dari'),'utf8')==='data n := 1;');
+} finally {rmSync(resolve(DEV_ROOT,'.work/escape-test'));rmSync(outside,{recursive:true,force:true});}
 for(const dispose of disposers.reverse())dispose();
 rmSync(SCRATCH,{recursive:true,force:true});
 console.log(`\n✓ ${passed} / ✗ 0`);

@@ -261,8 +261,8 @@ export class DraftRuntime {
             const shared=pending.get(pendingKey);
             if(shared){ result=await shared; hit=true; }
             else {
-              if(acquisition&&this.captured.has(key))throw new Error('Captured snapshot was reclaimed; use refresh:true or renew_context before acquiring it again');
-              if(acquisition&&this.captured.size>=4096)throw new Error('Acquisition identity budget exceeded; use refresh:true or renew_context');
+              if(acquisition&&this.captured.has(key))throw new Error('Captured snapshot was reclaimed; renew the acquisition context before acquiring it again');
+              if(acquisition&&this.captured.size>=4096)throw new Error('Acquisition identity budget exceeded; renew the acquisition context');
               const work=this.backend.execute(context);
               pending.set(pendingKey,work);
               result=await work;

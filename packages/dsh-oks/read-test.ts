@@ -3,11 +3,10 @@ import {mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {readWindow,formatRead,READ_MAX_BYTES} from './src/read.ts';
-import {readWorkFile} from './src/results.ts';
-const read=(text:string,offset?:unknown,limit?:unknown)=>readWindow([text],'oks://work/test.txt',offset,limit);
+const read=(text:string,offset?:unknown,limit?:unknown)=>readWindow([text],'.work/test.txt',offset,limit);
 const simple=await read('one\r\ntwo\nthree\n',2,1);
-assert.deepEqual(simple,{path:'oks://work/test.txt',offset:2,lines:[{number:2,text:'two'}],totalLines:3});
-assert.equal(formatRead(simple,1),'<path>oks://work/test.txt</path>\n<type>file</type>\n<content>\n2: two\n\n(Showing lines 2-2 of 3. Use offset=3 to continue.)\n</content>');
+assert.deepEqual(simple,{path:'.work/test.txt',offset:2,lines:[{number:2,text:'two'}],totalLines:3});
+assert.equal(formatRead(simple,1),'<path>.work/test.txt</path>\n<type>file</type>\n<content>\n2: two\n\n(Showing lines 2-2 of 3. Use offset=3 to continue.)\n</content>');
 const empty=await read('');assert.deepEqual(empty.lines,[]);assert.equal(empty.totalLines,0);
 assert.match(formatRead(empty,undefined),/End of file - total 0 lines/);
 for(const text of ['','one','one\n'])await assert.rejects(read(text,2),/out of range/);
@@ -29,16 +28,7 @@ const chinese=await read(('中'.repeat(1000)+'\n').repeat(30));
 assert.equal(chinese.lines.length,17);assert.ok(Buffer.byteLength(chinese.lines.map(line=>line.text).join('\n'))<=READ_MAX_BYTES);
 // Streaming boundaries, CRLF and a giant newline-free line preserve host semantics.
 async function* chunks(){yield 'first\r';yield '\n';for(let i=0;i<200;i++)yield '中'.repeat(20000);yield '\nlast';}
-const streamed=await readWindow(chunks(),'oks://work/test.txt',undefined,undefined);
+const streamed=await readWindow(chunks(),'.work/test.txt',undefined,undefined);
 assert.equal(streamed.totalLines,3);assert.equal(streamed.lines[0].text,'first');
 assert.match(streamed.lines[1].text,/line truncated to 2000 chars/);assert.equal(streamed.lines[2].text,'last');
-// Actual work files above the streaming threshold are readable without the write-size cap.
-const root=mkdtempSync(join(tmpdir(),'oks-read-'));
-try {
- mkdirSync(join(root,'.work'));
- writeFileSync(join(root,'.work/large.txt'),'x'.repeat(11*1024*1024)+'\nlast');
- const result=await readWorkFile(root,'oks://work/large.txt',2,1,'oks_read');
- assert.deepEqual(result.lines,[{number:2,text:'last'}]);assert.equal(result.totalLines,2);
- await assert.rejects(readWorkFile(root,'oks://work/',1,1,'oks_read'));
-}finally{rmSync(root,{recursive:true,force:true});}
-console.log('read: host windows, byte boundaries, long lines, Unicode, empty/EOF, continuation and large streamed files passed');
+console.log('read: host-style built-in text windows, byte boundaries, long lines, Unicode, EOF and continuation passed');

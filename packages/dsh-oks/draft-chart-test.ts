@@ -37,15 +37,12 @@ const chart=async({spec,data,nodes}:any)=>{
  chartSpec <-${JSON.stringify(mapping)};
  figure <-render_figure(${JSON.stringify(spec)},{data:rows${nodes?',nodes':''}});
  </Pipeline><Figures><${component} name="rendered" spec={chartSpec} data={rows}${nodes?' nodes={nodes}':''}/></Figures>
- <Template name="answer"><article><figure><Figure ref="rendered"/></figure></article></Template></Dari>`;
+ <Template name="answer"><article><UseFigure ref="rendered"/></article></Template></Dari>`;
  writeFileSync(join(DEV_ROOT,file),source);
- const result=await call('oks_run_answer',{src:file});
- if(result.delivery.status!=='ready')throw new Error(JSON.stringify(result));
- const publication=await call('oks_resolve',{src:file,figures:['figure']});assert(publication.ok,JSON.stringify(publication));
+ const publication=await call('dari_resolve',{src:file,figures:['figure']});assert(publication.ok,JSON.stringify(publication));
  const embedded=publication.figures.figure.embedded;const path=decodeURI(embedded.slice(embedded.indexOf('](')+2,-1));
- const shown={path,markdown:embedded,title:embedded.slice(2,embedded.indexOf(']('))};
- const figure=await call('oks_project',{input:file+'#figure'});
- return {value:{ok:true,asset:shown.path,rowCount:figure.data.rows.length,spec:figure.data.spec,title:shown.title},text:shown.markdown};
+ const input=readChartInput(readFileSync(path,'utf8'))!;
+ return {value:{ok:true,asset:path,rowCount:input.data.rows.length,spec:input.data.spec,title:embedded.slice(2,embedded.indexOf(']('))},text:embedded};
 };
 try {
   // 负值走 0 轴另一侧，并且换色，方向一眼可辨。
@@ -100,9 +97,9 @@ try {
   });
   if (pieEmpty.value.ok !== true) throw new Error('没有正数时饼图也应当出图');
 
-  // 面积图：字段与折线一致，x 轴同样支持 number / time。
+  // 面积图：字段与折线一致，x 轴使用显式输入类型。
   const area = await chart({
-    spec: { kind: 'area', title: '每日告警数', x: 'day', value: 'count', xType: 'number' },
+    spec: { kind: 'area', title: '每日告警数', x: 'day', value: 'count', xType:"Int" },
     data: [{ day: 0, count: 15 }, { day: 1, count: 25 }, { day: 2, count: 18 }],
     name: 'probe_area',
   });
@@ -180,7 +177,7 @@ try {
   // 两个度量位各走一条：第二轴、参考线。
   const bareOptional = await chart({
     spec: {
-      kind: 'line', title: '只给必填项的第二轴与参考线', x: 'm', value: 'cpu',
+      kind:'line', xType:"String", title: '只给必填项的第二轴与参考线', x: 'm', value: 'cpu',
       second: { value: 'ports' }, marks: [{ value: 90 }],
     },
     data: comboRows,
@@ -233,29 +230,28 @@ try {
   if (!barDashed.some((d) => d.y1 === d.y2)) throw new Error('横条图上的类别标记应当是横线');
   console.log('  横条图：second 换到 x 轴，阈值竖线 + 类别横线都在');
 
-  // xType 不填时从数据推断。这条同时钉住"年份数字不能被当成 epoch 毫秒"——
-  // 那会把横轴画到 1970 年，而且图看起来还挺正常。
+  // 显式输入类型确定轴行为；数值不猜测为时间。
   const inferredTime = await chart({
-    spec: { kind: 'line', x: 't', value: 'v' },
+    spec: { kind:'line', xType:"Rfc3339", x: 't', value: 'v' },
     data: [{ t: '2026-01-01T00:00:00Z', v: 1 }, { t: '2026-01-02T00:00:00Z', v: 2 }, { t: '2026-01-03T00:00:00Z', v: 3 }],
     name: 'probe_infer_time',
   });
-  if (inferredTime.value.spec.xType !== 'time') throw new Error('时间文本应当被推断成 time');
+  if (inferredTime.value.spec.xType !== 'Rfc3339') throw new Error('时间文本采用 Rfc3339');
   const inferredNumber = await chart({
-    spec: { kind: 'line', x: 'y', value: 'v' },
+    spec: { kind:'line', xType:"Int", x: 'y', value: 'v' },
     data: [{ y: 2026, v: 1 }, { y: 2027, v: 2 }, { y: 2028, v: 3 }],
     name: 'probe_infer_number',
   });
-  if (inferredNumber.value.spec.xType !== 'number') {
-    throw new Error('年份数字应被推断成 number，而不是当作 epoch 毫秒');
+  if (inferredNumber.value.spec.xType !== 'Int') {
+    throw new Error('年份数字采用 Int 数值轴');
   }
   const inferredCategory = await chart({
-    spec: { kind: 'line', x: 'k', value: 'v' },
+    spec: { kind:'line', xType:"String", x: 'k', value: 'v' },
     data: [{ k: '甲', v: 1 }, { k: '乙', v: 2 }],
     name: 'probe_infer_category',
   });
-  if (inferredCategory.value.spec.xType !== null) throw new Error('文本类别应当留空（走类目轴）');
-  console.log('  横轴推断：时间文本→time · 年份数字→number · 文本类别→类目轴');
+  if (inferredCategory.value.spec.xType !== 'String') throw new Error('文本类别采用 String 类目轴');
+  console.log('  显式横轴：Rfc3339 · Int · String');
 
   // 放错层时，报错要指出正确位置——agent 靠它自己纠正，比让它在两层之间猜好。
   let misplacedMessage = '';
@@ -279,7 +275,7 @@ try {
     { m: 'M' + i, s: 'c', v: 10 },
   ]).flat();
   const pct = await chart({
-    spec: { kind: 'area', x: 'm', series: 's', value: 'v', stack: 'percent', valueLabel: '占比', unit: '%' },
+    spec: { kind:'area', xType:"String", x: 'm', series: 's', value: 'v', stack: 'percent', valueLabel: '占比', unit: '%' },
     data: pctRows,
     name: 'probe_percent_headroom',
   });
@@ -305,7 +301,7 @@ try {
       t: `2024-${String(i + 1).padStart(2, '0')}-01T00:00:00Z`, s: s2, v: 20 + i * 5 + j * 3,
     })));
   const timePct = await chart({
-    spec: { kind: 'area', x: 't', series: 's', value: 'v', xType: 'time', stack: 'percent', valueLabel: '占比', unit: '%' },
+    spec: { kind: 'area', x: 't', series: 's', value: 'v', xType:"Rfc3339", stack: 'percent', valueLabel: '占比', unit: '%' },
     data: timePctRows,
     name: 'probe_time_percent',
   });
@@ -500,7 +496,7 @@ try {
   // 同一个默认值不落在别的图元上：area 不给 stack 是叠着画、line 从来不分段。
   const stackOf = (kind, spec) => buildOption(groupRows, {
     kind, title: null, sourceLabel: 'agent 自主填写', x: 'q', value: 'v', series: 'c',
-    xType: null, xLabel: null, valueLabel: null, unit: null, ...spec,
+    xType: kind==='line'||kind==='area'?'String':null, xLabel: null, valueLabel: null, unit: null, ...spec,
   }).option.series.map((item) => item.stack ?? null);
   if (JSON.stringify(stackOf('area', {})) !== '[null,null,null]') throw new Error('area 不给 stack 时不该堆叠');
   if (JSON.stringify(stackOf('line', {})) !== '[null,null,null]') throw new Error('line 没有堆叠这个说法');
@@ -528,7 +524,7 @@ try {
   ]);
   const axisTicksOf = (svg) => [...svg.matchAll(/<text[^>]*>([^<]{1,12})<\/text>/g)]
     .map((match) => match[1].trim()).filter((text) => /^-?[\d.]+$/.test(text)).map(Number);
-  const lineSpec = { kind: 'line', x: 'month', value: 'v', series: 'device', unit: '%' };
+  const lineSpec = { kind:'line', xType:"String", x: 'month', value: 'v', series: 'device', unit: '%' };
   const kpiLine = await chart({ spec: lineSpec, data: kpiRows, name: 'probe_line_kpi' });
   const lineTicks = axisTicksOf(readFileSync(resolve(DEV_ROOT, kpiLine.value.asset), 'utf8'));
   if (Math.min(...lineTicks) < 90) {
@@ -617,9 +613,7 @@ try {
   const graphRoot=graphInput.origin.nodes[graphInput.origin.root];
   assert.deepEqual(Object.keys(graphRoot.inputs!).sort(),['data','nodes']);
   for(const parent of Object.values(graphRoot.inputs!))assert.ok(graphInput.origin.nodes[parent]);
-  const archived=await call('oks_run_answer',{src:'.work/chart.dari'});
-  assert.equal(archived.delivery.status,'ready');
-  const publication=await call('oks_resolve',{src:'.work/chart.dari',reports:['answer']});assert(publication.ok,JSON.stringify(publication));
+  const publication=await call('dari_resolve',{src:'.work/chart.dari',reports:['answer']});assert(publication.ok,JSON.stringify(publication));
   const embedded=publication.reports.answer.embedded;
   const graphReport=readReportPage(readFileSync(decodeURI(embedded.slice(embedded.indexOf('](')+2,-1)),'utf8'));
   assert.ok(!('error' in graphReport));
@@ -627,10 +621,10 @@ try {
   assert.deepEqual((graphReport.dari.figures.rendered.data as any).rows,graphEdges);
   const minimalSpec: Record<string, Record<string, unknown>> = {
     bar: { x: 'k', value: 'w' },
-    line: { x: 'k', value: 'w' },
+    line: { xType:'String', x: 'k', value: 'w' },
     column: { x: 'k', value: 'w' },
     pie: { x: 'k', value: 'w' },
-    area: { x: 'k', value: 'w' },
+    area: { xType:'String', x: 'k', value: 'w' },
     scatter: { x: 'w', value: 'w' },
     histogram: { value: 'w' },
     box: { x: 'k', value: 'w' },

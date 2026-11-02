@@ -65,7 +65,7 @@ export function assembleReport(input: AssembleInput): AssembleResult {
   const used = new Set(checked.refs);
   const missing = [...used].filter((ref) => input.bindings[ref] === undefined);
   if (missing.length > 0) {
-    return { error: `正文引用了没有绑定的项：${missing.join('、')}；检查 Report 中的 Value 与 Figure 引用。` };
+    return { error: `正文引用了没有绑定的项：${missing.join('、')}；检查 Report 中的 Value 与 UseFigure 引用。` };
   }
   const unused = Object.keys(input.bindings).filter((key) => !used.has(key));
   if (unused.length > 0) {

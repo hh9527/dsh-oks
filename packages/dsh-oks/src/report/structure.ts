@@ -1,9 +1,11 @@
 /** DARI 编译后的报告结构。渲染器只遍历结构，不解析生成的 HTML。 */
 import type { Span } from '../draft/pipeline.ts';
-export const AUTHOR_ELEMENTS:readonly string[]=['article','section','h1','h2','h3','p','div','span','figure','figcaption','table','caption','thead','tbody','tfoot','tr','th','td','ul','ol','li','blockquote','pre','code','strong','em','a','br','hr'];
+const COMPILED_ELEMENTS:readonly string[]=['article','section','h1','h2','h3','p','div','span','figure','figcaption','table','caption','thead','tbody','tfoot','tr','th','td','ul','ol','li','blockquote','pre','code','strong','em','a','br','hr'];
+/** Source nodes are distinct from generated figure/caption containers. */
+export const AUTHOR_ELEMENTS:readonly string[]=['Report','section','h1','h2','h3','p','div','span','ul','ol','li','blockquote','pre','code','strong','em','a','br','hr','Value','Lit','UseFigure','FigureRef'];
 export const AUTHOR_ATTRIBUTES:readonly string[]=['id','class','title','lang','data-oks-ref','data-oks-pick','data-oks-shrink','data-oks-lit','href','colspan','rowspan','scope'];
 /** Public authoring hides the literal marker behind Lit. */
-export const PUBLIC_AUTHOR_ATTRIBUTES=AUTHOR_ATTRIBUTES.filter(key=>key!=='data-oks-lit');
+export const PUBLIC_AUTHOR_ATTRIBUTES=AUTHOR_ATTRIBUTES.filter(key=>!['data-oks-lit','colspan','rowspan','scope'].includes(key));
 export type ReportNode={kind:'text';text:string;span:Span}|{kind:'comment';text:string;span:Span}|ReportElement;
 export type ReportElement={kind:'element';name:string;attrs:Record<string,string>;children:ReportNode[];span:Span};
 export type ReportError={code:string;message:string;line:number;column:number;element:string|null};
@@ -46,7 +48,7 @@ export function compileReport(root:ReportElement):ReportProgram {
       return;
     }
     const {name,attrs}=node;
-    if(!AUTHOR_ELEMENTS.includes(name))error(node,'author-element',`Unsupported report element <${name}>`);
+    if(!COMPILED_ELEMENTS.includes(name))error(node,'author-element',`Unsupported report element <${name}>`);
     for(const [key,value]of Object.entries(attrs)){
       if(!AUTHOR_ATTRIBUTES.includes(key))error(node,'author-attribute',`Unsupported report attribute ${key}`);
       if(key==='id'){if(!value||ids.has(value))error(node,'author-id',`Report id must be nonempty and unique: ${value}`);ids.add(value);}

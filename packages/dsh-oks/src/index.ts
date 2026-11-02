@@ -51,7 +51,7 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
     createKaRuntime({ ctx, log, config, vocabulary: true }),
   );
 
-  const definitions = createTools({ knowledge, ka, timeContext, log, config, attachments:()=>ctx.get('attachments'), approval:()=>ctx.get('approval') });
+  const definitions = createTools({ knowledge, ka, timeContext, log, config, attachments:()=>ctx.get('attachments'), approval:()=>ctx.get('approval'), filePolicy:()=>ctx.get('sandboxPolicy') });
   ctx.effect(() => definitions.dispose);
   for (const definition of guidedTools(definitions, knowledge)) {
     const dispose = ctx.tools.register(definition);

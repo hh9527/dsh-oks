@@ -54,18 +54,19 @@ export const presentationFacts = {
             "line",
             "LineChart"
           ],
-          "doc": "沿 x 展示趋势；series 分线。时间 xType=time，使用 RFC3339 或 epoch 毫秒；数值/时间 x 在每个序列内须非递减。null 留缺口，connectNulls 控制连接。",
+          "doc": "沿 x 展示趋势；series 分线。xType 必填：Int / Float / String / Rfc3339 / EpochMillis；Rfc3339 接受带时区时间文本，EpochMillis 接受整数毫秒；数值/时间 x 在每个序列内须非递减。null 留缺口，connectNulls 控制连接。",
           "facts": {
             "required": [
               "x",
-              "value"
+              "value",
+              "xType"
             ],
             "series": "group",
             "example": {
               "spec": {
                 "x": "at",
                 "value": "count",
-                "xType": "time"
+                "xType": "Rfc3339"
               },
               "rows": [
                 {
@@ -161,11 +162,13 @@ export const presentationFacts = {
           "facts": {
             "required": [
               "x",
-              "value"
+              "value",
+              "xType"
             ],
             "series": "group",
             "example": {
               "spec": {
+                "xType": "Int",
                 "x": "at",
                 "value": "count",
                 "series": "group",
@@ -565,7 +568,7 @@ export const presentationFacts = {
               "x": "数据列名",
               "value": "数据列名",
               "series": "数据列名；含义见图表类型说明",
-              "xType": "line/area 使用 number|time；省略时从 x 推断",
+              "xType": "line/area 必填：Int / Float / String / Rfc3339 / EpochMillis；分别为整数、数值、类别文本、RFC3339 文本、整数毫秒",
               "xLabel": "坐标轴名称",
               "valueLabel": "度量名称",
               "unit": "显示单位"
@@ -660,7 +663,7 @@ export const presentationFacts = {
           ],
           "doc": "可运行 DARI：示例数据、有类型表头转换、柱图、表格与 DARI 报告。",
           "facts": {
-            "dari": "data facts := table([{level:\"major\",count:3}],{kind:\"example\"});\ndata rows := select({from:{f:facts},fields:(r)=>({\"告警级别\":r.f.level,\"数量\":r.f.count})});\ndata winner := select_one({from:{f:facts},fields:(r)=>({level:r.f.level}),order_by:(o)=>[asc(o.level)],limit:1});\ndata chartSpec := {x:\"告警级别\",value:\"数量\"};\ndata tableSpec := {columns:[\"告警级别\",\"数量\"]};\ndata summary := select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({total:sum(rows.f.count)})});\n\nfigure comparison := ColumnChart(spec = chartSpec, data = rows);\n\nfigure details := Table(spec = tableSpec, data = rows);\n\nreport answer := Report(title = \"呈现示例\") [\n  h1 [ \"示例结果\" ],\n  p [\n    \"数量：\",\n    Value(data = summary?.total),\n  ],\n  p [\n    \"首项：\",\n    Value(data = winner?.level),\n  ],\n  figure [\n    Figure(ref = comparison),\n    figcaption [ \"类别比较\" ],\n  ],\n  figure [\n    Figure(ref = details),\n    figcaption [ \"明细\" ],\n  ],\n];\n"
+            "dari": "data facts := table([{level:\"major\",count:3}],{kind:\"example\"});\ndata rows := select({from:{f:facts},fields:(r)=>({\"告警级别\":r.f.level,\"数量\":r.f.count})});\ndata winner := select_one({from:{f:facts},fields:(r)=>({level:r.f.level}),order_by:(o)=>[asc(o.level)],limit:1});\ndata chartSpec := {x:\"告警级别\",value:\"数量\"};\ndata tableSpec := {columns:[\"告警级别\",\"数量\"]};\ndata summary := select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({total:sum(rows.f.count)})});\n\nfigure comparison := ColumnChart(spec = chartSpec, data = rows);\n\nfigure details := Table(spec = tableSpec, data = rows);\n\nreport answer := Report(title = \"呈现示例\") [\n  h1 [ \"示例结果\" ],\n  p [\n    \"数量：\",\n    Value(data = summary?.total),\n  ],\n  p [\n    \"首项：\",\n    Value(data = winner?.level),\n  ],\n  UseFigure(ref = comparison, caption = \"类别比较\"),\n  UseFigure(ref = details, caption = \"明细\"),\n];\n"
           }
         }
       }
@@ -687,15 +690,15 @@ export const presentationFacts = {
             "figure",
             "图序号"
           ],
-          "doc": "data 定义不可变计算，figure 定义具名图表，report 定义报告。Value 显示标量；Report 通过 Figure 引用图表，figcaption 自动获得图/表编号，FigureRef 显示文字编号。",
+          "doc": "data 定义不可变计算，figure 定义具名图表，report 定义报告。Value 显示标量；Report 通过 UseFigure 引用图表并指定可选 caption，自动获得图/表编号，FigureRef 显示文字编号。",
           "facts": {
             "scalar": "Value(data = summary.total);",
             "arrayScalar": "Value(data = winner?.level);",
             "pick": "属性写成 key = expression，支持绑定、静态/可选投影及有类型计算。子节点使用 JSON 字符串和 DOM-like 节点；动态标量通过 Value(data = expression) 插入。",
-            "figure": "figure [ Figure(ref = comparison), figcaption [ \"说明\" ], ];",
+            "figure": "UseFigure(ref = comparison, caption = \"说明\");",
             "bindings": "report answer := Report [ p [ \"正文\" ], ];",
             "spec": "组件 spec 省略 kind，标签决定图表类型；只有 NetworkGraph 接受 nodes。组件语法为 tag(attrs) [ children ]，属性或子节点为空时可省略对应部分。",
-            "structure": "figure 声明具名图表。Report 的 figure 排版块内先放 Figure(ref = chart)，再放可选 figcaption。FigureRef(ref = chart) 显示本报告的编号，目标须在同一 Report 中展示。图和表按文档顺序分别编号，图注位于图表之后。"
+            "structure": "figure 声明具名图表。Report 使用 UseFigure(ref = chart, caption = \"说明\") 嵌入图表，caption 可选。FigureRef(ref = chart) 显示本报告的编号，目标须在同一 Report 中展示。图和表按文档顺序分别编号，图注位于图表之后。"
           }
         },
         "draft": {
@@ -705,7 +708,7 @@ export const presentationFacts = {
           ],
           "doc": "可运行 DARI：精确绑定标量、数组元素、图表与表格。",
           "facts": {
-            "dari": "data facts := table([{level:\"major\",count:3}],{kind:\"example\"});\ndata rows := select({from:{f:facts},fields:(r)=>({\"告警级别\":r.f.level,\"数量\":r.f.count})});\ndata winner := select_one({from:{f:facts},fields:(r)=>({level:r.f.level}),order_by:(o)=>[asc(o.level)],limit:1});\ndata chartSpec := {x:\"告警级别\",value:\"数量\"};\ndata tableSpec := {columns:[\"告警级别\",\"数量\"]};\ndata summary := select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({total:sum(rows.f.count)})});\n\nfigure comparison := ColumnChart(spec = chartSpec, data = rows);\n\nfigure details := Table(spec = tableSpec, data = rows);\n\nreport answer := Report(title = \"呈现示例\") [\n  h1 [ \"示例结果\" ],\n  p [\n    \"数量：\",\n    Value(data = summary?.total),\n  ],\n  p [\n    \"首项：\",\n    Value(data = winner?.level),\n  ],\n  figure [\n    Figure(ref = comparison),\n    figcaption [ \"类别比较\" ],\n  ],\n  figure [\n    Figure(ref = details),\n    figcaption [ \"明细\" ],\n  ],\n];\n"
+            "dari": "data facts := table([{level:\"major\",count:3}],{kind:\"example\"});\ndata rows := select({from:{f:facts},fields:(r)=>({\"告警级别\":r.f.level,\"数量\":r.f.count})});\ndata winner := select_one({from:{f:facts},fields:(r)=>({level:r.f.level}),order_by:(o)=>[asc(o.level)],limit:1});\ndata chartSpec := {x:\"告警级别\",value:\"数量\"};\ndata tableSpec := {columns:[\"告警级别\",\"数量\"]};\ndata summary := select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({total:sum(rows.f.count)})});\n\nfigure comparison := ColumnChart(spec = chartSpec, data = rows);\n\nfigure details := Table(spec = tableSpec, data = rows);\n\nreport answer := Report(title = \"呈现示例\") [\n  h1 [ \"示例结果\" ],\n  p [\n    \"数量：\",\n    Value(data = summary?.total),\n  ],\n  p [\n    \"首项：\",\n    Value(data = winner?.level),\n  ],\n  UseFigure(ref = comparison, caption = \"类别比较\"),\n  UseFigure(ref = details, caption = \"明细\"),\n];\n"
           }
         },
         "body": {
@@ -727,7 +730,7 @@ export const presentationFacts = {
     }
   },
   "examples": {
-    "report": "data facts := table([{level:\"major\",count:3}],{kind:\"example\"});\ndata rows := select({from:{f:facts},fields:(r)=>({\"告警级别\":r.f.level,\"数量\":r.f.count})});\ndata winner := select_one({from:{f:facts},fields:(r)=>({level:r.f.level}),order_by:(o)=>[asc(o.level)],limit:1});\ndata chartSpec := {x:\"告警级别\",value:\"数量\"};\ndata tableSpec := {columns:[\"告警级别\",\"数量\"]};\ndata summary := select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({total:sum(rows.f.count)})});\n\nfigure comparison := ColumnChart(spec = chartSpec, data = rows);\n\nfigure details := Table(spec = tableSpec, data = rows);\n\nreport answer := Report(title = \"呈现示例\") [\n  h1 [ \"示例结果\" ],\n  p [\n    \"数量：\",\n    Value(data = summary?.total),\n  ],\n  p [\n    \"首项：\",\n    Value(data = winner?.level),\n  ],\n  figure [\n    Figure(ref = comparison),\n    figcaption [ \"类别比较\" ],\n  ],\n  figure [\n    Figure(ref = details),\n    figcaption [ \"明细\" ],\n  ],\n];\n",
+    "report": "data facts := table([{level:\"major\",count:3}],{kind:\"example\"});\ndata rows := select({from:{f:facts},fields:(r)=>({\"告警级别\":r.f.level,\"数量\":r.f.count})});\ndata winner := select_one({from:{f:facts},fields:(r)=>({level:r.f.level}),order_by:(o)=>[asc(o.level)],limit:1});\ndata chartSpec := {x:\"告警级别\",value:\"数量\"};\ndata tableSpec := {columns:[\"告警级别\",\"数量\"]};\ndata summary := select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({total:sum(rows.f.count)})});\n\nfigure comparison := ColumnChart(spec = chartSpec, data = rows);\n\nfigure details := Table(spec = tableSpec, data = rows);\n\nreport answer := Report(title = \"呈现示例\") [\n  h1 [ \"示例结果\" ],\n  p [\n    \"数量：\",\n    Value(data = summary?.total),\n  ],\n  p [\n    \"首项：\",\n    Value(data = winner?.level),\n  ],\n  UseFigure(ref = comparison, caption = \"类别比较\"),\n  UseFigure(ref = details, caption = \"明细\"),\n];\n",
     "tableHeaders": {
       "input": {
         "rows": [

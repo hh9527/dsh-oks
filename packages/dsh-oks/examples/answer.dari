@@ -19,12 +19,6 @@ report answer := Report(title = "呈现示例") [
     "首项：",
     Value(data = winner?.level),
   ],
-  figure [
-    Figure(ref = comparison),
-    figcaption [ "类别比较" ],
-  ],
-  figure [
-    Figure(ref = details),
-    figcaption [ "明细" ],
-  ],
+  UseFigure(ref = comparison, caption = "类别比较"),
+  UseFigure(ref = details, caption = "明细"),
 ];

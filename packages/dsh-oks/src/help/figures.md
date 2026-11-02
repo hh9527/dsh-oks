@@ -13,9 +13,9 @@ figure daily := ColumnChart(spec = spec, data = rows);
 
 组件标签确定类型，spec 省略 kind。data 引用 data 绑定的 Table(T)。x/value/series 指向检查返回的列名；series 的含义由图表类型决定。先在 query/select 中完成聚合；图表不自动汇总重复单元。
 
-规格各层级严格检查字段名与类型。排版使用 `layout:{height:300,rowHeight:20}`，排序和数值标签使用 `style:{sort:"desc",labels:true}`；未知或放错层级的字段会在 oks_check 中报错，并提示正确路径。
+规格各层级严格检查字段名与类型。排版使用 `layout:{height:300,rowHeight:20}`，排序和数值标签使用 `style:{sort:"desc",labels:true}`；未知或放错层级的字段会在 dari_check 中报错，并提示正确路径。
 
-时间轴 xType=time 接受 RFC3339 或 epoch 毫秒；数值与时间 x 在每个序列内须非递减。窗口的自然日时区来自 context，与存储时标格式分别表达。
+时间轴 xType=Rfc3339 接受带时区的 RFC3339 文本，xType=EpochMillis 接受整数毫秒；数值与时间 x 在每个序列内须非递减。窗口的自然日时区来自 context，与存储时标格式分别表达。
 
 ## 按需读取
 
@@ -24,3 +24,5 @@ figure daily := ColumnChart(spec = spec, data = rows);
 - Report 正文、Value、图表引用、编号和完整报告示例：`oks://help/report.md`
 
 Table 的 columns 是字符串列名数组，表头就是数据键名；中文表头在 select 的 fields 中指定输出列名。只有 NetworkGraph 接受独立 nodes 数据。
+
+LineChart / AreaChart 的 spec.xType 必填：Int、Float、String、Rfc3339 或 EpochMillis。Int/Float 使用数值轴，String 使用类别轴，Rfc3339/EpochMillis 使用时间轴。检查器检查列类型，运行时验证实际值；不进行输入编码推断。

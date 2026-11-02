@@ -274,27 +274,6 @@ export const readableOn = (background: string): string => {
   return luminance < 0.249 ? '#ffffff' : '#2a3540';
 };
 
-/** 从一列值推断横轴怎么读。
- *
- *  只在"明确像时间"时才判成 time——年份数字（2026）绝不能被当成 epoch 毫秒，
- *  那会把横轴画到 1970 年去，而且看起来还挺像一张图。
- */
-export const inferXType = (values: readonly unknown[]): 'number' | 'time' | 'category' => {
-  const present = values.filter((value) => value !== null && value !== undefined && value !== '');
-  if (present.length === 0) return 'category';
-  // 文本：必须带日期与时间两部分的形状才算时间。
-  const looksLikeDateTime = (text: string): boolean =>
-    /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(text) || /^\d{4}\/\d{1,2}\/\d{1,2}/.test(text);
-  if (present.every((value) => typeof value === 'string' && looksLikeDateTime(value))) return 'time';
-  if (present.every((value) => typeof value === 'number' && Number.isFinite(value))) {
-    // epoch 毫秒：只认合理区间（2000-01-01 ~ 2100-01-01）。年份数字落不进这个区间。
-    const min = Date.UTC(2000, 0, 1);
-    const max = Date.UTC(2100, 0, 1);
-    return present.every((value) => (value as number) >= min && (value as number) <= max) ? 'time' : 'number';
-  }
-  return 'category';
-};
-
 /** 数值轴的说明：valueLabel 与 unit 合成。
  *  label 里已经带了单位就不再重复——agent 常把单位写进 label（"CPU 使用率 (%)"），
  *  再给一次 unit 就会拼成"CPU 使用率 (%)（%）"。 */

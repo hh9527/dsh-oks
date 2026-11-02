@@ -1,3 +1,4 @@
+import {axisValue,X_TYPES,type XType} from './spec.ts';
 /** 呈现规格 → echarts option。
  *
  *  这是整条出图链路里"把业务字段与结果行翻译成渲染输入"的那一层。echarts 吃的是 JSON，
@@ -54,7 +55,7 @@ export interface OptionInput {
   x: string;
   value: string;
   series: string | null;
-  xType: 'number' | 'time' | null;
+  xType: XType | null;
   xLabel: string | null;
   valueLabel: string | null;
   unit: string | null;
@@ -168,6 +169,7 @@ export const buildOption = (
   spec: OptionInput,
   nodes: readonly Row[] | undefined = undefined,
 ): { option: EChartsCoreOption; height: number } => {
+  if((spec.kind==='line'||spec.kind==='area')&&!(X_TYPES as readonly unknown[]).includes(spec.xType))throw new Error('spec.xType is required: Int / Float / String / Rfc3339 / EpochMillis');
   // 桑基图：行是**边**——`x` 起点、`series` 终点、`value` 权重（不填时每条边计 1）。
   // 布局由 echarts 从 DAG 自己分层，作者不给层级。它与别的图元不同，先于通用分组处理。
   if (spec.kind === 'sankey') {
@@ -717,8 +719,9 @@ export const buildOption = (
   });
 
   // x 轴：横条图是数值轴（第二维度就挂在它旁边），其余是类别轴或时间轴。
-  const baseXAxis = horizontal ? measureAxis : (spec.kind === 'line' || spec.kind === 'area') && spec.xType === 'time'
-    ? { ...categoryAxis, type: 'time' as const, data: undefined }
+  const continuous = (spec.kind==='line'||spec.kind==='area')&&spec.xType!==null&&spec.xType!=='String';
+  const baseXAxis = horizontal ? measureAxis : continuous
+    ? { ...categoryAxis, type: (spec.xType==='Rfc3339'||spec.xType==='EpochMillis'?'time':'value') as 'time'|'value', data: undefined }
     : categoryAxis;
 
   // 直方图：一列数值先分箱再按箱画柱。散点表现不了"一组值怎么分布"（三档数据画出来就是三个点），
@@ -948,11 +951,11 @@ export const buildOption = (
     connectNulls,
     lineStyle: { width: 2, color: pick(seriesNames.length) },
     itemStyle: { color: pick(seriesNames.length) },
-    // 时间轴时同样要以 [时间, 值] 给出，echarts 才会按时间排布。缺失的那个点也照样列出
+    // 连续轴时同样要以 [坐标, 值] 给出，echarts 才会按时间排布。缺失的那个点也照样列出
     //（值为 null）——把整条删掉等于说"这段时间不在轴上"，缺口会消失、线会直接跨过去。
-    data: spec.xType === 'time' && (spec.kind === 'line' || spec.kind === 'area')
+    data: continuous
       ? categories
-        .map((category) => [category, toNumber(firstRowByCategory.get(category)?.[second.value])] as [string, number | null])
+        .map((category) => [axisValue(firstRowByCategory.get(category)?.[spec.x],spec.xType!), toNumber(firstRowByCategory.get(category)?.[second.value])] as [number, number | null])
       : categories.map((category) => toNumber(firstRowByCategory.get(category)?.[second.value])),
   };
 
@@ -990,17 +993,17 @@ export const buildOption = (
       grid: secondAxis === null ? grid : { ...grid, right: 56 },
       xAxis,
       yAxis,
-      // 时间轴时数据要以 [时间, 值] 形式给出，echarts 才会按时间排布。
+      // 连续轴时数据要以 [坐标, 值] 形式给出，echarts 才会按时间排布。
       // 值必须取**已经算好的那一份**（stack: 'percent' 时它就是归一化结果）——回到原始行再取一次
       // 会把归一化丢掉，堆叠的总和线于是一路爬出绘图区、看起来像"图被截断"。
       // 缺失点（null）留在数组里：断点由 `connectNulls` 决定，不在这一步被抹掉。
-      series: (spec.kind === 'line' || spec.kind === 'area') && spec.xType === 'time'
+      series: continuous
         ? allSeries.map((item, index) => {
           if (index >= series.length) return item;
           const values = (item as { data?: (number | null)[] }).data ?? [];
           return {
             ...item,
-            data: categories.map((category, i) => [category, values[i] ?? null] as [string, number | null]),
+            data: categories.map((category, i) => [axisValue(firstRowByCategory.get(category)?.[spec.x],spec.xType!), values[i] ?? null] as [number, number | null]),
           };
         })
         : allSeries,

@@ -75,7 +75,7 @@ elif args[0]=='plugin':
                                       capture_output=True)
 
             for _ in range(2):
-                result = run("install")
+                result = run("install-profile")
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             manifest = json.loads((target / "profiles/web/package.json").read_text())
             published = target / "packages/dsh-oks"
@@ -93,8 +93,43 @@ elif args[0]=='plugin':
             self.assertEqual(patch.count('id: agent-preset-registry\n'), 1)
             self.assertNotIn('\n[]\n', patch)
             self.assertIn('# user config', patch)
+            for package in ['dsh-fs-observation-policy', 'dsh-tool-fs', 'dsh-tool-fs-search']:
+                self.assertEqual(patch.count(f'name: "@deepseek-ai/{package}"'), 1)
+                self.assertNotIn(package, patch.split('id: preset-oks-knowledge\n', 1)[1])
+            self.assertIn('sampleOverCapGlobResults: false', patch)
+            # Upgrade an existing search tool missing its required setting.
+            patch_file = target / "profiles/web/cordis.patch.yml"
+            patch_file.write_text(patch.replace('              sampleOverCapGlobResults: false\n', ''))
+            result = run("install-profile")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            patch = patch_file.read_text()
+            self.assertEqual(patch.count('sampleOverCapGlobResults: false'), 1)
+            # Upgrade a previously installed profile with missing file tools.
+            patch = patch.replace('            config:\n              sampleOverCapGlobResults: false\n', '')
+            patch_file = target / "profiles/web/cordis.patch.yml"
+            lines = patch.splitlines(keepends=True)
+            patch_file.write_text(''.join(line for line in lines if not any(
+                name in line for name in ['id: tool-fs', 'id: fs-observation-policy',
+                    'name: "@deepseek-ai/dsh-tool-fs', 'name: "@deepseek-ai/dsh-fs-observation-policy'])))
+            result = run("install-profile")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            restored = patch_file.read_text()
+            for package in ['dsh-fs-observation-policy', 'dsh-tool-fs', 'dsh-tool-fs-search']:
+                self.assertEqual(restored.count(f'name: "@deepseek-ai/{package}"'), 1)
 
-            result = run("run", "--host", "127.0.0.1", "two words")
+
+            self.assertFalse((target / 'start.sh').exists())
+            self.assertFalse((target / 'run-dsh.sh').exists())
+            self.assertTrue((target / 'justfile').is_file())
+            self.assertFalse((target / 'run-watch').exists())
+
+            direct = subprocess.run(['just', '--justfile', str(target / 'justfile'), 'run-dsh', '--host', '127.0.0.1'],
+                cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(direct.returncode, 0, direct.stderr)
+            self.assertEqual(json.loads(log.read_text().splitlines()[-1])['args'], ['web', '--port', '10924', '--host', '127.0.0.1'])
+            result = subprocess.run(['just', '--justfile', str(target / 'justfile'),
+                'run', '--host', '127.0.0.1', 'two words'], cwd=root,
+                env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             call = json.loads(log.read_text().splitlines()[-1])
             self.assertEqual(call['args'], ['web', '--port', '10924', '--host', '127.0.0.1', 'two words'])
@@ -104,7 +139,7 @@ elif args[0]=='plugin':
             watcher = json.loads(log.read_text().splitlines()[-2])
             self.assertEqual(watcher['cmd'], 'watchexec')
             self.assertEqual(watcher['args'], ['--restart', '--ignore-nothing', '--shell=none',
-                '-w', str(target / '.ctrl'), '--', 'dsh', 'web', '--port', '10924',
+                '-w', str(target / '.ctrl'), '--', 'just', '--justfile', str(target / 'justfile'), 'run-dsh',
                 '--host', '127.0.0.1', 'two words'])
 
             # 真实 watcher 验证 touch 会重启；子进程为替身，不监听任何服务端口。
@@ -121,7 +156,7 @@ while True: time.sleep(0.05)
 ''')
             restart_log = root / 'restart.jsonl'
             with (root / 'watcher.log').open('w') as output:
-                process = subprocess.Popen([str(target / 'start.sh')], cwd=root,
+                process = subprocess.Popen(['just', '--justfile', str(target / 'justfile'), 'run'], cwd=root,
                     env={**env, 'RESTART_LOG': str(restart_log)}, stdout=output,
                     stderr=output, start_new_session=True)
                 def wait_runs(count):
@@ -152,13 +187,13 @@ while True: time.sleep(0.05)
                         process.wait(timeout=5)
 
             count = len(log.read_text().splitlines())
-            result = run("install", FAIL_BUILD_INSTALL="1")
+            result = run("install-profile", FAIL_BUILD_INSTALL="1")
             self.assertNotEqual(result.returncode, 0)
             calls = [json.loads(line) for line in log.read_text().splitlines()[count:]]
             self.assertEqual(len(calls), 1)
             self.assertEqual(calls[0]['args'], ['install', '--frozen-lockfile', '--ignore-scripts'])
 
-            result = subprocess.run([*command, 'port=65536', 'install'], cwd=root,
+            result = subprocess.run([*command, 'port=65536', 'install-profile'], cwd=root,
                                     env=env, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('1..65535', result.stderr)

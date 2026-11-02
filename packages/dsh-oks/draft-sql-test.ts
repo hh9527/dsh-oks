@@ -20,7 +20,7 @@ spec <-data({columns:["server","${figureColumn}"]});
 <Asset language="sql" name="compare.sql">${code}</Asset>
 <Asset language="sql" name="final.sql">SELECT server, delta FROM t_comparison ORDER BY delta DESC,server</Asset>
 <Figures><Table name="comparison" data={final} spec={spec}/></Figures>
-<Report name="answer"><article><figure><Figure ref="comparison"/></figure></article></Report>
+<Report name="answer"><article><UseFigure ref="comparison"/></article></Report>
 </Dari>`;
 let result=await checkDesign(draft(sql.replace('c.cpu-b.cpu','c.wrong_cpu-b.cpu')),'sql.dari',backend);
 assert.equal(reads,0,'check must not open business database');

@@ -1,4 +1,3 @@
-import { createSelector } from '../select.ts';
 import {chartTitle} from '../chart/spec.ts';
 import type {ChartSpec} from '../chart/spec.ts';
 import { createHash, randomUUID } from 'node:crypto';
@@ -9,11 +8,11 @@ import { isRecord } from '../host.ts';
 import type { Knowledge, WorkspaceEntry } from '../knowledge.ts';
 import type { TimeContext } from '../time-context.ts';
 import type { ContextTimeZone } from '../time.ts';
-import { embedChartInput, isTableColumn, readWorkText } from '../results.ts';
+import { embedChartInput, isTableColumn, readDariSource } from '../results.ts';
 import { createDraftBackend } from './backend.ts';
 import { DraftRuntime } from './runtime.ts';
 import { checkDesign, parseDesign, parseExecutableDesign } from './design.ts';
-import type { DraftBackend, DraftRun, DraftValue } from './runtime.ts';
+import type { DraftBackend, DraftRun } from './runtime.ts';
 import { escapeHtml, renderMarkdown } from '../chart/markdown.ts';
 import { canonicalJson } from '../key.ts';
 
@@ -139,12 +138,12 @@ export function createDraftTools(options: {
     }
     return result;
   };
-  const checkSource = async (entry:WorkspaceEntry, file:string, text:string, exec:ToolExec, signal:AbortSignal, selection:{answer?:string;requireSelection?:boolean}={}) => {
+  const checkSource = async (entry:WorkspaceEntry, file:string, text:string, exec:ToolExec, signal:AbortSignal) => {
     const zone:ContextTimeZone=structuredClone(options.timeContext.zones.get(exec.agent!.session!)??{kind:'missing'});
     const knowledge={executorFor:()=>{throw new Error('Business query execution is forbidden during checking');}};
     const record=recordFor(entry,exec,file,true);record.zone=zone;
     const backend=createDraftBackend({knowledge,entry,file,contextZone:()=>zone,contextNow:()=>record.contextTime});
-    return checkDesign(text,file,backend,signal,selection);
+    return checkDesign(text,file,backend,signal);
   };
   const publish = async (record:RecordState,sourceText:string,name:string,exec:ToolExec) => {
     const retained=record.runtime.read(name,sourceText);
@@ -175,26 +174,25 @@ export function createDraftTools(options: {
   };
   const tools: ToolDefinition[] = [
     {
-      name:'oks_check',
+      name:'dari_check',
       description:'Check a DARI design without executing business queries. Returns query columns and types, diagnostics, and checks deferred until real data is available. query(intent) obtains model columns to type Table(T); select derives a Table and select_one derives Option(Row). Returns inferred binding types without business values. No business results are returned.',
-      parameters:{type:'object',properties:{src:{type:'string'},answer:{type:'string'}},required:['src'],additionalProperties:false},output,
-      async execute(args:{src?:unknown;answer?:unknown},exec:ToolExec) {
-        assertKeys(args,['src','answer']);
-        if(args.answer!==undefined&&typeof args.answer!=='string')throw new Error('answer must be a Report name');
-        if(typeof args.src!=='string'||!args.src.endsWith('.dari'))throw new Error('src must be a oks://work/*.dari path');
+      parameters:{type:'object',properties:{src:{type:'string'}},required:['src'],additionalProperties:false},output,
+      async execute(args:{src?:unknown},exec:ToolExec) {
+        assertKeys(args,['src']);
+        if(typeof args.src!=='string'||!args.src.endsWith('.dari'))throw new Error('src must be a local .dari path');
         const entry=options.knowledge.ensureWorkspace(exec);
-        const read=readWorkText(entry.root,args.src,'oks_check');
+        const read=readDariSource(entry.root,args.src,'dari_check');
         const signal=AbortSignal.any([shutdown.signal,AbortSignal.timeout(120000),...(exec.signal?[exec.signal]:[])]);
-        return checkSource(entry,read.file,read.text,exec,signal,{answer:args.answer as string|undefined});
+        return checkSource(entry,read.file,read.text,exec,signal);
       },
     },
     {
-      name:'oks_resolve',
-      description:'Check a DARI source and resolve explicitly selected data, figures and reports. Executes only their dependencies and reuses cached computations. data returns structured binding values; figures and reports return objects keyed by binding name, each containing {embedded: "Markdown"}. Copy embedded verbatim into the answer to display the selected artifact. At least one binding must be selected. requireRunApproval controls native user approval; refresh starts a fresh acquisition batch.',
-      parameters:{type:'object',properties:{src:{type:'string'},data:{type:'array',items:{type:'string'}},figures:{type:'array',items:{type:'string'}},reports:{type:'array',items:{type:'string'}},refresh:{type:'boolean'}},required:['src'],additionalProperties:false},output,
-      async execute(args:{src?:unknown;data?:unknown;figures?:unknown;reports?:unknown;refresh?:unknown},exec:ToolExec){
-        assertKeys(args,['src','data','figures','reports','refresh']);
-        if(typeof args.src!=='string'||!args.src.endsWith('.dari'))throw new Error('src must be an oks://work/*.dari path');
+      name:'dari_resolve',
+      description:'Check a DARI source and resolve explicitly selected data, figures and reports. Executes only their dependencies and reuses cached computations. data returns structured binding values; figures and reports return objects keyed by binding name, each containing {embedded: "Markdown"}. Copy embedded verbatim into the answer to display the selected artifact. At least one binding must be selected. requireRunApproval controls native user approval; use dari_renew_context to start a fresh acquisition batch.',
+      parameters:{type:'object',properties:{src:{type:'string'},data:{type:'array',items:{type:'string'}},figures:{type:'array',items:{type:'string'}},reports:{type:'array',items:{type:'string'}}},required:['src'],additionalProperties:false},output,
+      async execute(args:{src?:unknown;data?:unknown;figures?:unknown;reports?:unknown},exec:ToolExec){
+        assertKeys(args,['src','data','figures','reports']);
+        if(typeof args.src!=='string'||!args.src.endsWith('.dari'))throw new Error('src must be a local .dari path');
         const selection={data:[] as string[],figures:[] as string[],reports:[] as string[]};
         for(const kind of ['data','figures','reports'] as const){
           const names=args[kind];
@@ -203,10 +201,9 @@ export function createDraftTools(options: {
         }
         const targets=Object.values(selection).flat();
         if(!targets.length)throw new Error('Select at least one data, figure or report binding');
-        if(args.refresh!==undefined&&typeof args.refresh!=='boolean')throw new Error('refresh must be boolean');
-        if(!exec.agent?.session)throw new Error('oks_resolve requires a caller session');
+        if(!exec.agent?.session)throw new Error('dari_resolve requires a caller session');
         const entry=options.knowledge.ensureWorkspace(exec);
-        const read=readWorkText(entry.root,args.src,'oks_resolve');
+        const read=readDariSource(entry.root,args.src,'dari_resolve');
         const key=keyFor(entry,exec,read.file);
         if(pending.has(key))throw new Error('This draft is already awaiting approval or running');
         pending.add(key);
@@ -236,22 +233,21 @@ export function createDraftTools(options: {
           const approvedEnvironment=environment();
           let approvalStatus:'allowed-once'|'not-required'='not-required';
           if(requiresApproval){
-            const reason=`${args.refresh===true?'刷新并解析':'解析'}分析稿 ${read.file.split('/').at(-1)}`;
-            const decision=await approval!.request({agent:exec.agent,toolName:'oks_resolve',...(exec.callId?{callId:exec.callId}:{}),reason,signal});
+            const reason=`解析分析稿 ${read.file.split('/').at(-1)}`;
+            const decision=await approval!.request({agent:exec.agent,toolName:'dari_resolve',...(exec.callId?{callId:exec.callId}:{}),reason,signal});
             signal.throwIfAborted();
             if(decision!=='allowed-once')return {ok:false,status:decision==='rejected'?'approval-rejected':decision==='cancelled'?'approval-cancelled':'approval-unavailable',execution:'not performed',sourceHash};
             approvalStatus='allowed-once';
           }
           if(approvedEnvironment!==environment())return {ok:false,status:'environment-changed',execution:'not performed',sourceHash};
-          if(readWorkText(entry.root,args.src,'oks_resolve').text!==read.text)return {ok:false,status:'source-changed',execution:'not performed',sourceHash};
+          if(readDariSource(entry.root,args.src,'dari_resolve').text!==read.text)return {ok:false,status:'source-changed',execution:'not performed',sourceHash};
           if((selection.figures.length||selection.reports.length)&&!options.attachments?.())throw new Error('The host attachments service is unavailable');
           const record=recordFor(entry,exec,read.file,true);
           if(record.active)throw new Error('This draft is already running; wait for it to finish');
           record.active=true;record.touched=Date.now();
           record.zone=structuredClone(options.timeContext.zones.get(exec.agent.session)??{kind:'missing'});
-          if(args.refresh===true)record.contextTime=Date.now();
           try{
-            const run=await record.runtime.run(read.text,{targets,refresh:args.refresh===true,signal:AbortSignal.any([signal,AbortSignal.timeout(120000)])});
+            const run=await record.runtime.run(read.text,{targets,signal:AbortSignal.any([signal,AbortSignal.timeout(120000)])});
             const base=receipt(run,read.file);
             if(!base.ok)return {...base,approval:approvalStatus};
             const data:Record<string,unknown>=Object.create(null);
@@ -268,104 +264,24 @@ export function createDraftTools(options: {
       },
     },
     {
-      name: 'oks_run_answer',
-      description: 'Host-only execution of a complete DARI draft. query(intent) acquires rows, columns and truncation metadata. This tool is not registered for agents.',
-      parameters: { type: 'object', properties: { src: { type: 'string' }, answer: { type: 'string' }, refresh: { type: 'boolean' } }, required: ['src'], additionalProperties: false },
+      name: 'dari_renew_context',
+      description: 'Start a fresh acquisition context for one local DARI source in the current session. Renews the time baseline and query snapshots, invalidates previous results, and preserves reusable deterministic computations. Does not execute queries or modify source. The next dari_resolve acquires new data.',
+      parameters: {type:'object',properties:{src:{type:'string'}},required:['src'],additionalProperties:false},
       output,
-      async execute(args: { src?: unknown; answer?: unknown; refresh?: unknown }, exec: ToolExec) {
-        assertKeys(args, ['src', 'answer', 'refresh']);
-        if (typeof args.src !== 'string' || !args.src.endsWith('.dari')) throw new Error('src must be a oks://work/*.dari report path; migrate Markdown explicitly');
-        if (args.answer !== undefined && typeof args.answer !== 'string') throw new Error('answer must be reports.name or a Report binding name');
-        if (args.refresh !== undefined && typeof args.refresh !== 'boolean') throw new Error('refresh must be boolean');
-        const entry = options.knowledge.ensureWorkspace(exec);
-        const read = readWorkText(entry.root, args.src, 'oks_run_answer');
-        const record = recordFor(entry, exec, read.file, true);
-        if (record.active) throw new Error('This draft is already running; wait for it to finish');
-        record.active = true;
-        record.touched = Date.now();
-        record.zone = structuredClone(options.timeContext.zones.get(exec.agent!.session!) ?? { kind: 'missing' });
-        try {
-          const signal = AbortSignal.any([shutdown.signal, AbortSignal.timeout(120000), ...(exec.signal ? [exec.signal] : [])]);
-          const run = await record.runtime.run(read.text, { refresh: args.refresh === true, signal });
-          const base = receipt(run, read.file);
-          if (run.status !== 'complete') return { ...base, delivery: { status: 'unavailable' } };
-          const candidates = run.answers ?? [];
-          let selected: [string, DraftValue] | undefined;
-          if (typeof args.answer === 'string') {
-            const state = run.outputs.get(args.answer);
-            if (!state?.value || state.internal) return { ...base, delivery: { status: 'unavailable', answer: args.answer, error: state?.error ?? 'Answer binding is undefined or unsuccessful' } };
-            selected = [args.answer, state.value];
-          } else if (candidates.length === 1) {
-            const state = run.outputs.get(candidates[0]);
-            if (!state?.value || state.internal) return { ...base, delivery: { status: 'unavailable', answer: candidates[0], error: state?.error ?? 'Answer is unsuccessful' } };
-            selected = [candidates[0], state.value];
-          }
-          else if (candidates.length > 1) return { ...base, delivery: { status: 'selection_required', candidates: candidates.slice(0, 20) } };
-          if (!selected) return { ...base, delivery: { status: 'exploring' } };
-          const [name, value] = selected;
-          const source = value.sources.length === 1 ? value.sources[0] : undefined;
-          if (!source?.delivery || source.at.length || source.path.length) return { ...base, delivery: { status: 'unavailable', error: 'Selected output is not a complete Report' } };
-          return {...base,delivery:{status:'ready',mode:'retained',answer:name,input:`${args.src}#${name}`}};
-        } finally {
-          record.active = false;
-          record.touched = Date.now();
-          if (closed) record.runtime.dispose();
-        }
-      },
-    },
-    {
-      name:'renew_context',
-      description:'Reset the acquisition batch of one oks://work/*.dari source in the current session. Does not execute the draft or query the database. The next run captures a new context and query results; deterministic query plans remain reusable. Existing outputs become unavailable until the next run.',
-      parameters:{type:'object',properties:{src:{type:'string'}},required:['src'],additionalProperties:false},
-      output,
-      async execute(args:{src?:unknown},exec:ToolExec){
+      async execute(args:{src?:unknown},exec:ToolExec) {
+        exec.signal?.throwIfAborted();
         assertKeys(args,['src']);
-        if(typeof args.src!=='string'||!args.src.endsWith('.dari'))throw new Error('src must be a oks://work/*.dari report path');
         const entry=options.knowledge.ensureWorkspace(exec);
-        const read=readWorkText(entry.root,args.src,'renew_context');
+        const read=readDariSource(entry.root,args.src,'dari_renew_context');
+        const key=keyFor(entry,exec,read.file);
+        if(pending.has(key))throw new Error('This draft is already awaiting approval or running');
         const record=recordFor(entry,exec,read.file,true);
         if(record.active)throw new Error('This draft is already running; wait for it to finish');
-        const batch=record.runtime.renew();record.touched=Date.now();
+        const batch=record.runtime.renew();
+        record.contextTime=Date.now();
+        record.zone=structuredClone(options.timeContext.zones.get(exec.agent!.session!)??{kind:'missing'});
+        record.touched=Date.now();
         return {ok:true,src:read.file,batch,status:'renewed'};
-      },
-    },
-    {
-      name: 'oks_project',
-      description: 'Read structured input using a select rule string. The current model root directory, branch shapes and counts are provided in this session’s knowledge navigation and oks://help/knowledge.md; select=":keys" enumerates actual roots. Resources: oks://knowledge or retained oks://work/<file>.dari#<binding>, #figures.<name>, #reports.<name>, #output, #failures, #diagnostics and #meta.<binding>. select examples: ports.rows; {rows,columns}; items[0:25]:map({id,name}). :map projects array items or object values, preserving object keys; use ? to skip absent fields or preserve null while short-circuiting the rest, e.g. a?.b.{c?:len,d}. Multi-field projections require braces. :keys/:len inspect shape. Read oks://help/project.md with oks_read for syntax. Returns .data; oversized results return {error:"payload_too_large",repr,reprLength,len} with a 4096-character JSON preview. Reading never executes SQL, runs drafts, refreshes or saves.',
-      parameters:{type:'object',properties:{input:{type:'string'},select:{type:'string'}},required:['input'],additionalProperties:false},
-      output,
-      async execute(args:{input?:unknown;select?:unknown},exec:ToolExec) {
-        assertKeys(args,['input','select']);
-        if(typeof args.input!=='string')throw new Error('input must identify one structured resource');
-        const select=args.select===undefined?undefined:createSelector(args.select);
-        const resource=args.input;
-        const isKnowledge=resource==='oks://knowledge';
-        // Open the workspace only when resolving a supported structured resource.
-        let entry:WorkspaceEntry|undefined;
-        const workspace=()=>entry??=options.knowledge.ensureWorkspace(exec);
-        const view=async(data:unknown)=>{
-          return {data:select?select(data as JsonValue):data};
-        };
-        if(isKnowledge){
-          const index=await options.knowledge.ensureIndex(workspace());
-          return {ok:true,model:workspace().modelHash,...await view(index.knowledge)};
-        }
-        const match=/^((?:oks:\/\/work\/|\.work\/).+\.dari)#([^#]+)$/.exec(resource);
-        if(match){
-          const read=readWorkText(workspace().root,match[1],'oks_project');
-          const record=recordFor(workspace(),exec,read.file,false);
-          if(match[2]==='failures'||match[2]==='diagnostics'){
-            const described=record.runtime.describe(read.text);
-            const data=match[2]==='diagnostics'?described.diagnostics:described.outputs.filter(output=>output.status==='failed'||output.status==='blocked').map(output=>({...output,input:`${read.file}#${output.name}`}));
-            const {outputs:_outputs,diagnostics:_diagnostics,...summary}=described;
-            return {ok:true,...summary,...await view(data)};
-          }
-          const meta=match[2].startsWith('meta.');
-          const readValue=record.runtime.read(meta?match[2].slice(5):match[2],read.text);
-          const data=meta?{sources:readValue.value.sources.map(({origin,at,path})=>({origin,at,path})),run:readValue.run,sourceHash:readValue.sourceHash}:readValue.value.data;
-          return {ok:true,run:readValue.run,sourceHash:readValue.sourceHash,stale:readValue.stale,...await view(data)};
-        }
-        throw new Error('Unknown structured resource; use oks://knowledge or oks://work/<file>.dari#<binding>');
       },
     },
   ];

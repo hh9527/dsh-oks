@@ -1,14 +1,11 @@
-import {readWindow,readArgs,READ_STREAM_MIN_SIZE} from './read.ts';
-import { sourcePath } from './resource-path.ts';
+import {readWindow} from './read.ts';
 import { createHash } from 'node:crypto';
-import { createReadStream, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync,
-  writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { errorText, isRecord } from './host.ts';
 import { capLine } from './text.ts';
 
 // DARI 运行数据类型、来源链、附件内容编码与源码文件管理。
-export const WORK_DIR = '.work';
 
 /** 模型声明的结果列：逻辑类型和可空性来自静态投影，与实际返回行无关。 */
 export const RESULT_TYPES = ['Int', 'Float', 'Bool', 'String', 'DateTimeUtc', 'EpochMillis', 'DateTime'] as const;
@@ -415,193 +412,34 @@ export function describeRows(
 /** 单份程序正文的字节上限。 */
 export const CODE_MAX_BYTES = 64 * 1024;
 
-/** `.work/` 里单份文本文件的上限（存得住的上限，比"能当程序引用的上限"宽）。 */
-export const WORK_MAX_BYTES = 256 * 1024;
+/** 单份 DARI 源码的读取上限。 */
+export const DARI_MAX_BYTES = 256 * 1024;
 
-/** 校验工作区相对完整路径，原样使用调用方给定的名称。 */
-function validateFilePath(raw: unknown): asserts raw is string {
-  if (typeof raw !== 'string' || raw === '' || raw !== raw.trim() || isAbsolute(raw)
-    || raw.includes('\\') || raw.includes('#') || raw.includes('\0')
-    || raw.split('/').some(part => part === '' || part === '.' || part === '..')) {
-    throw new Error(`需要工作区相对完整文件路径：${JSON.stringify(raw)}`);
-  }
-}
-
-/** 校验最近的现有父目录，创建目录前也要挡住符号链接逃逸。 */
+/** 检查现有路径及其父目录的真实位置，拒绝符号链接越出工作区。 */
 function checkRealBoundary(root: string, target: string): void {
   const workspace = realpathSync(root);
   let candidate = target;
   while (!existsSync(candidate)) candidate = dirname(candidate);
   const actual = realpathSync(candidate);
   const inside = relative(workspace, actual);
-  if (inside.startsWith('..') || isAbsolute(inside)) throw new Error('路径经符号链接越出工作区。');
+  if (inside === '..' || inside.startsWith('../') || isAbsolute(inside)) throw new Error('路径经符号链接越出工作区。');
 }
 
-/** 完整文件名称的共同边界：词法与真实路径均留在工作区内。 */
-export function workspaceFilePath(root: string, raw: unknown): string {
-  validateFilePath(raw);
-  const target = resolve(root, raw);
-  checkRealBoundary(root, target);
-  return target;
-}
-
-/** 工作文件使用完整相对路径，并逐次验证真实边界。 */
-export function workPath(root: string, raw: unknown, tool: string): { rel: string; full: string } {
-  const given=raw;
-  raw=sourcePath(raw);
-  validateFilePath(raw);
-  if (!raw.startsWith(`${WORK_DIR}/`)) throw new Error(`${tool} 需要 oks://work/ 下的完整文件地址，例如 oks://work/analysis.dari`);
-  const full = workspaceFilePath(root, raw);
-  const base = resolve(root, WORK_DIR);
-  if (existsSync(base)) {
-    const realBase = realpathSync(base);
-    let candidate = full;
-    while (!existsSync(candidate)) candidate = dirname(candidate);
-    const inside = relative(realBase, realpathSync(candidate));
-    if (inside.startsWith('..') || isAbsolute(inside)) throw new Error(`${tool} 路径经符号链接越出 ${WORK_DIR}/。`);
-  }
-  return { rel: given as string, full };
-}
-
-/** `.work/` 里的现有文件（按名字排序）：agent 换会话回来时先看这个。 */
-export function listWorkFiles(root: string): Array<{ name: string; bytes: number; modifiedAt: string }> {
-  const base = join(root, WORK_DIR);
-  checkRealBoundary(root, base);
-  let entries: string[];
-  try {
-    entries = readdirSync(base, { withFileTypes: true })
-      .filter((entry) => entry.isFile())
-      .map((entry) => entry.name)
-      .sort();
-  } catch {
-    entries=[];
-  }
-  const files=entries.map((name) => {
-    const info = statSync(join(base, name));
-    return {
-      name: `${WORK_DIR}/${name}`,
-      bytes: info.size,
-      modifiedAt: new Date(info.mtimeMs).toISOString().replace(/\.\d{3}Z$/, 'Z'),
-    };
-  });
-  return files;
-}
-
-/** 把父目录建出来，再做一次真实路径复核（父目录若是符号链接指向 `.work/` 外面，这里就挡住）。 */
-function ensureInsideWork(root: string, target: string): void {
-  mkdirSync(dirname(target), { recursive: true });
-  const base = realpathSync(resolve(root, WORK_DIR));
-  const real = realpathSync(dirname(target));
-  const inside = relative(base, real);
-  if (inside.length > 0 && (inside.startsWith('..') || isAbsolute(inside))) {
-    throw new Error(`${WORK_DIR}/ 里的父目录指向了外面，拒绝写入：${JSON.stringify(target)}`);
-  }
-  const targetInside = existsSync(target) ? relative(base, realpathSync(target)) : '';
-  if (targetInside.startsWith('..') || isAbsolute(targetInside)) {
-    throw new Error(`${WORK_DIR}/ 里的这个文件指向了外面，拒绝写入`);
-  }
-}
-
-/** 写一份 `.work/` 下的文本文件：父目录按需创建，已存在就覆盖（它是 agent 自己的工作区，
- *  没有"独占创建"这条规矩——`edit` 与重写是它迭代代码的方式）。 */
-/** 删一份 `.work/` 下的文件。只删文件——目录要先把它里面的文件删掉。 */
-export function deleteWorkFile(root: string, raw: unknown): { file: string; remaining: number } {
-  const { rel, full } = workPath(root, raw, 'oks_delete');
-  let info: ReturnType<typeof statSync>;
-  try {
-    info = statSync(full);
-  } catch {
-    throw new Error(`oks_delete 找不到 ${rel}。`);
-  }
-  if (!info.isFile()) {
-    throw new Error(`oks_delete 只能删文件：${rel} 是一个目录（先删它里面的文件）。`);
-  }
-  unlinkSync(full);
-  return { file: rel, remaining: listWorkFiles(root).length };
-}
-
-export function writeWorkFile(root: string, path: unknown, content: unknown, tool: string): {
-  file: string; bytes: number; created: boolean;
-} {
-  const { rel, full } = workPath(root, path, tool);
-  if (typeof content !== 'string') throw new Error(`${tool} 需要 content（要写入的文本）`);
-  const bytes = Buffer.byteLength(content);
-  if (bytes > WORK_MAX_BYTES) {
-    throw new Error(`这份内容 ${(bytes / 1024).toFixed(0)} KB，超过 ${WORK_DIR}/ 单份文件的上限 `
-      + `${WORK_MAX_BYTES / 1024} KB：拆成几份。`);
-  }
-  const created = !existsSync(full);
-  ensureInsideWork(root, full);
-  writeFileSync(full, content);
-  return { file: rel, bytes, created };
-}
-
-/** 改一份 `.work/` 下的文本文件：字面替换。`old` 必须原样出现——找不到、或出现多次而没开
- *  `replaceAll`，都报出来（改错地方的代价比多问一句高）。 */
-/** 读 `.work/` 下**一整份文本文件**（不限扩展名）：报告正文这类"内容文件"走它。
+/** Read a DARI source using the same local paths as host file tools.
+ * Canonical identity keeps relative, absolute and symlink aliases in one cache.
  */
-export function readWorkText(root: string, raw: unknown, tool: string): { text: string; file: string } {
-  const { rel, text } = readWorkTextWhole(root, raw, tool);
-  return { text, file: rel };
-}
-
-export function prepareWorkEdit(root: string, path: unknown, old: unknown, next: unknown, replaceAll: unknown, tool: string): {
-  file: string; replaced: number; bytes: number; body:string; original:string;
-} {
-  const { rel } = workPath(root, path, tool);
-  if (typeof old !== 'string' || old === '') throw new Error(`${tool} 需要 old：要替换掉的原样文本`);
-  if (typeof next !== 'string') throw new Error(`${tool} 需要 new：替换成什么`);
-  const {text}=readWorkTextWhole(root,path,tool);
-  const parts = text.split(old);
-  const replaced = parts.length - 1;
-  if (replaced === 0) {
-    throw new Error(`${rel} 里没有出现要替换的那段文本（${JSON.stringify(capLine(old, 60))}）：`
-      + 'old 必须与文件里的内容逐字相同（含空格与缩进）。');
+export function readDariSource(root:string, raw:unknown, tool:string): {file:string;text:string} {
+  if(typeof raw!=='string'||!raw.trim()||raw.includes('://')||raw.includes('\0')||!raw.endsWith('.dari')) {
+    throw new Error(`${tool}: src must be a local .dari file path, relative to the workspace or absolute`);
   }
-  if (replaced > 1 && replaceAll !== true) {
-    throw new Error(`${rel} 里出现了 ${replaced} 次：要么把 old 写得更长以唯一定位，要么传 replaceAll: true 全部替换。`);
-  }
-  const body = parts.join(next);
-  const bytes = Buffer.byteLength(body);
-  if (bytes > WORK_MAX_BYTES) {
-    throw new Error(`改完是 ${(bytes / 1024).toFixed(0)} KB，超过 ${WORK_DIR}/ 单份文件的上限。`);
-  }
-  return { file: rel, replaced, bytes, body, original:text };
-}
-
-export function editWorkFile(root:string,path:unknown,old:unknown,next:unknown,replaceAll:unknown,tool:string) {
-  const prepared=prepareWorkEdit(root,path,old,next,replaceAll,tool);
-  writeWorkFile(root,prepared.file,prepared.body,tool);
-  return {file:prepared.file,replaced:prepared.replaced,bytes:prepared.bytes};
-}
-
-/** 读 `.work/` 下**一整份文本文件**：`readWorkFile`（给 agent 看的行窗口）与报告正文都用它。
- *  路径校验、文件不存在时的提示、单份文件上限都在这里，只有这一处。 */
-function readWorkTextWhole(root: string, path: unknown, tool: string): { rel: string; text: string } {
-  const { rel, full } = workPath(root, path, tool);
-  let text: string;
-  try {
-    text = readFileSync(full, 'utf8');
-  } catch {
-    throw new Error(`读不到 ${rel}`
-      + `。材料、图表件与报告不在 ${WORK_DIR}/ 下：要读它们用 oks_project（用 select 选择或 transform 处理）；`
-      + `${WORK_DIR}/ 只装你自己写的文件。`);
-  }
-  const bytes = Buffer.byteLength(text, 'utf8');
-  if (bytes > WORK_MAX_BYTES) {
-    throw new Error(`${rel} ${(bytes / 1024).toFixed(0)} KB，超过 ${WORK_DIR}/ 单份文件的上限：拆成几份。`);
-  }
-  return { rel, text };
-}
-
-/** Bounded source read; large files stream while the full line count remains exact. */
-export async function readWorkFile(root:string,path:unknown,offset:unknown,limit:unknown,tool:string) {
-  readArgs(offset,limit);
-  const {rel,full}=workPath(root,path,tool);
-  const stat=statSync(full);
-  if(!stat.isFile())throw new Error(`Not a regular file: ${rel}`);
-  const chunks=stat.size>=READ_STREAM_MIN_SIZE?createReadStream(full,{encoding:'utf8'}):[readFileSync(full,'utf8')];
-  return readWindow(chunks,rel,offset,limit);
+  const target=resolve(root,raw);
+  const inside=relative(resolve(root),target);
+  if(inside==='..'||inside.startsWith('../')||isAbsolute(inside))throw new Error('DARI source must be inside the workspace');
+  checkRealBoundary(root,target);
+  const full=realpathSync(target);
+  if(!statSync(full).isFile())throw new Error('DARI source must be a regular file');
+  if(statSync(full).size>DARI_MAX_BYTES)throw new Error('DARI source exceeds 256 KiB');
+  return {file:relative(realpathSync(root),full).split('\\').join('/'),text:readFileSync(full,'utf8')};
 }
 
 export function readTextLines(text:string,rel:string,offset:unknown,limit:unknown,_tool:string) {

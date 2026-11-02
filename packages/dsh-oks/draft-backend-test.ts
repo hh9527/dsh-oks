@@ -13,7 +13,7 @@ data facts := query({limit:5,start:months[0].start.dateTimeUtc});
 data rows := select({from:{facts},fields:(r)=>({label:"observed",n:r.facts.n})});
 data summary := select_one({from:{rows},fields:(r)=>({n:r.rows.n}),order_by:(out)=>[desc(out.n)],limit:1});
 figure chart := ColumnChart(spec={x:"label",value:"n"},data=rows);
-report answer := Report [p ["Total: ",Value(data=summary?.n)],figure [Figure(ref=chart)]];`;
+report answer := Report [p ["Total: ",Value(data=summary?.n)],UseFigure(ref = chart)];`;
 try{
  const checked=await checkDesign(source,'answer.dari',backend);assert.equal(checked.ok,true,JSON.stringify(checked));assert.equal(executions,0);
  let run=await runtime.run(source);assert.equal(run.status,'complete',run.error);

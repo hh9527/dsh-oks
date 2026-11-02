@@ -43,7 +43,7 @@ try {
 ${example.nodes?`data nodes := table(${JSON.stringify(example.nodes)},{kind:"example"});`:''}
 data spec := ${JSON.stringify(Object.fromEntries(Object.entries(example.spec).filter(([key])=>key!=="kind")))};
 figure chart := ${Object.entries(COMPONENT_KINDS).find(([,value])=>value===kind)![0]}(spec = spec, data = rows${example.nodes?', nodes = nodes':''});
-report answer := Report [ figure [ Figure(ref = chart), ], ];`;
+report answer := Report [ UseFigure(ref = chart), ];`;
   const runtime=new FixtureRuntime(backend);const result=await runtime.run(source);
   assert.equal(result.status,'complete',`${kind}: ${result.error}`);
   for(const [name,output]of result.outputs)assert.ok(output.value,`${kind}/${name}: ${output.error}`);

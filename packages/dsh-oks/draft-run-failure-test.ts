@@ -21,11 +21,11 @@ async function scenario(source:string,rows:{n:number}[],truncated:boolean,verify
  const exec={agent:{session:{id:'test'}}} as unknown as ToolExec;
  const call=async(name:string,args:unknown)=>await drafts.tools.find(t=>t.name===name)!.execute(args as never,exec) as any;
  try{
-  const checked=await call('oks_check',{src:'oks://work/test.dari'});assert.equal(checked.ok,true,JSON.stringify(checked.diagnostics));
+  const checked=await call('dari_check',{src:'.work/test.dari'});assert.equal(checked.ok,true,JSON.stringify(checked.diagnostics));
   assert.equal(executions,0,'checking does not execute business queries');
-  const result=await call('oks_resolve',{src:'oks://work/test.dari',reports:['answer']});
+  const result=await call('dari_resolve',{src:'.work/test.dari',reports:['answer']});
   assert.equal(executions,1);assert.deepEqual(result,JSON.parse(JSON.stringify(result)));
-  await verify(result,async(name)=>call('oks_project',{input:'oks://work/test.dari#'+name}));
+  await verify(result,async()=>({data:result.failures}));
  }finally{drafts.dispose();rmSync(root,{recursive:true,force:true})}
 }
 

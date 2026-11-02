@@ -1,4 +1,4 @@
 {
   "title": "Knowledge service (OKS)",
-  "description": "Normalize vocabulary with ka_ask, discover knowledge with oks_knowledge, and edit Markdown answer drafts under .work/. oks_run_answer executes queries, processing, debug and rendering; oks_project reads existing outputs. Reports archive data and provenance. The workspace oks.json declares the model, domain and read-only data source."
+  "description": "Navigate domain knowledge with ka_ask, oks_search, oks_cap and oks_info. Author DARI using host file tools; dari_check validates the whole source, dari_resolve returns selected data and embedded artifacts, and dari_renew_context renews acquisition context. oks_read reads built-in manuals only."
 }

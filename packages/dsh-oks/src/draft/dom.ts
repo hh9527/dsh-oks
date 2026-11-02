@@ -69,8 +69,8 @@ export function parseDomDraft(source:string,file:string){
   };
   const attribute=(tag:string,key:string,part:{start:number;end:number;text:string}):Attribute=>{
     const span=location(part.start,part.end);
-    if((tag==='Figure'||tag==='FigureRef')&&key==='ref'){
-      const symbol=part.text.trim();if(!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(symbol))fail('Figure.ref requires a figure binding',part.start,part.end);
+    if((tag==='UseFigure'||tag==='FigureRef')&&key==='ref'){
+      const symbol=part.text.trim();if(!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(symbol))fail('UseFigure.ref requires a figure binding',part.start,part.end);
       if(declarations.get(symbol)!=='figure')fail('Undefined or forward figure binding '+symbol,part.start,part.end);
       return {kind:'text',value:symbol,span};
     }
@@ -105,6 +105,8 @@ export function parseDomDraft(source:string,file:string){
     whitespace();const start=at;
     if(depth>128)fail('Template nesting exceeds 128');if(++elements>2048)fail('Report exceeds 2048 template elements');
     const tag=name(true),attrs=new Map<string,Attribute>();
+    if(['Figure','figure','figurecaption','figcaption','table','caption','thead','tbody','tfoot','tr','td','th'].includes(tag))
+      fail(`Unsupported report element ${tag}; use UseFigure(ref = name, caption = "...")`,start,at);
     whitespace();if(source[at]==='('){
       at++;whitespace();while(source[at]!==')'){
         const begin=at,key=name(true);if(attrs.has(key))fail('Duplicate attribute '+key,begin);
@@ -124,7 +126,7 @@ export function parseDomDraft(source:string,file:string){
         whitespace();if(source[at]===','){at++;whitespace();}else if(source[at]!==']')fail('Expected , between child nodes');
       }at++;
     }
-    if(!children.length&&(['Value','Figure','FigureRef','br','hr'].includes(tag)||componentKind(tag)!==undefined))selfClosing=true;
+    if(!children.length&&(['Value','UseFigure','FigureRef','br','hr'].includes(tag)||componentKind(tag)!==undefined))selfClosing=true;
     const result={name:tag,attrs,children,selfClosing,span:location(start)};
     childSpans.set(result,spans);return result;
   };
