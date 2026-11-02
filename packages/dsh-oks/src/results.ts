@@ -326,44 +326,6 @@ export function readArtifactMeta(content: string): ArtifactMeta | null {
   }
 }
 
-/** 图与表的 data：画出来的行 + 它们的展示规格。两者同形——图与表各自该怎么看，
- *  由 `spec` 说；那一份行数据本身是通用表格。 */
-export interface DisplayData {
-  rows: Array<Record<string, unknown>>;
-  spec: unknown;
-}
-
-/** 图里的绘图材料：**画出来的行**、绘图规格，以及这份数据的完整来源链。
- *  它和图的自述分开放：自述回答"这是什么"，这一块回答"这些数字从哪来"。 */
-export type ChartInput = EnvelopeParts<DisplayData>;
-
-/** 绘图材料在 SVG 里的标记名。 */
-const CHART_INPUT_KEY = 'dsh-oks-chart-input';
-
-/** 把绘图材料嵌进 SVG：与自述一样放在文件最前面，读的人只读开头就够。
- *  它是**复制**而不是引用——工作区可回收，图要能自己说清来路（见 rfc/0005 决策 6）。 */
-export function embedChartInput(content: string, input: ChartInput): string {
-  const open = /<svg[^>]*>/.exec(content);
-  if (open === null) throw new Error('图里没有根 <svg>，绘图材料写不进去（渲染层的形状变了？）');
-  const insert = `<metadata id="${CHART_INPUT_KEY}">${escapeXmlText(JSON.stringify(input))}</metadata>`;
-  const end = open.index + open[0].length;
-  return content.slice(0, end) + insert + content.slice(end);
-}
-
-/** 从图里读回绘图材料；读不到（老图、形状不符）就是 null。 */
-export function readChartInput(content: string): ChartInput | null {
-  const raw = new RegExp(`<metadata id="${CHART_INPUT_KEY}">([^<]*)</metadata>`).exec(content)?.[1];
-  if (raw === undefined) return null;
-  const json = raw.replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"').replace(/&amp;/g, '&');
-  try {
-    const value = JSON.parse(json) as ChartInput;
-    return value?.origin === undefined ? null : value;
-  } catch {
-    return null;
-  }
-}
-
 /** 值编码：大整数转十进制字符串、二进制转 base64，并给出观察到的类型标签。 */
 function encodeCell(value: unknown): { value: unknown; type: string } {
   if (value === null || value === undefined) return { value: null, type: 'null' };

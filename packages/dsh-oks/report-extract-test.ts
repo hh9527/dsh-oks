@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import {mkdtempSync,writeFileSync,readFileSync,existsSync,symlinkSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {reportExtractDariTool,extractDariSource} from './src/report-extract.ts';
+import {reportArchiveNodes} from './src/report/page.ts';
+import {parseExecutableDesign} from './src/draft/design.ts';
+const root=mkdtempSync(join(tmpdir(),'oks-extract-'));
+let mode='workspace-write',decision='allowed-once';
+const archive={version:1,context:{run:'run1',batch:'batch1',sourceHash:'hash',startedAt:'2026-11-02T00:00:00Z',model:{hash:'model',domain:'ic'},captures:[{binding:'ctx',value:{now:'historical */\nnot code'}}],acquisitions:[]},dari:{source:'data ctx := context();\nanswer := Answer [p ["原稿"]];',pipeline:'',title:'报告',notes:'',assets:{},reports:{},figures:{},values:{}}};
+const html=reportArchiveNodes(archive as any);
+const options={knowledge:{ensureWorkspace:()=>({root})} as any,filePolicy:()=>({resolve:()=>({mode,workspaceRoot:root})}),approval:()=>({async request(){return decision;}}) as any};
+const tool=reportExtractDariTool(options),exec={agent:{session:{}}} as any;
+const call=(args:unknown)=>tool.execute(args as never,exec);
+try{
+ writeFileSync(join(root,'report.html'),html);
+ const result=await call({src:'report.html',sink:'restored.dari'}) as any;
+ assert.equal(result.sink,'restored.dari');
+ const text=readFileSync(join(root,'restored.dari'),'utf8');
+ assert(text.endsWith(archive.dari.source));assert(text.includes('2026-11-02T00:00:00Z'));assert(text.includes('historical */'));
+ parseExecutableDesign(text,'restored.dari');
+ await assert.rejects(call({src:'report.html',sink:'restored.dari'}),/already exists/);
+ assert.equal(readFileSync(join(root,'restored.dari'),'utf8'),text);
+ for(const sink of ['../escape.dari','missing/out.dari','out.txt'])await assert.rejects(call({src:'report.html',sink}));
+ symlinkSync(join(root,'report.html'),join(root,'link.html'));
+ await assert.rejects(call({src:'link.html',sink:'new.dari'}),/symbolic links/);
+ mode='read-only';await assert.rejects(call({src:'report.html',sink:'new.dari'}),/writable/);
+ mode='workspace-write';decision='rejected';await assert.rejects(call({src:'report.html',sink:'new.dari'}),/not approved/);
+ assert(!existsSync(join(root,'new.dari')));
+ assert.throws(()=>extractDariSource('<html>no archive</html>'),/元数据/);
+ console.log('Report extraction: original source, historical metadata, parseable comments, no overwrite, sandbox, symlinks and approval passed');
+}finally{rmSync(root,{recursive:true,force:true});}

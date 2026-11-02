@@ -1,6 +1,6 @@
 # 时间上下文与窗口
 
-分析稿使用 context() 获得冻结的时间上下文，再用 time_windows(ctx,{unit,count,mode}) 生成日历窗口。检查与运行使用相同的时间和时区；显式刷新时重新捕获。
+分析稿使用 context() 获得冻结的时间上下文，再用 time_windows(ctx,{unit,count,mode}) 生成日历窗口。检查期使用固定示例时刻做语义验证，运行期捕获实际时刻并复用；显式更新上下文时重新捕获。
 
 ## 参数
 
@@ -12,7 +12,14 @@ complete 返回最近 N 个已完成日历周期。current 包含当前周期，
 
 窗口按从早到晚排列，每个区间为 [start,end)，周从星期一开始。自然日遵循时区日历规则，可以为 23 或 25 小时。午夜跳时取当天第一个有效时刻；滚动平移采用 Temporal compatible 规则，重复墙钟取较早时刻，缺失墙钟向后平移。若时区历史跳过整日导致窗口没有时长，检查返回诊断，请调整范围。
 
-时区来自当轮用户消息。缺失、冲突或无效时向用户澄清。计算使用显式时区，不能用固定偏移代替日历运算。
+`context()` 已包含当前时刻和客户端时区：
+
+- `ctx.utc.epochMillis`：当前时刻的 epoch 毫秒
+- `ctx.utc.rfc3339`：当前时刻的 UTC 文本
+- `ctx.tz.client.id`：客户端 IANA 时区名，例如 Asia/Shanghai
+- `ctx.tz.client.offset` / `ctx.tz.client.offsetMinutes`：该时刻的偏移
+
+时间和客户端时区从 `context()` 获取，`time_windows(ctx, ...)` 直接使用其中的客户端时区。采用的统计时区应在报告中注明；需要核对的是业务统计口径。仅当口径存在实质歧义，或 context 无法提供有效时区时才澄清。计算使用 IANA 时区，不能用固定偏移代替日历运算。
 
 ## 边界
 

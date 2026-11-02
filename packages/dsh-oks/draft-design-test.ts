@@ -159,3 +159,31 @@ console.log('Syntax diagnostics: original line, caret, expected delimiter and op
  assert.throws(()=>parseTableSpec({columns:['n'],title:42}),/title must be a string/);
  console.log(`Strict figure specs: ${invalid.length} invalid shapes rejected by shared parsing, semantic checking and runtime preflight without SQL; valid nested options accepted`);
 }
+
+for (const [expression, hint] of [
+ ['row.设备分类', 'row["设备分类"]'],
+ ['row."CPU 平均使用率(%)"', 'row["CPU 平均使用率(%)"]'],
+ ['row?.设备分类', 'map_opt(value, row => row["设备分类"])'],
+ ['{设备分类:1}', '{"设备分类": value}'],
+] as const) {
+ const result = await check(`data row := {"设备分类":"交换机"}; data result := ${expression};`);
+ assert.equal(result.ok, false);
+ assert(result.diagnostics.some(d => d.message.includes(hint)), JSON.stringify(result));
+}
+const chineseKeys = await check('data row := {"设备分类":"交换机","CPU 平均使用率(%)":42}; data result := {category:row["设备分类"],cpu:row["CPU 平均使用率(%)"]};');
+assert.equal(chineseKeys.ok, true, JSON.stringify(chineseKeys));
+console.log('Chinese keys: bracket access accepted and invalid syntax has actionable diagnostics');
+
+const fieldExamples=Object.fromEntries(Array.from({length:12},(_,i)=>['field_'+i,i]));
+const boundedFields=await check(`data row := ${JSON.stringify(fieldExamples)}; data result := row.missing;`);
+assert.equal(boundedFields.ok,false);
+const fieldDiagnostic=boundedFields.diagnostics.find(d=>d.message.includes('Unknown field missing'))!;
+assert(fieldDiagnostic.message.includes('on row;'));
+assert(fieldDiagnostic.message.includes('up to 8 of 12'));
+assert(fieldDiagnostic.message.includes('"field_7"'));
+assert(!fieldDiagnostic.message.includes('"field_8"'));
+const nestedField=await check('data rows := table([{a_alarm_severity:1}]); data result := select({from:{a:rows},fields:r=>({severity:r.a.alarm_severity})});');
+assert(nestedField.diagnostics.some(d=>d.message.includes('Unknown field alarm_severity on r.a;')&&d.message.includes('"a_alarm_severity"')));
+const emptyFields=await check('data row := {}; data result := row.missing;');
+assert(emptyFields.diagnostics.some(d=>d.message.includes('up to 8 of 0): (none)')));
+console.log('Missing fields: access object identified, examples capped at 8, empty records handled');

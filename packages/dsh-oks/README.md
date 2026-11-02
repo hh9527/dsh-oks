@@ -13,13 +13,13 @@
 | `oks_info({ids})` | 批量读取精确知识点 |
 | `oks_read({path,offset?,limit?})` | 只读内置手册；path 为 oks://help/ 时列出手册 |
 | `dari_check({src})` | 全稿检查，返回列类型和诊断；不执行业务 SQL |
-| `dari_resolve({src,data?,figures?,reports?})` | 求值所选绑定及依赖，返回数据和 Markdown 展示引用；批准由配置控制 |
+| `dari_resolve({src,answer,data?,figures?,reports?})` | answer 必填：true 交付 Answer Markdown；false 调试所选绑定；批准由配置控制 |
 | `dari_renew_context({src})` | 更新时间基准和采集批次，使旧结果失效；不执行查询 |
 
 
 领域摘要进入 KA 的固定系统上下文，词汇表进入独立 VA 的固定系统上下文，主 agent 保留工作方法和图表能力。预制工具完整返回其结果，输出规模由查询范围、分页和工具内部结构控制。
 
-agent 先设计和检查分析稿，dari_resolve 按 data/figures/reports 显式选择绑定，仅执行其依赖并返回产物，按配置申请本次批准。内部宿主运行器保留执行、缓存、来源和呈现能力。
+agent 先设计和检查分析稿，使用 `dari_resolve({src,answer:true})` 返回唯一 Answer 的 Markdown；调试时使用 answer:false 并选择 data/figures/reports。只执行所选依赖，运行批准由配置控制。内部宿主运行器保留执行、缓存、来源和呈现能力。
 
 ## 知识子会话
 
@@ -51,17 +51,18 @@ kaPreset: oks-knowledge
 
 ## 快速体验
 
-把 [examples/answer.dari](examples/answer.dari) 的内容写到工作区 `oks://work/draft.dari`，随后：
+把 [Answer 示例](examples/answer-markdown.dari) 的内容写到工作区本地文件 `draft.dari`，随后：
 
 ```js
-dari_check({src: "oks://work/draft.dari"})
+dari_check({src: "draft.dari"})
+dari_resolve({src: "draft.dari", answer: true})
 ```
 
 该示例明确使用演示数据。真实任务应先发现模型能力，用 query(Intent) 表达取数，再用 dari_check 检查查询及列类型。检查不要求 dataFile；后处理类型在检查期推导，业务数据和渲染在运行时取得。
 
 ## DARI 有类型 Pipeline
 
-`.dari` 使用 data、figure、report 声明不可变计算、图表和报告。图表与报告统一使用 `tag(attrs) [ children ]` 构造表达式。语法规范见 [RFC 0021](../../rfc/0021-typed-relational-pipeline.md)，使用说明见 [Pipeline 手册](src/help/pipeline.md)。
+`.dari` 使用 data、figure、report 声明不可变计算、图表和报告，使用唯一的 `answer := Answer [...]` 定义回答。图表、报告和回答统一使用 `tag(attrs) [ children ]` 构造表达式。语法规范见 [RFC 0021](../../rfc/0021-typed-relational-pipeline.md)，使用说明见 [Pipeline 手册](src/help/pipeline.md)。
 
 ```text
 data facts := query({...});
@@ -75,20 +76,25 @@ data first := select_one({
   order_by:(out)=>[desc(out.value),asc(out.name)],limit:1
 });
 figure chart := BarChart(spec = {x:"name",value:"value"}, data = result);
-report answer := Report [
+report full := Report [
   h1 [ "分析结果" ],
-  p [ "首项：", Value(data = first?.name), ],
+  p [ "首项：", value(ref = first?.name), ],
   UseFigure(ref = chart),
+];
+answer := Answer [
+  p ["分析已完成"],
+  UseFigure(ref = chart),
+  UseReport(ref = full),
 ];
 ```
 
-模型在 check 时返回 query 的 columns，直接构成 Table(T) 的行类型。select 根据表类型、行作用域和表达式签名推导新的 Table(U)；select_one 得到普通的 Option(U)。表列通过行函数访问，报告标量使用可选对象投影，例如 `Value(data = first?.name);`。
+模型在 check 时返回 query 的 columns，直接构成 Table(T) 的行类型。select 根据表类型、行作用域和表达式签名推导新的 Table(U)；select_one 得到普通的 Option(U)。表列通过行函数访问，报告标量使用可选对象投影，例如 `value(ref = first?.name)`。
 
 支持 inner/left join、筛选、投影、排序、limit、分组聚合、Option、有限 map、union_all 和时间转换。数值和字符串不发生隐式转换。错误字段、错误算术类型、可空谓词、非法聚合、图表列映射都在不读业务数据时检查。模型 columns 不包含的信息，如业务键唯一性和单位，不自行猜测。
 
-运行以有类型计划生成参数化 SQL，在本次运行的 SQLite `:memory:` 内执行。每个结果集保留 schema；查询与派生计算按依赖缓存，缓存命中也能恢复临时表。select_one 的动态多行约束会在运行时拒绝。截断输入、schema 漂移、值类型不符、资源超限均明确失败。
+运行以有类型计划生成参数化 SQL，在每份分析稿的临时 SQLite 中执行；临时数据库闲置 15 分钟后回收。每个结果集保留 schema；查询与派生计算按依赖缓存，缓存命中也能恢复临时表。select_one 的动态多行约束会在运行时拒绝。截断输入、schema 漂移、值类型不符、资源超限均明确失败。
 
-图表写成 `figure chart := BarChart(spec = spec, data = result);`，检查器验证列名和数值映射。报告通过 `UseFigure(ref = chart, caption = "说明")` 编排，caption 可选。绑定不可变，先定义后引用；reports 显式选择报告，data 显式选择需要解读的事实。内部数据不自动返回，运行结果包含所选报告引用的标量和图表事实。源码、当前来源位置和计算过程跟随图表与报告保存。
+图表写成 `figure chart := BarChart(spec = spec, data = result);`，检查器验证列名和数值映射。报告通过 `UseFigure(ref = chart, caption = "说明")` 编排，caption 可选。绑定不可变，先定义后引用。正常交付将 answer.embedded 原样贴回；UseFigure 生成图表嵌入，UseReport 生成可点击的报告链接。调试时通过 data/figures/reports 选择输出。报告归档保留上下文、查询与加工过程、正文引用值和最终绘图数据；SVG 只承载图形和标题。
 
 ## 知识发现
 
@@ -238,14 +244,14 @@ agent 可检查稿件并通过 dari_resolve 运行；默认直接运行，配置
 
 ### 报告归档
 
-DARI 报告 HTML 在非执行元数据中保留 `{version:1,context,dari}`。context 是本次运行与实际采集的快照；dari 包含完整 source、title、notes、assets、pipeline、reports，以及所有图表的 code、binding、status 和成功时的实际 data。dari.values 以规范化投影 code 为键，保存正文实际引用的标量，例如 `{"summary.total":42}`；相同投影跨报告去重。归档只保存图表数据与正文引用值，不保存全部中间绑定。整稿源码可完整恢复，导出不会刷新时间或执行查询。
+DARI 报告 HTML 使用三个非执行 script 节点：`dari-source`（text/plain）保存完整原始源码，`dari-context`（application/json）保存版本和实际执行上下文，`dari-values`（application/json）保存当前报告实际使用的引用值（含图表数据）。引用按表达式索引并去重，不保存未使用的中间绑定或其他报告的引用值。源码嵌入时转义 HTML 敏感字符，提取时无损还原；JSON 转义 `<` 等字符，避免结束标签截断节点。
 
-宿主内部可按需读取归档，agent 通过获准的 dari_resolve 获取结果。只执行所选产物的依赖；归档中的其他图表标为 unavailable，失败分支保留状态。归档受运行存储预算约束。
+`report_extract_dari({src,sink})` 将源码写入新的本地 `.dari` 文件，并以行注释附上历史执行上下文；不覆盖文件、不刷新时间、不执行查询。运行期内部的完整归档仍受运行存储预算约束。
 
 
 ### 有类型 Pipeline 验收
 
-[IC CPU 两期比较](examples/cpu-typed-pipeline.dari) 覆盖窗口、18 个模型查询、关系组合、单行对象、聚合和逐日图；[NS 网元分类](examples/ns-typed-pipeline.dari) 覆盖另一模型的列 schema 与普通聚合对象。两份稿件均不含 Asset。
+[IC CPU 两期比较](examples/cpu-typed-pipeline.dari) 覆盖窗口、18 个模型查询、关系组合、单行对象、聚合和逐日图；[NS 网元分类](examples/ns-typed-pipeline.dari) 覆盖另一模型的列 schema 与普通聚合对象。示例使用 data 声明后处理，无需单独的 asset。
 
 `node --import ./scripts/markdown-loader.mjs draft-typed-test.ts` 验证无业务数据的类型检查、字段诊断、Option、左关联、空表/空组、聚合、单行守卫、有限展开、缓存恢复、schema 变化和预制图表手册示例。Issue [#49](https://github.com/hh9527/dsh-oks/issues/49) 跟踪实现与验收，当前为分支实现。
 

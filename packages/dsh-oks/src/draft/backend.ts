@@ -449,6 +449,11 @@ export function createDraftBackend(options: {
     if (ctx.operator === 'render_report') {
       const bindings = bindingsOf(ctx.args[1]);
       const title = ctx.asset?.title ?? ctx.title ?? ctx.asset!.name.replace(/^@report\//,'');
+      if(ctx.asset?.format==='markdown'){
+        const items=Object.fromEntries(Object.entries(bindings).map(([name,binding])=>[name,binding.value]));
+        const reportValues=Object.fromEntries(Object.entries(ctx.asset.references??{}).filter(([,ref])=>ref.kind==='value').map(([alias,ref])=>[ref.code??alias,bindings[alias].value]));
+        return {data:{items},reportValues,sources:[{origin,at:[],path:[]}]};
+      }
       const report = assembleReport({ name: 'answer', title, subtitle: null, category: '即时分析', at: resultStamp(), draft: node.draft, motivation: node.motivation, program:ctx.asset!.program!, figurePlacement:ctx.asset!.figurePlacement, bindings,
         valueOf: (ref, pick) => pickScalar(bindings[ref]?.value, pick),
       });
@@ -462,7 +467,8 @@ export function createDraftBackend(options: {
         const code=ctx.asset!.references?.[ref]?.code??projectionCode(ref,path);
         return [code,value];
       }));
-      return { data: { assets: report.assets, items: report.items }, reportValues, sources: [{ origin, at: [], path: [], delivery: { html: report.page, title } }] };
+      const reportReferences=Object.fromEntries(Object.entries(ctx.asset!.references??{}).filter(([alias])=>Object.hasOwn(bindings,alias)).map(([alias,ref])=>[ref.code??alias,bindings[alias].value]));
+      return { data: { assets: report.assets, items: report.items }, reportValues, reportReferences, sources: [{ origin, at: [], path: [], delivery: { html: report.page, title } }] };
     }
     const evidence = computed.evidence as { display?: { kind: 'chart' | 'table'; content: string } } | undefined;
     return { logicalType:computed.logicalType, data: computed.data, sources: [{ origin, at: [], path: [], ...(evidence?.display ? { display: evidence.display } : {}) }],

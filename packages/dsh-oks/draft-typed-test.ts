@@ -85,7 +85,7 @@ console.log('Typed boundaries: left join Option/presence, empty tables/groups, c
  assert(!example.includes('<Asset'));
  const before=reads;const checked=await checkDesign(example,'typed.dari',backend);assert.equal(checked.ok,true,JSON.stringify(checked));
  const rt=new DraftRuntime(backend,{parse:parseExecutableDesign});
- try{const run=await rt.run(example);for(const [name,state]of run.outputs)assert(!['failed','blocked'].includes(state.status),name+':'+state.error);assert.equal(reads,before);assert(rt.read('answer',example).value.sources[0].delivery);}finally{rt.dispose();}
+ try{const run=await rt.run(example);for(const [name,state]of run.outputs)assert(!['failed','blocked'].includes(state.status),name+':'+state.error);assert.equal(reads,before);assert(rt.read('full',example).value.sources[0].delivery);}finally{rt.dispose();}
 }
 {
  const {rt,text}=await checkedRun(`first <-select_one({from:{x:a},fields:(r)=>({cpu:r.x.cpu}),order_by:(o)=>[asc(o.cpu)],limit:1});

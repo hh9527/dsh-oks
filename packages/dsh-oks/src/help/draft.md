@@ -1,6 +1,6 @@
 # DARI 分析稿
 
-不要为了探索能力单独开分析稿，而是一个问题一个分析稿，直接在分析稿内进行尝试。 一个业务问题使用一份 `.dari`。`data` 定义不可变的取数与后处理，`figure` 定义图表，`report` 定义可交付报告。用 宿主内置文件工具 编辑，dari_check 检查；dari_resolve 检查后解析显式选择的产物及其依赖；默认直接运行，requireRunApproval=true 时先申请宿主用户批准。
+不要为了探索能力单独开分析稿，而是一个问题一个分析稿，直接在分析稿内进行尝试。 一个业务问题使用一份 `.dari`。`data` 定义不可变的取数与后处理，`figure` 定义图表，`report` 定义可交付报告，唯一的 `answer := Answer [...]` 定义回答流正文。用 宿主内置文件工具 编辑，dari_check 检查；dari_resolve 检查后根据必填的 answer 布尔参数解析回答及显式选择的产物和依赖；默认直接运行，requireRunApproval=true 时先申请宿主用户批准。
 
 源码使用本地文件路径，src 可以是工作区相对路径或工作区内的绝对路径；缓存按会话和文件的真实路径隔离。用宿主内置工具读取、创建和编辑文件。`dari_check({src:"analysis.dari"})` 检查全稿，只接收 src。`oks_read` 只读取内置手册。
 
@@ -13,9 +13,9 @@ data summary := select_one({
   fields:(g,rows)=>({returned_groups:count(rows)})
 });
 
-report answer := Report(title = "对象概览") [
+answer := Answer [
   h1 [ "对象概览" ],
-  p [ "返回分组数：", Value(data = summary?.returned_groups), ],
+  p [ "返回分组数：", value(ref = summary?.returned_groups), ],
 ];
 ```
 
@@ -25,10 +25,15 @@ report answer := Report(title = "对象概览") [
 
 ```dari
 figure counts := ColumnChart(spec = {x:"name",value:"count"}, data = grouped);
-report answer := Report [
+report full := Report [
   h1 [ "对象统计" ],
   p [ "总数：", Value(data = summary?.total), ],
   UseFigure(ref = counts, caption = "类别分布"),
+];
+answer := Answer [
+  p ["分析结果如下"],
+  UseFigure(ref = counts, caption = "类别分布"),
+  UseReport(ref = full),
 ];
 ```
 
@@ -46,19 +51,34 @@ figure 绑定右侧是图表组件或 Table，data 直接接受 Table(T)，无�
 
 ## 批准与交付
 
-完成整稿检查后，显式选择要获得的绑定，至少选择一项：
+完成整稿检查后，正常交付调用 `dari_resolve({src:"analysis.dari",answer:true})`。调试时关闭回答并选择需要读取的绑定：
 
 ```js
 dari_resolve({
+    answer: false,
     src: "<问题>.dari",
     data: ["summary"],
     figures: ["counts"],
-    reports: ["answer"]
+    reports: ["full"]
 })
 ```
 
-三个列表均可省略，名称必须对应声明种类。data 返回绑定的结构化值，包括表、对象、标量和 null。figures/reports 返回以绑定名为键的对象，每项包含 Markdown 字符串 `embedded`；把该字符串原样加入回答流即可展示图表或报告入口。展示产物不重复返回业务事实；需要解读的值通过 data 显式选择。图表可以独立交付，不要求编写 report。
+answer 为必填布尔值，三个列表均可省略，名称必须对应声明种类。answer:true 返回唯一 Answer 的 `answer.embedded`；answer:false 只解析显式选中的内容，至少选择一项。data 返回绑定的结构化值，包括表、对象、标量和 null。figures/reports 返回以绑定名为键的对象，每项包含 Markdown 字符串 `embedded`；把该字符串原样加入回答流即可展示图表或报告入口。展示产物不重复返回业务事实；需要解读的值通过 data 显式选择。图表可以独立交付，不要求编写 report。
 
 只执行所选产物的依赖，共享计算与缓存。普通重复解析复用查询和后处理缓存，改后处理不重新取数；dari_renew_context({src}) 创建新的采集上下文，下一次解析重新取数。
 
 默认检查后直接解析。设置 requireRunApproval=true 时，每次解析通过 DSH 原生批准机制，批准绑定本稿源码、模型、数据配置和冻结的上下文。拒绝或取消时不执行；等待中源码或配置变化会拒绝继续。根据显式返回的事实解读。
+
+## 回答流出口
+
+每份分析稿最多声明一个 `answer := Answer [...]`，先定义数据、图表和报告，再声明回答。正常交付调用 `dari_resolve({src:"analysis.dari",answer:true})`，将返回的 `answer.embedded` Markdown 原样贴进回答，不重复编写或解读同一份正文。answer:true 时也可以额外选择 data/figures/reports；调试使用 `dari_resolve({src:"analysis.dari",answer:false,data:["summary"]})`。省略 answer 或请求不存在的 Answer 会报错。
+
+Answer 沿用 node 写法：h1/h2/h3 转为 Markdown 标题，strong/em 转为强调，p、列表、引用、代码和链接转为对应 Markdown。动态标量写作 `value(ref=summary?.total)`，检查引用及标量类型，保留来源追踪；文字与动态值均转义 Markdown。`Lit ["1.2"]` 表示明确的静态文字。null 显示为破折号。
+
+`UseFigure(ref=chart,caption="说明")` 发布图表并嵌入图片 Markdown，Table 则生成表格文件链接。`UseReport(ref=full)` 发布已经声明的 Report，并嵌入可点击的报告文件链接；不需要额外调用 present。相同产物在一次解析中只发布一次。UseReport 只用于 Answer；Answer 不接受无法用 Markdown 表达的 class、id 等排版属性，检查时会明确报错。
+
+SVG 图表文件只包含图形和标题。数据、查询与加工过程、上下文及最终绘图数据保存在报告归档中，溯源从报告读取。报告包含三个非执行 script 节点：dari-source 保存源码，dari-context 保存实际执行上下文，dari-values 保存当前报告使用的引用值（含图表数据），相同引用去重。
+
+## 从报告恢复分析稿
+
+`report_extract_dari({src:"report.html",sink:"restored.dari"})` 将报告归档中的原始源码写入指定的新 `.dari` 文件，目标目录须已存在，文件不覆盖。源码前附加历史执行上下文（含 context 实际值）、执行时间及模型标识等注释。它不执行查询；重新运行会取得新的上下文，不保证重现原报告结果。提取后使用宿主文件工具读写该文件。

@@ -8,7 +8,8 @@ import {join,resolve} from 'node:path';
 import {buildOption,CHART_WIDTH} from './src/chart/option.ts';
 import {renderEchartsSvg} from './src/chart/echarts.ts';
 import {CHART_KINDS,SERIES_COLORS,supports} from './src/chart/shared.ts';
-import {readChartInput} from './src/results.ts';
+import type {DraftValue} from './src/draft/runtime.ts';
+let lastChart:DraftValue|undefined;
 import {createDraftTools} from './src/draft/tools.ts';
 import {createDraftBackend} from './src/draft/backend.ts';
 import {readReportPage} from './src/report/page.ts';
@@ -19,7 +20,10 @@ mkdirSync(join(DEV_ROOT,'.work'));
 const entry={root:DEV_ROOT,modelHash:'fixture',settings:{workspaceRoot:DEV_ROOT,domain:'test',queryMaxRows:500}} as WorkspaceEntry;
 const knowledge={ensureWorkspace:()=>entry} as Knowledge;
 const drafts=createDraftTools({knowledge,timeContext:{zones:new Map(),install(){}},
- backend:(entry,file,contextZone)=>createDraftBackend({knowledge,entry,file,contextZone}),
+ backend:(entry,file,contextZone)=>{
+  const backend=createDraftBackend({knowledge,entry,file,contextZone});
+  return {...backend,assemble(ctx,computed){const value=backend.assemble(ctx,computed);if(ctx.operator==='render_figure')lastChart=value;return value;}};
+ },
  attachments:()=>testAttachments(DEV_ROOT),
 });
 const exec={agent:{session:{id:'chart-regression'}}} as ToolExec;
@@ -28,6 +32,7 @@ let passed=0;
 const ok=(label:string,condition:unknown)=>{assert.ok(condition,label);passed++;};
 // This is a test fixture writer, not an adapter for the removed write tools.
 const chart=async({spec,data,nodes}:any)=>{
+ lastChart=undefined;
  const file='.work/chart.dari';
  const {kind,...mapping}=spec;
  const component=Object.keys(COMPONENT_KINDS).find(key=>COMPONENT_KINDS[key as keyof typeof COMPONENT_KINDS]===kind)!;
@@ -39,10 +44,11 @@ const chart=async({spec,data,nodes}:any)=>{
  </Pipeline><Figures><${component} name="rendered" spec={chartSpec} data={rows}${nodes?' nodes={nodes}':''}/></Figures>
  <Template name="answer"><article><UseFigure ref="rendered"/></article></Template></Dari>`;
  writeFileSync(join(DEV_ROOT,file),source);
- const publication=await call('dari_resolve',{src:file,figures:['figure']});assert(publication.ok,JSON.stringify(publication));
+ const publication=await call('dari_resolve',{answer:false,src:file,figures:['figure']});assert(publication.ok,JSON.stringify(publication));
  const embedded=publication.figures.figure.embedded;const path=decodeURI(embedded.slice(embedded.indexOf('](')+2,-1));
- const input=readChartInput(readFileSync(path,'utf8'))!;
- return {value:{ok:true,asset:path,rowCount:input.data.rows.length,spec:input.data.spec,title:embedded.slice(2,embedded.indexOf(']('))},text:embedded};
+ const svg=readFileSync(path,'utf8');assert.doesNotMatch(svg,/<metadata|dsh-oks-chart-input/);
+ const input={data:lastChart!.data as any,origin:lastChart!.sources[0].origin};
+ return {input,value:{ok:true,asset:path,rowCount:input.data.rows.length,spec:input.data.spec,title:embedded.slice(2,embedded.indexOf(']('))},text:embedded};
 };
 try {
   // 负值走 0 轴另一侧，并且换色，方向一眼可辨。
@@ -205,8 +211,8 @@ try {
   if (dashedCount < 2) throw new Error(`两条阈值线应当在图里，只找到 ${dashedCount} 条`);
   console.log('  阈值线：' + dashedCount + ' 条虚线，标签都在');
   // 参考线属于**绘图规格**，随规格一起进图：它不进来源链（不是数据），但要能核对。
-  const marksSpec = readChartInput(marksSvg)?.data.spec;
-  ok('参考线随绘图规格存进图里（它属于规格，不属于数据）',
+  const marksSpec = threshold.input.data.spec;
+  ok('参考线保留在运行期绘图规格中（它属于规格，不属于数据）',
     (marksSpec?.marks ?? []).length === 2 && marksSpec.marks[1].label === '上限 55%'
     && marksSpec.unit === '%' && marksSpec.kind === 'column');
 
@@ -607,18 +613,18 @@ try {
   const graph=await chart({spec:{kind:'graph',x:'from',series:'to'},data:graphEdges,nodes:graphNodes});
   const graphSvg=readFileSync(resolve(DEV_ROOT,graph.value.asset),'utf8');
   ok('graph SVG 包含节点与边名称',graphSvg.includes('核心') && graphSvg.includes('经 site_id'));
-  const graphInput=readChartInput(graphSvg)!;
+  const graphInput=graph.input;
   assert.deepEqual(graphInput.data.rows,graphEdges);
   assert.deepEqual(graphInput.data.nodeRows,graphNodes);
   const graphRoot=graphInput.origin.nodes[graphInput.origin.root];
   assert.deepEqual(Object.keys(graphRoot.inputs!).sort(),['data','nodes']);
   for(const parent of Object.values(graphRoot.inputs!))assert.ok(graphInput.origin.nodes[parent]);
-  const publication=await call('dari_resolve',{src:'.work/chart.dari',reports:['answer']});assert(publication.ok,JSON.stringify(publication));
+  const publication=await call('dari_resolve',{answer:false,src:'.work/chart.dari',reports:['answer']});assert(publication.ok,JSON.stringify(publication));
   const embedded=publication.reports.answer.embedded;
   const graphReport=readReportPage(readFileSync(decodeURI(embedded.slice(embedded.indexOf('](')+2,-1)),'utf8'));
   assert.ok(!('error' in graphReport));
-  assert.deepEqual((graphReport.dari.figures.rendered.data as any).nodeRows,graphNodes);
-  assert.deepEqual((graphReport.dari.figures.rendered.data as any).rows,graphEdges);
+  assert.deepEqual((Object.values(graphReport.values).find((v:any)=>v?.nodeRows) as any).nodeRows,graphNodes);
+  assert.deepEqual((Object.values(graphReport.values).find((v:any)=>v?.nodeRows) as any).rows,graphEdges);
   const minimalSpec: Record<string, Record<string, unknown>> = {
     bar: { x: 'k', value: 'w' },
     line: { xType:'String', x: 'k', value: 'w' },

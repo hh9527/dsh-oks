@@ -23,7 +23,7 @@ async function scenario(source:string,rows:{n:number}[],truncated:boolean,verify
  try{
   const checked=await call('dari_check',{src:'.work/test.dari'});assert.equal(checked.ok,true,JSON.stringify(checked.diagnostics));
   assert.equal(executions,0,'checking does not execute business queries');
-  const result=await call('dari_resolve',{src:'.work/test.dari',reports:['answer']});
+  const result=await call('dari_resolve',{answer:false,src:'.work/test.dari',reports:['answer']});
   assert.equal(executions,1);assert.deepEqual(result,JSON.parse(JSON.stringify(result)));
   await verify(result,async()=>({data:result.failures}));
  }finally{drafts.dispose();rmSync(root,{recursive:true,force:true})}

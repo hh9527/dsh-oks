@@ -1,3 +1,4 @@
+import {validateMarkdownAnswer} from '../report/markdown-answer.ts';
 import {parseDomDraft} from './dom.ts';
 import { projectionCode } from './projection.ts';
 import type { DariAuthoring } from './archive.ts';
@@ -12,7 +13,7 @@ import { compileReport,element as reportElement,serializeReport,decodeAuthorText
 export type Reference = { source:string; binding:string; path:(string|number)[]; optional?:number[]; code?:string; span:Span };
 export type Attribute = { kind:'text'; value:string; span:Span; valueStart?:number } | ({kind:'reference'} & Reference);
 export type Element = { selfClosing:boolean;name:string; attrs:Map<string,Attribute>; children:(Element|string)[]; span:Span };
-export type DraftAsset = { title?:string;program?:ReportProgram;figurePlacement?:'before-caption';name:string;language:'sql'|'report';source:string;span:Span;body:Position;fragment?:SourceFragment;references?:Record<string,{kind:'value'|'figure';span:Span;code?:string}> };
+export type DraftAsset = { title?:string;format?:'markdown';program?:ReportProgram;figurePlacement?:'before-caption';name:string;language:'sql'|'report';source:string;span:Span;body:Position;fragment?:SourceFragment;references?:Record<string,{kind:'value'|'figure'|'report';span:Span;code?:string}> };
 export type DraftDocument = {syntax?:'dom';authoring?:DariAuthoring;title?:string;notes?:string;nodes:PipelineNode[];assets:Map<string,DraftAsset>;pipeline:Span;answers:string[];file:string;diagnostics?:SourceDiagnostic[]};
 
 export function parseDraft(source:string,file='draft.dari'):DraftDocument {
@@ -159,7 +160,7 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
   let title=prepared?.title??'Report';
   let pipeline:{body:string;begin:number}|undefined=prepared?{body:source,begin:0}:undefined;let notes:string|undefined;
   const figures=prepared?.figures??new Map<string,Element>();let hasFigures=false;
-  const assets=new Map<string,DraftAsset>();const templates:{title?:string;legacy?:boolean;name:string;element:Element;span:Span}[]=prepared?.templates??[];
+  const assets=new Map<string,DraftAsset>();const templates:{title?:string;format?:'markdown';legacy?:boolean;name:string;element:Element;span:Span}[]=prepared?.templates??[];
   let rootStart=0;
   if(!prepared){
   whitespace();const root=open();rootStart=root.start;if(root.tag!=='Dari'||root.selfClosing)fail('Expected a Dari root',root.start);only(root.attrs,['title']);title=decodeAuthorText(literal(root.attrs,'title',false)??'Report',(message,offset)=>fail(message,((root.attrs.get('title') as {valueStart?:number}|undefined)?.valueStart??0)+offset));
@@ -273,7 +274,7 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
       if(!figures.has(key))fail(`Unknown figure ${key}`,location.start.offset);
       let alias=figureAliases.get(key);
       if(!alias){alias=`named_figure_${figureAliases.size+1}`;figureAliases.set(key,alias);const name=prepared?key:`figures.${key}`;
-        inputs.push({key:alias,value:{kind:'ref',name,span:location}});bindings.add(name);refs[alias]={kind:'figure',span:location};}
+        inputs.push({key:alias,value:{kind:'ref',name,span:location}});bindings.add(name);refs[alias]={kind:'figure',span:location,code:name};}
       return alias;
     };
     const decoded=(value:string,location:Span)=>decodeAuthorText(prepared?value.replaceAll('&','&amp;'):value,(message,offset)=>fail(message,Math.min(location.start.offset+offset,source.length)));
@@ -290,6 +291,17 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
     };
     const childrenOf=(el:Element):ReportNode[]=>el.children.map((child,i)=>typeof child==='string'?textNode(child,childSpans.get(el)?.get(i)??el.span):lower(child));
     const lower=(el:Element):ReportNode=>{
+      if(el.name==='UseReport'){
+        if(template.format!=='markdown')fail('UseReport is only supported inside Answer',el.span.start.offset);
+        only(el.attrs,['ref']);if(!el.selfClosing)fail('UseReport must be empty',el.span.start.offset);
+        const key=literal(el.attrs,'ref')!;
+        const target=templates.find(t=>t.name===key&&t.format!=='markdown');
+        if(!target)fail('Unknown report '+key,el.span.start.offset);
+        const alias=`report_${inputs.length+1}`;
+        inputs.push({key:alias,value:{kind:'ref',name:key,span:el.span}});bindings.add(key);
+        refs[alias]={kind:'report',code:key,span:el.span};
+        return reportElement('a',{'data-oks-ref':alias,href:'#'},[],el.span);
+      }
       if(el.name==='FigureRef'){
         only(el.attrs,['ref']);if(!el.selfClosing)fail('FigureRef must be self-closing',el.span.start.offset);
         const key=literal(el.attrs,'ref')!;const number=figureNumbers.get(key);
@@ -301,9 +313,10 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
         if(el.children.some(child=>typeof child!=='string'))fail('Lit accepts only literal text children',el.span.start.offset,el.span.end.offset);
         return reportElement('span',{'data-oks-lit':''},childrenOf(el),el.span);
       }
-      if(el.name==='Value'){
-        only(el.attrs,['data']);if(el.children.some(child=>typeof child!=='string'||child.trim()!==''))fail('Value must be empty',el.span.start.offset);
-        const ref=requiredRef(el,'data');const alias=`value_${inputs.length+1}`;
+      if(el.name==='Value'||el.name==='value'){
+        const attr=el.name==='value'?'ref':'data';
+        only(el.attrs,[attr]);if(el.children.some(child=>typeof child!=='string'||child.trim()!==''))fail('Value must be empty',el.span.start.offset);
+        const ref=requiredRef(el,attr);const alias=`value_${inputs.length+1}`;
         inputs.push({key:alias,value:refExpr(ref)});bindings.add(ref.binding);refs[alias]={kind:'value',span:ref.span,code:ref.code??ref.path.reduce<string>((code,key,i)=>code+(ref.optional?.includes(i)?'?':'')+projectionCode('',[key]),ref.binding)};
         return reportElement('span',{'data-oks-ref':alias},[],el.span);
       }
@@ -326,12 +339,14 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
     const tree=lower(template.element);
     if(tree.kind!=='element')fail('Report requires an article',template.span.start.offset);
     const program=compileReport(tree as import('../report/structure.ts').ReportElement);
+    const markdown='format' in template&&template.format==='markdown';
+    if(markdown)validateMarkdownAnswer(program);
     if(program.errors.length){
       const errors=program.errors.map(error=>{const offset=original.lines[error.line-1]+error.column-1;return {file,stage:'template',message:error.message,span:original.span(offset,offset)};});
       throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);
     }
     const name=`@report/${template.name}`;
-    assets.set(name,{...(template.title?{title:template.title}:{}),program,figurePlacement:'before-caption',name,language:'report',source:serializeReport(tree),span:template.span,body:template.span.start,references:refs});
+    assets.set(name,{...(markdown?{format:'markdown' as const}:{}),...(template.title?{title:template.title}:{}),program,figurePlacement:'before-caption',name,language:'report',source:serializeReport(tree),span:template.span,body:template.span.start,references:refs});
     const value:Expr={kind:'call',operator:'render_report',args:[literalExpr(name,template.span),objectExpr(inputs,template.span)],span:template.span};
     nodes.push({statement:{kind:'binding',name:prepared||template.legacy?template.name:`reports.${template.name}`,value,span:template.span,motivation:''},bindings:[...bindings],assets:[]});
     });

@@ -47,7 +47,7 @@ const MAX_DEPTH = 128;
 /** base is the location of the first code character in the original source file. */
 export function parsePipeline(source: string, base: Position = { offset: 0, line: 1, column: 1 }): PipelineNode[] {
   const code=source.replace(/"(?:\\.|[^"\\])*"|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,' ');
-  if(/\b(?:select|select_one|table|union_all|map|map_opt|is_some|is_none|round|concat|case_when)\s*\(|=>|\?\.|\?\?|&&|\|\||==|!=/.test(code)||/[+*%!<>/]/.test(code.replaceAll('<-',''))||/[A-Za-z0-9_$)\]]\s*-/.test(code.replaceAll('<-','')))return parseTypedPipeline(source,base);
+  if(/\b(?:select|select_one|table|union_all|map|map_opt|is_some|is_none|round|concat|case_when|lookup)\s*\(|=>|\?\.|\?\?|&&|\|\||==|!=/.test(code)||/[+*%!<>/]/.test(code.replaceAll('<-',''))||/[A-Za-z0-9_$)\]]\s*-/.test(code.replaceAll('<-','')))return parseTypedPipeline(source,base);
   let index = 0;
   let line = base.line;
   let column = base.column;

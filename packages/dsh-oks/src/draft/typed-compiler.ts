@@ -5,6 +5,7 @@ import type {SqlColumn} from './sql.ts';
 import {isRecord} from '../host.ts';
 export type V={type:Ty;known:boolean;value?:any;sql?:string;fields?:Record<string,V>;items?:V[];column?:boolean;rows?:boolean;presence?:string};
 const q=(s:string)=>'"'+s.replaceAll('"','""')+'"';
+const accessPath=(n:N):string|undefined=>{if(n.k==='ref')return n.name;if(n.k!=='get'||!n.input)return undefined;const base=accessPath(n.input);if(!base)return undefined;return base+(typeof n.key==='string'&&/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(n.key)?(n.optional?'?.':'.')+n.key:'['+JSON.stringify(n.key)+']');};
 const nullable=(t:Ty)=>t.kind==='null'||'nullable' in t&&t.nullable;
 const scalarType=(t:Ty):t is Extract<Ty,{kind:'scalar'}>=>t.kind==='scalar';
 const numeric=(t:Ty)=>scalarType(t)&&['Int','Float'].includes(t.name);
@@ -36,7 +37,7 @@ export class TypedCompiler{
    if(t.kind==='array'){if(typeof n.key!=='number')fail(n,'Array projection requires a numeric index');if(t.length!==undefined&&n.key>=t.length)fail(n,'Array index out of bounds');if(!input.items){if(this.checking)return this.bind(t.element,undefined);fail(n,'Use a statically known array');}return input.items[n.key];}
    if(t.kind!=='record')fail(n,'Cannot project '+String(n.key)+' from '+show(t));
    if(t.nullable&&!n.optional)fail(n,'Use ?. to project from '+show(t));
-   if(!Object.hasOwn(t.fields,n.key!))fail(n,'Unknown field '+String(n.key)+'; available fields: '+Object.keys(t.fields).join(', '));
+   if(!Object.hasOwn(t.fields,n.key!)){const keys=Object.keys(t.fields),path=accessPath(n.input!);fail(n,'Unknown field '+String(n.key)+(path?' on '+path:'')+'; available fields (examples, up to 8 of '+keys.length+'): '+(keys.slice(0,8).map(k=>JSON.stringify(k)).join(', ')||'(none)'));}
    let v=input.fields?.[n.key!]??this.bind(t.fields[n.key!],input.known&&input.value!==null?input.value[n.key!]:undefined);
    if(n.optional&&t.nullable)v={...v,type:optional(v.type),known:input.known?true:v.known,...(input.known&&input.value===null?{value:null}:{})};
    return v;
@@ -79,6 +80,26 @@ export class TypedCompiler{
    }
    if(name==='is_some'||name==='is_none'){arity(1);const x=a[0];if(!nullable(x.type))fail(n,name+' requires Option');return {type:scalar('Bool'),known:x.known,...(x.known?{value:name==='is_some'?x.value!==null:x.value===null}:{sql:'('+this.presence(x,n)+(name==='is_some'?' IS NOT NULL)':' IS NULL)')}),column:x.column};}
    if(name==='round'){arity(2);if(!numeric(a[0].type)||!a[1].known||!Number.isInteger(a[1].value)||a[1].value<0||a[1].value>15)fail(n,'round requires a numeric value and known precision 0..15');const k=a.every(x=>x.known);return {type:a[0].type,known:k,column:a[0].column,...(k?{value:a[0].value===null?null:Math.sign(a[0].value)*Math.round(Math.abs(a[0].value)*10**a[1].value)/10**a[1].value}:{sql:'DARI_ROUND('+this.sql(a[0],n)+','+this.sql(a[1],n)+')'})};}
+   if(name==='lookup'){
+    arity(2);const [input,mapping]=a;
+    if(!scalarType(input.type)&&input.type.kind!=='null')fail(n,'lookup input must be a scalar or null');
+    if(mapping.type.kind!=='array'||!mapping.known||!Array.isArray(mapping.value)||!mapping.value.length)fail(n,'lookup requires a nonempty mapping array known at check time');
+    const pairs=mapping.value as {value:unknown;label:unknown}[];let labelType:Ty={kind:'never'};const seen=new Set<unknown>();let keyName:string|undefined;
+    for(const pair of pairs){
+     if(!isRecord(pair)||Object.keys(pair).length!==2||!Object.hasOwn(pair,'value')||!Object.hasOwn(pair,'label'))fail(n,'lookup mapping entries require exactly value and label');
+     const keyType=typeOf(pair.value),valueType=typeOf(pair.label);
+     if(!scalarType(keyType))fail(n,'lookup mapping value must be a non-null scalar');
+     if(input.type.kind==='scalar'&&input.type.name!==keyType.name)fail(n,'lookup key type must match input type '+show(present(input.type)));
+     if(keyName!==undefined&&keyName!==keyType.name)fail(n,'lookup mapping keys must have one type');keyName=keyType.name;
+     if(!scalarType(valueType)&&valueType.kind!=='null')fail(n,'lookup label must be a scalar or null');
+     if(seen.has(pair.value))fail(n,'lookup duplicate value '+JSON.stringify(pair.value));seen.add(pair.value);
+     labelType=common(labelType,valueType);
+    }
+    const type=labelType.kind==='null'?labelType:optional(labelType);
+    if(input.known)return {type,known:true,column:input.column,value:input.value===null?null:pairs.find(p=>p.value===input.value)?.label??null};
+    const sql='(CASE '+this.sql(input,n)+pairs.map(p=>' WHEN '+this.param(p.value)+' THEN '+this.param(p.label)).join('')+' ELSE NULL END)';
+    return {type,known:false,column:input.column,sql};
+   }
    if(name==='case_when'){arity(3);if(a[0].type.kind!=='scalar'||a[0].type.name!=='Bool'||a[0].type.nullable)fail(n,'case_when requires Bool');const type=common(a[1].type,a[2].type),k=a.every(x=>x.known);return {type,known:k,...(k?{value:a[0].value?a[1].value:a[2].value}:{sql:'(CASE WHEN '+this.sql(a[0],n)+' THEN '+this.sql(a[1],n)+' ELSE '+this.sql(a[2],n)+' END)'})};}
    if(name==='concat'){arity(1,64);for(const x of a)if(!scalarType(x.type)||x.type.name!=='String')fail(n,'concat requires String');const k=a.every(x=>x.known);return {type:scalar('String',a.some(x=>nullable(x.type))),known:k,...(k?{value:a.some(x=>x.value===null)?null:a.map(x=>x.value).join('')}:{sql:'('+a.map(x=>this.sql(x,n)).join('||')+')'})};}
    fail(n,'Function is not available in this expression: '+name);

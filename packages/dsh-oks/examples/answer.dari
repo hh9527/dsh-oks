@@ -9,7 +9,7 @@ figure comparison := ColumnChart(spec = chartSpec, data = rows);
 
 figure details := Table(spec = tableSpec, data = rows);
 
-report answer := Report(title = "呈现示例") [
+report full := Report(title = "呈现示例") [
   h1 [ "示例结果" ],
   p [
     "数量：",
@@ -21,4 +21,9 @@ report answer := Report(title = "呈现示例") [
   ],
   UseFigure(ref = comparison, caption = "类别比较"),
   UseFigure(ref = details, caption = "明细"),
+];
+
+answer := Answer [
+    p ["分析已完成，详见报告"],
+    UseReport(ref=full)
 ];

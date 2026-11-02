@@ -1,6 +1,6 @@
 # 有类型的关系 Pipeline
 
-计算声明为 `data name := expression;`，先定义后引用。图表与报告使用 DOM-like 节点，见 `oks://help/draft.md`。
+计算声明为 `data name := expression;`，先定义后引用。图表、报告和 Answer 使用 `tag(attrs) [ children ]` 节点，见 `oks://help/draft.md`。
 
 query 的 columns 由模型在检查期返回，直接参与本语言的类型推导。后处理使用有签名的表达式；所有表列均有明确类型和可空性。模型列的 nullable:true 对应 Option(T)。字段名必须使用模型实际返回值，通常带节点名前缀。
 
@@ -60,6 +60,27 @@ data groups := select({
 - case_when(test,a,b)：test 为 Bool，两个分支类型兼容
 - 窗口边界的 dateTimeUtc / epochMillis：直接提供 DateTimeUtc / EpochMillis；rfc3339 用于本地时间展示
 
+## 静态查表映射
+
+用 `lookup(value, mapping)` 替代多层分类名称转换条件：
+
+```dari
+data device_labels := [
+    {value:"ne.category.switch",label:"交换机"},
+    {value:"ne.category.router",label:"路由器"}
+];
+data displayed := select({
+    from:{d:devices},
+    fields:r=>({category:lookup(r.d.dev_device_class,device_labels) ?? "其他"})
+});
+```
+
+映射表必须是检查期已知的非空数组，每项恰好包含 value 和 label。
+value 是同一种类型的非空标量，须与输入类型一致；重复 value 报错。
+label 是类型兼容的标量（可含 null），返回类型为 Option(LabelType)。
+按值精确匹配，不自动转换类型；未命中或输入为 null 时返回 null。
+默认值使用 `??`。映射表可定义一次、多处复用；只用于展示时不应据此改变领域筛选或统计口径。
+
 ## 有限展开
 
 `map(days,(day)=>query({...}))` 对已知、有界数组展开计划，每个查询都返回 columns 参与检查。map 支持第二个 index 参数，最多 50 项；全稿最多 128 个查询。业务结果不能决定新的 query 参数或数量。
@@ -69,3 +90,10 @@ data groups := select({
 ## 检查与执行边界
 
 dari_check 不读业务数据库，检查字段、作用域、类型、Option、聚合、图表映射和 Report 标量。运行时仍检查远端 schema/值域、输入完整性、select_one 行数及资源限制。数据在按会话与分析稿隔离的临时 SQLite 文件中计算；同一分析稿多次运行复用缓存，运行期间保留，最后一次运行结束后空闲 15 分钟关闭并删除，下次运行自动重建。检查使用独立的内存库，只准备表结构，不延长执行缓存有效期。SQL 由编译器生成；语言侧只使用有类型的 Pipeline。
+
+### 中文与特殊字符键
+
+对象键包含中文、空格或括号时，使用双引号；访问时使用方括号，例如
+`{"设备分类":"交换机"}`、`row["设备分类"]`、`row["CPU 平均使用率(%)"]`。
+不要写 `row.设备分类` 或 `row."设备分类"`。
+可空对象使用 `map_opt(value, row => row["设备分类"])`。

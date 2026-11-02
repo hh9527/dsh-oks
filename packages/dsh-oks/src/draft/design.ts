@@ -62,12 +62,14 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
   let doc: DraftDocument;
   try { doc = parseAnalysisDesign(source,file); }
   catch (error) { if (!(error instanceof DraftSyntaxError)) throw error; addError(error,error.span,'syntax'); return {ok:false,status:'invalid' as const,queries,types,deferred,diagnostics,warnings,reports,...(answer===undefined?{}:{answer}),execution:'not performed' as const}; }
-  reports=doc.answers;
+  reports=doc.answers.filter(name=>doc.assets.get('@report/'+name)?.format!=='markdown');
+  const hasAnswer=doc.assets.get('@report/answer')?.format==='markdown';
   if(options.answer!==undefined){
     const matches=reports.filter(n=>n===options.answer||n===`reports.${options.answer}`);
     if(matches.length===1)answer=matches[0];
     else diagnostics.push({file,stage:'validation',message:`${matches.length?'Ambiguous':'Unknown'} report ${JSON.stringify(options.answer)}. Available reports: ${reports.join(', ')||'(none)'}`,span:doc.pipeline});
-  }else if(reports.length===1)answer=reports[0];
+  }else if(hasAnswer)answer='answer';
+  else if(reports.length===1)answer=reports[0];
   else if(options.requireSelection&&reports.length>1)diagnostics.push({file,stage:'validation',message:`Select answer from: ${reports.join(', ')}`,span:doc.pipeline});
   try { await backend.preflight(doc,signal); } catch (error) { addError(error,doc.pipeline); }
   const original=new SourceFile(file,source);

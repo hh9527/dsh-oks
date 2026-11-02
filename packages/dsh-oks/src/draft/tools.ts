@@ -1,3 +1,4 @@
+import {renderMarkdownAnswer} from '../report/markdown-answer.ts';
 import {chartTitle} from '../chart/spec.ts';
 import type {ChartSpec} from '../chart/spec.ts';
 import { createHash, randomUUID } from 'node:crypto';
@@ -8,7 +9,7 @@ import { isRecord } from '../host.ts';
 import type { Knowledge, WorkspaceEntry } from '../knowledge.ts';
 import type { TimeContext } from '../time-context.ts';
 import type { ContextTimeZone } from '../time.ts';
-import { embedChartInput, isTableColumn, readDariSource } from '../results.ts';
+import { isTableColumn, readDariSource } from '../results.ts';
 import { createDraftBackend } from './backend.ts';
 import { DraftRuntime } from './runtime.ts';
 import { checkDesign, parseDesign, parseExecutableDesign } from './design.ts';
@@ -162,7 +163,7 @@ export function createDraftTools(options: {
       const body=kind==='chart'?source.display.content:renderMarkdown(source.display.content,(_info,text)=>`<pre><code>${escapeHtml(text)}</code></pre>`);
       html=`<!doctype html><html><head><meta charset="utf-8"><style>body{margin:12px;font:14px sans-serif;color:#222}svg{max-width:100%;height:auto}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:6px;text-align:left}h2{font-size:16px}</style></head><body><h2>${escapeHtml(title)}</h2>${body}</body></html>`;
     }else throw new Error('Selected output has no presentation');
-    const content=kind==='chart'?embedChartInput(source.display!.content.replace(/<svg[^>]*>/,open=>open+`<title>${escapeHtml(title)}</title>`),{origin:source.origin,data:retained.value.data as never}):html;
+    const content=kind==='chart'?source.display!.content.replace(/<svg[^>]*>/,open=>open+`<title>${escapeHtml(title)}</title>`):html;
     const extension=kind==='chart'?'.svg':kind==='report'?'.report.html':'.html';
     if(exec.signal?.aborted)throw new Error('aborted');
     const attachment=await attachments.saveFile({data:Buffer.from(content),name:name.slice(name.indexOf('.')+1)+extension});
@@ -188,18 +189,19 @@ export function createDraftTools(options: {
     },
     {
       name:'dari_resolve',
-      description:'Check a DARI source and resolve explicitly selected data, figures and reports. Executes only their dependencies and reuses cached computations. data returns structured binding values; figures and reports return objects keyed by binding name, each containing {embedded: "Markdown"}. Copy embedded verbatim into the answer to display the selected artifact. At least one binding must be selected. requireRunApproval controls native user approval; use dari_renew_context to start a fresh acquisition batch.',
-      parameters:{type:'object',properties:{src:{type:'string'},data:{type:'array',items:{type:'string'}},figures:{type:'array',items:{type:'string'}},reports:{type:'array',items:{type:'string'}}},required:['src'],additionalProperties:false},output,
-      async execute(args:{src?:unknown;data?:unknown;figures?:unknown;reports?:unknown},exec:ToolExec){
-        assertKeys(args,['src','data','figures','reports']);
+      description:'Check a DARI source and resolve selected outputs. answer is required: true renders the unique answer := Answer [...] as answer.embedded Markdown, including UseFigure images and UseReport links; false resolves only explicit data/figures/reports for debugging. Copy embedded verbatim into the reply. Executes only selected dependencies and reuses cached computations. data returns structured values; figures/reports return named {embedded:"Markdown"} objects. requireRunApproval controls native approval; dari_renew_context starts a fresh acquisition batch.',
+      parameters:{type:'object',properties:{src:{type:'string'},data:{type:'array',items:{type:'string'}},figures:{type:'array',items:{type:'string'}},reports:{type:'array',items:{type:'string'}},answer:{type:'boolean',description:'Required. true resolves the unique Answer; false selects only explicit data/figures/reports for debugging.'}},required:['src','answer'],additionalProperties:false},output,
+      async execute(args:{src?:unknown;data?:unknown;figures?:unknown;reports?:unknown;answer?:unknown},exec:ToolExec){
+        assertKeys(args,['src','answer','data','figures','reports']);
         if(typeof args.src!=='string'||!args.src.endsWith('.dari'))throw new Error('src must be a local .dari path');
+        if(typeof args.answer!=='boolean')throw new Error('answer must be explicitly set to true or false');
         const selection={data:[] as string[],figures:[] as string[],reports:[] as string[]};
         for(const kind of ['data','figures','reports'] as const){
           const names=args[kind];
           if(names!==undefined&&(!Array.isArray(names)||names.some(n=>typeof n!=='string'||!n.length)))throw new Error(`${kind} must be an array of binding names`);
           selection[kind]=[...new Set(names as string[]|undefined)];
         }
-        const targets=Object.values(selection).flat();
+        const targets=[...Object.values(selection).flat(),...(args.answer?['answer']:[])];
         if(!targets.length)throw new Error('Select at least one data, figure or report binding');
         if(!exec.agent?.session)throw new Error('dari_resolve requires a caller session');
         const entry=options.knowledge.ensureWorkspace(exec);
@@ -213,7 +215,9 @@ export function createDraftTools(options: {
           const checked=await checkSource(entry,read.file,read.text,exec,AbortSignal.any([signal,AbortSignal.timeout(120000)]));
           if(!checked.ok)return {...checked,execution:'not performed'};
           const doc=parseDesign(read.text,read.file);
-          const reports=new Set(doc.answers);
+          const answers=new Set([...doc.assets.values()].filter(a=>a.format==='markdown').map(a=>a.name.slice('@report/'.length)));
+          const reports=new Set(doc.answers.filter(name=>!answers.has(name)));
+          if(args.answer&&!answers.has('answer'))throw new Error('Missing answer := Answer [...]; use answer:false for explicit debug selections');
           const figures=new Set(Object.values(doc.authoring?.figures??{}).map(f=>f.binding));
           const bindings=new Set(doc.nodes.filter(n=>!n.internal&&n.statement.kind==='binding').map(n=>n.statement.kind==='binding'?n.statement.name:''));
           const diagnostics=[];
@@ -221,7 +225,7 @@ export function createDraftTools(options: {
             const node=doc.nodes.find(n=>n.statement.kind==='binding'&&n.statement.name===name);
             // Pipeline chart bindings can directly call render_figure.
             const figure=figures.has(name)||node?.statement.value.kind==='call'&&node.statement.value.operator==='render_figure';
-            const valid=bindings.has(name)&&(kind==='reports'?reports.has(name):kind==='figures'?figure:!reports.has(name)&&!figure);
+            const valid=bindings.has(name)&&(kind==='reports'?reports.has(name):kind==='figures'?figure:!reports.has(name)&&!answers.has(name)&&!figure);
             if(!valid)diagnostics.push({file:read.file,stage:'selection',message:`Unknown ${kind} binding or wrong kind: ${name}`,span:node?.statement.span??doc.pipeline});
           }
           if(diagnostics.length)return {ok:false,status:'invalid',diagnostics,execution:'not performed'};
@@ -241,7 +245,8 @@ export function createDraftTools(options: {
           }
           if(approvedEnvironment!==environment())return {ok:false,status:'environment-changed',execution:'not performed',sourceHash};
           if(readDariSource(entry.root,args.src,'dari_resolve').text!==read.text)return {ok:false,status:'source-changed',execution:'not performed',sourceHash};
-          if((selection.figures.length||selection.reports.length)&&!options.attachments?.())throw new Error('The host attachments service is unavailable');
+          const answerAsset=args.answer?doc.assets.get('@report/answer'):undefined;
+          if((selection.figures.length||selection.reports.length||Object.values(answerAsset?.references??{}).some(r=>r.kind!=='value'))&&!options.attachments?.())throw new Error('The host attachments service is unavailable');
           const record=recordFor(entry,exec,read.file,true);
           if(record.active)throw new Error('This draft is already running; wait for it to finish');
           record.active=true;record.touched=Date.now();
@@ -253,12 +258,22 @@ export function createDraftTools(options: {
             const data:Record<string,unknown>=Object.create(null);
             const figures:Record<string,{embedded:string}>=Object.create(null);
             const reports:Record<string,{embedded:string}>=Object.create(null);
+            let answer:{embedded:string}|undefined;
+            const published=new Map<string,{embedded:string}>();
+            const publishOnce=async(name:string)=>{let value=published.get(name);if(!value){value=await publish(record,read.text,name,exec);published.set(name,value);}return value;};
             for(const name of selection.data)data[name]=record.runtime.read(name,read.text).value.data;
-            for(const name of selection.figures)figures[name]=await publish(record,read.text,name,exec);
-            for(const name of selection.reports)reports[name]=await publish(record,read.text,name,exec);
+            for(const name of selection.figures)figures[name]=await publishOnce(name);
+            for(const name of selection.reports)reports[name]=await publishOnce(name);
+            if(args.answer){
+              const asset=answerAsset!;
+              const presentations:Record<string,string>=Object.create(null);
+              for(const [alias,reference]of Object.entries(asset.references??{}))if(reference.kind!=='value')presentations[alias]=(await publishOnce(reference.code!)).embedded;
+              const value=record.runtime.read('answer',read.text).value.data as {items:Record<string,unknown>};
+              answer={embedded:renderMarkdownAnswer(asset.program!,value.items,presentations)};
+            }
             // Receipts describe failures, not unrequested values or intermediate bindings.
             return {ok:true,run:run.id,sourceHash:run.sourceHash,batch:run.batch,counts:base.counts,approval:approvalStatus,
-              ...(selection.data.length?{data:{...data}}:{}),...(selection.figures.length?{figures:{...figures}}:{}),...(selection.reports.length?{reports:{...reports}}:{})};
+              ...(selection.data.length?{data:{...data}}:{}),...(selection.figures.length?{figures:{...figures}}:{}),...(selection.reports.length?{reports:{...reports}}:{}),...(answer?{answer}:{})};
           }finally{record.active=false;record.touched=Date.now();if(closed)record.runtime.dispose();}
         }finally{pending.delete(key);}
       },

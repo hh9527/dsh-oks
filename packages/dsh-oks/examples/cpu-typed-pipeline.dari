@@ -133,7 +133,7 @@ figure dailyChart := LineChart(spec = dailySpec, data = dailyRows);
 
 figure alarmTable := Table(spec = alarmSpec, data = alarmRows);
 
-report answer := Report(title = "CPU 两期比较：有类型 Pipeline 设计示例") [
+report full := Report(title = "CPU 两期比较：有类型 Pipeline 设计示例") [
   h1 [ "服务器 CPU 两期比较" ],
   p [
     "基期从 ",
@@ -154,4 +154,9 @@ report answer := Report(title = "CPU 两期比较：有类型 Pipeline 设计示
   UseFigure(ref = summaryTable, caption = "两期平均 CPU 与差值"),
   UseFigure(ref = dailyChart, caption = "逐日平均 CPU，缺失不按零处理"),
   UseFigure(ref = alarmTable, caption = "同一批服务器的两期严重告警数量"),
+];
+
+answer := Answer [
+    p ["分析已完成，详见报告"],
+    UseReport(ref=full)
 ];

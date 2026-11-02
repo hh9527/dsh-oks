@@ -9,10 +9,10 @@ export function parseDomDraft(source:string,file:string){
   const original=new SourceFile(file,source);
   let at=0,sequence=0,elements=0;
   const definitions=new Map<string,N>();
-  const declarations=new Map<string,'data'|'figure'|'report'>();
+  const declarations=new Map<string,'data'|'figure'|'report'|'answer'>();
   const nodes:PipelineNode[]=[];
   const figures=new Map<string,Element>();
-  const templates:{name:string;title:string;element:Element;span:Span}[]=[];
+  const templates:{name:string;title:string;element:Element;span:Span;format?:'markdown'}[]=[];
   const references:Reference[]=[];
   const childSpans=new WeakMap<Element,Map<number,Span>>();
   let title='Report';
@@ -69,12 +69,13 @@ export function parseDomDraft(source:string,file:string){
   };
   const attribute=(tag:string,key:string,part:{start:number;end:number;text:string}):Attribute=>{
     const span=location(part.start,part.end);
-    if((tag==='UseFigure'||tag==='FigureRef')&&key==='ref'){
-      const symbol=part.text.trim();if(!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(symbol))fail('UseFigure.ref requires a figure binding',part.start,part.end);
-      if(declarations.get(symbol)!=='figure')fail('Undefined or forward figure binding '+symbol,part.start,part.end);
+    if((tag==='UseFigure'||tag==='FigureRef'||tag==='UseReport')&&key==='ref'){
+      const symbol=part.text.trim();if(!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(symbol))fail(tag+'.ref requires a binding',part.start,part.end);
+      const expected=tag==='UseReport'?'report':'figure';
+      if(declarations.get(symbol)!==expected)fail('Undefined or forward '+expected+' binding '+symbol,part.start,part.end);
       return {kind:'text',value:symbol,span};
     }
-    if(componentKind(tag)!==undefined||tag==='Value'){
+    if(componentKind(tag)!==undefined||(tag==='Value'||tag==='value')){
       const binding='__dom'+sequence++;compile(part,binding,true);
       const ast=definitions.get(binding)!;
       // Keep direct projections canonical in provenance and reuse existing bindings.
@@ -126,17 +127,17 @@ export function parseDomDraft(source:string,file:string){
         whitespace();if(source[at]===','){at++;whitespace();}else if(source[at]!==']')fail('Expected , between child nodes');
       }at++;
     }
-    if(!children.length&&(['Value','UseFigure','FigureRef','br','hr'].includes(tag)||componentKind(tag)!==undefined))selfClosing=true;
+    if(!children.length&&(['value','Value','UseReport','UseFigure','FigureRef','br','hr'].includes(tag)||componentKind(tag)!==undefined))selfClosing=true;
     const result={name:tag,attrs,children,selfClosing,span:location(start)};
     childSpans.set(result,spans);return result;
   };
-  const reserved=new Set(['data','figure','report','export','true','false','null','query','context','select','select_one','table','map','union_all','time_windows','is_some','is_none','map_opt','round','case_when','concat','to_datetime_utc','to_epoch_millis','asc','desc','count','sum','avg','min','max']);
+  const reserved=new Set(['data','figure','report','export','true','false','null','query','context','select','select_one','table','map','union_all','time_windows','is_some','is_none','map_opt','round','case_when','lookup','concat','to_datetime_utc','to_epoch_millis','asc','desc','count','sum','avg','min','max']);
   whitespace();while(at<source.length){
     if(declarations.size>=512)fail('DARI is limited to 512 declarations');
     const start=at,kind=name();
-    if(!['data','figure','report'].includes(kind))fail('Expected data, figure or report declaration',start,at);
-    whitespace();const bindingStart=at,binding=name();
-    if(binding.startsWith('__')||reserved.has(binding))fail('Reserved binding name '+binding,bindingStart,at);
+    if(!['data','figure','report','answer'].includes(kind))fail('Expected data, figure or report declaration',start,at);
+    whitespace();const bindingStart=at,binding=kind==='answer'?'answer':name();
+    if(kind!=='answer'&&(binding.startsWith('__')||reserved.has(binding)))fail('Reserved binding name '+binding,bindingStart,at);
     if(declarations.has(binding))fail('Duplicate binding '+binding,bindingStart,at);
     eat(':=');
     if(kind==='data'){
@@ -150,17 +151,18 @@ export function parseDomDraft(source:string,file:string){
         if(tree.attrs.has('name'))fail('Figure name is supplied by its binding',tree.span.start.offset);
         tree.attrs.set('name',{kind:'text',value:binding,span:location(bindingStart,bindingStart+binding.length)});figures.set(binding,tree);
       }else{
-        if(tree.name!=='Report')fail('report requires Report',tree.span.start.offset,tree.span.end.offset);
+        const expected=kind==='answer'?'Answer':'Report';
+        if(tree.name!==expected)fail(kind+' requires '+expected,tree.span.start.offset,tree.span.end.offset);
         const reportTitle=tree.attrs.get('title');
         const heading=tree.children.find(c=>typeof c!=='string'&&c.name==='h1');
         const ownTitle=reportTitle?.kind==='text'?reportTitle.value:heading&&typeof heading!=='string'?heading.children.filter(c=>typeof c==='string').join('')||binding:binding;
         if(!templates.length)title=ownTitle;
         if(reportTitle)tree.attrs.delete('title');
         // Report itself is the article root; no extra wrapper is needed in source.
-        tree.name='article';tree.selfClosing=false;templates.push({name:binding,title:ownTitle,element:tree,span:location(start)});
+        tree.name='article';tree.selfClosing=false;templates.push({name:binding,title:ownTitle,element:tree,span:location(start),...(kind==='answer'?{format:'markdown' as const}:{})});
       }
     }
-    declarations.set(binding,kind as 'data'|'figure'|'report');whitespace();
+    declarations.set(binding,kind as 'data'|'figure'|'report'|'answer');whitespace();
   }
   if(!declarations.size)fail('Expected data, figure or report declaration',0,Math.min(1,source.length));
   let queries=0;

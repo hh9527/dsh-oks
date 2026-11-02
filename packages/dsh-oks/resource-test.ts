@@ -12,7 +12,7 @@ const definitions=createTools({knowledge,ka:{} as any,timeContext:{zones:new Map
 const tools=guidedTools(definitions,knowledge),exec={agent:{session:{id:'resources'}}} as any;
 const call=async(name:string,args:unknown)=>tools.find(t=>t.name===name)!.execute(args as never,exec) as Promise<any>;
 try {
- assert.deepEqual(tools.map(t=>t.name).sort(),['move_entry','remove_file','ka_ask','oks_search','oks_cap','oks_info','oks_read','dari_check','dari_resolve','dari_renew_context'].sort());
+ assert.deepEqual(tools.map(t=>t.name).sort(),['report_extract_dari','move_entry','remove_file','ka_ask','oks_search','oks_cap','oks_info','oks_read','dari_check','dari_resolve','dari_renew_context'].sort());
  const index=await call('oks_read',{path:'oks://help/'});
  const paths=index.lines.map((line:any)=>line.text);
  for(const path of ['oks://help/workflow.md','oks://help/figures.md','oks://help/report.md'])assert(paths.includes(path));
@@ -26,8 +26,8 @@ try {
  for(const path of [join(outside,'escape.dari'),'../escape.dari','escape/escape.dari','.work/a.dari'])assert.throws(()=>readDariSource(root,path,'test'));
  await assert.rejects(call('dari_check',{src:'reports/a.dari',answer:'a'}),/Expected only src/);
  assert.equal((await call('dari_check',{src:'reports/a.dari'})).ok,true);
- await assert.rejects(call('dari_resolve',{src:'reports/a.dari',data:['a'],refresh:true}),/Expected only/);
- const result=await call('dari_resolve',{src:local,data:['a']});assert.equal(result.data.a,1);
- assert.equal((await call('dari_resolve',{src:'reports/a.dari',data:['a']})).counts.executed,0);
+ await assert.rejects(call('dari_resolve',{answer:false,src:'reports/a.dari',data:['a'],refresh:true}),/Expected only/);
+ const result=await call('dari_resolve',{answer:false,src:local,data:['a']});assert.equal(result.data.a,1);
+ assert.equal((await call('dari_resolve',{answer:false,src:'reports/a.dari',data:['a']})).counts.executed,0);
  console.log('Public tools: exact ten-tool surface, built-in manuals, local file boundaries, canonical cache identity and rejected retired parameters passed');
 } finally {definitions.dispose();rmSync(root,{recursive:true,force:true});rmSync(outside,{recursive:true,force:true});}

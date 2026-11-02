@@ -17,7 +17,7 @@ data spec := {x:"classification",value:"count"};
 
 figure classChart := ColumnChart(spec = spec, data = classes);
 
-report answer := Report(title = "NS 网元分类概览") [
+report full := Report(title = "NS 网元分类概览") [
   h1 [ "网元分类概览" ],
   p [
     "共 ",
@@ -27,4 +27,9 @@ report answer := Report(title = "NS 网元分类概览") [
     " 个网元。",
   ],
   UseFigure(ref = classChart),
+];
+
+answer := Answer [
+    p ["分析已完成，详见报告"],
+    UseReport(ref=full)
 ];

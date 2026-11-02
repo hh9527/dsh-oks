@@ -8,18 +8,23 @@ import { escapeHtml } from '../chart/markdown.ts';
 import { errorText, isRecord } from '../host.ts';
 import {escapeAttribute,escapeText,attributeText,type ReportNode,type ReportProgram} from './structure.ts';
 
-/** 元数据区在页面里的 id。 */
-export const REPORT_METADATA_ID = 'oks-metadata';
-export const REPORT_METADATA_OPEN = `<script type="json" id="${REPORT_METADATA_ID}">`;
+export const REPORT_SOURCE_OPEN = '<script type="text/plain" id="dari-source">';
+export const REPORT_METADATA_ID = 'dari-context';
+export const REPORT_METADATA_OPEN = '<script type="application/json" id="dari-context">';
+export const REPORT_VALUES_OPEN = '<script type="application/json" id="dari-values">';
 const REPORT_METADATA_CLOSE = '</script>';
-
-/** JSON 正文会转义所有 <，因此结束标记不会与数据或作者源码混淆。 */
-function metadataRange(html:string):{start:number;end:number}|undefined {
-  const open=html.indexOf(REPORT_METADATA_OPEN);
-  if(open<0)return undefined;
-  const start=open+REPORT_METADATA_OPEN.length;
-  const end=html.indexOf(REPORT_METADATA_CLOSE,start);
-  return end<0?undefined:{start,end};
+function metadataRange(html:string,marker=REPORT_METADATA_OPEN):{start:number;end:number}|undefined {
+ const open=html.indexOf(marker);if(open<0)return undefined;
+ const start=open+marker.length,end=html.indexOf(REPORT_METADATA_CLOSE,start);
+ return end<0?undefined:{start,end};
+}
+export type ReportPageArchive={version:1;source:string;context:ReportArchive['context'];values:Record<string,unknown>};
+const sourceText=(s:string)=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+const restoreSource=(s:string)=>s.replaceAll('&gt;','>').replaceAll('&lt;','<').replaceAll('&amp;','&');
+export function reportArchiveNodes(archive?:ReportArchive,values:Record<string,unknown>={}):string {
+ return REPORT_SOURCE_OPEN+sourceText(archive?.dari.source??'')+REPORT_METADATA_CLOSE+'\n'+
+ REPORT_METADATA_OPEN+metadataJson({version:archive?.version??1,context:archive?.context??null})+REPORT_METADATA_CLOSE+'\n'+
+ REPORT_VALUES_OPEN+metadataJson(values)+REPORT_METADATA_CLOSE;
 }
 
 /** 报告内联资源的引用前缀：工作区路径解析器明确拒绝它，隔离由协议保证。 */
@@ -148,7 +153,7 @@ export function buildReportPage(input: ReportPageInput): string {
 <style>
 ${REPORT_STYLE}
 </style>
-${REPORT_METADATA_OPEN}${metadataJson(input.archive??{})}${REPORT_METADATA_CLOSE}
+${reportArchiveNodes(input.archive)}
 </head>
 <body>
 <header>
@@ -166,32 +171,27 @@ ${input.article}
   return named;
 }
 
-/** 回读工具生成的报告：只读取固定标记内的 JSON，不解析 HTML 正文。 */
-export function readReportPage(html:string):ReportArchive|{error:string} {
-  const range=metadataRange(html);
-  if(!range)return {error:'报告缺少完整的 oks-metadata JSON 元数据区。'};
-  let parsed:ReportArchive;
-  try {
-    parsed=JSON.parse(html.slice(range.start,range.end));
-  }catch(cause){
-    return {error:`报告元数据区不是 JSON：${errorText(cause)}`};
-  }
-  if(!isRecord(parsed))return {error:'报告元数据区必须是对象。'};
-  if(parsed.version!==1)return {error:'不支持的报告归档版本。'};
-  const c=parsed.context,d=parsed.dari;
-  if(!isRecord(c)||!isRecord(d)||typeof d.source!=='string'||typeof d.pipeline!=='string'||typeof d.title!=='string'||typeof d.notes!=='string'
-    ||!isRecord(d.assets)||!Object.values(d.assets).every(value=>typeof value==='string')
-    ||!isRecord(d.reports)||!Object.values(d.reports).every(value=>typeof value==='string')||!isRecord(d.figures)
-    ||!Object.values(d.figures).every(value=>isRecord(value)&&typeof value.code==='string'&&typeof value.binding==='string'&&typeof value.status==='string')
-    ||typeof c.run!=='string'||typeof c.batch!=='string'||typeof c.sourceHash!=='string'||typeof c.startedAt!=='string'
-    ||!isRecord(d.values)||!Object.values(d.values).every(value=>value===null||['string','number','boolean'].includes(typeof value))
-    ||!Array.isArray(c.captures)||!Array.isArray(c.acquisitions))return {error:'报告 DARI 归档或执行上下文不完整。'};
-  return {version:parsed.version,context:parsed.context,dari:parsed.dari};
+/** Read only the three fixed inert script nodes; never evaluate report contents. */
+export function readReportPage(html:string):ReportPageArchive|{error:string} {
+ const source=metadataRange(html,REPORT_SOURCE_OPEN),context=metadataRange(html),values=metadataRange(html,REPORT_VALUES_OPEN);
+ if(!source||!context||!values)return {error:'报告缺少完整的源码、上下文或引用值元数据节点。'};
+ let meta:any,refs:unknown;
+ try{meta=JSON.parse(html.slice(context.start,context.end));refs=JSON.parse(html.slice(values.start,values.end));}
+ catch(cause){return {error:'报告元数据不是 JSON：'+errorText(cause)};}
+ if(!isRecord(meta)||!isRecord(refs))return {error:'报告元数据必须是对象。'};
+ if(meta.version!==1)return {error:'不支持的报告归档版本。'};
+ const c=meta.context;
+ if(!isRecord(c)||typeof c.run!=='string'||typeof c.batch!=='string'||typeof c.sourceHash!=='string'||typeof c.startedAt!=='string'||!Array.isArray(c.captures)||!Array.isArray(c.acquisitions))return {error:'报告执行上下文不完整。'};
+ return {version:1,source:restoreSource(html.slice(source.start,source.end)),context:c as ReportArchive['context'],values:refs};
 }
 
-/** 用字符串切片写入已结束运行的快照；不解析页面、不获取时钟、不重新计算。 */
-export function withReportArchive(html:string,archive:ReportArchive):string {
-  const range=metadataRange(html);
-  if(!range)throw new Error('报告缺少完整的 oks-metadata JSON 元数据区，无法嵌入 DARI 归档');
-  return html.slice(0,range.start)+metadataJson(archive)+html.slice(range.end);
+/** Replace all three slots with the source and this report's actual referenced values. */
+export function withReportArchive(html:string,archive:ReportArchive,values:Record<string,unknown>={}):string {
+ const replacements=[
+  {marker:REPORT_SOURCE_OPEN,text:sourceText(archive.dari.source)},
+  {marker:REPORT_METADATA_OPEN,text:metadataJson({version:archive.version,context:archive.context})},
+  {marker:REPORT_VALUES_OPEN,text:metadataJson(values)},
+ ].map(item=>{const range=metadataRange(html,item.marker);if(!range)throw new Error('报告缺少完整的元数据节点');return {...range,text:item.text};}).sort((a,b)=>b.start-a.start);
+ for(const r of replacements)html=html.slice(0,r.start)+r.text+html.slice(r.end);
+ return html;
 }

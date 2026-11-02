@@ -1,3 +1,4 @@
+import {reportExtractDariTool} from './report-extract.ts';
 import {moveEntryTool} from './move-entry.ts';
 import {removeFileTool,type FilePolicyService} from './remove-file.ts';
 import type { PluginConfig } from './config.ts';
@@ -55,5 +56,5 @@ export function createTools({ knowledge, ka, timeContext, attachments, approval,
     },
   ];
   const drafts = createDraftTools({approval, knowledge, timeContext, attachments });
-  return Object.assign([...definitions, removeFileTool({knowledge,approval,filePolicy}), moveEntryTool({knowledge,approval,filePolicy}), ...drafts.tools], { dispose: drafts.dispose });
+  return Object.assign([...definitions, reportExtractDariTool({knowledge,approval,filePolicy}), removeFileTool({knowledge,approval,filePolicy}), moveEntryTool({knowledge,approval,filePolicy}), ...drafts.tools], { dispose: drafts.dispose });
 }

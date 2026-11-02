@@ -13,7 +13,7 @@ import { intentKey } from './src/key.ts';
 import { CHART_KINDS, SERIES_COLORS, supports } from './src/chart/shared.ts';
 import { tableMarkdown } from './src/view/table.ts';
 // 来源链的读取与易读视图：冒烟直接调这一层，验证编码与边界（不经工具）。
-import { canonicalJson, chainLines, readChartInput, recordId, rowsOf } from './src/results.ts';
+import { canonicalJson, chainLines, recordId, rowsOf } from './src/results.ts';
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync,
   symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -271,7 +271,7 @@ const checked=await call('dari_check',{src:draftFile});
 ok('设计检查返回真实模型列类型',checked.value.ok && checked.value.queries.length===2 && checked.value.queries[0].columns.length>0);
 ok('真实数据后处理留到运行期',checked.value.deferred.some(d=>d.operator==='render_report'));
 for(const name of ['oks_run_answer','oks_result','oks_show','renew_context','oks_project']) ok('agent 不暴露运行与结果入口',!registered.has(name));
-const runResult=await call('dari_resolve',{src:draftFile,data:['total'],reports:['answer']});
+const runResult=await call('dari_resolve',{answer:false,src:draftFile,data:['total'],reports:['answer']});
 if(modelSettings.requireRunApproval) {
  ok('开启批准后缺少服务时禁止运行',runResult.value.status==='approval-unavailable');
 } else {

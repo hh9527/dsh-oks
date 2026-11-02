@@ -44,9 +44,9 @@ async function scenario(run:boolean){
   writeFileSync(join(cwd,src),source);
   started=performance.now();const checked=await call('dari_check',{src});const checkMs=performance.now()-started;assert.equal(checked.ok,true,JSON.stringify(checked));
   if(!run)return {domain,mode:'check without database',capMs:Math.round(capMs),infoMs:Math.round(infoMs),checkMs:Math.round(checkMs),bindings:checked.queries.length};
-  started=performance.now();const result=await call('dari_resolve',{src,...selection});const runMs=performance.now()-started;assert.equal(result.ok,true,JSON.stringify(result));assert.equal(result.approval,'not-required');assert.equal(approvalRequests,0);
+  started=performance.now();const result=await call('dari_resolve',{answer:false,src,...selection});const runMs=performance.now()-started;assert.equal(result.ok,true,JSON.stringify(result));assert.equal(result.approval,'not-required');assert.equal(approvalRequests,0);
   assert(reports.length?Object.hasOwn(result,'reports'):Object.hasOwn(result,'data'));
-  started=performance.now();const cached=await call('dari_resolve',{src,...selection});const cachedRunMs=performance.now()-started;assert.equal(cached.ok,true);assert.equal(cached.counts.executed,0);
+  started=performance.now();const cached=await call('dari_resolve',{answer:false,src,...selection});const cachedRunMs=performance.now()-started;assert.equal(cached.ok,true);assert.equal(cached.counts.executed,0);
   return {domain,mode:'run',checkMs:Math.round(checkMs),runMs:Math.round(runMs),cachedRunMs:Math.round(cachedRunMs),figures:Object.keys(result.figures??{}).length,counts:result.counts};
  }finally{disposers.reverse().forEach(fn=>fn());}
 }

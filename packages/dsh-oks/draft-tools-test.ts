@@ -27,36 +27,36 @@ try {
  writeFileSync(absolute,source);
  let checked=await call('dari_check',{src});assert.equal(checked.ok,true,JSON.stringify(checked));assert.equal(executions,0);
  await assert.rejects(call('dari_check',{src,answer:'answer'}),/Expected only src/);
- let first=await call('dari_resolve',{src,data:['facts','ctx','summary'],figures:['chart'],reports:['answer']});
+ let first=await call('dari_resolve',{answer:false,src,data:['facts','ctx','summary'],figures:['chart'],reports:['answer']});
  assert.equal(first.ok,true,JSON.stringify(first));assert.equal(executions,1);
  assert.deepEqual(first.data.facts.rows,[{n:1}]);assert.equal(first.data.ctx.utc.epochMillis,now);
  assert.match(first.figures.chart.embedded,/^!\[/);assert.match(first.reports.answer.embedded,/^\[/);
  now+=60000;
- const cached=await call('dari_resolve',{src:absolute,data:['facts','ctx','summary']});
+ const cached=await call('dari_resolve',{answer:false,src:absolute,data:['facts','ctx','summary']});
  assert.equal(cached.batch,first.batch);assert.equal(cached.counts.executed,0);assert.equal(executions,1);assert.deepEqual(cached.data,first.data);
- await assert.rejects(call('dari_resolve',{src,data:['facts'],refresh:true}),/Expected only/);
+ await assert.rejects(call('dari_resolve',{answer:false,src,data:['facts'],refresh:true}),/Expected only/);
  const renewed=await call('dari_renew_context',{src:absolute});assert.equal(executions,1);assert.notEqual(renewed.batch,first.batch);
  assert.equal(renewed.src,src);
  checked=await call('dari_check',{src});assert.equal(checked.ok,true);assert.equal(executions,1);
- const fresh=await call('dari_resolve',{src,data:['facts','ctx']});
+ const fresh=await call('dari_resolve',{answer:false,src,data:['facts','ctx']});
  assert.equal(fresh.batch,renewed.batch);assert.equal(executions,2);assert.equal(fresh.data.ctx.utc.epochMillis,now);assert.deepEqual(fresh.data.facts.rows,[{n:2}]);
  // Renewal affects neither another file nor another caller's captures.
  writeFileSync(join(root,'second.dari'),source);
- const second=await call('dari_resolve',{src:'second.dari',data:['facts']});
- const isolated=await call('dari_resolve',{src,data:['facts']},other);
+ const second=await call('dari_resolve',{answer:false,src:'second.dari',data:['facts']});
+ const isolated=await call('dari_resolve',{answer:false,src,data:['facts']},other);
  const before=executions;
  await call('dari_renew_context',{src});
- assert.equal((await call('dari_resolve',{src:'second.dari',data:['facts']})).batch,second.batch);
- assert.equal((await call('dari_resolve',{src,data:['facts']},other)).batch,isolated.batch);assert.equal(executions,before);
+ assert.equal((await call('dari_resolve',{answer:false,src:'second.dari',data:['facts']})).batch,second.batch);
+ assert.equal((await call('dari_resolve',{answer:false,src,data:['facts']},other)).batch,isolated.batch);assert.equal(executions,before);
  // Full-draft checking catches errors even in unselected bindings.
  writeFileSync(absolute,source+'\ndata unused := no_such_function();');
  checked=await call('dari_check',{src});assert.equal(checked.ok,false);
- assert.equal((await call('dari_resolve',{src,data:['facts']})).ok,false);assert.equal(executions,before);
+ assert.equal((await call('dari_resolve',{answer:false,src,data:['facts']})).ok,false);assert.equal(executions,before);
  writeFileSync(absolute,source);
- for(const selection of [{},{data:['missing']},{reports:['facts']},{data:['chart']}])assert.equal((await call('dari_resolve',{src,...selection}).catch(()=>({ok:false}))).ok,false);
+ for(const selection of [{},{data:['missing']},{reports:['facts']},{data:['chart']}])assert.equal((await call('dari_resolve',{answer:false,src,...selection}).catch(()=>({ok:false}))).ok,false);
  // Renewal during an active acquisition must not alter the running batch.
  release=()=>{};
- const running=call('dari_resolve',{src,data:['facts']});
+ const running=call('dari_resolve',{answer:false,src,data:['facts']});
  for(let i=0;i<30;i++)await new Promise<void>(resolve=>setImmediate(resolve));
  await assert.rejects(call('dari_renew_context',{src}),/already.*running/);
  release!();release=undefined;assert.equal((await running).ok,true);
