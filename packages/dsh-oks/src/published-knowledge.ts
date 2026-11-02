@@ -1,3 +1,4 @@
+import {expandOwnedKnowledge,finishOwnedKnowledge} from './owned-knowledge.ts';
 import {assignTypeIds} from './knowledge-type-ids.ts';
 import { graphRoots, refPath, resolveFact, encodePart, kindRoles } from './knowledge-graph.ts';
 import type { SemanticGraph, KnowledgeItem } from './knowledge-graph.ts';
@@ -12,6 +13,8 @@ const kindOf = (role: string): string => Object.entries(kindRoles).find(([, valu
 
 /** Import model facts with plugin-owned type addresses, then derive navigation. */
 export function derivePublishedKnowledge(input: unknown, presentation?: unknown, vocabulary?: unknown): RetrievalIndex {
+  const owned=isRecord(input)&&input.knowledge_contract==='ontology-knowledge-v5';
+  if(owned)input=expandOwnedKnowledge(input as Record<string,any>);
   if (!isRecord(input) || input.knowledge_contract !== 'ontology-knowledge-v4' || input.intent_contract !== 'ontology-intent-v1' || input.addressing !== 'node-member-uri-v1') throw new Error('Unsupported initialization knowledge contract');
   if (typeof input.revision !== 'string' || input.revision === '' || !Array.isArray(input.facts) || !Array.isArray(input.items)) throw new Error('Invalid initialization knowledge publication');
   const graph: SemanticGraph = { entities: {}, datasets: {}, dimension_groups: {}, measure_groups: {}, types: {}, relations: {}, tools: {}, items: [] };
@@ -140,7 +143,8 @@ export function derivePublishedKnowledge(input: unknown, presentation?: unknown,
     const name=term.name===canonical?typeIds.names.get(term.key)!:term.name;
     return {...term,name,aliases:[...new Set(term.aliases.map(alias=>alias===canonical?typeIds.names.get(term.key)!:alias))].filter(alias=>alias!==name)};
   });
-  return { revision: input.revision, knowledge: graph, contract: { knowledge_contract: input.knowledge_contract, intent_contract: input.intent_contract, addressing: input.addressing },
+  const result:RetrievalIndex={ revision: input.revision, knowledge: graph, contract: { knowledge_contract: input.knowledge_contract, intent_contract: input.intent_contract, addressing: input.addressing },
     meta: { format: 'oks-knowledge-v3', revision: input.revision, roots: graphRoots, counts: Object.fromEntries(graphRoots.map(root => [root, Object.keys(graph[root] ?? {}).length])) },
     terms, keys: new Set(graph.items.map(item => item.key)), links: edges };
+  return owned?finishOwnedKnowledge(result,input):result;
 }

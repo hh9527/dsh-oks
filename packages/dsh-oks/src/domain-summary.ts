@@ -68,7 +68,7 @@ export function renderDomainSummary(graph: object, domain: string): string {
       `${d.dimensions.length} 维度 / ${d.measures.length} 度量`,d.time_roles.length?'支持时间分析':''].filter(Boolean);
     lines.push('- '+code('datasets/'+encodePart(d.id))+'：'+parts.map(prose).join('；'));
   }
-  lines.push('', '## 关系导航', '', '按声明方向合并列出可关联的数据集；关系 ID、基数、连接键和覆盖范围通过相应 Dataset 的 relations 卡片或 cap 获取。', '');
+  lines.push('', '## 关系导航', '', '按声明方向合并列出可关联的数据集；关系 ID、基数、连接键和覆盖范围通过 Relation 节点或 cap 获取。', '');
   const neighbors=new Map<string,Set<string>>();
   for(const r of summary.relations){
     const from=addressId(r.from_dataset),to=addressId(r.to_dataset);

@@ -1,10 +1,11 @@
+import {hasOwnedNodes} from './owned-knowledge.ts';
 import { encodePart, graphRoots, refPath, type SemanticGraph } from './knowledge-graph.ts';
 import { knowledgeNode, semanticId } from './semantic-id.ts';
 
 type Fact = Record<string, any>;
 type Point = {id:string;kind:string;root:string;fact:Fact;names:string[];doc:string;words:string[]};
 const kinds:Record<string,string> = {datasets:'Dataset',entities:'Entity',types:'Type',relations:'Relation',dimension_groups:'DimensionGroup',measure_groups:'MeasureGroup',fields:'Field',roles:'Role',dimensions:'Dimension',measures:'Measure',time_roles:'TimeRole',business_links:'BusinessLink',values:'Value'};
-const children = ['fields','roles','dimensions','measures','time_roles','business_links','values'];
+const children = ['fields','roles','dimensions','measures','time_roles','business_links','values','relations'];
 const normalize = (value:string) => value.normalize('NFKC').toLowerCase().replace(/[\\,:;\s]+/g,' ').trim();
 const record = (value:unknown):value is Fact => value !== null && typeof value === 'object' && !Array.isArray(value);
 const unique = (values:string[]) => [...new Set(values)].sort();
@@ -38,6 +39,7 @@ function getPoint(graph:SemanticGraph,id:string):Point {
 function references(value:unknown,index:Map<string,Point>,into:Set<string>):void {
   if(typeof value==='string'){
     try{const id=semanticId(value);if(index.has(id))into.add(id);}catch{}
+    for(const match of value.matchAll(/types\/[A-Za-z0-9_.~%\-]+/g)){try{const id=semanticId(match[0]);if(index.has(id))into.add(id);}catch{}}
   }else if(Array.isArray(value))for(const v of value)references(v,index,into);
   else if(record(value))for(const key of ['type','types','identity','logical_type','raw','item','element','key','value','fields','variants','args'])if(Object.hasOwn(value,key))references(value[key],index,into);
 }
@@ -65,14 +67,32 @@ export function discoverPoints(graph:SemanticGraph,args:Record<string,any>) {
     const matches=(a.terms??[]).map((term:string)=>({term,ids:scope.filter(p=>p.words.some(word=>word.includes(normalize(term)))).map(p=>p.id).sort()}));
     return {id:point.id,kind:point.kind,matches,unresolved_terms:matches.filter((m:any)=>!m.ids.length).map((m:any)=>m.term)};
   });
+  if(hasOwnedNodes(graph))for(const anchor of anchors){
+    const p=index.get(anchor.id)!;
+    if(p.kind==='Type'&&p.fact.reverse_references===true)for(const site of p.fact.reference_locations??[]){
+      if(typeof site.node!=='string')continue;
+      const root=semanticId(site.node);if(!index.has(root))continue;
+      selected.add(root);if(root.startsWith('datasets/'))datasets.add(root);
+      if(Array.isArray(site.path)&&site.path.length===2){const id=root+'/'+site.path.map((x:string,i:number)=>i?encodePart(x):x).join('/');if(index.has(id))selected.add(id);}
+    }
+  }
   // Entity anchors retain candidate carriers; only explicitly selected datasets
   // participate in paths, so a popular Entity cannot fan out into the whole graph.
   const carriers=anchors.filter((a:any)=>a.kind==='Entity').map((a:any)=>({entity:a.id,datasets:unique([...index.values()].filter(p=>p.kind==='Role'&&p.fact.entity===a.id).map(p=>p.root))}));
   const adjacency=new Map<string,{to:string;relation:string}[]>();
-  for(const point of index.values())if(point.kind==='Relation'){
+  const connect=(from:string,to:string,relation:string)=>{
+    if(!index.has(from)||!index.has(to)||!index.has(relation))return;
+    for(const [a,b] of [[from,to],[to,from]]){const list=adjacency.get(a)??[];list.push({to:b,relation});adjacency.set(a,list);}
+  };
+  if(hasOwnedNodes(graph)){
+    for(const point of index.values())if(point.kind==='Dataset'&&record(point.fact.peers)){
+      for(const [peer,descriptor] of Object.entries(point.fact.peers))if(record(descriptor)&&Array.isArray(descriptor.by)){
+        for(const by of descriptor.by)if(record(by)&&by.direction==='forward'&&typeof by.id==='string')connect(point.id,semanticId(peer),semanticId(by.id));
+      }
+    }
+  }else for(const point of index.values())if(point.kind==='Relation'){
     const {from_dataset:from,to_dataset:to}=point.fact;
-    if(typeof from!=='string'||typeof to!=='string'||!index.has(from)||!index.has(to))continue;
-    for(const [a,b] of [[from,to],[to,from]]){const list=adjacency.get(a)??[];list.push({to:b,relation:point.id});adjacency.set(a,list);}
+    if(typeof from==='string'&&typeof to==='string')connect(from,to,point.id);
   }
   for(const list of adjacency.values())list.sort((a,b)=>a.relation.localeCompare(b.relation,'en')||a.to.localeCompare(b.to,'en'));
   const targets=unique([...datasets]),connections:any[]=[];
@@ -99,10 +119,11 @@ export function discoverPoints(graph:SemanticGraph,args:Record<string,any>) {
   }
   const grouped:Record<string,string[]>={};
   for(const id of [...selected].sort()){const kind=index.get(id)!.kind;(grouped[kind]??=[]).push(id);}
-  return {anchors,index:grouped,connections,carriers,max_depth:maxDepth};
+  const locations=hasOwnedNodes(graph)?Object.fromEntries([...selected].sort().map(id=>{const p=index.get(id)!;return [id,{node:p.root,path:knowledgeNode(graph,id).path.slice(2)}];})):undefined;
+  return {anchors,index:grouped,connections,carriers,max_depth:maxDepth,...(locations?{locations}:{})};
 }
 
-const navigation=new Set(['referenced_by','related','traversable','bindings','binding','group','dimension_groups','measure_groups','types','datasets','entities','dimensions','measures','time_roles','business_links','relations','fields','roles']);
+const navigation=new Set(['peers','reference_locations','referenced_by','related','traversable','bindings','binding','group','dimension_groups','measure_groups','types','datasets','entities','dimensions','measures','time_roles','business_links','relations','fields','roles']);
 function publicRef(value:any):any {
   if(typeof value!=='string')return value;
   try{return semanticId(value);}catch{return value;}
@@ -130,9 +151,9 @@ export function readPoints(graph:SemanticGraph,args:Record<string,any>) {
     try{
       const p=getPoint(graph,id);
       const {path}=knowledgeNode(graph,id);const query:Fact={};
-      if(path[0]==='datasets'){query.dataset=path[1];if(path.length===4){const member:Record<string,string>={fields:'field',dimensions:'dimension',measures:'measure',roles:'role'};if(member[path[2]])query[member[path[2]]]=path[3];}}
+      if(path[0]==='datasets'){query.dataset=path[1];if(path.length===4){const member:Record<string,string>={fields:'field',dimensions:'dimension',measures:'measure',roles:'role'};if(member[path[2]])query[member[path[2]]]=path[3];if(path[2]==='relations')query.relation=p.fact.relation??path[3];}}
       else if(path[0]==='entities')query.entity=path[1];else if(path[0]==='relations')query.relation=path[1];
-      items.push({id,kind:p.kind,...query,...(p.names.length?{names:p.names}:{}),...(p.doc.trim()?{doc:p.doc}:{}),facts:definition(p)});
+      items.push({id,kind:p.kind,...(hasOwnedNodes(graph)?{node:p.root,path:path.slice(2)}:{}),...query,...(p.names.length?{names:p.names}:{}),...(p.doc.trim()?{doc:p.doc}:{}),facts:definition(p)});
     }catch(error){errors.push({id,error:(error as Error).message});}
   }
   return {items,...(errors.length?{errors}:{})};

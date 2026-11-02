@@ -1,6 +1,7 @@
+import {hasOwnedNodes} from './owned-knowledge.ts';
 import { queryKnowledge } from './knowledge-methods.ts';
 import { semanticId, knowledgeNode } from './semantic-id.ts';
-import { refPath, type SemanticGraph } from './knowledge-graph.ts';
+import { refPath, encodePart, type SemanticGraph } from './knowledge-graph.ts';
 
 // Only reference-bearing fields are converted. Business values, docs and query
 // intents retain their exact model representation.
@@ -31,14 +32,14 @@ function nodeRow(row: any): any {
 export function semanticKnowledge(graph: SemanticGraph, method: string, args: Record<string, any>): any {
   if (method === 'search') {
     const result = queryKnowledge(graph, method, args) as any;
-    return {...result, items:result.items.map(nodeRow)};
+    return {...result, items:result.items.map((row:any)=>{const value=nodeRow(row);if(!hasOwnedNodes(graph))return value;const path=refPath(row.key);return {...value,node:semanticId(path[0]+'/'+encodePart(path[1])),path:path.slice(2)};})};
   }
   if (method === 'card') {
     const {ref,path} = knowledgeNode(graph,args.id);
     if (path[0] !== 'datasets' || path.length !== 2) {
       if (Object.keys(args).some(k => k !== 'id')) throw new Error('Only Dataset root cards accept section, skip and take');
       const result = queryKnowledge(graph,'read',{key:ref}) as any;
-      return {...nodeRow(result), items:result.items.map(nodeRow)};
+      return {...nodeRow(result), items:result.items.map((row:any)=>{const value=nodeRow(row);if(!hasOwnedNodes(graph))return value;const path=refPath(row.key);return {...value,node:semanticId(path[0]+'/'+encodePart(path[1])),path:path.slice(2)};})};
     }
     const result = queryKnowledge(graph,'card',{...args,id:path[1],docs:true}) as any;
     const converted = nodeRow(result);
