@@ -14,7 +14,7 @@ import { createDraftBackend } from './backend.ts';
 import { DraftRuntime } from './runtime.ts';
 import { checkDesign, parseDesign, parseExecutableDesign } from './design.ts';
 import type { DraftBackend, DraftRun } from './runtime.ts';
-import { escapeHtml, renderMarkdown } from '../chart/markdown.ts';
+import { escapeHtml } from '../chart/markdown.ts';
 import { canonicalJson } from '../key.ts';
 
 const shape = createProjector('Shape');
@@ -150,21 +150,18 @@ export function createDraftTools(options: {
     const retained=record.runtime.read(name,sourceText);
     const source=retained.value.sources.length===1?retained.value.sources[0]:undefined;
     if(!source||source.at.length||source.path.length)throw new Error('Selected output is not a complete presentation');
+    if(source.display?.kind==='table'&&!source.delivery)return {embedded:source.display.content};
     const attachments=options.attachments?.();
     if(!attachments)throw new Error('The host attachments service is unavailable');
-    let html:string,title:string,kind:string;
-    if(source.delivery){html=source.delivery.html;title=source.delivery.title;kind='report';}
-    else if(source.display){
+    let content:string,title:string,kind:'chart'|'report';
+    if(source.delivery){content=source.delivery.html;title=source.delivery.title;kind='report';}
+    else if(source.display?.kind==='chart'){
       const data=retained.value.data;
-      title=isRecord(data)&&isRecord(data.spec)
-        ? source.display.kind==='chart'?chartTitle(data.spec as unknown as ChartSpec):typeof data.spec.title==='string'?data.spec.title:name.slice(name.indexOf('.')+1)
-        :name.slice(name.indexOf('.')+1);
-      kind=source.display.kind;
-      const body=kind==='chart'?source.display.content:renderMarkdown(source.display.content,(_info,text)=>`<pre><code>${escapeHtml(text)}</code></pre>`);
-      html=`<!doctype html><html><head><meta charset="utf-8"><style>body{margin:12px;font:14px sans-serif;color:#222}svg{max-width:100%;height:auto}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:6px;text-align:left}h2{font-size:16px}</style></head><body><h2>${escapeHtml(title)}</h2>${body}</body></html>`;
+      title=isRecord(data)&&isRecord(data.spec)?chartTitle(data.spec as unknown as ChartSpec):name.slice(name.indexOf('.')+1);
+      kind='chart';
+      content=source.display.content.replace(/<svg[^>]*>/,open=>open+`<title>${escapeHtml(title)}</title>`);
     }else throw new Error('Selected output has no presentation');
-    const content=kind==='chart'?source.display!.content.replace(/<svg[^>]*>/,open=>open+`<title>${escapeHtml(title)}</title>`):html;
-    const extension=kind==='chart'?'.svg':kind==='report'?'.report.html':'.html';
+    const extension=kind==='chart'?'.svg':'.report.html';
     if(exec.signal?.aborted)throw new Error('aborted');
     const attachment=await attachments.saveFile({data:Buffer.from(content),name:name.slice(name.indexOf('.')+1)+extension});
     const path=attachments.fileHostPath(attachment);
@@ -189,7 +186,7 @@ export function createDraftTools(options: {
     },
     {
       name:'dari_resolve',
-      description:'Check a DARI source and resolve selected outputs. answer is required: true renders the unique answer := Answer [...] as answer.embedded Markdown, including UseFigure images and UseReport links; false resolves only explicit data/figures/reports for debugging. Copy embedded verbatim into the reply. Executes only selected dependencies and reuses cached computations. data returns structured values; figures/reports return named {embedded:"Markdown"} objects. requireRunApproval controls native approval; dari_renew_context starts a fresh acquisition batch.',
+      description:'Check a DARI source and resolve selected outputs. answer is required: true renders the unique answer := Answer [...] as answer.embedded Markdown, including UseFigure images or Markdown tables and UseReport links; false resolves only explicit data/figures/reports for debugging. Copy embedded verbatim into the reply. Executes only selected dependencies and reuses cached computations. data returns structured values; figures/reports return named {embedded:"Markdown"} objects. requireRunApproval controls native approval; dari_renew_context starts a fresh acquisition batch.',
       parameters:{type:'object',properties:{src:{type:'string'},data:{type:'array',items:{type:'string'}},figures:{type:'array',items:{type:'string'}},reports:{type:'array',items:{type:'string'}},answer:{type:'boolean',description:'Required. true resolves the unique Answer; false selects only explicit data/figures/reports for debugging.'}},required:['src','answer'],additionalProperties:false},output,
       async execute(args:{src?:unknown;data?:unknown;figures?:unknown;reports?:unknown;answer?:unknown},exec:ToolExec){
         assertKeys(args,['src','answer','data','figures','reports']);
@@ -246,7 +243,12 @@ export function createDraftTools(options: {
           if(approvedEnvironment!==environment())return {ok:false,status:'environment-changed',execution:'not performed',sourceHash};
           if(readDariSource(entry.root,args.src,'dari_resolve').text!==read.text)return {ok:false,status:'source-changed',execution:'not performed',sourceHash};
           const answerAsset=args.answer?doc.assets.get('@report/answer'):undefined;
-          if((selection.figures.length||selection.reports.length||Object.values(answerAsset?.references??{}).some(r=>r.kind!=='value'))&&!options.attachments?.())throw new Error('The host attachments service is unavailable');
+          const presentationNames=[...selection.figures,...selection.reports,...Object.values(answerAsset?.references??{}).filter(r=>r.kind!=='value').map(r=>r.code!)];
+          const needsAttachment=presentationNames.some(name=>{
+            const value=doc.nodes.find(n=>n.statement.kind==='binding'&&n.statement.name===name)?.statement.value;
+            return !(value?.kind==='call'&&value.operator==='render_figure'&&value.figureKind==='table');
+          });
+          if(needsAttachment&&!options.attachments?.())throw new Error('The host attachments service is unavailable');
           const record=recordFor(entry,exec,read.file,true);
           if(record.active)throw new Error('This draft is already running; wait for it to finish');
           record.active=true;record.touched=Date.now();

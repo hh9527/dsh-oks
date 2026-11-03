@@ -47,7 +47,7 @@ try{
  const archived=readFileSync(pathOf(embedded),'utf8');
  assert.match(archived,/见 <span(?: data-oks-lit="")?>图 1<\/span>/);assert.equal((archived.match(/图 1：/g)??[]).length,2);assert.match(archived,/表 1：/);assert.doesNotMatch(archived,/图 2：/);
  assert.match(readFileSync(pathOf(result.reports['reports.tables'].embedded),'utf8'),/图 1：/);
- assert.match(readFileSync(pathOf(result.figures['figures.details'].embedded),'utf8'),/<table/);
+ assert.match(result.figures['figures.details'].embedded,/^\| level \| n \|\n/);
  const reportData=readReportPage(archived);assert.ok(!('error' in reportData));assert.ok(Object.keys(reportData.values).length>0);
  assert.equal(result.data,undefined,'presentation results do not duplicate facts');
  const values=await resolve({data:['rows','spec']});assert.equal(values.ok,true);assert.equal(values.data.rows.length,2);assert.equal(values.figures,undefined);assert.equal(values.reports,undefined);

@@ -38,6 +38,21 @@ try{
  assert(text.includes('\\*not emphasis\\* \\[link\\]\\(x\\) \\<tag\\>'));
  assert(text.includes('- 甲\n- 乙'));assert(text.includes('> 客观统计'));assert(text.includes('``a`b``'));
  assert(text.includes('```\nhello\nworld\n```'));assert(text.includes('https://example.com/a%28b%29'));
+ writeFileSync(join(root,'table.dari'),`data rows := table([{level:"major",n:3},{level:"minor",n:2}],{kind:"example"});
+figure details := Table(spec={columns:["level","n"]},data=rows);
+answer := Answer [h2 ["明细"],UseFigure(ref=details,caption="统计明细")];`);
+ const tabular=await call('dari_resolve',{src:'table.dari',answer:true,figures:['details']},plain);
+ assert.equal(tabular.ok,true,JSON.stringify(tabular));
+ const markdown='| level | n |\n| --- | ---: |\n| major | 3 |\n| minor | 2 |\n';
+ assert.equal(tabular.figures.details.embedded,markdown);
+ assert(tabular.answer.embedded.includes(markdown));assert(tabular.answer.embedded.includes('统计明细'));
+ assert(!tabular.answer.embedded.includes('.html'));assert.equal(files,0);
+ const tableOnly=await call('dari_resolve',{src:'table.dari',answer:false,figures:['details']},plain);
+ assert.equal(tableOnly.figures.details.embedded,markdown);
+ const cachedTable=await call('dari_resolve',{src:'table.dari',answer:true},plain);
+ assert.equal(cachedTable.counts.executed,0);assert(cachedTable.answer.embedded.includes(markdown));
+ const attachedTable=await call('dari_resolve',{src:'table.dari',answer:true,figures:['details']});
+ assert.equal(attachedTable.figures.details.embedded,markdown);assert.equal(files,0);
  const visual=source.replace('answer := Answer [','answer := Answer [UseFigure(ref=chart,caption="分布"),UseReport(ref=file),UseReport(ref=file),');
  // Reports must be declared before they are referenced.
  const report='report file := Report [p [value(ref=summary?.n)]];';
