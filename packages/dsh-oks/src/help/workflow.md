@@ -25,3 +25,5 @@ dari_check 不执行查询；dari_resolve 默认检查后直接执行。配置 r
 当前时刻和客户端时区从 `context()` 获取，时区字段为 `ctx.tz.client.id`；`time_windows(ctx, ...)` 直接使用该时区。采用的统计时区应在报告中注明，仅在统计口径存在实质歧义或 context 无法提供有效时区时澄清。
 
 分析稿使用宿主内置文件工具管理，src 使用工作区内的本地路径。普通解析复用同一采集上下文；需要最新时间或数据时调用 `dari_renew_context({src})`，下一次 `dari_resolve` 再重新取数。`dari_resolve` 接收 src、必填的 answer 布尔参数及可选的 data、figures、reports。
+
+词汇参考每行是 `- <name> in <ctx>: <问题中的说法>`（name 和 ctx 用反引号标记）；cap 的 terms 只复制 name，ctx 用于定位所属上下文，冒号后的用户说法不作为 terms。

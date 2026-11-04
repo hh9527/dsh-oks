@@ -4,6 +4,8 @@
 
 将用户原始问题及明确约束交给 ka_ask。工具先向独立持有完整词典的 VA 对齐词汇，再把原始问题和 VA 回答交给持有关系地图的 KA。最终返回两部分：KA 的阅读清单和 VA 原始词汇参考，均为自然语言。
 
+词汇参考每行是 `- <name> in <ctx>: <问题中的说法>`（name 和 ctx 用反引号标记）；cap 的 terms 只复制 name，ctx 用于定位所属上下文，冒号后的用户说法不作为 terms。
+
 ## 联合发现
 
 根据 KA 阅读清单选择 Entity/Dataset 知识节点 ID，并从 ka_ask 的词汇参考中逐字选择领域词汇（不直接使用用户原话或自行改写），组织 anchors 参数交给 `oks_cap({anchors:[{id:"datasets/current_alarm",terms:["alarm_severity"]},{id:"datasets/tenant",terms:["tenant_name"]}]})`。
