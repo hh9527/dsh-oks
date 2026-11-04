@@ -64,7 +64,7 @@ export function discoverPoints(graph:SemanticGraph,args:Record<string,any>) {
     const scope=[...index.values()].filter(p=>p.id===point.id||(point.id===point.root&&p.root===point.root));
     for(const p of scope)selected.add(p.id);
     if(point.root.startsWith('datasets/'))datasets.add(point.root);
-    const matches=(a.terms??[]).map((term:string)=>({term,ids:scope.filter(p=>p.words.some(word=>word.includes(normalize(term)))).map(p=>p.id).sort()}));
+    const matches=(a.terms??[]).map((term:string)=>({term,ids:scope.filter(p=>p.id!==point.id&&p.words.some(word=>word.includes(normalize(term)))).map(p=>p.id).sort()}));
     return {id:point.id,kind:point.kind,matches,unresolved_terms:matches.filter((m:any)=>!m.ids.length).map((m:any)=>m.term)};
   });
   if(hasOwnedNodes(graph))for(const anchor of anchors){

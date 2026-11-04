@@ -67,3 +67,15 @@ assert(!receipt.includes('locations'));
 const noTermsText=renderCap({}, {data:unmatched})[0].text!;
 assert(noTermsText.includes('relations/ab'));assert(noTermsText.includes('relations/bc'));
 console.log('Cap Markdown receipt: headings, complete paths, exact IDs and unresolved terms preserved');
+
+const selfGraph=structuredClone(graph);
+selfGraph.items.push({key:'datasets/a',names:['anchor_only','shared_word'],doc:''});
+selfGraph.items.push({key:'datasets/a#fields/id',names:['shared_word'],doc:''});
+const self=discoverPoints(selfGraph,{anchors:[{id:'datasets/a',terms:['anchor_only','shared_word']},{id:'datasets/b'}]});
+assert.deepEqual(self.anchors[0].matches,[{term:'anchor_only',ids:[]},{term:'shared_word',ids:['datasets/a/fields/id']}]);
+assert.deepEqual(self.anchors[0].unresolved_terms,['anchor_only']);
+assert(self.index.Dataset.includes('datasets/a'));
+assert.deepEqual(self.connections,result.connections);
+const memberSelf=discoverPoints(selfGraph,{anchors:[{id:'datasets/a/fields/id',terms:['shared_word']}]});
+assert.deepEqual(memberSelf.anchors[0].matches[0].ids,[]);
+assert(memberSelf.index.Field.includes('datasets/a/fields/id'));
