@@ -615,7 +615,7 @@ export const buildOption = (
       color: '#1c2b3a',
       // 类别在横轴上、又挤的时候斜排；横条的类别在纵轴上，保持水平。
       rotate: !horizontal && needsSlantedTicks(categories) ? 45 : 0,
-      hideOverlap: true,
+      ...(horizontal ? { interval: 0, hideOverlap: false } : { hideOverlap: true }),
     },
     axisLine: { lineStyle: { color: '#d8e0ea' } },
     axisTick: { show: false },

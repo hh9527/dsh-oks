@@ -31,6 +31,15 @@ for(const kind of ['bar','column']){
  const many=Array.from({length:40},(_,i)=>({level:String(i),n:i}));
  assert.equal((build(kind,{entityColor:true},many).option as any).series[0].data.length,40);
 }
+// Horizontal charts allocate one row per category: every category must stay visible.
+for(const kind of ['bar','grouped_bar']){
+ const data=Array.from({length:5},(_,i)=>({level:`租户-${i+1}`,n:10-i}));
+ const built=build(kind,{title:'最近3个完整自然日未清除告警数量最多的5个租户',xLabel:'租户',valueLabel:'未清除告警数',unit:'条',style:{labels:true},...(kind==='grouped_bar'?{series:'level'}:{})},data);
+ const svg=renderEchartsSvg(built.option,CHART_WIDTH,built.height);
+ for(const row of data)assert(svg.includes(row.level),kind+' missing category label '+row.level);
+ assert.equal((built.option as any).yAxis.axisLabel.interval,0);
+ assert.equal((built.option as any).yAxis.axisLabel.hideOverlap,false);
+}
 const backend=createDraftBackend({entry:{} as any,file:'modes.dari',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge:{executorFor(){throw Error('No SQL in chart checks');}}});
 for(const [component,series,ok]of [
  ['ColumnChart','',true],['BarChart','',true],
