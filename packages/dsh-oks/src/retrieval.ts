@@ -72,13 +72,15 @@ export function renderWholeVocabulary(index: RetrievalIndex): string {
     const root = term.key.split('#', 1)[0];
     const rootId = root.slice(root.indexOf('/') + 1);
     // 无业务名字的生成分组已被排除；具名分组以名字作为检索上下文，不暴露哈希。
-    const context = hash.test(rootId) ? '分组 ' + words.join(',') : root;
+    const context = hash.test(rootId) ? '分组 ' + words.join(',')
+      : term.key.includes('#') ? root : root.slice(0, root.indexOf('/'));
     let entries = groups.get(context);
     if (!entries) groups.set(context, entries = new Map());
-    const line = '- ' + words.join(',') + ';' + plain(term.doc);
+    const doc = plain(term.doc);
+    const line = '- ' + words.join(',') + (doc ? ';' + doc : '');
     entries.set(line, line);
   }
   return [...groups].sort(([a], [b]) => a.localeCompare(b, 'en'))
-    .map(([context, entries]) => '[' + context + ']\n'
+    .map(([context, entries]) => '### ' + context + '\n'
       + [...entries.values()].sort((a, b) => a.localeCompare(b, 'en')).join('\n')).join('\n\n');
 }

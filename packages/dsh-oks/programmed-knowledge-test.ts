@@ -45,7 +45,7 @@ const render = (terms: any[]) => renderWholeVocabulary({terms} as any);
 const term = (key: string, name: string, kind = 'Field', aliases: string[] = [], doc = '') =>
   ({...vocabulary[0],key,name,kind,aliases,doc});
 assert.equal(render([term('datasets/device','设备','Dataset',['终端','NE'],'设备清单')]),
-  '[datasets/device]\n- 设备,终端,NE;设备清单');
+  '### datasets\n- 设备,终端,NE;设备清单');
 const dictionary = render([
   term('datasets/a#fields/x','CPU'), term('datasets/a#dimensions/x','CPU'),
   term('datasets/b#fields/x','CPU'),
@@ -57,14 +57,19 @@ const dictionary = render([
   term('dimension_groups/'+'a'.repeat(64),'a'.repeat(64),'DimensionGroup',['ns/dimension/0']),
   term('measure_groups/'+'b'.repeat(64),'b'.repeat(64),'MeasureGroup',['流量']),
 ]);
-assert.equal(dictionary.match(/- CPU;/g)?.length,2); // 同上下文去重，跨上下文保留。
-assert.match(dictionary,/- 业务别名;/);
-assert.match(dictionary,/- 0;/);
+assert.equal(dictionary.match(/- CPU$/gm)?.length,2); // 同上下文去重，跨上下文保留。
+assert.match(dictionary,/- 业务别名/);
+assert.match(dictionary,/- 0/);
 assert.match(dictionary,/- major;重要/);
-assert.match(dictionary,/\[分组 流量\]/);
+assert.match(dictionary,/### 分组 流量/);
 assert.doesNotMatch(dictionary,/secret|sample|role_63|ns\/dimension|[ab]{64}|#fields/);
 assert.equal(render([term('types/a:b','a,b;c','Ty',['"quoted"','x\\y','line\nnext'],'first\r\nsecond;detail:literal,comma')]),
-  '[types/a:b]\n- a b c,"quoted",x y,line next;first second detail literal comma');
+  '### types\n- a b c,"quoted",x y,line next;first second detail literal comma');
 assert.match(render([term('types/checksum#values/hex','c'.repeat(64),'Value')]), /c{64}/);
 assert.equal(render([]),'');
 console.log('VA dictionary: context deduplication, business aliases, enum values and generated-identity filtering passed');
+
+assert.equal(render([
+  term('types/AlarmSeverity','AlarmSeverity','Type'),
+  term('types/AlarmSeverity#values/Critical','Critical','Value',['紧急']),
+]),'### types\n- AlarmSeverity\n\n### types/AlarmSeverity\n- Critical,紧急');

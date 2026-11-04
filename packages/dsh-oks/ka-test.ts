@@ -167,7 +167,7 @@ test('固定先 VA 后 KA，同问合并，返回两份原始回答',async()=>{
  const runtime=createKnowledgeConsultation(ka,va),parent=caller(),signal=new AbortController().signal;
  const first=runtime.ask(parent,'p','CPU 原始约束',signal),same=runtime.ask(parent,'p','CPU 原始约束',signal);
  await flush();assert.equal(calls.length,1);assert.equal(calls[0][0],'va');
- const vocabulary='[datasets/kpi]\n- CPU,cpu_usage;说明';complete({helper:'va',messageId:'v',answer:vocabulary});
+ const vocabulary='### datasets/kpi\n- CPU,cpu_usage;说明';complete({helper:'va',messageId:'v',answer:vocabulary});
  const result=await first;assert.deepEqual(await same,result);assert.equal(calls.length,2);
  assert.equal(calls[1][3],`## 用户问题
 
