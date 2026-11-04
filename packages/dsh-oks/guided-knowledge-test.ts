@@ -37,11 +37,10 @@ const registered:ToolDefinition[]=[];const disposers:(()=>void)[]=[];
 apply({get(){},logger:{info(){}},tools:{register(t:ToolDefinition){registered.push(t);}},effect(fn:()=>unknown){const d=fn();if(typeof d==='function')disposers.push(d as ()=>void);},on(){return ()=>{};}} as never,{});
 try {
  assert.deepEqual(registered.map(t=>t.name).sort(),tools.map(t=>t.name).sort());
- const value={ok:true,data:{text:'x'.repeat(20000)}};
- for(const name of ['oks_info']) {
-  const definition=registered.find(t=>t.name===name)!;
-  assert.deepEqual(JSON.parse(definition.output.render({} as never,value as never).map(b=>b.text??'').join('')),value);
- }
+ const infoTool=registered.find(t=>t.name==='oks_info')!;
+ const infoValue=await call('oks_info',{ids:['datasets/d/dimensions/id']});
+ const infoText=infoTool.output.render({} as never,infoValue as never).map(b=>b.text??'').join('');
+ assert.match(infoText,/## datasets\/d\/dimensions\/id/);assert.match(infoText,/dimension="id"/);
  const capTool=registered.find(t=>t.name==='oks_cap')!;
  const text=capTool.output.render({} as never,cap as never).map(b=>b.text??'').join('');
  assert.match(text,/## 锚点/);assert.match(text,/### datasets\/d/);assert.match(text,/datasets\/d\/dimensions\/id/);

@@ -18,7 +18,7 @@ cap 先发现路径，再裁剪返回结果：锚点、完整路径节点和关�
 
 ## 精确读取
 
-`oks_info({ids:["datasets/current_alarm/dimensions/alarm_severity","datasets/current_alarm/measures/critical_alarm_count"]})` 批量读取 1–64 个点。每个点只返回自身定义，空说明省略；完整指代、身份映射、公式、谓词、类型和值域等语义保留。未知 ID 逐点返回错误，成功点保留。
+`oks_info({ids:["datasets/current_alarm/dimensions/alarm_severity","datasets/current_alarm/measures/critical_alarm_count"]})` 批量读取 1–64 个点。回执按精确 ID 分为 Markdown 小节，明确列出 query 使用的短名称。每个点只返回自身定义，空说明和顶层 null 属性省略；相等的 ops/filters、canonical_order/order 只展示一份，复杂结构保留为 JSON 代码块，嵌套空值及空集合保持原样；完整指代、身份映射、公式、谓词、类型和值域等语义保留。未知 ID 逐点返回错误，成功点保留。
 
 ID 从 KA、cap 或 search 复制，不自行拼接或解码。ID 用于知识寻址；info 返回的 dataset/dimension/measure 等短名称用于 query，枚举和业务值保持原样。例如 datasets/device_kpi/dimensions/device_kpi_ts_raw 是交给 oks_info 的地址，query 中则使用 dimension:"device_kpi_ts_raw"；短名称从 info 定义读取，不通过拆解地址推导。query 的 nodes[].id 另为请求内自定义别名，由 root、node、from、to 引用。
 

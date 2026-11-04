@@ -1,3 +1,4 @@
+import {renderInfo} from './info-receipt.ts';
 import {renderCap} from './cap-receipt.ts';
 import {renderResolveReceipt} from './draft/resolve-receipt.ts';
 import { discoverPoints, readPoints } from './point-knowledge.ts';
@@ -46,9 +47,9 @@ export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge)
       async execute(raw, exec) { return method('cap', check(raw, ['anchors','max_depth']), exec); },
     },
     {
-      name: 'oks_info', description: 'Read exact knowledge points from cap.index or cap term matches. ids is a batch of 1..64 complete node IDs; each item contains only its own definition, no recursive navigation or inline child graph. Empty descriptions are omitted. Types, enums, formulas, predicates, identity parts and query constraints are retained. Unknown IDs are reported individually. Query names stay short as defined by each point ID and its facts.',
+      name: 'oks_info', description: 'Read exact knowledge points from cap text paths and vocabulary matches. Returns Markdown sections headed by exact IDs, explicit short query names and complete definitions; complex expressions remain JSON blocks. ids is a batch of 1..64 complete node IDs; each item contains only its own definition, no recursive navigation or inline child graph. Empty descriptions are omitted. Types, enums, formulas, predicates, identity parts and query constraints are retained. Unknown IDs are reported individually. Query names stay short as defined by each point ID and its facts.',
       parameters:{type:'object',properties:{ids:{type:'array',minItems:1,maxItems:64,items:{type:'string'}}},required:['ids'],additionalProperties:false},
-      output,
+      output: {schema:OBJECT_OUTPUT,render:renderInfo},
       async execute(raw,exec){return method('info',check(raw,['ids']),exec);},
     },
 
