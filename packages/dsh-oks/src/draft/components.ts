@@ -3,7 +3,7 @@ import type { ChartKind } from '../chart/shared.ts';
 
 /** DARI component names and their renderer kind; the tag owns the discriminant. */
 export const COMPONENT_KINDS = {
-  BarChart: 'bar', ColumnChart: 'column', LineChart: 'line', AreaChart: 'area',
+  BarChart: 'bar', GroupedBarChart: 'grouped_bar', ColumnChart: 'column', GroupedColumnChart: 'grouped_column', LineChart: 'line', AreaChart: 'area',
   PieChart: 'pie', ScatterChart: 'scatter', Histogram: 'histogram', BoxPlot: 'box',
   Heatmap: 'heatmap', RadarChart: 'radar', Sankey: 'sankey', NetworkGraph: 'graph',
   Gauge: 'gauge', Table: 'table',

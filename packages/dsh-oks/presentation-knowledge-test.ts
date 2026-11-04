@@ -19,7 +19,7 @@ const backend=createDraftBackend({knowledge:{executorFor(){throw new Error('Pres
 try {
  const run=async(name:string,args:Record<string,unknown>)=>queryKnowledge(graph,name,args) as any;
  const overview=createSelector('tools.render_figure.kinds:keys')(graph as unknown as JsonValue) as any;
- assert.equal(overview.tools.render_figure['kinds:keys'].length,14);
+ assert.equal(overview.tools.render_figure['kinds:keys'].length,16);
  assert.ok(overview.tools.render_figure['kinds:keys'].includes('column'));
 
  for(const item of graph.items)assert.ok(resolveFact(graph,item.key),item.key);
@@ -58,5 +58,5 @@ report answer := Report [ UseFigure(ref = chart), ];`;
  const failed=await new FixtureRuntime(backend).run(invalid);
  assert.equal(failed.status,'invalid');assert.match(failed.error!,/rename data keys in select fields/);
  for(const columns of [[{key:'level',label:'告警级别'}],[],['n','n'],[''],42])assert.throws(()=>parseTableSpec({kind:'table',columns}),/columns/);
- console.log('presentation knowledge: paged discovery/navigation, exact slices, 14 executable figure examples, renderer matrix, table headers and DARI bindings passed');
+ console.log('presentation knowledge: paged discovery/navigation, exact slices, 16 executable figure examples, renderer matrix, table headers and DARI bindings passed');
 }finally{}

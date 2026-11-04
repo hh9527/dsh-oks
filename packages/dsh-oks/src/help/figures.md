@@ -26,3 +26,16 @@ figure daily := ColumnChart(spec = spec, data = rows);
 Table 的 columns 是字符串列名数组，表头就是数据键名；中文表头在 select 的 fields 中指定输出列名。只有 NetworkGraph 接受独立 nodes 数据。
 
 LineChart / AreaChart 的 spec.xType 必填：Int、Float、String、Rfc3339 或 EpochMillis。Int/Float 使用数值轴，String 使用类别轴，Rfc3339/EpochMillis 使用时间轴。检查器检查列类型，运行时验证实际值；不进行输入编码推断。
+
+## 普通图与分组图
+
+BarChart / ColumnChart 只接受 x、value，不接受 series。颜色按 x 类别使用 style.colors；传一个颜色可统一着色。负值沿数值轴表达，不覆盖类别颜色。
+
+GroupedBarChart / GroupedColumnChart 必须提供 series；颜色对应序列，并与图例一致，即使筛选后只有一个序列也保留图例。分组柱图仍支持 stack=total / percent。底层 kind 分别为 grouped_bar / grouped_column。
+
+已有的柱条加折线双轴组合（second）继续按指标着色，与指标图例一致。
+
+```dari
+figure severity := ColumnChart(spec={x:"级别",value:"条数",style:{colors:["#d32f2f","#f57c00","#fbc02d","#1976d2"]}},data=counts);
+figure comparison := GroupedColumnChart(spec={x:"设备分类",value:"使用率",series:"指标"},data=metrics);
+```

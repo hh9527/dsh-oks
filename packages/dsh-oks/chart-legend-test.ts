@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { buildOption, CHART_WIDTH } from './src/chart/option.ts';
 import { renderEchartsSvg } from './src/chart/echarts.ts';
-import { NEGATIVE_COLOR, SERIES_COLORS } from './src/chart/shared.ts';
+import { SERIES_COLORS } from './src/chart/shared.ts';
 
 // Each series has two marks and one legend swatch. The SVG must use its
 // assigned color for all three, including with custom and entity palettes.
-for (const kind of ['column', 'bar', 'line', 'area'] as const) {
+for (const kind of ['grouped_column', 'grouped_bar', 'line', 'area'] as const) {
   for (const style of [{}, { colors: ['#123456', '#789abc'] }]) {
     for (const entityColor of [false, true]) {
       const built = buildOption([
@@ -37,6 +37,6 @@ const signed = buildOption([{ x: 'positive', v: 2 }, { x: 'negative', v: -1 }], 
   xType: null, xLabel: null, valueLabel: null, unit: null,
 });
 const signedSvg = renderEchartsSvg(signed.option, CHART_WIDTH, signed.height);
-assert.ok(signedSvg.includes(`fill="${NEGATIVE_COLOR}"`));
+assert.ok(signedSvg.includes(`fill="${SERIES_COLORS[1]}"`));
 assert.ok(signedSvg.includes(`fill="${SERIES_COLORS[0]}"`));
-console.log('Chart legend and mark colors agree; negative values retain their override.');
+console.log('Chart legend and mark colors agree; plain bars retain category colors for negative values.');

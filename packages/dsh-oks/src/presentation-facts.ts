@@ -22,13 +22,13 @@ export const presentationFacts = {
             "bar",
             "BarChart"
           ],
-          "doc": "横向比较类别数值；series 可选，表示分组。",
+          "doc": "单序列类别比较，不接受 series；颜色按 x 类别使用 style.colors 色板，一个颜色可统一着色，负值不改变类别颜色。需要分组时使用 GroupedBarChart。",
           "facts": {
             "required": [
               "x",
               "value"
             ],
-            "series": "group",
+            "series": "not supported",
             "example": {
               "spec": {
                 "x": "label",
@@ -42,6 +42,51 @@ export const presentationFacts = {
                 {
                   "label": "乙",
                   "count": 5
+                }
+              ]
+            }
+          }
+        },
+        "grouped_bar": {
+          "names": [
+            "分组横条图",
+            "grouped_bar",
+            "GroupedBarChart"
+          ],
+          "doc": "按类别比较多个序列；series 必填，颜色对应序列，图例与图形同色；即使数据只剩一个序列也保留此语义。",
+          "facts": {
+            "required": [
+              "x",
+              "value",
+              "series"
+            ],
+            "series": "group",
+            "example": {
+              "spec": {
+                "x": "label",
+                "value": "count",
+                "series": "group"
+              },
+              "rows": [
+                {
+                  "label": "甲",
+                  "group": "A",
+                  "count": 3
+                },
+                {
+                  "label": "甲",
+                  "group": "B",
+                  "count": 5
+                },
+                {
+                  "label": "乙",
+                  "group": "A",
+                  "count": 2
+                },
+                {
+                  "label": "乙",
+                  "group": "B",
+                  "count": 4
                 }
               ]
             }
@@ -84,24 +129,54 @@ export const presentationFacts = {
         "column": {
           "names": [
             "柱状图",
-            "分组柱图",
-            "堆叠柱图",
             "column",
             "ColumnChart"
           ],
-          "doc": "纵向比较类别；series 为分组列，省略 stack 时并列，stack=total 堆叠，percent 按类别归一为百分比。",
+          "doc": "单序列类别比较，不接受 series；颜色按 x 类别使用 style.colors 色板，一个颜色可统一着色，负值不改变类别颜色。需要分组时使用 GroupedColumnChart。",
           "facts": {
             "required": [
               "x",
               "value"
+            ],
+            "series": "not supported",
+            "example": {
+              "spec": {
+                "x": "label",
+                "value": "count"
+              },
+              "rows": [
+                {
+                  "label": "甲",
+                  "count": 3
+                },
+                {
+                  "label": "乙",
+                  "count": 5
+                }
+              ]
+            }
+          }
+        },
+        "grouped_column": {
+          "names": [
+            "分组柱状图",
+            "grouped_column",
+            "GroupedColumnChart",
+            "堆叠柱图"
+          ],
+          "doc": "按类别比较多个序列；series 必填，颜色对应序列，图例与图形同色；即使数据只剩一个序列也保留此语义。省略 stack 时并列，stack=total 堆叠，percent 按类别归一为百分比。",
+          "facts": {
+            "required": [
+              "x",
+              "value",
+              "series"
             ],
             "series": "group",
             "example": {
               "spec": {
                 "x": "label",
                 "value": "count",
-                "series": "group",
-                "stack": "total"
+                "series": "group"
               },
               "rows": [
                 {
@@ -113,6 +188,16 @@ export const presentationFacts = {
                   "label": "甲",
                   "group": "B",
                   "count": 5
+                },
+                {
+                  "label": "乙",
+                  "group": "A",
+                  "count": 2
+                },
+                {
+                  "label": "乙",
+                  "group": "B",
+                  "count": 4
                 }
               ]
             }
@@ -580,7 +665,7 @@ export const presentationFacts = {
                 "asc"
               ],
               "labels": "Bool",
-              "colors": "1..12 个十六进制颜色字符串"
+              "colors": "1..12 个十六进制颜色；普通柱条图按类别、分组图按序列取色，单色数组统一着色"
             },
             "layout": {
               "labelFont": [

@@ -8,7 +8,7 @@ export type Row = Record<string, unknown>;
 /** 全部图元。清单只此一份：schema 的枚举、规格的类型、渲染的分支都从这里取，
  *  否则加一个图元要改三处，漏掉一处就是"工具收下了、渲染认不得"（或反过来）。 */
 export const CHART_KINDS = [
-  'bar', 'line', 'column', 'pie', 'area', 'scatter', 'histogram', 'box', 'heatmap', 'radar',
+  'bar', 'grouped_bar', 'line', 'column', 'grouped_column', 'pie', 'area', 'scatter', 'histogram', 'box', 'heatmap', 'radar',
   'sankey', 'gauge', 'graph',
 ] as const;
 export type ChartKind = (typeof CHART_KINDS)[number];
@@ -19,15 +19,15 @@ export type ChartKind = (typeof CHART_KINDS)[number];
  *  两处各写一遍就会漏——漏的后果不是报错，而是开关在这张图上**静默无效**。 */
 export const EXPRESSION_SUPPORT = {
   /** 堆叠：把同一个分组里的序列叠起来。 */
-  stack: ['column', 'area'],
+  stack: ['grouped_column', 'area'],
   /** 气泡：把第三列映射成点的大小。 */
   size: ['scatter'],
   /** 分箱：直方图的箱子数。 */
   bins: ['histogram'],
   /** 第二个度量：另一条线配一个独立的第二数值轴。 */
-  second: ['bar', 'column', 'line', 'area'],
+  second: ['bar', 'grouped_bar', 'column', 'grouped_column', 'line', 'area'],
   /** 参考线 / 阈值线。 */
-  marks: ['bar', 'column', 'line', 'area', 'gauge'],
+  marks: ['bar', 'grouped_bar', 'column', 'grouped_column', 'line', 'area', 'gauge'],
   /** 环形：饼图中心留白。 */
   donut: ['pie'],
   /** 断点：缺失点在折线上连成直线（`true`）还是断开成两段（不写）。
@@ -35,7 +35,7 @@ export const EXPRESSION_SUPPORT = {
   connectNulls: ['line', 'area'],
   /** 颜色跟实体：颜色由名字决定（`true`），于是同一个实体在哪张图里都是同一个颜色；
    *  不写就按序列序号取色。 */
-  entityColor: ['bar', 'column', 'line', 'area', 'pie', 'radar'],
+  entityColor: ['bar', 'grouped_bar', 'column', 'grouped_column', 'line', 'area', 'pie', 'radar'],
 } as const;
 
 /** 图元专属开关的名字。 */
@@ -154,7 +154,7 @@ export interface StyleOverrides {
   sort?: 'none' | 'desc' | 'asc';
   /** 是否在图上标出数值。 */
   labels?: boolean;
-  /** 覆盖色板；按序列（或扇区）依次取用。 */
+  /** 覆盖色板；普通柱条图按类别，分组图按序列，饼图按扇区取用。 */
   colors?: string[];
 }
 

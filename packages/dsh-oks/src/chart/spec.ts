@@ -281,6 +281,12 @@ export const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: str
     style: {},
     layout: {},
   };
+  if ((kind === 'bar' || kind === 'column') && record.series !== undefined) {
+    return {error: `${kind} does not accept spec.series; use ${kind === 'bar' ? 'GroupedBarChart (grouped_bar)' : 'GroupedColumnChart (grouped_column)'} for grouped data`};
+  }
+  if ((kind === 'grouped_bar' || kind === 'grouped_column') && spec.series === null) {
+    return {error: `${kind} requires spec.series (the grouping column); use ${kind === 'grouped_bar' ? 'BarChart' : 'ColumnChart'} for a single series`};
+  }
   const parsedLayout = parseLayout(record.layout);
   if ('error' in parsedLayout) return { error: parsedLayout.error };
   spec.layout = parsedLayout.layout;
@@ -369,14 +375,8 @@ export const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: str
       };
     }
   }
-  if (spec.kind === 'bar' && (spec.x === '' || spec.value === '')) {
-    return { error: 'bar 需要 spec.x（类别列）与 spec.value（数值列）' };
-  }
-  if (spec.kind === 'column') {
-    // series 可选：给了就是分组柱，不给就是每类一根柱子——后者是"单柱 + 一条线"的常见组合。
-    if (spec.x === '' || spec.value === '') {
-      return { error: 'column 需要 spec.x（类别列）与 spec.value（数值列）' };
-    }
+  if (['bar','column','grouped_bar','grouped_column'].includes(spec.kind) && (spec.x === '' || spec.value === '')) {
+    return {error: `${spec.kind} requires spec.x (category column) and spec.value (numeric column)`};
   }
   if (spec.kind === 'pie') {
     if (spec.x === '' || spec.value === '') {

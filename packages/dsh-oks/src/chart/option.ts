@@ -39,7 +39,7 @@ export const CHART_WIDTH = PAGE_WIDTH;
  *  `count` 是"有多少行要占高度"：横条与矩阵是一行一个类别（矩阵传的是分组数），其余传类别数。 */
 export const plotHeight = (kind: string, count: number, labelFont: number, overrides: LayoutOverrides): number => {
   const rowHeight = Math.max(overrides.rowHeight ?? 26, Math.round(labelFont * 1.8));
-  const fallback = kind === 'bar' ? Math.round(60 + count * rowHeight)
+  const fallback = kind === 'bar' || kind === 'grouped_bar' ? Math.round(60 + count * rowHeight)
     // 矩阵的行是分组，高度按行数走；再给标题与底部色标留出位置。
     : kind === 'heatmap' ? Math.max(240, Math.round(104 + count * rowHeight))
       : kind === 'pie' ? 300
@@ -162,13 +162,16 @@ const hashName = (name: string): number => {
 
 /**
  * 规格 + 结果行 → echarts option。
- * 所有图元共用同一套规则：色板按序列轮转、负值用区分色、空序列跳过、类别密度决定标签斜排。
+ * 普通柱条图按类别着色，分组图按序列着色；空序列跳过，类别密度决定标签斜排。
  */
 export const buildOption = (
   rows: readonly Row[],
   spec: OptionInput,
   nodes: readonly Row[] | undefined = undefined,
 ): { option: EChartsCoreOption; height: number } => {
+  const originalKind=spec.kind;
+  const grouped=originalKind==='grouped_bar'||originalKind==='grouped_column';
+  if(grouped)spec={...spec,kind:originalKind==='grouped_bar'?'bar':'column'};
   if((spec.kind==='line'||spec.kind==='area')&&!(X_TYPES as readonly unknown[]).includes(spec.xType))throw new Error('spec.xType is required: Int / Float / String / Rfc3339 / EpochMillis');
   // 桑基图：行是**边**——`x` 起点、`series` 终点、`value` 权重（不填时每条边计 1）。
   // 布局由 echarts 从 DAG 自己分层，作者不给层级。它与别的图元不同，先于通用分组处理。
@@ -477,7 +480,7 @@ export const buildOption = (
       left: 'center' as const,
       textStyle: { fontSize: layout.titleFont, fontWeight: 'bold' as const, color: '#1c2b3a' },
     };
-  const legend = seriesNames.length > 1 && spec.kind !== 'pie'
+  const legend = (grouped || seriesNames.length > 1) && spec.kind !== 'pie'
     ? { top: spec.title === null ? 0 : 34, right: 0, itemWidth: 12, itemHeight: 10, textStyle: { fontSize: labelFont, color: '#1c2b3a' } }
     : undefined;
 
@@ -499,7 +502,7 @@ export const buildOption = (
     const slots = new Map<string, number>();
     for (const name of [...new Set(names)].sort()) {
       let slot = hashName(name) % byName.length;
-      while (taken.has(slot)) slot = (slot + 1) % byName.length;
+      for (let attempts = 0; taken.has(slot) && attempts < byName.length; attempts++) slot = (slot + 1) % byName.length;
       taken.add(slot);
       slots.set(name, slot);
     }
@@ -510,7 +513,7 @@ export const buildOption = (
   // spec.stack 的"没写"是 null，而下面各处的判断比的是 undefined——两种"没有"混在一起，
   // "不给 stack"就会被当成 stack: 'total'。"分组柱"因此在真机上从来画不出来（永远是多段的一根）。
   // 在这一行统一成 undefined，让"没写"和"没写"只有一个样子。
-  const stack = supports(spec.kind, 'stack') ? spec.stack ?? undefined : undefined;
+  const stack = supports(originalKind, 'stack') ? spec.stack ?? undefined : undefined;
 
   // 散点：两个量之间的关系。给了 size 就把第三维映射成点的大小（气泡图）。
   if (spec.kind === 'scatter') {
@@ -675,6 +678,10 @@ export const buildOption = (
   };
 
   const colorAt = colorResolver(seriesNames);
+  const categoryNames=distinct(rows,spec.x);
+  const categoryColor=colorResolver(categoryNames);
+  const categoryColors=!grouped && (spec.kind==='bar'||spec.kind==='column') && spec.second==null
+    ? new Map(categoryNames.map((name,index)=>[name,categoryColor(name,index)])) : null;
   const series = seriesNames.map((name, index) => {
     const bucket = points.get(name) ?? new Map<string, number>();
     const raw = categories.map((category) => bucket.get(category) ?? null);
@@ -689,11 +696,8 @@ export const buildOption = (
     const color = colorAt(name, index);
     const base = {
       name: name === '' ? axisName(spec.valueLabel, spec.unit) ?? 'value' : name,
-      // With a categorical legend, color always identifies the series.
-      // Sign coloring is reserved for bars without a categorical legend.
-      data: data.map((value) => legend === undefined && spec.second == null
-        && (spec.kind === 'bar' || spec.kind === 'column') && value !== null && value < 0
-        ? { value, itemStyle: { color: NEGATIVE_COLOR } }
+      data: data.map((value, categoryIndex) => categoryColors !== null && value !== null
+        ? {value,itemStyle:{color:categoryColors.get(categories[categoryIndex])!}}
         : value),
       itemStyle: { color },
       connectNulls,

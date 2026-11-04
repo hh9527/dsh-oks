@@ -51,20 +51,19 @@ const chart=async({spec,data,nodes}:any)=>{
  return {input,value:{ok:true,asset:path,rowCount:input.data.rows.length,spec:input.data.spec,title:embedded.slice(2,embedded.indexOf(']('))},text:embedded};
 };
 try {
-  // 负值走 0 轴另一侧，并且换色，方向一眼可辨。
+  // 负值走 0 轴另一侧，颜色仍由类别决定。
   const signed = await chart({
     spec: { kind: 'bar', title: '正负对照', x: 'label', value: 'value' },
     data: [{ label: '正', value: 5 }, { label: '负', value: -3 }],
     name: 'probe_signed',
   });
   const signedSvg = readFileSync(resolve(DEV_ROOT, signed.value.asset), 'utf8');
-  console.log(`  正负对照：${signedSvg.includes('#c0567a') ? '负值用区分色 ✓' : '✗ 没有区分色'}`);
-  if (!signedSvg.includes('#c0567a')) throw new Error('负值应当用区分色绘制');
+  assert(signedSvg.includes('#5a8cf0')&&signedSvg.includes('#e0803a'),'正负值按类别使用色板');
 
   // 分组柱：横轴是类别，每个类别里按 series 分成相邻的柱子。
   const column = await chart({
     spec: {
-      kind: 'column', title: '月销售额（按渠道）', x: 'month', series: 'channel', value: 'amount',
+      kind: 'grouped_column', title: '月销售额（按渠道）', x: 'month', series: 'channel', value: 'amount',
       valueLabel: '销售额（万元）',
     },
     data: [
@@ -140,7 +139,7 @@ try {
   ];
   for (const [label, stack] of [['绝对量', 'total'], ['占比', 'percent']]) {
     const stacked = await chart({
-      spec: { kind: 'column', x: 'm', series: 'sev', value: 'n', stack },
+      spec: { kind: 'grouped_column', x: 'm', series: 'sev', value: 'n', stack },
       data: stackRows,
       name: 'probe_stack_' + stack,
     });
@@ -483,7 +482,7 @@ try {
     return d === null || fill === null ? [] : [{ x: Number(d[1]), y: Number(d[2]), w: Number(d[3]), h: Number(d[4]) }];
   });
   const barSpread = (values) => Math.max(...values) - Math.min(...values);
-  const columnSpec = { kind: 'column', x: 'q', value: 'v', series: 'c' };
+  const columnSpec = { kind: 'grouped_column', x: 'q', value: 'v', series: 'c' };
   const grouped = await chart({ spec: columnSpec, data: groupRows, name: 'probe_grouped' });
   const stacked = await chart({ spec: { ...columnSpec, stack: 'total' }, data: groupRows, name: 'probe_stacked' });
   const groupedBars = barsOf(readFileSync(resolve(DEV_ROOT, grouped.value.asset), 'utf8'));
@@ -510,7 +509,7 @@ try {
 
   // 横条图 + series：横向的分组条。它原来按"类别数"算高度，一个类别三条时每根只有 5px 高。
   const groupedBar = await chart({
-    spec: { kind: 'bar', x: 'q', value: 'v', series: 'c' },
+    spec: { kind: 'grouped_bar', x: 'q', value: 'v', series: 'c' },
     data: groupRows,
     name: 'probe_bar_grouped',
   });
@@ -629,6 +628,8 @@ try {
     bar: { x: 'k', value: 'w' },
     line: { xType:'String', x: 'k', value: 'w' },
     column: { x: 'k', value: 'w' },
+    grouped_column: { x: 'k', value: 'w', series: 's' },
+    grouped_bar: { x: 'k', value: 'w', series: 's' },
     pie: { x: 'k', value: 'w' },
     area: { xType:'String', x: 'k', value: 'w' },
     scatter: { x: 'w', value: 'w' },
@@ -678,8 +679,8 @@ try {
     ['layout 越界', { spec: { kind: 'bar', x: 'label', value: 'value', layout: { labelFont: 4 } }, data: [{ label: 'A', value: 1 }] }],
     ['layout 写错项', { spec: { kind: 'bar', x: 'label', value: 'value', layout: { nope: 1 } }, data: [{ label: 'A', value: 1 }] }],
     ['stack 填给 bar', { spec: { kind: 'bar', x: 'label', value: 'value', stack: 'total' }, data: [{ label: 'A', value: 1 }] }],
-    ['size 填给 column', { spec: { kind: 'column', x: 'label', series: 's', value: 'value', size: 'n' }, data: [{ label: 'A', s: 'x', value: 1 }] }],
-    ['stack 取值非法', { spec: { kind: 'column', x: 'label', series: 's', value: 'value', stack: 'nope' }, data: [{ label: 'A', s: 'x', value: 1 }] }],
+    ['size 填给 column', { spec: { kind: 'grouped_column', x: 'label', series: 's', value: 'value', size: 'n' }, data: [{ label: 'A', s: 'x', value: 1 }] }],
+    ['stack 取值非法', { spec: { kind: 'grouped_column', x: 'label', series: 's', value: 'value', stack: 'nope' }, data: [{ label: 'A', s: 'x', value: 1 }] }],
     ['style.sort 非法', { spec: { kind: 'bar', x: 'label', value: 'value', style: { sort: 'nope' } }, data: [{ label: 'A', value: 1 }] }],
     ['style.colors 非法', { spec: { kind: 'bar', x: 'label', value: 'value', style: { colors: ['red'] } }, data: [{ label: 'A', value: 1 }] }],
     ['scatter 缺 value', { spec: { kind: 'scatter', x: 'a' }, data: [{ a: 1 }] }],
@@ -696,12 +697,12 @@ try {
       data: [{ m: 'a', s: 'x', v: 1 }, { m: 'b', s: 'x', v: 2 }, { m: 'c', s: 'x', v: 3 }, { m: 'a', s: 'y', v: 4 }, { m: 'b', s: 'y', v: 5 }],
     }],
     ['second 填给 pie', { spec: { kind: 'pie', x: 'label', value: 'value', second: { value: 'n' } }, data: [{ label: 'A', value: 1, n: 2 }] }],
-    ['second 缺 value', { spec: { kind: 'column', x: 'label', series: 's', value: 'value', second: { label: 'x' } }, data: [{ label: 'A', s: 'p', value: 1 }] }],
-    ['second.kind 非 line', { spec: { kind: 'column', x: 'label', series: 's', value: 'value', second: { value: 'n', kind: 'bar' } }, data: [{ label: 'A', s: 'p', value: 1, n: 2 }] }],
+    ['second 缺 value', { spec: { kind: 'grouped_column', x: 'label', series: 's', value: 'value', second: { label: 'x' } }, data: [{ label: 'A', s: 'p', value: 1 }] }],
+    ['second.kind 非 line', { spec: { kind: 'grouped_column', x: 'label', series: 's', value: 'value', second: { value: 'n', kind: 'grouped_bar' } }, data: [{ label: 'A', s: 'p', value: 1, n: 2 }] }],
     ['marks 填给 scatter', { spec: { kind: 'scatter', x: 'a', value: 'b', marks: [{ value: 1 }] }, data: [{ a: 1, b: 2 }] }],
     ['marks.axis 非法', { spec: { kind: 'bar', x: 'label', value: 'value', marks: [{ value: 1, axis: 'z' }] }, data: [{ label: 'A', value: 1 }] }],
     ['marks.value 类型非法', { spec: { kind: 'bar', x: 'label', value: 'value', marks: [{ value: true }] }, data: [{ label: 'A', value: 1 }] }],
-    ['second 指向不存在的列', { spec: { kind: 'column', x: 'label', series: 's', value: 'value', second: { value: 'nope' } }, data: [{ label: 'A', s: 'p', value: 1 }] }],
+    ['second 指向不存在的列', { spec: { kind: 'grouped_column', x: 'label', series: 's', value: 'value', second: { value: 'nope' } }, data: [{ label: 'A', s: 'p', value: 1 }] }],
   ];
   for (const [label, args] of failures) {
     let rejected = false;
