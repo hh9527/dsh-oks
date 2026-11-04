@@ -8,9 +8,9 @@
 
 根据 KA 阅读清单选择 Entity/Dataset 知识节点 ID，并从 ka_ask 的词汇参考中逐字选择领域词汇（不直接使用用户原话或自行改写），组织 anchors 参数交给 `oks_cap({anchors:[{id:"datasets/current_alarm",terms:["alarm_severity"]},{id:"datasets/tenant",terms:["tenant_name"]}]})`。
 
-cap 先发现路径，再裁剪返回结果：锚点、完整路径节点和关系始终保留，外延只保留词汇命中的成员及必要类型 ID，中间节点不全量展开成员。未提供词汇或零命中时不回退全量成员。terms 不影响路径搜索的子图。index 按类别列出保留的精确 ID；anchors.matches 给出词汇到 ID 的证据，unresolved_terms 标记未命中的词。索引是候选清单，只读当前问题所需的点。
+cap 先发现路径，再裁剪返回结果：锚点、完整路径节点和关系始终保留，外延只保留词汇命中的成员及必要类型 ID，中间节点不全量展开成员。未提供词汇或零命中时不回退全量成员。terms 不影响路径搜索的子图。回执以 Markdown 分段列出锚点、关系路径、承载数据集、词汇命中、未命中和必要的类型依赖。每个命中保留原词和精确 ID，只读当前问题所需的点。
 
-connections 给出所选 Dataset 之间的有界最短候选路径，含中间 Dataset 和 Relation ID。max_depth 默认 2，可设 0..3；截断有明确标记，未找到不代表全图不可达。Entity 的 carriers 是候选 Dataset，需要选择后再作为锚点发现关系。
+“关系路径”给出所选 Dataset 之间的有界最短候选路径，含中间 Dataset 和 Relation ID。max_depth 默认 2，可设 0..3；截断有明确标记，未找到不代表全图不可达。Entity 的“承载数据集”是候选 Dataset，需要选择后再作为锚点发现关系。
 
 连接存在仅说明模型声明了关联。聚合是否会放大度量，还取决于 Relation 的方向、基数、身份映射和 Measure 约束；通过 oks_info 阅读这些点，再用 dari_check 验证具体查询。
 

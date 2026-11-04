@@ -38,10 +38,13 @@ apply({get(){},logger:{info(){}},tools:{register(t:ToolDefinition){registered.pu
 try {
  assert.deepEqual(registered.map(t=>t.name).sort(),tools.map(t=>t.name).sort());
  const value={ok:true,data:{text:'x'.repeat(20000)}};
- for(const name of ['oks_cap','oks_info']) {
+ for(const name of ['oks_info']) {
   const definition=registered.find(t=>t.name===name)!;
   assert.deepEqual(JSON.parse(definition.output.render({} as never,value as never).map(b=>b.text??'').join('')),value);
  }
+ const capTool=registered.find(t=>t.name==='oks_cap')!;
+ const text=capTool.output.render({} as never,cap as never).map(b=>b.text??'').join('');
+ assert.match(text,/## 锚点/);assert.match(text,/### datasets\/d/);assert.match(text,/datasets\/d\/dimensions\/id/);
  const check=registered.find(t=>t.name==='dari_check')!;
  const receipt={ok:true,text:'# ready-status:\n- data.facts: t1-test'};
  assert.equal(check.output.render({} as never,receipt as never).map(b=>b.text??'').join(''),receipt.text);

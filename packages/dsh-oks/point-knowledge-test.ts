@@ -56,3 +56,14 @@ for(let i=0;i<1000;i++)expanded.datasets.a.fields['unused_'+i]={type:'String'};
 const compact=discoverPoints(expanded,args);
 assert.deepEqual(compact,result);
 console.log('Cap pruning: unchanged paths, intact skeleton, bounded exterior; 1000 unrelated fields add 0 receipt bytes');
+
+const {renderCap}=await import('./src/cap-receipt.ts');
+const receipt=renderCap({}, {data:result})[0].text!;
+assert.match(receipt,/## 关系路径/);
+assert.match(receipt,/### datasets\/a/);
+for(const id of ['datasets/a','datasets/bridge','datasets/b','relations/ab','relations/bc','types/Percent','datasets/a/dimensions/name','made_up'])assert(receipt.includes(id),id);
+assert(!receipt.includes('[datasets/a]'));
+assert(!receipt.includes('locations'));
+const noTermsText=renderCap({}, {data:unmatched})[0].text!;
+assert(noTermsText.includes('relations/ab'));assert(noTermsText.includes('relations/bc'));
+console.log('Cap Markdown receipt: headings, complete paths, exact IDs and unresolved terms preserved');

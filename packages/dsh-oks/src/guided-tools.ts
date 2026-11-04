@@ -1,3 +1,4 @@
+import {renderCap} from './cap-receipt.ts';
 import {renderResolveReceipt} from './draft/resolve-receipt.ts';
 import { discoverPoints, readPoints } from './point-knowledge.ts';
 import { semanticKnowledge } from './semantic-knowledge.ts';
@@ -39,9 +40,9 @@ export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge)
       },
     },
     {
-      name: 'oks_cap', description: 'Discover knowledge jointly using anchors:[{id,terms?}] using Entity/Dataset IDs from ka_ask’s 阅读清单 section and domain terms copied verbatim from its 词汇参考 section, rather than raw user phrases. Discovers paths before pruning the response: all anchor and path nodes/relations remain intact; exterior point IDs are limited to term matches and their type dependencies. Missing or unmatched terms do not expand all members. Returns verified term matches, classified point IDs and bounded shortest connection candidates. Copy needed IDs to oks_info. A connection is not proof that aggregation across it is safe; read Relation cardinality and Measure constraints, then check the query.',
+      name: 'oks_cap', description: 'Discover knowledge jointly using anchors:[{id,terms?}] using Entity/Dataset IDs from ka_ask’s 阅读清单 section and domain terms copied verbatim from its 词汇参考 section, rather than raw user phrases. Discovers paths before pruning the response: all anchor and path nodes/relations remain intact; exterior point IDs are limited to term matches and their type dependencies. Missing or unmatched terms do not expand all members. Returns Markdown sections for anchors, complete connection paths, vocabulary matches, unresolved terms and necessary exact IDs. Copy needed IDs to oks_info. A connection is not proof that aggregation across it is safe; read Relation cardinality and Measure constraints, then check the query.',
       parameters: {type:'object', properties:{anchors:{type:'array',minItems:1,maxItems:12,items:{type:'object',properties:{id:{type:'string'},terms:{type:'array',maxItems:20,items:{type:'string'}}},required:['id'],additionalProperties:false}},max_depth:{type:'integer',minimum:0,maximum:3}},required:['anchors'],additionalProperties:false},
-      output,
+      output: {schema:OBJECT_OUTPUT,render:renderCap},
       async execute(raw, exec) { return method('cap', check(raw, ['anchors','max_depth']), exec); },
     },
     {
