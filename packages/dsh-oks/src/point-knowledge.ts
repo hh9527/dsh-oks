@@ -57,7 +57,7 @@ export function discoverPoints(graph:SemanticGraph,args:Record<string,any>) {
   if(!Array.isArray(args.anchors)||!args.anchors.length||args.anchors.length>12)throw new Error('anchors requires 1..12 {id,terms?} entries');
   const maxDepth=args.max_depth??2;
   if(!Number.isInteger(maxDepth)||maxDepth<0||maxDepth>3)throw new Error('max_depth must be 0..3');
-  const index=points(graph),selected=new Set<string>(),datasets=new Set<string>();
+  const index=points(graph),selected=new Set<string>(),datasets=new Set<string>(),reverseSites=new Set<string>();
   const anchors=args.anchors.map((a:any)=>{
     if(!record(a)||Object.keys(a).some(k=>!['id','terms'].includes(k))||typeof a.id!=='string'||(a.terms!==undefined&&(!Array.isArray(a.terms)||a.terms.length>20||a.terms.some((t:any)=>typeof t!=='string'||!normalize(t)||t.length>200))))throw new Error('Each anchor needs id and at most 20 nonempty terms');
     const point=getPoint(graph,a.id);
@@ -72,8 +72,8 @@ export function discoverPoints(graph:SemanticGraph,args:Record<string,any>) {
     if(p.kind==='Type'&&p.fact.reverse_references===true)for(const site of p.fact.reference_locations??[]){
       if(typeof site.node!=='string')continue;
       const root=semanticId(site.node);if(!index.has(root))continue;
-      selected.add(root);if(root.startsWith('datasets/'))datasets.add(root);
-      if(Array.isArray(site.path)&&site.path.length===2){const id=root+'/'+site.path.map((x:string,i:number)=>i?encodePart(x):x).join('/');if(index.has(id))selected.add(id);}
+      selected.add(root);reverseSites.add(root);if(root.startsWith('datasets/'))datasets.add(root);
+      if(Array.isArray(site.path)&&site.path.length===2){const id=root+'/'+site.path.map((x:string,i:number)=>i?encodePart(x):x).join('/');if(index.has(id)){selected.add(id);reverseSites.add(id);}}
     }
   }
   // Entity anchors retain candidate carriers; only explicitly selected datasets
@@ -117,9 +117,22 @@ export function discoverPoints(graph:SemanticGraph,args:Record<string,any>) {
     selected.add(id);queue.push(id);
     for(const p of index.values())if(p.root===id&&!selected.has(p.id)){selected.add(p.id);queue.push(p.id);}
   }
+  // Discovery above is independent of terms. Prune only the serialized exterior;
+  // anchors and every path node/edge remain an indivisible skeleton.
+  const visible=new Set<string>(anchors.flatMap((a:any)=>[a.id,...a.matches.flatMap((m:any)=>m.ids)]));
+  for(const connection of connections)for(const path of connection.paths){
+    for(const id of path.nodes)visible.add(id);
+    for(const id of path.relations)visible.add(id);
+  }
+  // Explicit reverse-reference Type anchors retain their discovered reference sites.
+  for(const id of reverseSites)visible.add(id);
+  const dependencies=[...visible];
+  for(let i=0;i<dependencies.length;i++)for(const id of typeDependencies(index.get(dependencies[i])!,index))if(!visible.has(id)){
+    visible.add(id);dependencies.push(id);
+  }
   const grouped:Record<string,string[]>={};
-  for(const id of [...selected].sort()){const kind=index.get(id)!.kind;(grouped[kind]??=[]).push(id);}
-  const locations=hasOwnedNodes(graph)?Object.fromEntries([...selected].sort().map(id=>{const p=index.get(id)!;return [id,{node:p.root,path:knowledgeNode(graph,id).path.slice(2)}];})):undefined;
+  for(const id of [...visible].sort()){const kind=index.get(id)!.kind;(grouped[kind]??=[]).push(id);}
+  const locations=hasOwnedNodes(graph)?Object.fromEntries([...visible].sort().map(id=>{const p=index.get(id)!;return [id,{node:p.root,path:knowledgeNode(graph,id).path.slice(2)}];})):undefined;
   return {anchors,index:grouped,connections,carriers,max_depth:maxDepth,...(locations?{locations}:{})};
 }
 

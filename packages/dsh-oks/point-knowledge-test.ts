@@ -43,3 +43,16 @@ assert(!tools.some(t=>t.name==='oks_card'));
 assert.deepEqual(Object.keys(tools.find(t=>t.name==='oks_cap')!.parameters.properties as object),['anchors','max_depth']);
 await assert.rejects(call('oks_cap',{dataset:'a'}));
 await assert.rejects(call('oks_cap',{...args,join_depth:2}));
+
+// Term pruning cannot alter the discovered subgraph or remove path nodes/edges.
+const unmatched=discoverPoints(graph,{anchors:args.anchors.map(a=>({id:a.id,terms:['no_such_term']}))});
+assert.deepEqual(unmatched.connections,result.connections);
+assert.deepEqual(unmatched.index,{Dataset:['datasets/a','datasets/b','datasets/bridge'],Relation:['relations/ab','relations/bc']});
+assert(!result.index.Field);assert(!result.index.Role);assert(!result.index.Measure);
+assert(!JSON.stringify(result.index).includes('datasets/bridge/fields/id'));
+assert.equal(JSON.stringify(result).includes('types/Identity'),false);
+const expanded=structuredClone(graph);
+for(let i=0;i<1000;i++)expanded.datasets.a.fields['unused_'+i]={type:'String'};
+const compact=discoverPoints(expanded,args);
+assert.deepEqual(compact,result);
+console.log('Cap pruning: unchanged paths, intact skeleton, bounded exterior; 1000 unrelated fields add 0 receipt bytes');
