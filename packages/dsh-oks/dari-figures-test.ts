@@ -75,7 +75,7 @@ report answer := Report [p [Value(data=summary?.n)],UseFigure(ref = chart)];`);
  // Data-only outputs need neither report nor attachment service; large values are returned intact.
  write('data big := '+JSON.stringify('x'.repeat(20000))+';');
  const large=await resolve({data:['big']});assert.equal(large.data.big.length,20000);
- const tool=drafts.tools.find(t=>t.name==='dari_resolve')!;assert.equal(JSON.parse((tool.output.render as Function)({},large)[0].text).data.big.length,20000);
+ const tool=drafts.tools.find(t=>t.name==='dari_resolve')!;const rendered=(tool.output.render as Function)({},large)[0].text;assert.match(rendered,/^Succeed\n-------/);assert.equal(JSON.parse(rendered.match(/```json\n([\s\S]*?)\n```/)[1]).length,20000);
  write('data value := 42;');const other=await resolve({data:['value']},{agent:{session:{id:'other'}}});assert.equal(other.ok,true);assert.equal(other.data.value,42,'each session resolves independently');
  rmSync(physical);assert.equal(readFileSync(pathOf(image.embedded),'utf8'),original);assert.equal(readFileSync(pathOf(embedded),'utf8'),archived);
  assert.equal(queries,0);assert.equal(existsSync(join(root,'artifacts')),false);assert.equal(existsSync(join(root,'.oks')),false);

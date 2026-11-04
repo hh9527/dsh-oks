@@ -38,10 +38,13 @@ apply({get(){},logger:{info(){}},tools:{register(t:ToolDefinition){registered.pu
 try {
  assert.deepEqual(registered.map(t=>t.name).sort(),tools.map(t=>t.name).sort());
  const value={ok:true,data:{text:'x'.repeat(20000)}};
- for(const name of ['oks_cap','oks_info','dari_check']) {
+ for(const name of ['oks_cap','oks_info']) {
   const definition=registered.find(t=>t.name===name)!;
   assert.deepEqual(JSON.parse(definition.output.render({} as never,value as never).map(b=>b.text??'').join('')),value);
  }
+ const check=registered.find(t=>t.name==='dari_check')!;
+ const receipt={ok:true,text:'# ready-status:\n- data.facts: t1-test'};
+ assert.equal(check.output.render({} as never,receipt as never).map(b=>b.text??'').join(''),receipt.text);
 } finally {disposers.reverse().forEach(d=>d());}
 console.log('Public knowledge tools: exact surface, domain boundaries, search/cap/info and full result rendering passed');
 
@@ -54,8 +57,13 @@ for (const name of ['dari_check','dari_resolve']) {
   assert.equal(await internal.execute(),failure);
   await assert.rejects(surface.execute({} as never,{}),(error:unknown)=>{
     assert(error instanceof Error);
-    assert(error.message.startsWith(`${name} failed:\n`));
-    assert.deepEqual(JSON.parse(error.message.slice(error.message.indexOf('\n')+1)),failure);
+    if(name==='dari_resolve'){
+      assert.match(error.message,/^ResolveFailed\n-------------/);assert.match(error.message,/L3:4: Expected number/);
+      assert(!error.message.includes('"diagnostics"'));
+    }else{
+      assert(error.message.startsWith(`${name} failed:\n`));
+      assert.deepEqual(JSON.parse(error.message.slice(error.message.indexOf('\n')+1)),failure);
+    }
     return true;
   });
   result = {ok:true,columns:[{name:'n',type:'Int'}]};

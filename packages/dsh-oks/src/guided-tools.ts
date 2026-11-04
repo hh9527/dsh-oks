@@ -1,3 +1,4 @@
+import {renderResolveReceipt} from './draft/resolve-receipt.ts';
 import { discoverPoints, readPoints } from './point-knowledge.ts';
 import { semanticKnowledge } from './semantic-knowledge.ts';
 import { isRecord, type ToolDefinition, type ToolExec } from './host.ts';
@@ -72,8 +73,8 @@ export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge)
       async execute(raw: never, exec: ToolExec) {
         const result = await t.execute(raw, exec);
         // Only the public tool boundary turns domain failures into host tool errors.
-        // Keep the complete receipt in the message: DSH exposes only Error.message to the agent.
-        if (isRecord(result) && result.ok === false) throw new Error(`${t.name} failed:\n${JSON.stringify(result, null, 2)}`);
+        // DSH exposes Error.message to the agent; format compact diagnostics at this boundary.
+        if (isRecord(result) && result.ok === false) throw new Error(typeof result.text==='string'?result.text:t.name==='dari_resolve'?renderResolveReceipt(result):`${t.name} failed:\n${JSON.stringify(result, null, 2)}`);
         return result;
       },
     };

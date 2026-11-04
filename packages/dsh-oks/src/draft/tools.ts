@@ -1,3 +1,5 @@
+import {renderResolveReceipt} from './resolve-receipt.ts';
+import {checkReceipt,parseInspect} from './check-receipt.ts';
 import {renderMarkdownAnswer} from '../report/markdown-answer.ts';
 import {chartTitle} from '../chart/spec.ts';
 import type {ChartSpec} from '../chart/spec.ts';
@@ -173,21 +175,24 @@ export function createDraftTools(options: {
   const tools: ToolDefinition[] = [
     {
       name:'dari_check',
-      description:'Check a DARI design without executing business queries. Returns query columns and types, diagnostics, and checks deferred until real data is available. query(intent) obtains model columns to type Table(T); select derives a Table and select_one derives Option(Row). Returns inferred binding types without business values. No business results are returned.',
-      parameters:{type:'object',properties:{src:{type:'string'}},required:['src'],additionalProperties:false},output,
-      async execute(args:{src?:unknown},exec:ToolExec) {
-        assertKeys(args,['src']);
+      description:'Check the entire DARI source without acquiring business rows. Returns compact text headed Succeed or CheckFailed: ready-status lists every declared binding; t1- fingerprints identify successfully checked type shapes, ? means not successfully checked, and reports/answer use checked. An unchanged fingerprint means previously inspected shape information remains valid. Optionally inspect data/figures by binding name to read inferred shapes only. Errors include original source spans, capped at 20; upstream cascades are hidden. Fingerprints describe shapes, not execution caches.',
+      parameters:{type:'object',properties:{src:{type:'string'},inspect:{type:'object',properties:{data:{type:'array',maxItems:32,items:{type:'string',minLength:1}},figures:{type:'array',maxItems:32,items:{type:'string',minLength:1}}},additionalProperties:false}},required:['src'],additionalProperties:false},
+      output:{schema:OBJECT,render:(_args:unknown,value:unknown)=>[{type:'text',text:(value as {text:string}).text}]},
+      async execute(args:{src?:unknown;inspect?:unknown},exec:ToolExec) {
+        assertKeys(args,['src','inspect']);
+        const inspect=parseInspect(args.inspect);
         if(typeof args.src!=='string'||!args.src.endsWith('.dari'))throw new Error('src must be a local .dari path');
         const entry=options.knowledge.ensureWorkspace(exec);
         const read=readDariSource(entry.root,args.src,'dari_check');
         const signal=AbortSignal.any([shutdown.signal,AbortSignal.timeout(120000),...(exec.signal?[exec.signal]:[])]);
-        return checkSource(entry,read.file,read.text,exec,signal);
+        return checkReceipt(await checkSource(entry,read.file,read.text,exec,signal),inspect);
       },
     },
     {
       name:'dari_resolve',
-      description:'Check a DARI source and resolve selected outputs. answer is required: true renders the unique answer := Answer [...] as answer.embedded Markdown, including UseFigure images or Markdown tables and UseReport links; false resolves only explicit data/figures/reports for debugging. Copy embedded verbatim into the reply. Executes only selected dependencies and reuses cached computations. data returns structured values; figures/reports return named {embedded:"Markdown"} objects. requireRunApproval controls native approval; dari_renew_context starts a fresh acquisition batch.',
-      parameters:{type:'object',properties:{src:{type:'string'},data:{type:'array',items:{type:'string'}},figures:{type:'array',items:{type:'string'}},reports:{type:'array',items:{type:'string'}},answer:{type:'boolean',description:'Required. true resolves the unique Answer; false selects only explicit data/figures/reports for debugging.'}},required:['src','answer'],additionalProperties:false},output,
+      description:'Check a DARI source and resolve requested outputs. answer is required: true resolves the unique Answer; false selects only explicit data/figures/reports. Successful text begins Succeed and a divider, followed by comment-delimited blocks: <!-- answer -->, <!-- reports.name --> and <!-- figures.name --> contain ready-to-use Markdown; <!-- data.name --> contains structured JSON in a code fence. Copy requested Markdown verbatim into the reply, excluding receipt headers and markers. Executes only selected dependencies and reuses cached computations. Failures are concise tool errors. requireRunApproval controls native approval; dari_renew_context starts a fresh acquisition batch.',
+      parameters:{type:'object',properties:{src:{type:'string'},data:{type:'array',items:{type:'string'}},figures:{type:'array',items:{type:'string'}},reports:{type:'array',items:{type:'string'}},answer:{type:'boolean',description:'Required. true resolves the unique Answer; false selects only explicit data/figures/reports for debugging.'}},required:['src','answer'],additionalProperties:false},
+      output:{schema:OBJECT,render:(_args:unknown,value:unknown)=>[{type:'text',text:renderResolveReceipt(value)}]},
       async execute(args:{src?:unknown;data?:unknown;figures?:unknown;reports?:unknown;answer?:unknown},exec:ToolExec){
         assertKeys(args,['src','answer','data','figures','reports']);
         if(typeof args.src!=='string'||!args.src.endsWith('.dari'))throw new Error('src must be a local .dari path');
@@ -210,7 +215,7 @@ export function createDraftTools(options: {
         try{
           signal.throwIfAborted();
           const checked=await checkSource(entry,read.file,read.text,exec,AbortSignal.any([signal,AbortSignal.timeout(120000)]));
-          if(!checked.ok)return {...checked,execution:'not performed'};
+          if(!checked.ok)return {...checked,...checkReceipt(checked),execution:'not performed'};
           const doc=parseDesign(read.text,read.file);
           const answers=new Set([...doc.assets.values()].filter(a=>a.format==='markdown').map(a=>a.name.slice('@report/'.length)));
           const reports=new Set(doc.answers.filter(name=>!answers.has(name)));

@@ -2,7 +2,7 @@
 
 ## 工具查询契约
 
-{{intentContract}}；分析稿中的 query(Intent) 表示取数，运行期返回 {rows,columns,truncated}；agent 使用 dari_check 检查意图并获得 columns，不执行 SQL。每个 Intent 的 limit 为 1..500，业务能力与模型短名称来自知识图。语法变更需同步检查解析器与帮助。
+{{intentContract}}；分析稿中的 query(Intent) 表示取数，运行期返回 {rows,columns,truncated}；agent 使用 dari_check 检查意图，通过 inspect.data 点名读取列类型，不执行 SQL。每个 Intent 的 limit 为 1..500，业务能力与模型短名称来自知识图。语法变更需同步检查解析器与帮助。
 
 ## 比较操作
 
@@ -34,7 +34,7 @@ Dataset 的 detail.references 包含具名 {id,fields} 集合。每个完整的�
 
 ## 查询意图语法
 
-每个顶层 Intent 的 op 为 Graph、GraphPair 或 GraphUnion。在 DARI pipeline 中用 data facts := query(Intent); 表达取数；dari_check 只做设计检查并返回列类型，不获取 rows。每个顶层 Intent 必须提供 1..500 的整数 limit。多个 Intent 是独立计划。limit 限制所有业务操作完成后的最终输出行数，编译为 SQL 与绑定参数，独立于业务 take/Top-N；嵌套操作数无需 limit。模型定义 limit 语义和有效范围，外部插件可声明更严格的调用要求，或在转发前注入、覆盖 limit；通过插件调用时遵守插件契约。模型服务按给定 limit 返回，不另算总量或 hasMore；工具执行侧返回 truncated。筛选值按维度或度量的声明解释，不提供输入 kind。
+每个顶层 Intent 的 op 为 Graph、GraphPair 或 GraphUnion。在 DARI pipeline 中用 data facts := query(Intent); 表达取数；dari_check 做设计检查，inspect.data 按需返回列类型，不获取 rows。每个顶层 Intent 必须提供 1..500 的整数 limit。多个 Intent 是独立计划。limit 限制所有业务操作完成后的最终输出行数，编译为 SQL 与绑定参数，独立于业务 take/Top-N；嵌套操作数无需 limit。模型定义 limit 语义和有效范围，外部插件可声明更严格的调用要求，或在转发前注入、覆盖 limit；通过插件调用时遵守插件契约。模型服务按给定 limit 返回，不另算总量或 hasMore；工具执行侧返回 truncated。筛选值按维度或度量的声明解释，不提供输入 kind。
 
 ## Graph 意图
 

@@ -2,7 +2,7 @@
 
 不要为了探索能力单独开分析稿，而是一个问题一个分析稿，直接在分析稿内进行尝试。 一个业务问题使用一份 `.dari`。`data` 定义不可变的取数与后处理，`figure` 定义图表，`report` 定义可交付报告，唯一的 `answer := Answer [...]` 定义回答流正文。用 宿主内置文件工具 编辑，dari_check 检查；dari_resolve 检查后根据必填的 answer 布尔参数解析回答及显式选择的产物和依赖；默认直接运行，requireRunApproval=true 时先申请宿主用户批准。
 
-源码使用本地文件路径，src 可以是工作区相对路径或工作区内的绝对路径；缓存按会话和文件的真实路径隔离。用宿主内置工具读取、创建和编辑文件。`dari_check({src:"analysis.dari"})` 检查全稿，只接收 src。`oks_read` 只读取内置手册。
+源码使用本地文件路径，src 可以是工作区相对路径或工作区内的绝对路径；缓存按会话和文件的真实路径隔离。用宿主内置工具读取、创建和编辑文件。`dari_check({src:"analysis.dari"})` 检查全稿，可通过可选 inspect 参数点名读取类型形状。`oks_read` 只读取内置手册。
 
 ## 声明与节点
 
@@ -47,7 +47,13 @@ figure 绑定右侧是图表组件或 Table，data 直接接受 Table(T)，无�
 
 表达式、聚合、Option 和有限 map 语义见 `oks://help/pipeline.md`；查询意图见 `oks://help/query.md`；时间见 `oks://help/time.md`；图表形式见摘要中对应的单图表手册，正文见 `oks://help/report.md`。
 
-检查回执的 queries 包含查询和关系节点的列，types 列出绑定类型，diagnostics 给出原稿位置、错误字段和可用字段。检查覆盖图表映射、报告结构、Value 标量和溯源要求，不返回业务值。query 的 limit 必填，范围 1..500；截断结果不能用于后处理聚合。
+检查返回纯文本，以 `Succeed` 和分割线表示成功，以 `CheckFailed` 和分割线表示检查失败。`ready-status` 列出全部公开声明，包含未使用的声明；data/figure 的 `t1-...` 指纹表示本次检查通过及推导出的类型形状，`?` 表示尚未通过检查。report/answer 通过时显示 `checked`。存在不可恢复的语法错误时，无法列出声明，依据 errors 修正源码。
+
+需要列名或对象字段类型时，调用 `dari_check({src:"analysis.dari",inspect:{data:["facts","summary"],figures:["counts"]}})`；名称使用源码绑定名，每个列表最多 32 项。inspect 只返回推导出的形状，figure 显示数据及可选节点表的类型，不重复源码定义。指纹不变，就可以沿用上下文中此前 inspect 获得的形状信息，不重复读取。没有读过形状时，按需 inspect。
+
+指纹包含类型、字段名、可空性和表列顺序；普通对象字段按名字排序，值、源码、数组长度和运行缓存不参与。指纹以 t1 标识格式版本。报告和回答通过 errors 判断，不参与 inspect。
+
+errors 给出原稿行列范围和诊断原话，每次最多 20 条，超过时报告省略数量；上游连锁错误不显示。失败时也返回可用节点状态及所请求的已通过节点形状，并表现为失败的工具调用。检查覆盖图表映射、报告结构、Value 标量和溯源要求，不返回业务值。query 的 limit 必填，范围 1..500；截断结果不能用于后处理聚合。
 
 ## 批准与交付
 
@@ -63,7 +69,9 @@ dari_resolve({
 })
 ```
 
-answer 为必填布尔值，三个列表均可省略，名称必须对应声明种类。answer:true 返回唯一 Answer 的 `answer.embedded`；answer:false 只解析显式选中的内容，至少选择一项。data 返回绑定的结构化值，包括表、对象、标量和 null。figures/reports 返回以绑定名为键的对象，每项包含 Markdown 字符串 `embedded`；把该字符串原样加入回答流即可展示图表或报告入口。展示产物不重复返回业务事实；需要解读的值通过 data 显式选择。图表可以独立交付，不要求编写 report。
+answer 为必填布尔值，三个列表均可省略，名称必须对应声明种类。answer:false 只解析显式选中的内容，至少选择一项。成功回执以 `Succeed` 和分割线开头，只输出请求的内容；下面用 HTML 注释分块：`<!-- answer -->` 是唯一 Answer 的 Markdown 正文，`<!-- reports.name -->` 是报告链接，`<!-- figures.name -->` 是图表图片或 Markdown 表格，`<!-- data.name -->` 是保留完整结构的 JSON 代码块。正文和链接直接使用 Markdown，不包在 JSON 字符串里。
+
+交付时原样使用相应块中的 Markdown，略去状态头、分隔注释和调试数据；需要解读的事实通过 data 显式选择。图表可以独立交付，不要求编写 report。检查失败使用 CheckFailed 回执；执行或选择失败使用 ResolveFailed 和精简根因诊断，并表现为失败的工具调用。
 
 只执行所选产物的依赖，共享计算与缓存。普通重复解析复用查询和后处理缓存，改后处理不重新取数；dari_renew_context({src}) 创建新的采集上下文，下一次解析重新取数。
 
@@ -71,7 +79,7 @@ answer 为必填布尔值，三个列表均可省略，名称必须对应声明�
 
 ## 回答流出口
 
-每份分析稿最多声明一个 `answer := Answer [...]`，先定义数据、图表和报告，再声明回答。正常交付调用 `dari_resolve({src:"analysis.dari",answer:true})`，将返回的 `answer.embedded` Markdown 原样贴进回答，不重复编写或解读同一份正文。answer:true 时也可以额外选择 data/figures/reports；调试使用 `dari_resolve({src:"analysis.dari",answer:false,data:["summary"]})`。省略 answer 或请求不存在的 Answer 会报错。
+每份分析稿最多声明一个 `answer := Answer [...]`，先定义数据、图表和报告，再声明回答。正常交付调用 `dari_resolve({src:"analysis.dari",answer:true})`，将 `<!-- answer -->` 块中的 Markdown 原样贴进回答，不重复编写或解读同一份正文。answer:true 时也可以额外选择 data/figures/reports；调试使用 `dari_resolve({src:"analysis.dari",answer:false,data:["summary"]})`。省略 answer 或请求不存在的 Answer 会报错。
 
 Answer 沿用 node 写法：h1/h2/h3 转为 Markdown 标题，strong/em 转为强调，p、列表、引用、代码和链接转为对应 Markdown。动态标量写作 `value(ref=summary?.total)`，检查引用及标量类型，保留来源追踪；文字与动态值均转义 Markdown。`Lit ["1.2"]` 表示明确的静态文字。null 显示为破折号。
 

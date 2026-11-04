@@ -14,7 +14,7 @@ export type Reference = { source:string; binding:string; path:(string|number)[];
 export type Attribute = { kind:'text'; value:string; span:Span; valueStart?:number } | ({kind:'reference'} & Reference);
 export type Element = { selfClosing:boolean;name:string; attrs:Map<string,Attribute>; children:(Element|string)[]; span:Span };
 export type DraftAsset = { title?:string;format?:'markdown';program?:ReportProgram;figurePlacement?:'before-caption';name:string;language:'sql'|'report';source:string;span:Span;body:Position;fragment?:SourceFragment;references?:Record<string,{kind:'value'|'figure'|'report';span:Span;code?:string}> };
-export type DraftDocument = {syntax?:'dom';authoring?:DariAuthoring;title?:string;notes?:string;nodes:PipelineNode[];assets:Map<string,DraftAsset>;pipeline:Span;answers:string[];file:string;diagnostics?:SourceDiagnostic[]};
+export type DraftDocument = {syntax?:'dom';declarations?:Map<string,'data'|'figure'|'report'|'answer'>;authoring?:DariAuthoring;title?:string;notes?:string;nodes:PipelineNode[];assets:Map<string,DraftAsset>;pipeline:Span;answers:string[];file:string;diagnostics?:SourceDiagnostic[]};
 
 export function parseDraft(source:string,file='draft.dari'):DraftDocument {
   const document=parseDraftForValidation(source,file);
@@ -353,5 +353,5 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
   }
   unit=undefined;stage='container';
   if(nodes.length>1024||assets.size>128)fail('DARI exceeds node or asset budget',0);
-  return {...(prepared?{syntax:'dom' as const}:{}),authoring,title,notes,nodes,assets,pipeline:original.span(pipelineFragment.start,pipelineFragment.end),answers,file,...(diagnostics.length?{diagnostics}:{})};
+  return {...(prepared?{syntax:'dom' as const,declarations:prepared.declarations}:{}),authoring,title,notes,nodes,assets,pipeline:original.span(pipelineFragment.start,pipelineFragment.end),answers,file,...(diagnostics.length?{diagnostics}:{})};
 }

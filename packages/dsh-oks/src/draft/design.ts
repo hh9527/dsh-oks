@@ -1,3 +1,4 @@
+import {isRecord} from '../host.ts';
 import {UNKNOWN,TYPED,known as isKnown,unbox,isBox,typeOf,box,show,common,scalar,type Ty} from './typed-types.ts';
 import { projectionError } from './projection.ts';
 import { SourceFile, sourceExcerpt } from './source.ts';
@@ -45,6 +46,13 @@ export function parseExecutableDesign(source: string, file?: string): DraftDocum
 
 const unknown=(v:unknown)=>!isKnown(v);
 
+export type CheckedBinding = {
+  name: string;
+  kind: 'data'|'figure'|'report'|'answer';
+  checked: boolean;
+  shape?: Ty | {kind:'figure';data:Ty;nodes?:Ty};
+};
+
 /** Evaluate only design values. Never acquire rows or execute postprocessing on invented rows. */
 export async function checkDesign(source: string, file: string, backend: DraftBackend, signal?: AbortSignal, options:{answer?:string;requireSelection?:boolean}={}) {
   const diagnostics: SourceDiagnostic[] = [];
@@ -52,6 +60,8 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
   let reports:string[]=[]; let answer:string|undefined;
   const queries: {binding:string;at:Expr['span']['start'];columns?:unknown;type?:string;guard?:string;result:object}[] = [];
   const types:Record<string,string>={};
+  const checkedBindings:CheckedBinding[]=[];
+  const resolved=new Set<string>();
   const deferred: {binding:string;operator:string;at:Expr['span']['start'];reason:string}[] = [];
   const sourceFile=new SourceFile(file,source);
   const addError = (error: unknown, span: Expr['span'],stage='validation') => {
@@ -61,7 +71,13 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
   };
   let doc: DraftDocument;
   try { doc = parseAnalysisDesign(source,file); }
-  catch (error) { if (!(error instanceof DraftSyntaxError)) throw error; addError(error,error.span,'syntax'); return {ok:false,status:'invalid' as const,queries,types,deferred,diagnostics,warnings,reports,...(answer===undefined?{}:{answer}),execution:'not performed' as const}; }
+  catch (error) { if (!(error instanceof DraftSyntaxError)) throw error; addError(error,error.span,'syntax'); return {ok:false,status:'invalid' as const,queries,types,checkedBindings,deferred,diagnostics,warnings,reports,...(answer===undefined?{}:{answer}),execution:'not performed' as const}; }
+  if(doc.declarations)for(const [name,kind] of doc.declarations)checkedBindings.push({name,kind,checked:false});
+  else for(const {statement,internal} of doc.nodes)if(!internal&&statement.kind==='binding'){
+    const e=statement.value;
+    const kind=e.kind==='call'&&e.operator==='render_figure'?'figure':e.kind==='call'&&e.operator==='render_report'?'report':'data';
+    checkedBindings.push({name:statement.name,kind,checked:false});
+  }
   reports=doc.answers.filter(name=>doc.assets.get('@report/'+name)?.format!=='markdown');
   const hasAnswer=doc.assets.get('@report/answer')?.format==='markdown';
   if(options.answer!==undefined){
@@ -82,7 +98,8 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
   const analyze=backend.analyze;
   if(!analyze)throw new Error('Backend does not provide an analysis implementation');
   const bindings = new Map<string,unknown>();
-  for (const {statement,internal} of doc.nodes) {
+  for (const {statement,internal,bindings:dependencies} of doc.nodes) {
+    let figureShape:Extract<CheckedBinding['shape'],{kind:'figure'}>|undefined;
     const binding = statement.kind === 'binding' ? statement.name : 'output';
     type Environment=Map<string,unknown>;
     const evaluate = async (e: Expr,locals:Environment=new Map(),variants:Environment[]=[new Map()]): Promise<unknown> => {
@@ -147,6 +164,9 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
       }
       const errors=backend.checkCall?.(ctx,value=>!unknown(value))??[];
       if(errors.length){diagnostics.push(...errors);return UNKNOWN;}
+      if(e.operator==='render_figure'&&isRecord(args[1])){
+        try{figureShape={kind:'figure',data:typeOf(args[1].data),...(args[1].nodes===undefined?{}:{nodes:typeOf(args[1].nodes)})};}catch{}
+      }
       if(e.operator==='sql'){
         let computed;
         try{computed=await analyze(ctx);}catch(error){
@@ -171,11 +191,25 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
       if(computed.logicalType&&isKnown(computed.data))return box(computed.logicalType as Ty,computed.data);
       return computed.data;
     };
-    try { const value = await evaluate(statement.value); if (statement.kind === 'binding'){bindings.set(binding,value);try{if(!internal)types[binding]=show(typeOf(value));}catch{}} }
+    try {
+      const before=diagnostics.length;
+      const value=await evaluate(statement.value);
+      if(statement.kind==='binding'){
+        bindings.set(binding,value);
+        let shape:CheckedBinding['shape'];
+        const result=checkedBindings.find(n=>n.name===binding);
+        const presentation=statement.value.kind==='call'&&statement.value.operator==='render_report';
+        try{shape=figureShape??typeOf(value);if(!internal&&shape.kind!=='figure')types[binding]=show(shape);}catch{}
+        const localError=diagnostics.some(d=>d.asset===binding || (d.span.start.offset>=statement.span.start.offset&&d.span.start.offset<statement.span.end.offset));
+        const checked=diagnostics.length===before&&!localError&&dependencies.every(name=>resolved.has(name))&&(shape!==undefined||presentation);
+        if(checked)resolved.add(binding);
+        if(result){result.checked=checked;if(shape!==undefined)result.shape=shape;}
+      }
+    }
     catch (error) { addError(error,statement.span); if (statement.kind === 'binding') bindings.set(binding,UNKNOWN); }
   }
   const unique = [...new Map(diagnostics.map(d=>[`${d.span.start.offset}:${d.message}`,d])).values()];
   const unresolved = deferred.some(d=>d.operator==='query');
-  return {ok:unique.length===0 && !unresolved,status:unique.length?'invalid':unresolved?'incomplete':'checked',queries,types,deferred,diagnostics:unique.filter(d=>d.message!=='Upstream type is unavailable'),warnings,reports,...(answer===undefined?{}:{answer}),
+  return {ok:unique.length===0 && !unresolved,status:unique.length?'invalid':unresolved?'incomplete':'checked',queries,types,checkedBindings,deferred,diagnostics:unique.filter(d=>d.message!=='Upstream type is unavailable'),warnings,reports,...(answer===undefined?{}:{answer}),
     execution:'not performed',runtimeChecks:['Remote result schema and cell types, table completeness and resource budgets','select_one cardinality guards that could not be statically proven','Actual figure column values and rendering','Runtime provenance chains and rendered report assembly']};
 }

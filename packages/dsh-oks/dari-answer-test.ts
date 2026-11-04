@@ -30,7 +30,7 @@ report file := Report [p [value(ref=summary?.n)]];
 `;
 try{
  writeFileSync(join(root,'answer.dari'),source);
- const checked=await call('dari_check',{src:'answer.dari'});assert.equal(checked.ok,true,JSON.stringify(checked));assert.equal(executions,0);assert.equal(checked.answer,'answer');assert.deepEqual(checked.reports,['file']);
+ const checked=await call('dari_check',{src:'answer.dari'});assert.equal(checked.ok,true,JSON.stringify(checked));assert.equal(executions,0);assert.match(checked.text,/- answer: checked/);assert.match(checked.text,/- report.file: checked/);
  const result=await call('dari_resolve',{src:'answer.dari',answer:true},plain);
  assert.equal(result.ok,true,JSON.stringify(result));assert.equal(files,0);
  const text=result.answer.embedded;
@@ -77,7 +77,7 @@ answer := Answer [h2 ["明细"],UseFigure(ref=details,caption="统计明细")];`
   ['value(ref=summary?.n) ["ignored"]',/must be empty/],
  ] as const){
   writeFileSync(join(root,'invalid.dari'),source.replace('h2 ["资源概况"]',node));
-  const bad=await call('dari_check',{src:'invalid.dari'});assert.equal(bad.ok,false,node);assert(bad.diagnostics.some((d:any)=>pattern.test(d.message)),JSON.stringify(bad));
+  const bad=await call('dari_check',{src:'invalid.dari'});assert.equal(bad.ok,false,node);assert(pattern.test(bad.text),JSON.stringify(bad));
  }
  console.log('Answer: typed zero-query checks, scalar provenance, Markdown escaping, no-attachment text, chart embedding and selection passed');
 }finally{drafts.dispose();plain.dispose();rmSync(root,{recursive:true,force:true});}

@@ -9,9 +9,9 @@
 1. 理解用户意图，明确要回答的问题
 2. 将用户原始问题（含明确约束）交给 ka_ask，获得领域词汇和相关知识点建议，根据自然语言阅读清单选择节点 ID 与词汇，组织 oks_cap 的 anchors 参数 获得联合索引与连接候选
 3. 从 cap 的索引和词汇命中中选择相关 ID，用 oks_info 批量读取精确知识点；检查时间、聚合、身份与连接的适用条件
-4. 建立一份 `.dari` 分析稿，一次设计所需的多个 `query(...)`。用 dari_check 检查并获得返回列及类型，修正查询诊断
-5. 根据列类型用有类型的 select/select_one 设计后处理流程和需要的图表映射（语法见 oks://help/pipeline.md），再用 dari_check 检查，完成分析稿
-6. 建立唯一的 `answer := Answer [...]`，通过 value(ref=...) 引用事实、UseFigure 嵌入图表、UseReport 引用报告。调用 `dari_resolve({src,answer:true})`，将返回的 answer.embedded Markdown 原样贴入回答；开启 requireRunApproval 时由宿主申请本次运行批准
+4. 建立一份 `.dari` 分析稿，一次设计所需的多个 `query(...)`。用 dari_check 检查，按需 inspect 相关 data 的返回列及类型，修正查询诊断
+5. 根据列类型用有类型的 select/select_one 设计后处理流程和需要的图表映射（语法见 oks://help/pipeline.md），再用 dari_check 检查，完成分析稿；类型指纹未变时沿用已读形状，无需重复 inspect
+6. 建立唯一的 `answer := Answer [...]`，通过 value(ref=...) 引用事实、UseFigure 嵌入图表、UseReport 引用报告。调用 `dari_resolve({src,answer:true})`，将返回的 `<!-- answer -->` 块中的 Markdown 原样贴入回答，略去状态头和分隔注释；开启 requireRunApproval 时由宿主申请本次运行批准
 
 知识节点 ID 只用于知识寻址，不直接填入 query。query 的 entity、dimension、measure、relation 使用 oks_info 返回的模型短名称；例如知识地址 datasets/device_kpi/dimensions/device_kpi_ts_raw 对应 dimension:"device_kpi_ts_raw"。不要自行拆解知识地址推导名称。nodes[].id 是本次查询自行定义的节点别名，供 root、node、from、to 引用。
 

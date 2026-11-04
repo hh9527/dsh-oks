@@ -26,7 +26,7 @@ let now=originalNow();Date.now=()=>now;
 try {
  writeFileSync(absolute,source);
  let checked=await call('dari_check',{src});assert.equal(checked.ok,true,JSON.stringify(checked));assert.equal(executions,0);
- await assert.rejects(call('dari_check',{src,answer:'answer'}),/Expected only src/);
+ await assert.rejects(call('dari_check',{src,answer:'answer'}),/Expected only src, inspect/);
  let first=await call('dari_resolve',{answer:false,src,data:['facts','ctx','summary'],figures:['chart'],reports:['answer']});
  assert.equal(first.ok,true,JSON.stringify(first));assert.equal(executions,1);
  assert.deepEqual(first.data.facts.rows,[{n:1}]);assert.equal(first.data.ctx.utc.epochMillis,now);
