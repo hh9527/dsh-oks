@@ -132,11 +132,11 @@ export function createKnowledgeConsultation(ka: KaRuntime, va: KaRuntime): KaRun
 
 ${query}
 
-## 词汇对照
+## 词汇参考
 
 ${vocabulary.answer}`, signal);
         return { ...navigation, readingList: navigation.answer, vocabulary: vocabulary.answer,
-          answer: `## 阅读清单\n\n${navigation.answer}\n\n## 词汇对照\n\n${vocabulary.answer}` };
+          answer: `## 阅读清单\n\n${navigation.answer}\n\n## 词汇参考\n\n${vocabulary.answer}` };
       });
     },
   };

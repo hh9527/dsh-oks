@@ -2,11 +2,11 @@
 
 ## 助手与词汇
 
-将用户原始问题及明确约束交给 ka_ask。工具先向独立持有完整词典的 VA 对齐词汇，再把原始问题和 VA 回答交给持有关系地图的 KA。最终返回两部分：KA 的阅读清单和 VA 原始词汇对照，均为自然语言。
+将用户原始问题及明确约束交给 ka_ask。工具先向独立持有完整词典的 VA 对齐词汇，再把原始问题和 VA 回答交给持有关系地图的 KA。最终返回两部分：KA 的阅读清单和 VA 原始词汇参考，均为自然语言。
 
 ## 联合发现
 
-根据 KA 阅读清单选择 Entity/Dataset 知识节点 ID，并从 ka_ask 的词汇对照中逐字选择领域词汇（不直接使用用户原话或自行改写），组织 anchors 参数交给 `oks_cap({anchors:[{id:"datasets/current_alarm",terms:["alarm_severity"]},{id:"datasets/tenant",terms:["tenant_name"]}]})`。
+根据 KA 阅读清单选择 Entity/Dataset 知识节点 ID，并从 ka_ask 的词汇参考中逐字选择领域词汇（不直接使用用户原话或自行改写），组织 anchors 参数交给 `oks_cap({anchors:[{id:"datasets/current_alarm",terms:["alarm_severity"]},{id:"datasets/tenant",terms:["tenant_name"]}]})`。
 
 cap 先发现路径，再裁剪返回结果：锚点、完整路径节点和关系始终保留，外延只保留词汇命中的成员及必要类型 ID，中间节点不全量展开成员。未提供词汇或零命中时不回退全量成员。terms 不影响路径搜索的子图。index 按类别列出保留的精确 ID；anchors.matches 给出词汇到 ID 的证据，unresolved_terms 标记未命中的词。索引是候选清单，只读当前问题所需的点。
 

@@ -109,7 +109,7 @@ test('KA 只装配关系地图，VA 词汇独立，工具清单为空',async()=>
  parent.ctx.tools.restrict=(v:any)=>{allowed=v.allow};
  const result=await assemble({},{agent:parent},async()=>({sections:[]}));
  assert.deepEqual(allowed,[]);
- assert.match(result.sections[0].text,/device/);assert.match(result.sections[0].text,/词汇对照/);
+ assert.match(result.sections[0].text,/device/);assert.match(result.sections[0].text,/词汇参考/);
  assert(!result.sections[0].text.includes('VOCABULARY_ONLY'));
 });
 
@@ -173,11 +173,11 @@ test('固定先 VA 后 KA，同问合并，返回两份原始回答',async()=>{
 
 CPU 原始约束
 
-## 词汇对照
+## 词汇参考
 
 ${vocabulary}`);assert.equal(calls[1][4],signal);
  assert.equal(result.vocabulary,vocabulary);assert.equal(result.readingList,'datasets/kpi：指标');
- assert.equal(renderAsk({},result)[0].text,`## 阅读清单\n\ndatasets/kpi：指标\n\n## 词汇对照\n\n${vocabulary}`);
+ assert.equal(renderAsk({},result)[0].text,`## 阅读清单\n\ndatasets/kpi：指标\n\n## 词汇参考\n\n${vocabulary}`);
 });
 test('VA 失败或阶段间取消时不调用 KA',async()=>{
  let called=false;const ka={ask:async()=>{called=true;throw Error('unexpected')}};
