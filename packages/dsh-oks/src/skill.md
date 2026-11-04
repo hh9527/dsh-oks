@@ -8,7 +8,7 @@
 
 每轮问题尽量只调用两次 `dari_resolve`：第一次一次性获取报告及形成观点所需的事实（显式选择 reports、data，使用 answer:false）；根据这些事实完善同一分析稿中的 Answer，第二次使用 answer:true 获取最终回答。简单问题可以一次完成，不必凑足两次。运行前的语法、类型和查询计划修正优先使用 `dari_check`；不要为了反复核对结果或细碎探索增加运行次数。确有运行错误或用户新增要求时再按需追加。
 
-- 把用户原始问题交给 ka_ask 获得领域词汇和知识导航，主 agent 自主使用 oks_search 找关联知识点，oks_cap / oks_info 读取详细知识
+- 把用户原始问题交给 ka_ask；从“阅读清单”选择 Entity/Dataset 锚点，从“词汇参考”逐字选择领域词汇填入 oks_cap 的 terms，不使用用户原话或自行改写；按需用 oks_search 补充定位，再用 oks_info 读取精确知识
 - 知识节点 ID 用于知识寻址；query 的 entity、dimension、measure、relation 使用 oks_info 返回的模型短名称，不使用知识地址。nodes[].id 是查询内自定义别名
 - 使用宿主内置文件工具 编辑一份 `.dari` 分析稿
 - dari_check 检查分析稿，返回查询列类型、诊断和待运行期检查的部分；不会执行 SQL
