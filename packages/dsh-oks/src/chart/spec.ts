@@ -55,7 +55,7 @@ export const chartTitle = (spec: ChartSpec): string => {
 const parseLayout = (raw: unknown): { layout: LayoutOverrides } | { error: string } => {
   if (raw === undefined) return { layout: {} };
   if (!isRecord(raw)) {
-    return { error: 'spec.layout 必须是对象：labelFont / titleFont / height / rowHeight / slantTicks 都可选' };
+    return { error: 'spec.layout 必须是对象：labelFont / titleFont / slantTicks / tickCount 都可选' };
   }
   const record = raw as Record<string, unknown>;
   const layout: LayoutOverrides = {};
@@ -63,8 +63,6 @@ const parseLayout = (raw: unknown): { layout: LayoutOverrides } | { error: strin
     // 正文字号不需要跟着标题放到那么大：18pt 在 720pt 页宽里已经把绘图区压得很窄了。
     ['labelFont', 8, 18],
     ['titleFont', 8, 32],
-    ['height', 200, 2000],
-    ['rowHeight', 16, 80],
     ['tickCount', 3, 12],
   ];
   for (const [name, min, max] of bounds) {
@@ -191,7 +189,7 @@ const parseMarks = (raw: unknown, kind: ChartKind): { marks: MarkLine[] } | { er
 /** 顶层与嵌套对象的键名清单：错误层级诊断指向正确路径。 */
 const STYLE_KEYS = ['sort', 'labels', 'colors'];
 const SPEC_KEYS = ['kind', 'title', 'x', 'value', 'series', 'xType', 'xLabel', 'valueLabel', 'unit', 'stack', 'size', 'second', 'marks', 'bins', 'donut', 'connectNulls', 'entityColor', 'style', 'layout'];
-const LAYOUT_KEYS = ['labelFont', 'titleFont', 'height', 'rowHeight', 'slantTicks', 'tickCount'];
+const LAYOUT_KEYS = ['labelFont', 'titleFont', 'slantTicks', 'tickCount'];
 
 /** Reject misplaced fields and point to their accepted path before normalizing values. */
 const unknownFields = (record: Record<string, unknown>, keys: readonly string[], path: string): string | null => {

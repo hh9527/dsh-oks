@@ -1,7 +1,6 @@
 // 出图与报告的公共件：色板、取数与排版规则。
 //
-// 十种图元（bar / line / column / pie / area / scatter / histogram / box / heatmap / radar）
-// 都建在这些之上，语义（沿用数据顺序、缺失组合留空、来源标识、字号随数据密度缩放）在这里统一保证。
+// 所有图元共用配色、字号单位与外围排版规则。
 
 export type Row = Record<string, unknown>;
 
@@ -96,32 +95,39 @@ export const distinct = (rows: readonly Row[], column: string): string[] => {
   return seen;
 };
 
-/** 图上的字号档。标题固定；标签随数据密度在有限范围内缩放——
- *  数据量大时小一点确实更清楚，但再小就看不清了，所以下限是 9pt。 */
+/** 字号是排版单位；不再根据文字内容或数据密度缩小字体。 */
 export const TITLE_FONT = 16;
-export const LABEL_FONT_MIN = 9;
-export const LABEL_FONT_MAX = 12;
+export const LABEL_FONT = 12;
 
-/** 估算一段文本的宽度（pt）：中日韩字符按一个字宽、其余按 0.55 字宽，再乘字号。 */
-const estimateTextWidth = (text: string, fontSize: number): number =>
-  [...text].reduce((sum, char) => sum + (/[\u2e80-\u9fff\uff00-\uffef]/.test(char) ? 1 : 0.55), 0) * fontSize;
+/** 固定类别槽位；只看类别数量，不测量具体文字。 */
+export const needsSlantedTicks = (categories: readonly string[], font = LABEL_FONT): boolean =>
+  categories.length > Math.floor(PLOT_WIDTH / (font * 6));
 
-/** 按数据密度选标签字号：放得下就用上限，挤就按比例往下调，但不低于下限。 */
-export const labelFontSize = (categories: readonly string[]): number => {
-  if (categories.length === 0) return LABEL_FONT_MAX;
-  const slot = PLOT_WIDTH / categories.length;
-  const widest = Math.max(...categories.map((category) => estimateTextWidth(category, LABEL_FONT_MAX)));
-  if (widest <= slot * 0.8) return LABEL_FONT_MAX;
-  const needed = LABEL_FONT_MAX * ((slot * 0.8) / widest);
-  return Math.max(LABEL_FONT_MIN, Math.min(LABEL_FONT_MAX, Math.round(needed * 10) / 10));
-};
+/** 所有图元共用的字号单位。 */
+export const fontUnits = (font: number) => ({
+  line: Math.ceil(font * 1.5),
+  row: Math.ceil(font * 2.5),
+  bar: Math.ceil(font * 1.5),
+  gap: Math.ceil(font),
+  body: Math.ceil(font * 20),
+});
 
-/** 类别标签会不会挤在一起：最长标签超过每组可用宽度的八成时，就该斜排。 */
-export const needsSlantedTicks = (categories: readonly string[]): boolean => {
-  if (categories.length === 0) return false;
-  const slot = PLOT_WIDTH / categories.length;
-  const widest = Math.max(...categories.map((category) => estimateTextWidth(category, 11)));
-  return widest > slot * 0.8;
+/** 按固定字符槽换行，不进行字体测量；全角/半角采用相同槽宽。 */
+export const wrapSlots = (text: string, capacity: number): string => text.split('\n').flatMap(line => {
+  const chars = [...line];
+  return chars.length === 0 ? [''] : Array.from({length: Math.ceil(chars.length / capacity)}, (_, i) => chars.slice(i * capacity, (i + 1) * capacity).join(''));
+}).join('\n');
+
+/** 标题和图例占独立行，绘图区只使用剩余的独立空间。 */
+export const chartFrame = (title: string | null, names: readonly string[], font: number, titleFont: number) => {
+  const u = fontUnits(font);
+  const titleText = title === null ? null : wrapSlots(title, Math.max(1, Math.floor((PAGE_WIDTH - 2 * u.gap) / titleFont)));
+  const titleHeight = titleText === null ? 0 : titleText.split('\n').length * Math.ceil(titleFont * 1.5) + u.gap;
+  // 每个图例项固定为 12 个字槽 + 图标 + 间距，保证预留量不依赖文字宽度。
+  const legendColumns = Math.max(1, Math.floor((PAGE_WIDTH - 2 * u.gap) / (font * 15)));
+  const legendRows = Math.ceil(names.length / legendColumns);
+  const legendHeight = legendRows * u.row;
+  return {titleText, legendTop: u.gap + titleHeight, top: u.gap + titleHeight + legendHeight + u.gap, bottom: u.line * 3, legendColumns, ...u};
 };
 
 /** 第二个度量：让同一张图里再画一条线，并给它一个独立的右侧数值轴。
@@ -158,18 +164,12 @@ export interface StyleOverrides {
   colors?: string[];
 }
 
-/** agent 可以覆盖的排版参数（都放在 spec 里，全部可选）。
- *  不填就走默认规则——默认值本身也是"文字优先、宽度固定、高度按图元"那套。
- *  开放它们是为了让 agent 能按用户反馈当场调整，不必等插件改版。 */
+/** 可选排版参数；尺寸由字号与图表结构自动计算，不开放像素高度。 */
 export interface LayoutOverrides {
   /** 轴标签 / 刻度 / 图例的字号（px）。 */
   labelFont?: number;
   /** 标题字号（px）。 */
   titleFont?: number;
-  /** 图高（px）；横条图省略时按行数算。 */
-  height?: number;
-  /** 横条图每行的高度（px）。 */
-  rowHeight?: number;
   /** 标签是否斜排；不填时按"挤不挤"自动判断。 */
   slantTicks?: boolean;
   /** 数值轴的刻度数量（3–12）；不填用默认档。 */
@@ -180,7 +180,6 @@ export interface LayoutOverrides {
 export interface Layout {
   labelFont: number;
   titleFont: number;
-  height: number;
   slantTicks: boolean;
   tickCount: number;
 }
@@ -188,21 +187,15 @@ export interface Layout {
 /** 数值轴的默认刻度数量：密了像尺子、疏了看不出量级，六档在多数情况下刚好。 */
 export const DEFAULT_TICK_COUNT = 6;
 
-/** 横条图每行的默认高度：一行 = 正文 + 上下留白。 */
-export const ROW_HEIGHT = 26;
-
 /** 把"默认规则 + agent 覆盖"合成最终排版值。
- *  默认规则：字号随数据密度在 9–12 之间缩放；高度由各图元给基准（横条按行数算）。 */
+ *  默认规则：字号固定，几何尺寸由字号与结构数量推导。 */
 export const resolveLayout = (options: {
   categories: readonly string[];
   overrides: LayoutOverrides;
-  /** 该图元的默认高度（横条由调用方按行数算好再传进来）。 */
-  defaultHeight: number;
 }): Layout => ({
-  labelFont: options.overrides.labelFont ?? labelFontSize(options.categories),
-  titleFont: options.overrides.titleFont ?? TITLE_FONT,
-  height: options.overrides.height ?? options.defaultHeight,
-  slantTicks: options.overrides.slantTicks ?? needsSlantedTicks(options.categories),
+  labelFont: options.overrides.labelFont ?? LABEL_FONT,
+  titleFont: options.overrides.titleFont ?? Math.round((options.overrides.labelFont ?? LABEL_FONT) * TITLE_FONT / LABEL_FONT),
+  slantTicks: options.overrides.slantTicks ?? needsSlantedTicks(options.categories, options.overrides.labelFont ?? LABEL_FONT),
   tickCount: options.overrides.tickCount ?? DEFAULT_TICK_COUNT,
 });
 

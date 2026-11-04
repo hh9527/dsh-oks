@@ -8,6 +8,8 @@ class FixtureRuntime extends DraftRuntime { constructor(backend:ConstructorParam
 import { createDraftBackend } from './src/draft/backend.ts';
 import { buildSemanticGraph, resolveFact } from './src/knowledge-graph.ts';
 import { mountPresentationKnowledge, presentationExample } from './src/presentation-knowledge.ts';
+import { buildOption, CHART_WIDTH } from './src/chart/option.ts';
+import { renderEchartsSvg } from './src/chart/echarts.ts';
 import { CHART_KINDS, EXPRESSION_SUPPORT } from './src/chart/shared.ts';
 import { parseChartSpec, parseTableSpec } from './src/chart/spec.ts';
 import { createSelector } from './src/select.ts';
@@ -33,6 +35,15 @@ try {
  for(const [kind,fact]of Object.entries(kinds)){
   const example=fact.example;
   if(kind!=='table'){
+   const sizes=[8,12,18].map(labelFont=>{
+    const parsed=parseChartSpec({kind,...example.spec,layout:{labelFont}});
+    assert('spec' in parsed,kind);
+    const built=buildOption(example.rows,parsed.spec,example.nodes);
+    assert(Number.isFinite(built.height)&&built.height>0,kind);
+    assert.match(renderEchartsSvg(built.option,CHART_WIDTH,built.height),/<svg/);
+    return built.height;
+   });
+   assert(sizes[0]<sizes[1]&&sizes[1]<sizes[2],`${kind}: font-driven heights ${sizes}`);
    for(const [feature,value]of Object.entries(values)){
     const spec={kind,...example.spec};for(const key of Object.keys(values))delete spec[key];spec[feature]=value;
     assert.equal('spec' in parseChartSpec(spec),(EXPRESSION_SUPPORT[feature as keyof typeof EXPRESSION_SUPPORT] as readonly string[]).includes(kind),`${kind}.${feature}`);

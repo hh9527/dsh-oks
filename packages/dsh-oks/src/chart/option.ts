@@ -12,7 +12,9 @@ import {
   PAGE_WIDTH,
   SERIES_COLORS,
   distinct,
-  labelFontSize,
+  fontUnits,
+  chartFrame,
+  LABEL_FONT,
   needsSlantedTicks,
   rampAt,
   rampStops,
@@ -35,18 +37,17 @@ import type { EChartsCoreOption } from 'echarts/core';
 /** 图表的输出尺寸（px）。echarts 的 SSR 不做自适应，宽高必须在初始化时给定。 */
 export const CHART_WIDTH = PAGE_WIDTH;
 
-/** 测得的绘图区高度：竖条 / 折线 / 面积为固定值，横条按行数算，饼图为方框边长。
- *  `count` 是"有多少行要占高度"：横条与矩阵是一行一个类别（矩阵传的是分组数），其余传类别数。 */
-export const plotHeight = (kind: string, count: number, labelFont: number, overrides: LayoutOverrides): number => {
-  const rowHeight = Math.max(overrides.rowHeight ?? 26, Math.round(labelFont * 1.8));
-  const fallback = kind === 'bar' || kind === 'grouped_bar' ? Math.round(60 + count * rowHeight)
-    // 矩阵的行是分组，高度按行数走；再给标题与底部色标留出位置。
-    : kind === 'heatmap' ? Math.max(240, Math.round(104 + count * rowHeight))
-      : kind === 'pie' ? 300
-        : kind === 'radar' ? 420
-          : 340;
-  return overrides.height ?? fallback;
+/** 绘图区高度；标题、图例和坐标轴空间由调用方单独相加。 */
+export const plotHeight = (kind: string, count: number, labelFont: number): number => {
+  const u = fontUnits(labelFont);
+  if (kind === 'bar' || kind === 'grouped_bar' || kind === 'heatmap') return Math.max(1, count) * u.row;
+  return kind === 'radar' ? u.body * 1.3 : u.body;
 };
+
+const chartTitle = (frame: ReturnType<typeof chartFrame>, titleFont: number) => frame.titleText === null ? undefined : ({
+  text: frame.titleText, top: frame.gap, padding: 0, left: 'center' as const,
+  textStyle: {fontSize: titleFont, lineHeight: Math.ceil(titleFont * 1.5), fontWeight: 'bold' as const, color: '#1c2b3a'},
+});
 
 /** 一次渲染要用的全部输入。字段分三层：语义（这份数据是什么）、表达开关（怎么表达）、排版。 */
 export interface OptionInput {
@@ -176,12 +177,9 @@ export const buildOption = (
   // 桑基图：行是**边**——`x` 起点、`series` 终点、`value` 权重（不填时每条边计 1）。
   // 布局由 echarts 从 DAG 自己分层，作者不给层级。它与别的图元不同，先于通用分组处理。
   if (spec.kind === 'sankey') {
-    const layout = resolveLayout({ categories: [], overrides: spec.layout ?? {}, defaultHeight: 340 });
-    const title = spec.title === null ? undefined : {
-      text: spec.title,
-      left: 'center' as const,
-      textStyle: { fontSize: layout.titleFont, fontWeight: 'bold' as const, color: '#1c2b3a' },
-    };
+    const layout = resolveLayout({ categories: [], overrides: spec.layout ?? {} });
+    const frame = chartFrame(spec.title, [], layout.labelFont, layout.titleFont);
+    const title = chartTitle(frame, layout.titleFont);
     const weights = spec.style?.colors !== undefined && spec.style.colors.length > 0 ? spec.style.colors : SERIES_COLORS;
     const links = new Map<string, { source: string; target: string; value: number }>();
     const nodes: Array<{ name: string; itemStyle?: { color: string } }> = [];
@@ -205,7 +203,7 @@ export const buildOption = (
       }
     }
     if (links.size === 0) {
-      return { option: emptyOption(spec, layout), height: 240 };
+      return { option: emptyOption(spec, layout), height: frame.top + frame.body + frame.bottom };
     }
     return {
       option: {
@@ -216,10 +214,10 @@ export const buildOption = (
           links: [...links.values()],
           nodeAlign: 'justify',
           // 标题占着顶部中间，而中间层的节点标签正好落在那里——给它留出上边距，别叠在一起。
-          top: spec.title === null ? 10 : 48,
-          bottom: 26,
-          nodeWidth: 14,
-          nodeGap: 12,
+          top: frame.top,
+          bottom: frame.line,
+          nodeWidth: frame.bar,
+          nodeGap: frame.gap,
           // 标签压在色带上很难读：加一圈白色描边，色带再淡一点。
           label: {
             fontSize: layout.labelFont,
@@ -232,19 +230,16 @@ export const buildOption = (
         }],
       } as EChartsCoreOption,
       // 高度按节点数走：每个节点给它一个可读的竖直位置。
-      height: Math.max(240, Math.round(120 + nodes.length * Math.max(18, Math.round(layout.labelFont * 1.6)))),
+      height: frame.top + frame.row * Math.max(4, nodes.length) + frame.line,
     };
   }
 
   // 仪表盘：行是"一张小仪表"——`x` 名称、`value` 值。v1 限定比率型：值按 0–100 读，
   // 超出范围明确报错（宁可失败，也不画一张假装合格的图）。同样先于通用分组处理。
   if (spec.kind === 'gauge') {
-    const layout = resolveLayout({ categories: [], overrides: spec.layout ?? {}, defaultHeight: 340 });
-    const title = spec.title === null ? undefined : {
-      text: spec.title,
-      left: 'center' as const,
-      textStyle: { fontSize: layout.titleFont, fontWeight: 'bold' as const, color: '#1c2b3a' },
-    };
+    const layout = resolveLayout({ categories: [], overrides: spec.layout ?? {} });
+    const frame = chartFrame(spec.title, [], layout.labelFont, layout.titleFont);
+    const title = chartTitle(frame, layout.titleFont);
     const palette = spec.style?.colors !== undefined && spec.style.colors.length > 0 ? spec.style.colors : SERIES_COLORS;
     const items: Array<{ name: string; value: number }> = [];
     for (const row of rows) {
@@ -257,15 +252,15 @@ export const buildOption = (
       }
       items.push({ name, value });
     }
-    if (items.length === 0) return { option: emptyOption(spec, layout), height: 200 };
+    if (items.length === 0) return { option: emptyOption(spec, layout), height: frame.top + frame.body + frame.bottom };
     const perRow = Math.min(items.length, 4);
     const gaugeRows = Math.ceil(items.length / perRow);
     // 按**像素**摆位：画布宽度是固定的、高度是我们算的。用百分比时 echarts 会按 min(宽,高) 折算，
     // 一张仪表会缩成一小撮、四周全是空白（真机上就是这样）。
     const cellWidth = CHART_WIDTH / perRow;
-    const cellHeight = 140;
+    const cellHeight = fontUnits(layout.labelFont).line * 8;
     // 标题占着顶部中间——不给它留位置，第一行仪表就会被压住（真机上就是这样）。
-    const titleGap = spec.title === null ? 0 : 34;
+    const titleGap = frame.top;
     const radius = Math.min(cellWidth, cellHeight) * 0.4;
     const series = items.map((item, index) => {
       const column = index % perRow;
@@ -309,7 +304,7 @@ export const buildOption = (
     });
     return {
       option: { title, series } as EChartsCoreOption,
-      height: Math.max(160, titleGap + gaugeRows * cellHeight),
+      height: titleGap + gaugeRows * cellHeight + frame.gap,
     };
   }
 
@@ -317,14 +312,11 @@ export const buildOption = (
   // 布局默认**按 `depth` 列分层**（层号由 Pipeline 计算：拓扑深度、到中心的跳数、网络层级都成）；
   // 节点表同时给了 `x`/`y` 就用给的坐标。力引导不做——排障图两次打开必须一样，随机观感不适合。
   if (spec.kind === 'graph') {
-    const layout = resolveLayout({ categories: [], overrides: spec.layout ?? {}, defaultHeight: 340 });
-    const title = spec.title === null ? undefined : {
-      text: spec.title,
-      left: 'center' as const,
-      textStyle: { fontSize: layout.titleFont, fontWeight: 'bold' as const, color: '#1c2b3a' },
-    };
+    const layout = resolveLayout({ categories: [], overrides: spec.layout ?? {} });
+    const frame = chartFrame(spec.title, [], layout.labelFont, layout.titleFont);
+    const title = chartTitle(frame, layout.titleFont);
     const palette = spec.style?.colors !== undefined && spec.style.colors.length > 0 ? spec.style.colors : SERIES_COLORS;
-    const titleGap = spec.title === null ? 0 : 34;
+    const titleGap = frame.top;
     const parsed = (nodes ?? []).map((row) => ({
       id: toLabel(row['id']),
       label: toLabel(row['label'] === undefined ? row['id'] : row['label']),
@@ -353,7 +345,7 @@ export const buildOption = (
     // 坐标：给了 x/y 就用它；否则按 depth 分列、层内按出现顺序从上到下（确定、可复现）。
     const levels = [...new Set(all.filter((node) => node.given === null).map((node) => node.depth!))].sort((a, b) => a - b);
     const columnGap = Math.max(120, Math.round((CHART_WIDTH - 180) / Math.max(levels.length - 1, 1)));
-    const rowGap = Math.max(30, Math.round(layout.labelFont * 2.4));
+    const rowGap = frame.row * 2;
     const seenInLevel = new Map<number, number>();
     const placed = new Map<string, { x: number; y: number }>();
     for (const node of all) {
@@ -379,7 +371,7 @@ export const buildOption = (
         name: node.id,
         x: placed.get(node.id)!.x,
         y: placed.get(node.id)!.y,
-        symbolSize: focusNodes.has(node.id) ? 26 : anyFocus ? 12 : 18,
+        symbolSize: focusNodes.has(node.id) ? frame.row : anyFocus ? layout.labelFont : frame.bar,
         itemStyle: {
           color: anyFocus && !focusNodes.has(node.id)
             ? '#c8d2dc'
@@ -416,12 +408,13 @@ export const buildOption = (
         });
       }
     }
-    if (graphLinks.size === 0) return { option: emptyOption(spec, layout), height: 240 };
+    if (graphLinks.size === 0) return { option: emptyOption(spec, layout), height: frame.top + frame.body + frame.bottom };
     return {
       option: {
         title,
         series: [{
           type: 'graph',
+          top: frame.top, bottom: frame.line, left: frame.gap, right: frame.gap,
           layout: 'none',
           data: graphNodes,
           links: [...graphLinks.values()].map((link, index) => ({
@@ -448,41 +441,37 @@ export const buildOption = (
           label: { fontSize: layout.labelFont, color: '#1c2b3a' },
         }],
       } as EChartsCoreOption,
-      height: Math.max(240, titleGap + 80 + deepest * rowGap),
+      height: titleGap + frame.line * 4 + deepest * rowGap,
     };
   }
 
   const { categories, seriesNames, points } = group(rows, spec);
-  const labelFont = spec.layout?.labelFont ?? labelFontSize(categories);
+  const labelFont = spec.layout?.labelFont ?? LABEL_FONT;
   const layout = resolveLayout({
     categories,
     overrides: spec.layout ?? {},
-    defaultHeight: 340,
   });
-  const height = plotHeight(
-    spec.kind,
-    // 占高度的"行"数：矩阵的行是分组（横轴才是类别）；横条图是一行一条，
-    // 分组时每个类别里有 series 条，行数要乘开——不乘的话每根只有几个像素高，图不可读。
-    spec.kind === 'heatmap' ? seriesNames.length
-      : spec.kind === 'bar' ? categories.length * Math.max(seriesNames.length, 1)
-        : categories.length,
-    labelFont,
-    spec.layout ?? {},
-  );
-
+  const hasLegend = (grouped || seriesNames.length > 1) && spec.kind !== 'pie' && spec.kind !== 'heatmap';
+  const frame = chartFrame(spec.title, hasLegend ? seriesNames : [], labelFont, layout.titleFont);
+  const horizontal = spec.kind === 'bar';
+  const bodyHeight = plotHeight(spec.kind,
+    spec.kind === 'heatmap' ? seriesNames.length : categories.length, labelFont)
+    + (horizontal && grouped ? categories.length * (Math.max(1, seriesNames.length) - 1) * frame.row + Math.max(0, categories.length - 1) * frame.gap : 0);
+  const bottom = spec.kind === 'heatmap' ? frame.bottom + frame.line * 2
+    : !horizontal && layout.slantTicks ? frame.bottom + frame.line * 3 : frame.bottom;
+  const height = Math.ceil(frame.top + bodyHeight + bottom);
   const hasValues = [...points.values()].some((bucket) => bucket.size > 0);
   if (!hasValues) return { option: emptyOption(spec, layout), height };
-
-  const title = spec.title === null
-    ? undefined
-    : {
-      text: spec.title,
-      left: 'center' as const,
-      textStyle: { fontSize: layout.titleFont, fontWeight: 'bold' as const, color: '#1c2b3a' },
-    };
-  const legend = (grouped || seriesNames.length > 1) && spec.kind !== 'pie'
-    ? { top: spec.title === null ? 0 : 34, right: 0, itemWidth: 12, itemHeight: 10, textStyle: { fontSize: labelFont, color: '#1c2b3a' } }
-    : undefined;
+  const title = chartTitle(frame, layout.titleFont);
+  const legend = !hasLegend ? undefined : {
+    top: frame.legendTop, left: frame.gap, width: CHART_WIDTH - 2 * frame.gap,
+    itemWidth: labelFont, itemHeight: labelFont, itemGap: labelFont,
+    textStyle: {fontSize: labelFont, lineHeight: frame.line, width: labelFont * 12, overflow: 'truncate' as const, color: '#1c2b3a'},
+  };
+  const grid = {
+    left: labelFont * (horizontal || spec.kind === 'heatmap' ? 10 : 6),
+    right: labelFont * 3, top: frame.top, bottom, containLabel: false, outerBoundsMode: 'none' as const,
+  };
 
   // 表达开关：色板可被覆盖，数值标签按需打开，堆叠只在 column / area 上有意义。
   const palette = spec.style?.colors !== undefined && spec.style.colors.length > 0 ? spec.style.colors : SERIES_COLORS;
@@ -559,7 +548,7 @@ export const buildOption = (
       height,
       option: {
         title,
-        grid: { left: 64, right: 28, top: spec.title === null ? 20 : 52, bottom: 48, containLabel: false },
+        grid,
         xAxis: { ...(valueAxis(axisName(spec.xLabel, null), 30, true) as object), axisLine: { show: true, lineStyle: { color: '#d8e0ea' } } },
         yAxis: valueAxis(axisName(spec.valueLabel, spec.unit), 52, true),
         series: [{
@@ -592,8 +581,8 @@ export const buildOption = (
         series: [{
           type: 'pie',
           // 环形：中心留白（`donut` 开关，只有饼图有这个形状）。
-          radius: [spec.donut === true ? '45%' : '0%', '68%'],
-          center: ['50%', spec.title === null ? '52%' : '56%'],
+          radius: [spec.donut === true ? bodyHeight * 0.25 : 0, bodyHeight * 0.38],
+          center: [CHART_WIDTH / 2, frame.top + bodyHeight / 2],
           data,
           label: { fontSize: labelFont, color: '#1c2b3a' },
           labelLine: { length: 10, length2: 10 },
@@ -602,19 +591,20 @@ export const buildOption = (
     };
   }
 
-  const horizontal = spec.kind === 'bar';
   const categoryAxis = {
     type: 'category' as const,
     data: categories,
     name: axisName(spec.xLabel, null),
     nameLocation: 'middle' as const,
-    nameGap: horizontal ? 30 : 40,
+    nameGap: frame.line * (horizontal ? 6 : 2),
     nameTextStyle: { fontSize: labelFont, color: '#5b6b7c' },
     axisLabel: {
       fontSize: labelFont,
       color: '#1c2b3a',
       // 类别在横轴上、又挤的时候斜排；横条的类别在纵轴上，保持水平。
-      rotate: !horizontal && needsSlantedTicks(categories) ? 45 : 0,
+      rotate: !horizontal && layout.slantTicks ? 45 : 0,
+      width: labelFont * (horizontal ? 8 : 6),
+      overflow: 'truncate' as const,
       ...(horizontal ? { interval: 0, hideOverlap: false } : { hideOverlap: true }),
     },
     axisLine: { lineStyle: { color: '#d8e0ea' } },
@@ -641,7 +631,7 @@ export const buildOption = (
     type: 'value' as const,
     name: axisName(spec.valueLabel, spec.unit),
     nameLocation: 'middle' as const,
-    nameGap: 48,
+    nameGap: frame.line * 2,
     nameTextStyle: { fontSize: labelFont, color: '#5b6b7c' },
     // 百分比堆叠时数据已经归一化到 100，轴上标成百分比。
     axisLabel: stack === 'percent'
@@ -667,14 +657,6 @@ export const buildOption = (
     axisLine: { show: false },
     axisTick: { show: false },
     splitLine: { lineStyle: { color: '#eef2f7' } },
-  };
-
-  const grid = {
-    left: horizontal ? 96 : 62,
-    right: 24,
-    top: spec.title === null ? (legend === undefined ? 16 : 30) : (legend === undefined ? 50 : 66),
-    bottom: horizontal ? 42 : 46,
-    containLabel: false,
   };
 
   const colorAt = colorResolver(seriesNames);
@@ -719,7 +701,7 @@ export const buildOption = (
         areaStyle: spec.kind === 'area' ? { color, opacity: stack === undefined ? 0.18 : 0.7 } : undefined,
       };
     }
-    return { ...base, type: 'bar' as const, barMaxWidth: horizontal ? 18 : 28, barGap: stack === undefined ? '12%' : '0%' };
+    return { ...base, type: 'bar' as const, barWidth: horizontal ? frame.bar : undefined, barMaxWidth: frame.bar * (horizontal ? 1 : 1.5), barGap: stack === undefined ? '12%' : '0%' };
   });
 
   // x 轴：横条图是数值轴（第二维度就挂在它旁边），其余是类别轴或时间轴。
@@ -752,7 +734,7 @@ export const buildOption = (
             color: '#1c2b3a',
             interval: 0,
             // 箱标签本来就长，斜排比挤成一团好读。
-            rotate: needsSlantedTicks(labels) ? 45 : 0,
+            rotate: needsSlantedTicks(labels, labelFont) ? 45 : 0,
           },
         },
         yAxis: { ...measureAxis, name: axisName(spec.valueLabel ?? '计数', spec.unit) },
@@ -762,7 +744,7 @@ export const buildOption = (
           data: bins.map((bin) => bin.count),
           itemStyle: { color: pick(0) },
           barCategoryGap: '2%',
-          barMaxWidth: 40,
+          barMaxWidth: frame.bar * 2,
           label: showLabels
             ? { show: true, position: 'top' as const, fontSize: Math.max(9, labelFont - 2), color: '#3d4d5c' }
             : undefined,
@@ -852,9 +834,9 @@ export const buildOption = (
       option: {
         title,
         // 纵轴是分组（可能是设备名或日期），左边留得比柱状图宽一些；底部留给颜色标尺。
-        grid: { ...grid, left: 118, top: spec.title === null ? 24 : 56, bottom: 62 },
+        grid,
         xAxis: { ...categoryAxis, data: categories },
-        yAxis: { ...verticalCategoryAxis, data: yNames, axisLabel: { fontSize: labelFont, color: '#1c2b3a', rotate: 0 } },
+        yAxis: { ...verticalCategoryAxis, data: yNames, axisLabel: { fontSize: labelFont, color: '#1c2b3a', rotate: 0, interval: 0, hideOverlap: false, width: labelFont * 8, overflow: 'truncate' as const } },
         visualMap: {
           type: 'continuous' as const,
           min: floor,
@@ -912,8 +894,8 @@ export const buildOption = (
         title,
         legend,
         radar: {
-          center: ['50%', spec.title === null ? '54%' : '57%'],
-          radius: '64%',
+          center: [CHART_WIDTH / 2, frame.top + bodyHeight / 2],
+          radius: bodyHeight * 0.36,
           indicator,
           axisName: { fontSize: labelFont, color: '#5b6b7c' },
           // 圈数就是雷达的刻度档数，太密会糊成一团蛛网。
@@ -994,7 +976,7 @@ export const buildOption = (
       title,
       legend,
       // 右侧多了数值轴，留出位置。
-      grid: secondAxis === null ? grid : { ...grid, right: 56 },
+      grid: secondAxis === null ? grid : { ...grid, right: labelFont * 6 },
       xAxis,
       yAxis,
       // 连续轴时数据要以 [坐标, 值] 形式给出，echarts 才会按时间排布。

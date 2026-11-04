@@ -109,8 +109,8 @@ console.log('Syntax diagnostics: original line, caret, expected delimiter and op
  const before=reads;
  const base={x:'n',value:'n'};
  const invalid:[Record<string,unknown>,RegExp][]=[
-  [{...base,height:200},/spec\.height.*spec\.layout\.height/],
-  [{...base,rowHeight:16},/spec\.rowHeight.*spec\.layout\.rowHeight/],
+  [{...base,height:200},/spec\.height.*not supported/],
+  [{...base,rowHeight:16},/spec\.rowHeight.*not supported/],
   [{...base,labels:true},/spec\.labels.*spec\.style\.labels/],
   [{...base,sort:'desc'},/spec\.sort.*spec\.style\.sort/],
   [{...base,unknown:true},/spec\.unknown.*allowed fields/],
@@ -130,7 +130,7 @@ console.log('Syntax diagnostics: original line, caret, expected delimiter and op
   [{...base,layout:{tickCount:3.5}},/tickCount.*integer/],
   [{...base,layout:{slantTicks:'yes'}},/slantTicks/],
   [{...base,style:null},/spec\.style.*对象/],
-  [{...base,style:{height:200}},/spec\.style\.height.*spec\.layout\.height/],
+  [{...base,style:{height:200}},/spec\.style\.height.*not supported/],
   [{...base,style:{stack:'total'}},/spec\.style\.stack.*spec\.stack/],
   [{...base,style:{labels:1}},/spec\.style\.labels/],
   [{...base,style:{colors:['#12345']}},/spec\.style\.colors/],
@@ -150,7 +150,7 @@ console.log('Syntax diagnostics: original line, caret, expected delimiter and op
   try{const run=await rt.run(source);assert.equal(run.status,'invalid',JSON.stringify(spec));assert.match(run.error!,pattern);}finally{rt.dispose();}
  }
  assert.equal(reads,before,'invalid figure specs never acquire business rows in checking or execution');
- const good={...base,layout:{height:300,rowHeight:20,tickCount:5},style:{labels:true,sort:'desc',colors:['#123','#1234','#123456','#12345678']}};
+ const good={...base,layout:{labelFont:12,titleFont:16,tickCount:5},style:{labels:true,sort:'desc',colors:['#123','#1234','#123456','#12345678']}};
  const checked=await check(`data rows := query({limit:5});data spec := ${JSON.stringify(good)};figure chart := BarChart(spec=spec,data=rows);`);
  assert.equal(checked.ok,true,JSON.stringify(checked));assert.equal(reads,before);
  assert('spec' in parseChartSpec({kind:'line',x:'n',value:'n',xType:"Rfc3339"}));

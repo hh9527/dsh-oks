@@ -114,7 +114,7 @@ try {
 
   // 排版覆盖项：用户不满意时 agent 可以调字号与高度，越界或写错项直接拒绝。
   const tuned = await chart({
-    spec: { kind: 'bar', x: 'label', value: 'value', layout: { labelFont: 14, height: 240, slantTicks: false } },
+    spec: { kind: 'bar', x: 'label', value: 'value', layout: { labelFont: 14, slantTicks: false } },
     data: [{ label: '甲', value: 3 }, { label: '乙', value: 5 }],
     name: 'probe_layout',
   });

@@ -40,6 +40,38 @@ for(const kind of ['bar','grouped_bar']){
  assert.equal((built.option as any).yAxis.axisLabel.interval,0);
  assert.equal((built.option as any).yAxis.axisLabel.hideOverlap,false);
 }
+// Font units determine geometry, independently of the actual label text.
+{
+ const {fontUnits}=await import('./src/chart/shared.ts');
+ for(const font of [8,12,18])for(const count of [1,2,5,20]){
+  const data=Array.from({length:count},(_,i)=>({level:`租户-${i+1}`,n:10+i}));
+  for(const kind of ['bar','grouped_bar']){
+   const built=build(kind,{title:'按存储设备类型的设备台数分布',layout:{labelFont:font},...(kind==='grouped_bar'?{series:'level'}:{})},data);
+   const option=built.option as any,grid=option.grid;
+   assert.equal(built.height-grid.top-grid.bottom,
+    kind==='bar'?count*fontUnits(font).row:count*count*fontUnits(font).row+(count-1)*fontUnits(font).gap);
+   const svg=renderEchartsSvg(built.option,CHART_WIDTH,built.height);
+   const marks=[...svg.matchAll(/<path[^>]*d="([^"]+)"[^>]*ecmeta_series_index=[^>]*ecmeta_ssr_type="chart"/g)];
+   assert.equal(marks.length,count);
+   for(const mark of marks){
+    const thickness=Number(mark[1].match(/l0 ([\d.]+)/)?.[1]);
+    assert(Math.abs(thickness-fontUnits(font).bar)<0.2,`${kind} font=${font}: ${mark[1]}`);
+   }
+  }
+ }
+ const base=build('bar',{title:'short'},[{level:'short',n:1},{level:'also short',n:2}]);
+ const long=build('bar',{title:'short'},[{level:'这是很长的分类名称但不应改变字体和几何布局',n:1},{level:'another much longer label',n:2}]);
+ assert.equal(base.height,long.height);assert.deepEqual((base.option as any).grid,(long.option as any).grid);
+ assert.equal((long.option as any).yAxis.axisLabel.fontSize,12);
+ const largeTitle=build('bar',{title:'很长的标题'.repeat(20)},[{level:'A',n:1},{level:'B',n:2}]);
+ assert(largeTitle.height>base.height);
+ assert.equal(largeTitle.height-(largeTitle.option as any).grid.top-(largeTitle.option as any).grid.bottom,60);
+ const crowded=build('grouped_column',{series:'level'},Array.from({length:10},(_,i)=>({level:`series${i}`,n:i+1})));
+ assert((crowded.option as any).grid.top>(build('grouped_column',{series:'level'},[rows[0]]).option as any).grid.top);
+ for(const key of ['height','rowHeight'])assert('error' in parseChartSpec({kind:'bar',x:'level',value:'n',layout:{[key]:200}}));
+ console.log('Font geometry: actual SVG bar thickness, 1/2/5/20 categories, grouped rows, title/legend space and removed pixel overrides passed');
+}
+
 const backend=createDraftBackend({entry:{} as any,file:'modes.dari',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge:{executorFor(){throw Error('No SQL in chart checks');}}});
 for(const [component,series,ok]of [
  ['ColumnChart','',true],['BarChart','',true],

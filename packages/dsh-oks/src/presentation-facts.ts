@@ -676,14 +676,6 @@ export const presentationFacts = {
                 8,
                 32
               ],
-              "height": [
-                200,
-                2000
-              ],
-              "rowHeight": [
-                16,
-                80
-              ],
               "tickCount": [
                 3,
                 12
