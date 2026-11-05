@@ -100,7 +100,7 @@ answer := Answer [
 
 数据分析流程直接进入预制 prompt，并以同一份文本在 `oks://help/workflow.md` 提供：理解意图、发现词汇和知识、批量检查查询及列类型、建立后处理后执行、审视数据并形成报告。
 
-模型的全局领域摘要以 Markdown 进入 KA，完整词汇表进入独立 VA 的固定系统上下文，覆盖全部 Entity、Dataset、查询能力数量与关系导航；主 agent 按需咨询 KA，自主使用 search/routes/info 读取局部知识。摘要不含反向连接，图表能力说明单独进入主 agent 上下文。摘要按模型缓存，不累积重复注入；主 agent 通过 ka_ask 获得领域导航。search/routes/info 的公开回执为紧凑 Markdown，内部保留结构化结果。
+模型的全局领域摘要以 Markdown 进入 KA，完整词汇表进入独立 VA 的固定系统上下文，覆盖全部 Entity、Dataset、查询能力数量与关系导航；主 agent 按需咨询 KA，自主使用 search/routes/info 读取局部知识。摘要不含反向连接，图表索引进入主 agent 已载入的 DARI 手册。摘要按模型缓存，不累积重复注入；主 agent 通过 ka_ask 获得领域导航。search/routes/info 的公开回执为紧凑 Markdown，内部保留结构化结果。
 
 ```js
 ka_ask({query:"业务说法"})
@@ -121,7 +121,7 @@ data months := time_windows(ctx,{unit:"month",count:3,mode:"complete"});
 
 complete 为最近 N 个完整期间；current 含当前期间，末端可能在未来；rolling 以捕获时刻为末端按日历回移。
 unit 为 year/quarter/month/week/day，count 为 1..50。周从周一开始，边界分别适用时区/DST 规则。
-细节见 `oks_read({path:"oks://help/time.md"})`，Pipeline 提供规范的 UTC/毫秒时间转换。
+时间、窗口与 Pipeline 写法已完整载入 `oks://help/dari.md`。
 
 ## 设计检查
 
@@ -218,12 +218,7 @@ build/prepare/pretest 直接更新 lib，运行中的 link 安装需先暂停服
 
 ### 呈现知识
 
-工具初始化时将领域无关的呈现用法挂载到 `tools`，与模型事实共享搜索、导航与投影。
-`tools/render_figure#kinds/<kind>` 提供必填列映射、series 语义、专属开关和可执行示例；
-`tools/render_figure#topics/table_headers` 说明字符串列名与 select 输出列命名；
-`tools/report#topics/references` 说明 Value、Figure 引用与静态投影。
-使用 `oks_read({path:"oks://help/figures.md"})` 查看入口，或用知识搜索查“图表”“表头”“data-oks-pick”。
-每个主题可单独读取；`#topics/draft` 提供完整可运行 DARI 示例。
+DARI 手册已包含一行一图的能力索引和必填 spec 键，由实际图表能力生成。选定图表后，按需读取 `oks://help/figure-<kind>.md`；完整通用规格见 `oks://help/figure-options.md`。图表分册不进入初始提示词，报告与回答语法已归入 DARI 手册。
 
 ## 文件与内置手册
 
@@ -233,11 +228,13 @@ build/prepare/pretest 直接更新 lib，运行中的 link 安装需先暂停服
 
 agent 可检查稿件并通过 dari_resolve 运行；默认直接运行，配置 requireRunApproval=true 时先申请批准；data 返回显式选择的结构化值；figures/reports 按绑定名返回 `{embedded}`，其中 embedded 为可原样嵌入回答的 Markdown 字符串。
 
-### 按需读取工具用法
+### 已载入手册与按需分册
 
-入口提示词保留任务和工作方法。工具帮助是 oks://help/*.md 只读文本文件，用 oks_read({path:"oks://help/"}) 列出，再用 oks_read({path:"oks://help/draft.md"}) 阅读，offset/limit 按行分页。knowledge.md 解释摘要、预制卡片和知识助手，draft.md、query.md、time.md 和 figures.md 分别提供分析稿、查询、时间与呈现的方法。
+初始提示词按 `workflow.md` → `dari.md` → `rules.md` 固定拼接，每段标记对应的 oks://help 地址，rules 始终位于插件手册前缀最末。三份手册已完整载入，首题无需再读；只有逐字引用或上下文被压缩后才通过 oks_read 重读。图表分册仍按需读取，暂不生成目录/行号索引。
 
-工具帮助统一维护在 `src/help/*.md`，作为普通 Markdown 文本在构建时内联，不转换为结构化知识。图表和报告的结构化能力与示例直接维护在 `src/presentation-facts.ts`；组件、能力矩阵和白名单由实现生成。维护约定见 `src/help/README.md`。
+workflow 负责工作顺序和知识导航，dari 负责语言、工具、类型、时间、查询、报告、回答与图表索引，rules 以短句强化关键纪律。旧 knowledge/draft/pipeline/query/time/figures/report 手册已归并删除。runtime skill 不再复制方法论。
+
+文本由 `src/help/*.md` 在构建时内联；图表索引及按需分册由 `src/presentation-facts.ts` 的现有能力生成。注入与读取共用同一文本，修改手册直接改变固定前缀。维护约定见 `src/help/README.md`。
 
 文本读取：`oks_read` 与标准 read 使用相同窗口规则：默认/最多 2000 行，单行保留 2000 字符并标注截断，正文上限 50 KiB，返回续读 offset；偏移越界报错。本地目录由宿主内置文件工具列出。
 

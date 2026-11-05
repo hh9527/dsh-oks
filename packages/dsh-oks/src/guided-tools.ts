@@ -50,7 +50,7 @@ export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge)
   ];
   const builtinRead: ToolDefinition = {
     name: 'oks_read',
-    description: 'Read built-in method manuals only. path="oks://help/" lists manuals; path="oks://help/<name>.md" reads one. offset/limit select line windows. Use the host file tools for local files and DARI source.',
+    description: 'Read built-in method manuals only. workflow.md, dari.md and rules.md are already fully loaded in the system context: do not read them to start a task; reread only for exact quotation or after context compression. Figure-specific manuals remain on demand. path="oks://help/" lists manuals; path="oks://help/<name>.md" reads one. offset/limit select line windows. Use the host file tools for local files and DARI source.',
     parameters: {type:'object',properties:{path:{type:'string'},offset:{type:'integer',minimum:1},limit:{type:'integer',minimum:1,maximum:2000}},required:['path'],additionalProperties:false},
     output: {schema:OBJECT_OUTPUT,render:renderWorkRead},
     async execute(raw) {

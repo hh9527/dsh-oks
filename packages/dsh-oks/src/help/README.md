@@ -1,20 +1,15 @@
-# 工具帮助的维护方式
+# 手册维护
 
-手写的工具用法集中在本目录；`src/skill.md` 保留任务、工作方法与帮助入口。
+主 agent 的固定前缀按 `workflow.md` → `dari.md` → `rules.md` 拼接，文本与 oks_read 完全同源，地址注释用于压缩后重读或逐字引用。rules 始终是插件手册前缀的末段；新增说明放在它之前。
 
-- `workflow.md`：工作方法和纪律，与直接注入的预制 prompt 共用文本
-- `knowledge.md`：全局摘要、预制知识卡片与知识助手。
-- `draft.md`：DARI、有类型 Pipeline、设计检查与按配置申请批准的运行。
-- `pipeline.md`：关系 DSL、类型推导、Option、聚合与有限展开
-- `query.md`：查询意图语法与约束。
-- `time.md`：时间上下文和日历窗口。
-- `figures.md`：图表通用语法与按需读取入口。单图表、Report 和通用规格手册从结构化能力生成。
+- workflow：顺序与知识导航，回答先做什么。
+- dari：语法、接口、类型、查询、时间、图表索引、Report/Answer，回答怎么写。
+- rules：短句、祈使、可判定的纪律，回答必须/不得做什么。对前两份的关键约束复述是有意强化，不按信息去重规则删减。
 
-帮助文档是普通 Markdown 文本，标题与代码块仅用于阅读，不承担知识字段或结构化值的编码。通过 oks://help/*.md 直接读取，oks_read({path:"oks://help/"}) 可列出手册。
+workflow 与 dari 避免重复解释。准入前缀的内容应是完成所有任务的基本能力；仅某类任务所需的内容按需读取。Report 因 UseReport 属于 Answer 保留在 dari，若后续膨胀，优先拆出。
 
-模型知识保留结构化事实；图表与报告的结构化能力、约束和示例维护在 `src/presentation-facts.ts`，由单图表手册、report.md 和 figure-options.md 按主题提供规格。文本帮助按主题解释用法，不参与结构化知识生成。
+图表分册 figure-*.md 仍按需读取，必填 spec 索引由 presentationFacts 和 COMPONENT_KINDS 生成后嵌入 dari；figure-options.md 提供完整通用规格。不重新添加独立呈现前缀或旧散装手册入口。
 
-构建时将 Markdown 内联到单文件插件，运行时不依赖源码目录。源码测试通过 `scripts/markdown-loader.mjs` 加载 Markdown。
-组件映射、能力矩阵、报告正文白名单、方法签名以及反向引用由实现生成，避免与帮助内容分开维护。
+Markdown 在构建期内联到单文件插件；手册内容改变就改变实际固定前缀文本，宿主按新文本构建上下文，不维护独立旧手册缓存。runtime skill 仅保留已载入提示，不复制完整方法论。
 
-全局领域摘要由 `src/domain-summary.ts` 从模型事实生成，进入 KA 的固定系统上下文；完整词汇表独立进入 VA，ka_ask 内部先调用 VA，再将词汇锚点与原始问题交给 KA；KA 不调用工具。返回值分别保留阅读清单与词汇参考。主 agent 按需通过 ka_ask 获取领域导航，再自主检索和读取 search/routes/info。图表形式和单图表手册入口单独进入主 agent 的系统上下文。
+领域摘要仍进入 KA，词表进入独立 VA；KA/VA 不注入主 agent 的 DARI 手册。暂不生成目录/行号索引。

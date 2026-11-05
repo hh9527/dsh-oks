@@ -1,29 +1,44 @@
-# 数据分析流程
+# 工作方法
 
-不要为了探索能力单独开分析稿，而是一个问题一个分析稿，直接在分析稿内进行尝试。
+## 分析顺序
 
-除非用户明确要求，否则不要根据取数结果重新调整取数计划。取数计划只依据用户意图和领域知识制定，不因已取得的数据结果改变查询范围、筛选条件、聚合口径或查询组合。
+1. 理解用户意图，明确对象、指标、时间范围、比较方式和交付形式。
+2. 发现知识入口：直接用 oks_search 检索已知领域词；词汇、规范值或关系入口不清楚时，向 ka_ask 提交原始问题和明确约束。KA 提供阅读清单，VA 提供词汇参考，主 agent 自行读取所需定义。
+3. 需要关联时用 oks_routes 找路径，用 oks_info 批量读取涉及的维度、指标、身份、时间和连接约束，形成取数计划。
+4. 建立一份 `.dari` 分析稿，一次设计所需查询，先用 dari_check 检查；按需 inspect 读取返回列及类型，依据诊断修正。
+5. 根据列类型建立 select/select_one 后处理、图表和交付节点，再检查全稿。形状指纹未变时沿用已读类型；选定图表后才读对应 figure 分册。
+6. 通常分两次解析：第一次显式选择 data/reports 获取形成观点所需的事实；完善同稿 Answer 后，第二次获取最终正文。简单问题可一次完成。最后审视事实，完成用户要求的解读与交付。
 
-每轮问题尽量只调用两次 `dari_resolve`：第一次一次性获取报告及形成观点所需的事实（显式选择 reports、data，使用 answer:false）；根据这些事实完善同一分析稿中的 Answer，第二次使用 answer:true 获取最终回答。简单问题可以一次完成，不必凑足两次。运行前的语法、类型和查询计划修正优先使用 `dari_check`；不要为了反复核对结果或细碎探索增加运行次数。确有运行错误或用户新增要求时再按需追加。
+## 知识定位
 
-1. 理解用户意图，明确要回答的问题
-2. 使用 oks_search({q:["领域词"],scope:["datasets","entities"]}) 查找根节点，再将 scope 改为选中的完整根 ID 定位字段、维度和度量；q 中的所有词共用 scope；词汇或领域关系不清楚时，按需向 ka_ask 提交原始问题和明确约束
-3. 需要连接时，用 oks_routes 获取节点间路径及基数、连接键；用 oks_info 批量读取所需精确定义，确认时间、聚合、身份与连接的适用条件
-4. 建立一份 `.dari` 分析稿，一次设计所需的多个 `query(...)`。用 dari_check 检查，按需 inspect 相关 data 的返回列及类型，修正查询诊断
-5. 根据列类型用有类型的 select/select_one 设计后处理流程和需要的图表映射（语法见 oks://help/pipeline.md），再用 dari_check 检查，完成分析稿；类型指纹未变时沿用已读形状，无需重复 inspect
-6. 建立唯一的 `answer := Answer [...]`，通过 value(ref=...) 引用事实、UseFigure 嵌入图表、UseReport 引用报告。调用 `dari_resolve({src,answer:true})`，将返回的 `<!-- answer -->` 块中的 Markdown 原样贴入回答，略去状态头和分隔注释；开启 requireRunApproval 时由宿主申请本次运行批准
+领域摘要由 KA 持有，完整词汇表由独立 VA 持有；主上下文不展开领域全文。ka_ask 返回「阅读清单」与「词汇参考」两段自然语言。词汇参考格式为 `- <name> in <ctx>: <问题中的说法>`，name/ctx 用反引号标记：q 数组收集 name，ctx 定位共享 scope，冒号后的文字只作词汇对照。需要不同范围的词分开调用。
 
-知识节点 ID 只用于知识寻址，不直接填入 query。query 的 entity、dimension、measure、relation 使用 oks_info 返回的模型短名称；例如知识地址 datasets/device_kpi/dimensions/device_kpi_ts_raw 对应 dimension:"device_kpi_ts_raw"。不要自行拆解知识地址推导名称。nodes[].id 是本次查询自行定义的节点别名，供 root、node、from、to 引用。
+```js
+oks_search({q:["设备","租户"],scope:["datasets","entities"]})
+oks_search({q:["cpu_usage","memory_usage"],scope:["datasets/device_kpi"]})
+```
 
-用户要求输出报告时，回答要简短：在 Answer 中用 UseReport 引用具名 Report，交付可点击的报告链接，不重复整份报告。需要调试或查看数据时，显式传入 `answer:false` 并选择 data/figures/reports；正常交付使用 `answer:true`。answer 参数必须显式提供。
+q/scope 是非空数组，最多各 12 项；每词独立匹配、最多返回 10 项，没有额外总结果上限。多个 scope 取并集，按知识 ID 去重后排序；词之间不是 AND。匹配名称、别名、说明和规范值，支持部分词及英文轻微拼写错误，不推断同义词。
 
-dari_check 不执行查询；dari_resolve 默认检查后直接执行。配置 requireRunApproval=true 时，每次运行都通过宿主申请批准，拒绝或取消后不执行。依据返回事实解读，不编造数据结论。依赖实际数据的检查由运行期完成。
-除非用户明确要求评价、推断或建议，观点采用“述而不作”的态度，客观陈述查询事实、统计口径与数据限制。这一原则同时适用于分析稿、报告正文和最终回复；不主动归因、作价值判断或提出行动建议。用户要求进一步分析时，区分事实与推断，说明依据及不确定性。
+| scope | 检索范围 |
+| --- | --- |
+| datasets / entities / types | 对应类别的独立节点 |
+| datasets/ID / entities/ID / types/ID | 该根的内部条目，不含自身 |
+| datasets/ID/fields、/dimensions、/measures | 字段、维度、指标；Entity 同样支持 |
+| datasets/ID/roles、/time_roles、/business_links、/relations | 模型实际声明的对应内容分类；Entity 同样支持 |
+| types/ID/values | 枚举成员 |
+| types/ID/references | 模型开放反向引用的直接引用点 |
 
-领域摘要由 KA 持有，完整词汇表由独立的 VA 持有；当前上下文提供图表与报告能力及手册入口。只需读取所选图表的说明。工具和语言说明见 `oks://help/*.md`，按需读取。
+references 返回实际引用点，如 datasets/current_alarm/dimensions/alarm_severity；未开放反向引用时为空，不递归扩展。合法空范围无命中，未知范围报错。回执按词和父路径分段，将父路径与相对名用 `/` 连接即可得到精确 ID，保持原有编码。
 
-当前时刻和客户端时区从 `context()` 获取，时区字段为 `ctx.tz.client.id`；`time_windows(ctx, ...)` 直接使用该时区。采用的统计时区应在报告中注明，仅在统计口径存在实质歧义或 context 无法提供有效时区时澄清。
+`oks_routes({from:"datasets/a",to:"datasets/b"})` 返回一对 Dataset/Entity 根节点的最短候选路径，含一跳关系、方向、基数、完整连接键、角色 ID 和 guard。Entity 经承载其身份的 Dataset 进入路径；同一承载 Dataset 无需跨表连接。max_depth 默认 2、可设 1..3，最多 8 条路径和 10,000 次边探索；无路径和截断均明确报告。路径存在与聚合安全分别判断。
 
-分析稿使用宿主内置文件工具管理，src 使用工作区内的本地路径。普通解析复用同一采集上下文；需要最新时间或数据时调用 `dari_renew_context({src})`，下一次 `dari_resolve` 再重新取数。`dari_resolve` 接收 src、必填的 answer 布尔参数及可选的 data、figures、reports。
+`oks_info({ids:["datasets/device_kpi/measures/cpu_usage"]})` 批量读取 1..64 个精确点，每点仅返回自身定义，未知 ID 逐点报告。回执显式给出查询短名称。Field.roles 的 Appellation/Reference/Classification/Metric 分别是称谓、指代、分类、指标；筛选和聚合能力由 Dimension/Measure 声明决定。
 
-词汇参考每行是 `- <name> in <ctx>: <问题中的说法>`（name 和 ctx 用反引号标记）；search 的 q 数组收集 name，ctx 用于定位共享 scope；需要不同范围的词分开调用，冒号后的用户说法只作对照。
+## 交付节奏
+
+通常先设计并检查，后执行并解读；不是靠观察业务结果反复试探查询能力。查询检查只获得列类型和诊断，实际值留在解析阶段。初次检查后已有充分列信息时，可直接完成后处理与展示。
+
+仅当统计时区口径有实质歧义或 context 无有效时区时澄清；当前时间和客户端时区本来就能从 context() 获得。报告中注明实际采用的口径。
+
+用户要求报告时，Answer 保持简短，用 UseReport 交付可点击链接；普通问题可在 Answer 直接放正文、数值、表格或图表。最终使用解析结果中的 Markdown，略去状态头、分隔注释和调试数据。

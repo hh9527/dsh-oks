@@ -307,7 +307,7 @@ const badModel=join(SCRATCH,'bad-model');mkdirSync(badModel,{recursive:true});
 writeFileSync(join(badModel,'empty.wasm'),Buffer.from([0,97,115,109,1,0,0,0]));
 writeFileSync(join(badModel,'oks.json'),JSON.stringify({...baseConfig,model:'empty.wasm',dataFile:settings.dataFile}));
 ok('缺快照模型明确拒绝',!!await refusalOf(()=>call('oks_info',{ids:["datasets/"+encodeURIComponent(datasetId)]},badModel)));
-const help=(await call('oks_read',{path:'oks://help/query.md',limit:2000},bare)).value;
+const help=(await call('oks_read',{path:'oks://help/dari.md',limit:2000},bare)).value;
 ok('帮助是无需配置的文本文件',help.lines.map((line:any)=>line.text).join('\n').includes('ontology-intent-v1'));
 for(const args of [{load:{}},{input:draftFile+'#total',save:{}},{input:draftFile+'#total',jq:{src:'.work/nope.jq'}}])
  ok('只读入口拒绝加工与写入参数',!!await refusalOf(()=>call('dari_check',args)));

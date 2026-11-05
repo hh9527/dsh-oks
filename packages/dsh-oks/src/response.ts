@@ -93,7 +93,7 @@ export function renderCurrentCtx(_args: unknown, value: CurrentCtxValue | null |
   const lines = [
     `asset:  ${value?.asset ?? ''}`,
     `这份时间上下文：${((value?.bytes ?? 0) / 1024).toFixed(1)} KB · ${value?.ms ?? 0} ms`,
-    '在分析稿中使用 context() 和 time_windows(ctx,{unit,count,mode}) 计算时间窗口；参数与示例见 oks://help/time.md。',
+    '在分析稿中使用 context() 和 time_windows(ctx,{unit,count,mode}) 计算时间窗口；参数与示例已载入 oks://help/dari.md。',
     '',
     JSON.stringify(value?.data ?? null, null, 2),
   ];
@@ -306,7 +306,7 @@ export function renderCheck(_args: unknown, value: CheckValue | null | undefined
   const runnable = value?.queryCount ?? 0;
   lines.push('', results.length > 0 && accepted.length === results.length
     ? `校验结论：${results.length} 个 Intent 全部可用（${runnable} 个查询可执行）。用 oks_exec_query_intent 带同一批名字与各自的 key 提交就能拿到结果。`
-    : `校验结论：${accepted.length}/${results.length} 可用（${runnable} 个查询可执行）。用 oks_info 按知识 ID 核实声明再修；查询语法通过 oks://help/query.md 读取，保持业务含义不变。`);
+    : `校验结论：${accepted.length}/${results.length} 可用（${runnable} 个查询可执行）。用 oks_info 按知识 ID 核实声明再修；查询语法已载入 oks://help/dari.md，保持业务含义不变。`);
   return [{ type: 'text', text: `${lines.join('\n')}\n` }];
 }
 

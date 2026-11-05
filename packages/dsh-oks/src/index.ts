@@ -11,7 +11,6 @@ export { renderMarkdown } from './chart/markdown.ts';
 
 import { createKnowledge } from './knowledge.ts';
 import { installWorkMethods } from './work-methods.ts';
-import { installKnowledgeNavigation } from './knowledge-navigation.ts';
 import { createTimeContext } from './time-context.ts';
 import { guidedTools } from './guided-tools.ts';
 import { createTools } from './tools.ts';
@@ -41,7 +40,6 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
   }
 
   installWorkMethods(ctx);
-  installKnowledgeNavigation({ ctx, knowledge, log });
 
   const timeContext = createTimeContext({ ctx, log });
   timeContext.install();

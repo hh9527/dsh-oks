@@ -31,8 +31,8 @@ report answer := Report(title = "CPU & memory") [
  UseFigure(ref = cpu, caption = "窗口平均值"),
 ];`;
 try{
- const {presentationManuals}=await import('./src/presentation-guide.ts');
- const manual=presentationManuals()['oks://help/report.md'];assert(manual.includes('Lit'));assert(!manual.includes('data-oks-lit'));
+ const {helpFiles}=await import('./src/help-files.ts');
+ const manual=helpFiles['oks://help/dari.md'];assert(manual.includes('Lit'));assert(!manual.includes('data-oks-lit'));
  const doc=parseDraft(source,'dom.dari');assert.equal(doc.syntax,'dom');assert.deepEqual(doc.answers,['answer']);
  assert(doc.nodes.some(n=>n.statement.kind==='binding'&&n.statement.name==='cpu'));
  assert(!doc.assets.get('@report/answer')!.program!.NumWithoutSource.some(item=>item.snippet==='1.2'));

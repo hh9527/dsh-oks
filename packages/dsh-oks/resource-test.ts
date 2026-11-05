@@ -15,7 +15,7 @@ try {
  assert.deepEqual(tools.map(t=>t.name).sort(),['report_extract_dari','move_entry','remove_file','ka_ask','oks_search','oks_routes','oks_info','oks_read','dari_check','dari_resolve','dari_renew_context'].sort());
  const index=await call('oks_read',{path:'oks://help/'});
  const paths=index.lines.map((line:any)=>line.text);
- for(const path of ['oks://help/workflow.md','oks://help/figures.md','oks://help/report.md'])assert(paths.includes(path));
+ for(const path of ['oks://help/workflow.md','oks://help/dari.md','oks://help/rules.md','oks://help/figure-line.md'])assert(paths.includes(path));
  for(const path of paths){const manual=await call('oks_read',{path});assert(manual.lines.length);}
  for(const path of ['analysis.dari',join(root,'analysis.dari'),'.work/a.dari','oks://help/../x','oks://knowledge'])await assert.rejects(call('oks_read',{path}),/built-in manuals/);
  mkdirSync(join(root,'reports'));

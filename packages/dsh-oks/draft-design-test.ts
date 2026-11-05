@@ -15,7 +15,7 @@ for(const invalid of ['data a := query({limit:5,bad:true});','data a := exec_que
 assert.equal(reads,0);
 const runtime=new DraftRuntime(backend,{parse:parseExecutableDesign});
 try{assert.equal((await runtime.run(source)).status,'complete');assert.deepEqual(runtime.read('after',source).value.data.rows,[{n:7}]);await runtime.run(source);assert.equal(reads,1);}finally{runtime.dispose();}
-const sample=[...helpFiles['oks://help/time.md'].matchAll(/```dari\n([\s\S]*?)```/g)].map(m=>m[1]).find(s=>s.includes('query('));assert(sample);assert.equal((await check(sample)).ok,true);
+const sample=[...helpFiles['oks://help/dari.md'].matchAll(/```dari\n([\s\S]*?)```/g)].map(m=>m[1]).find(s=>s.includes('alarm_occur_utc_raw'));assert(sample);assert.equal((await check(sample)).ok,true);
 console.log('Design: typed JS time boundaries, remote schema checks, no business reads, invalid DSL and cache passed');
 
 const cascaded=await check(`data a := query({limit:5});
