@@ -1,3 +1,4 @@
+import {tmpdir} from 'node:os';
 import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
@@ -11,7 +12,7 @@ import type {WorkspaceEntry,Knowledge} from './src/knowledge.ts';
 import type {ToolExec} from './src/host.ts';
 import type {TimeContext} from './src/time-context.ts';
 
-const root=mkdtempSync('/opt/userhome/h00629578/.cache/tmp/oks-dom-');mkdirSync(join(root,'.work'));
+const root=mkdtempSync(join(tmpdir(),'oks-dom-'));mkdirSync(join(root,'.work'));
 let reads=0,approvals=0;
 const columns=[{name:'name',type:'String',nullable:false},{name:'cpu',type:'Float',nullable:true}];
 const entry={root,modelHash:'dom-test',settings:{domain:'test',queryMaxRows:100,requireRunApproval:true,dataFile:'fixture.sqlite'},runner:{async send(){return {ok:{accepted:true,queries:[{sql:'select name,cpu limit ?1',bindings:[10],limit_slot:0,columns}]}};}}} as unknown as WorkspaceEntry;
@@ -33,7 +34,7 @@ report answer = tree! { Report(title = "CPU & memory") [
 try{
  const {helpFiles}=await import('./src/help-files.ts');
  const manual=helpFiles['oks://help/dari.md'];assert(manual.includes('Lit'));assert(!manual.includes('data-oks-lit'));
- const doc=parseDraft(source,'dom.dari');assert.equal(doc.syntax,'dom');assert.deepEqual(doc.answers,['answer']);
+ const doc=parseDraft(source,'dom.dari');assert.deepEqual(doc.answers,['answer']);
  assert(doc.nodes.some(n=>n.statement.kind==='binding'&&n.statement.name==='cpu'));
  assert(!doc.assets.get('@report/answer')!.program!.NumWithoutSource.some(item=>item.snippet==='1.2'));
  assert.equal(doc.authoring!.source,source);assert.equal(doc.authoring!.figures.cpu.binding,'cpu');

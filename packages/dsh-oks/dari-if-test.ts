@@ -1,10 +1,11 @@
+import {tmpdir} from 'node:os';
 import assert from 'node:assert/strict';
 import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {parseDraft} from './src/draft/document.ts';
 import {createDraftTools} from './src/draft/tools.ts';
 import {testAttachments} from './test-attachments.ts';
-const root=mkdtempSync('/opt/userhome/h00629578/.cache/tmp/dari-if-');
+const root=mkdtempSync(join(tmpdir(),'dari-if-'));
 let executions=0,empty=false,flag:boolean|null=true;
 const saved:{name:string;content:string}[]=[];
 const columns=[{name:'n',type:'Int',nullable:false},{name:'flag',type:'Bool',nullable:true},{name:'label',type:'String',nullable:false}];

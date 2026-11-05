@@ -226,7 +226,7 @@ export function createDraftBackend(options: {
     const diagnostics:SourceDiagnostic[]=[];
     const check=(work:()=>void,span=ctx.span)=>{try{work();}catch(error){diagnostics.push({file,stage:ctx.operator==='render_figure'?'figure':ctx.operator==='render_report'?'template':'validation',message:error instanceof Error?error.message:String(error),span});}};
     const first=ctx.args[0]?.data,second=ctx.args[1]?.data;
-    if(['sql','render_figure','render_report'].includes(ctx.operator)&&ctx.args[1]&&known(second))check(()=>{if(!isRecord(second))throw new Error(`${ctx.operator} inputs must be a named object`);});
+    if(['render_figure','render_report'].includes(ctx.operator)&&ctx.args[1]&&known(second))check(()=>{if(!isRecord(second))throw new Error(`${ctx.operator} inputs must be a named object`);});
     if(ctx.operator==='data'&&ctx.args[1]&&known(second))check(()=>{dataNature(second);});
     if(ctx.operator==='time_windows'&&known(second))check(()=>{timeWindowOptions(second);});
     if(ctx.operator==='render_figure'){
@@ -387,7 +387,7 @@ export function createDraftBackend(options: {
     throw new Error(`Unsupported operator ${ctx.operator}`);
   };
   const assemble = (ctx: CallContext, computed: Computed): DraftValue => {
-    const named = ctx.operator === 'time_windows' ? bindingsOf({data:{ctx:ctx.args[0].data},sources:ctx.args[0].sources.map(source=>({...source,at:['ctx',...source.at]}))}) : ['typed_value','relational','relational_one','sql','render_figure'].includes(ctx.operator) ? bindingsOf(ctx.args[1] ?? { data: {}, sources: [] }) : undefined;
+    const named = ctx.operator === 'time_windows' ? bindingsOf({data:{ctx:ctx.args[0].data},sources:ctx.args[0].sources.map(source=>({...source,at:['ctx',...source.at]}))}) : ['typed_value','relational','relational_one','render_figure'].includes(ctx.operator) ? bindingsOf(ctx.args[1] ?? { data: {}, sources: [] }) : undefined;
     const parents = named ? Object.values(named).map(binding => binding.origin) : ctx.args.map(draftValueOrigin);
     const inputs = named ? Object.fromEntries(Object.entries(named).map(([key, binding]) => [key, binding.origin.root])) : Object.fromEntries(parents.map((parent, index) => [String(index), parent.root]));
     const node: OriginNode = {

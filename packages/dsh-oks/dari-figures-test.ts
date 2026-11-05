@@ -1,3 +1,4 @@
+import {tmpdir} from 'node:os';
 import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync} from 'node:fs';
 import {createHash} from 'node:crypto';
@@ -7,7 +8,7 @@ import {createDraftBackend} from './src/draft/backend.ts';
 import {readReportPage} from './src/report/page.ts';
 import type {Knowledge,WorkspaceEntry} from './src/knowledge.ts';
 import type {TimeContext} from './src/time-context.ts';
-const root=mkdtempSync('/opt/userhome/h00629578/.cache/tmp/oks-figures-');
+const root=mkdtempSync(join(tmpdir(),'oks-figures-'));
 const file='analysis.dari',physical=join(root,file);
 let queries=0,renders=0,failSave=false,saves=0;
 const attachments={async saveFile({data,name}:{data:Uint8Array;name:string}){

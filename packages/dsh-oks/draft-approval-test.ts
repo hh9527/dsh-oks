@@ -1,3 +1,4 @@
+import {tmpdir} from 'node:os';
 import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
@@ -7,7 +8,7 @@ import type {ApprovalService,ToolExec} from './src/host.ts';
 import type {Knowledge,WorkspaceEntry} from './src/knowledge.ts';
 import type {TimeContext} from './src/time-context.ts';
 
-const root=mkdtempSync('/opt/userhome/h00629578/.cache/tmp/oks-approval-');mkdirSync(join(root,'.work'));
+const root=mkdtempSync(join(tmpdir(),'oks-approval-'));mkdirSync(join(root,'.work'));
 const path=join(root,'.work/test.dari'),src='.work/test.dari';
 const source='data facts = query({limit:5}); data one = select_one({from:{f:facts},fields:r=>({n:r.f.n}),order_by:o=>[asc(o.n)],limit:1}); answer tree! { Answer [p [Value(data=one?.n)]] };';
 let executions=0,requests=0;

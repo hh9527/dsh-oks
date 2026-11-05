@@ -88,12 +88,6 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
   else if(reports.length===1)answer=reports[0];
   else if(options.requireSelection&&reports.length>1)diagnostics.push({file,stage:'validation',message:`Select answer from: ${reports.join(', ')}`,span:doc.pipeline});
   try { await backend.preflight(doc,signal); } catch (error) { addError(error,doc.pipeline); }
-  const original=new SourceFile(file,source);
-  for(const asset of doc.assets.values())if(asset.program){
-    const at=(line:number,column:number)=>{
-      const offset=original.lines[line-1]+column-1;return original.span(offset,offset);
-    };
-  }
   const analyze=backend.analyze;
   if(!analyze)throw new Error('Backend does not provide an analysis implementation');
   const bindings = new Map<string,unknown>();

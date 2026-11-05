@@ -1,10 +1,11 @@
+import {tmpdir} from 'node:os';
 import {embedFigureCsv} from './src/chart/svg-data.ts';
 import assert from 'node:assert/strict';
 import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {createDraftTools} from './src/draft/tools.ts';
 import {testAttachments} from './test-attachments.ts';
-const root=mkdtempSync('/opt/userhome/h00629578/.cache/tmp/dari-answer-');
+const root=mkdtempSync(join(tmpdir(),'dari-answer-'));
 let executions=0,files=0;
 const saved:{name:string;content:string}[]=[];
 const columns=[{name:'n',type:'Int',nullable:false},{name:'label',type:'String',nullable:false}];
