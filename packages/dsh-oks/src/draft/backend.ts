@@ -1,3 +1,4 @@
+import {embedFigureCsv} from '../chart/svg-data.ts';
 import {runTyped,validateTypedRows} from './typed-runtime.ts';
 import {isBox,typeOf,show,unbox,record,scalar,type Ty} from './typed-types.ts';
 import {SqlWorkspace} from './sql.ts';
@@ -413,7 +414,7 @@ export function createDraftBackend(options: {
       if (issue) throw new Error(issue);
       const nodeRows = parsed.spec.kind === 'graph' ? rowsOf(input.nodes, 'render_figure.nodes') : undefined;
       const { option, height } = buildOption(rows, parsed.spec, nodeRows);
-      const svg = renderEchartsSvg(option, CHART_WIDTH, height);
+      const svg = embedFigureCsv(renderEchartsSvg(option, CHART_WIDTH, height), {rows,spec,...(nodeRows?{nodeRows}:{})});
       return { data: { rows, spec: parsed.spec, ...(nodeRows ? { nodeRows } : {}) }, evidence: { title: chartTitle(parsed.spec), display: { kind: 'chart', content: svg } } };
     }
     if (ctx.operator === 'render_report') {
@@ -467,8 +468,7 @@ export function createDraftBackend(options: {
         const code=ctx.asset!.references?.[ref]?.code??projectionCode(ref,path);
         return [code,value];
       }));
-      const reportReferences=Object.fromEntries(Object.entries(ctx.asset!.references??{}).filter(([alias])=>Object.hasOwn(bindings,alias)).map(([alias,ref])=>[ref.code??alias,bindings[alias].value]));
-      return { data: { assets: report.assets, items: report.items }, reportValues, reportReferences, sources: [{ origin, at: [], path: [], delivery: { html: report.page, title } }] };
+      return { data: { assets: report.assets, items: report.items }, reportValues, sources: [{ origin, at: [], path: [], delivery: { html: report.page, title } }] };
     }
     const evidence = computed.evidence as { display?: { kind: 'chart' | 'table'; content: string } } | undefined;
     return { logicalType:computed.logicalType, data: computed.data, sources: [{ origin, at: [], path: [], ...(evidence?.display ? { display: evidence.display } : {}) }],

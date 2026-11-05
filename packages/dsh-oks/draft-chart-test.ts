@@ -46,7 +46,7 @@ const chart=async({spec,data,nodes}:any)=>{
  writeFileSync(join(DEV_ROOT,file),source);
  const publication=await call('dari_resolve',{answer:false,src:file,figures:['figure']});assert(publication.ok,JSON.stringify(publication));
  const embedded=publication.figures.figure.embedded;const path=decodeURI(embedded.slice(embedded.indexOf('](')+2,-1));
- const svg=readFileSync(path,'utf8');assert.doesNotMatch(svg,/<metadata|dsh-oks-chart-input/);
+ const svg=readFileSync(path,'utf8');assert.match(svg,/<metadata id="dari-data" data-format="csv">/);assert.match(svg,/<metadata id="dari-spec" data-format="json">/);assert.doesNotMatch(svg,/dsh-oks-chart-input/);
  const input={data:lastChart!.data as any,origin:lastChart!.sources[0].origin};
  return {input,value:{ok:true,asset:path,rowCount:input.data.rows.length,spec:input.data.spec,title:embedded.slice(2,embedded.indexOf(']('))},text:embedded};
 };
@@ -620,10 +620,12 @@ try {
   for(const parent of Object.values(graphRoot.inputs!))assert.ok(graphInput.origin.nodes[parent]);
   const publication=await call('dari_resolve',{answer:false,src:'.work/chart.dari',reports:['answer']});assert(publication.ok,JSON.stringify(publication));
   const embedded=publication.reports.answer.embedded;
-  const graphReport=readReportPage(readFileSync(decodeURI(embedded.slice(embedded.indexOf('](')+2,-1)),'utf8'));
+  const graphHtml=readFileSync(decodeURI(embedded.slice(embedded.indexOf('](')+2,-1)),'utf8');
+  const graphReport=readReportPage(graphHtml);
   assert.ok(!('error' in graphReport));
-  assert.deepEqual((Object.values(graphReport.values).find((v:any)=>v?.nodeRows) as any).nodeRows,graphNodes);
-  assert.deepEqual((Object.values(graphReport.values).find((v:any)=>v?.nodeRows) as any).rows,graphEdges);
+  assert(!('values' in graphReport));
+  assert(graphHtml.includes('<metadata id="dari-nodes" data-format="csv">\nid,label,depth\ncore,核心,0\nedge,接入,1\n</metadata>'));
+  assert(graphHtml.includes('<metadata id="dari-data" data-format="csv">\nfrom,to,label\ncore,edge,经 site_id\n</metadata>'));
   const minimalSpec: Record<string, Record<string, unknown>> = {
     bar: { x: 'k', value: 'w' },
     line: { xType:'String', x: 'k', value: 'w' },

@@ -237,6 +237,6 @@ Report 的动态数值用 `Value(data=round(summary?.cpu,2))`，普通记录先�
 
 UseFigure 在 Answer 中发布图形并嵌入图片，Table 直接嵌入 Markdown 表格；在 Report 中嵌入图形/表格并自动编号。UseReport 仅用于 Answer，发布已声明 Report 的可点击链接，无需另调 present；同一次解析同一产物仅发布一次。
 
-报告归档含三个不执行的 script：dari-source 保存源码，dari-context 保存实际上下文与执行元数据，dari-values 保存该报告使用的引用值与图表数据、按引用去重。SVG 只含图形和标题，溯源从报告归档读取。
+报告归档保留两个不执行的 script：dari-source 保存源码，dari-context 保存实际上下文、执行时间及模型标识等元数据；不再重复保存 dari-values。所有 SVG 在非显示 metadata 节点内携带最终图表输入 CSV（dari-data；网络图另有 dari-nodes）与紧凑 JSON spec（dari-spec），便于读图；不附源码、上下文或溯源信息。表格与正文引用值直接从 HTML 读取；报告仍保留源码与执行元数据。
 
 `report_extract_dari({src:"report.html",sink:"restored.dari"})` 将归档源码写入新的指定文件，附加历史上下文、执行时间和模型标识等注释；目录已存在且不覆盖文件。不执行查询，重新运行会取得新上下文，不保证重现旧结果。提取后用宿主文件工具编辑。

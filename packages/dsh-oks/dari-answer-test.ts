@@ -1,3 +1,4 @@
+import {embedFigureCsv} from './src/chart/svg-data.ts';
 import assert from 'node:assert/strict';
 import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
@@ -5,13 +6,14 @@ import {createDraftTools} from './src/draft/tools.ts';
 import {testAttachments} from './test-attachments.ts';
 const root=mkdtempSync('/opt/userhome/h00629578/.cache/tmp/dari-answer-');
 let executions=0,files=0;
+const saved:{name:string;content:string}[]=[];
 const columns=[{name:'n',type:'Int',nullable:false},{name:'label',type:'String',nullable:false}];
 const entry={root,modelHash:'answer-test',settings:{workspaceRoot:root,domain:'test',queryMaxRows:200},runner:{async send(){return {ok:{accepted:true,queries:[{sql:'select n,label',bindings:[5],limit_slot:0,columns}]}};}}};
 const knowledge={ensureWorkspace:()=>entry,executorFor:()=>({executor:{async send(){executions++;return {rows:[{n:42,label:'*not emphasis* [link](x) <tag>'}],columns:['n','label'],truncated:false};},dispose(){}}})};
 const exec={agent:{session:{id:'answer'}}} as any;
 const timeContext={zones:new Map([[exec.agent.session,{kind:'resolved',timeZone:'UTC'}]])};
 const attachments=testAttachments(root);
-const drafts=createDraftTools({knowledge:knowledge as any,timeContext:timeContext as any,attachments:()=>({...attachments,saveFile:async args=>{files++;return attachments.saveFile(args);}})});
+const drafts=createDraftTools({knowledge:knowledge as any,timeContext:timeContext as any,attachments:()=>({...attachments,saveFile:async args=>{files++;saved.push({name:args.name!,content:Buffer.from(args.data).toString()});return attachments.saveFile(args);}})});
 const plain=createDraftTools({knowledge:knowledge as any,timeContext:timeContext as any});
 const call=async(name:string,args:object,tools=drafts)=>tools.tools.find(t=>t.name===name)!.execute(args as never,exec) as Promise<any>;
 const source=`data facts := query({limit:5});
@@ -59,6 +61,14 @@ answer := Answer [h2 ["明细"],UseFigure(ref=details,caption="统计明细")];`
  writeFileSync(join(root,'visual.dari'),visual.replace(report,'').replace('answer :=',report+'\nanswer :='));
  const mixed=await call('dari_resolve',{src:'visual.dari',answer:true,reports:['file'],figures:['chart']});
  assert.equal(mixed.ok,true,JSON.stringify(mixed));assert.match(mixed.reports.file.embedded,/^\[/);assert(mixed.answer.embedded.includes('!['));assert(mixed.answer.embedded.includes(mixed.reports.file.embedded));assert.equal(files,2);
+ const svg=saved.find(f=>f.name==='chart.svg')!.content;
+ assert(svg.includes('<metadata id="dari-data" data-format="csv">'));
+ const spec=JSON.parse(/<metadata id="dari-spec" data-format="json">([^<]*)<\/metadata>/.exec(svg)![1]);
+ assert.equal(spec.kind,'column');assert.equal(spec.x,'label');assert.equal(spec.value,'n');
+ assert(svg.includes('n,label\n42,*not emphasis* [link](x) &lt;tag&gt;'));
+ assert(!svg.includes('SELECT')&&!svg.includes('modelHash')&&!svg.includes('sourceHash'));
+ const standalone=await call('dari_resolve',{src:'visual.dari',answer:false,figures:['chart']});
+ assert(standalone.ok);assert(saved.at(-1)!.content.includes('id="dari-data"'));
  const cached=await call('dari_resolve',{src:'visual.dari',answer:true});assert.equal(cached.counts.executed,0);assert(cached.answer.embedded.includes('**数值**：42；*说明*'));assert(cached.answer.embedded.includes('!['));
  const debug=await call('dari_resolve',{src:'visual.dari',answer:false,data:['summary']});assert.equal(debug.ok,true);assert(!('answer' in debug));
  for(const selection of [{reports:['answer']},{data:['answer']}]){
@@ -79,5 +89,9 @@ answer := Answer [h2 ["明细"],UseFigure(ref=details,caption="统计明细")];`
   writeFileSync(join(root,'invalid.dari'),source.replace('h2 ["资源概况"]',node));
   const bad=await call('dari_check',{src:'invalid.dari'});assert.equal(bad.ok,false,node);assert(pattern.test(bad.text),JSON.stringify(bad));
  }
+ const encoded=embedFigureCsv('<svg><path/></svg>',{rows:[{label:'a,"b"\n</metadata>&',missing:null,empty:''}],nodeRows:[{id:'node',weight:2}]});
+ assert(encoded.includes('"a,""b""\n&lt;/metadata&gt;&amp;",,""'));
+ assert(encoded.includes('<metadata id="dari-nodes" data-format="csv">\nid,weight\nnode,2\n</metadata>'));
+ assert(encoded.endsWith('<path/></svg>'));
  console.log('Answer: typed zero-query checks, scalar provenance, Markdown escaping, no-attachment text, chart embedding and selection passed');
 }finally{drafts.dispose();plain.dispose();rmSync(root,{recursive:true,force:true});}

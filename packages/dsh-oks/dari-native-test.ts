@@ -40,7 +40,7 @@ try {
   assert.match(html,/&amp;lt;script&amp;gt; &amp;amp;/,'pipeline data is literal text, not markup or entities');
   assert.match(html,/<!-- 保留意图 -->/);assert.match(html,/data-oks-shrink="">完整结论/);
   const archive=readReportPage(html);assert.ok(!('error' in archive));
-  assert.equal(archive.source,source);assert(Object.values(archive.values).includes('&lt;script&gt; &amp; "quoted"'));
+  assert.equal(archive.source,source);assert(!('values' in archive));assert(!html.includes('id="dari-values"'));
   for(const raw of ['坏 &nbsp;','坏 \u0001']){
     const source=draft(`<p>中文😀\r\n${raw}</p>`);
     const result=await runtime.run(source);assert.equal(result.status,'invalid');

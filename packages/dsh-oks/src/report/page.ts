@@ -11,20 +11,18 @@ import {escapeAttribute,escapeText,attributeText,type ReportNode,type ReportProg
 export const REPORT_SOURCE_OPEN = '<script type="text/plain" id="dari-source">';
 export const REPORT_METADATA_ID = 'dari-context';
 export const REPORT_METADATA_OPEN = '<script type="application/json" id="dari-context">';
-export const REPORT_VALUES_OPEN = '<script type="application/json" id="dari-values">';
 const REPORT_METADATA_CLOSE = '</script>';
 function metadataRange(html:string,marker=REPORT_METADATA_OPEN):{start:number;end:number}|undefined {
  const open=html.indexOf(marker);if(open<0)return undefined;
  const start=open+marker.length,end=html.indexOf(REPORT_METADATA_CLOSE,start);
  return end<0?undefined:{start,end};
 }
-export type ReportPageArchive={version:1;source:string;context:ReportArchive['context'];values:Record<string,unknown>};
+export type ReportPageArchive={version:1;source:string;context:ReportArchive['context']};
 const sourceText=(s:string)=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
 const restoreSource=(s:string)=>s.replaceAll('&gt;','>').replaceAll('&lt;','<').replaceAll('&amp;','&');
-export function reportArchiveNodes(archive?:ReportArchive,values:Record<string,unknown>={}):string {
+export function reportArchiveNodes(archive?:ReportArchive):string {
  return REPORT_SOURCE_OPEN+sourceText(archive?.dari.source??'')+REPORT_METADATA_CLOSE+'\n'+
- REPORT_METADATA_OPEN+metadataJson({version:archive?.version??1,context:archive?.context??null})+REPORT_METADATA_CLOSE+'\n'+
- REPORT_VALUES_OPEN+metadataJson(values)+REPORT_METADATA_CLOSE;
+ REPORT_METADATA_OPEN+metadataJson({version:archive?.version??1,context:archive?.context??null})+REPORT_METADATA_CLOSE;
 }
 
 /** 报告内联资源的引用前缀：工作区路径解析器明确拒绝它，隔离由协议保证。 */
@@ -163,7 +161,7 @@ ${input.subtitle === null ? '' : `<p class="subtitle">${escapeHtml(input.subtitl
 </header>
 ${nav === '' ? '' : `<nav><span class="nav-title">目录</span>${nav}</nav>`}
 ${input.article}
-<footer>本报告由 oks 插件生成 · 单文件自足；DARI 源码、展示数据与执行上下文都在页面里（${REPORT_METADATA_ID}）</footer>
+<footer>本报告由 oks 插件生成 · 单文件自足；DARI 源码与执行元数据保存在页面中；展示数据见正文、表格与 SVG（${REPORT_METADATA_ID}）</footer>
 </body>
 </html>
 `;
@@ -171,26 +169,25 @@ ${input.article}
   return named;
 }
 
-/** Read only the three fixed inert script nodes; never evaluate report contents. */
+/** Read only the fixed inert source and context script nodes; never evaluate report contents. */
 export function readReportPage(html:string):ReportPageArchive|{error:string} {
- const source=metadataRange(html,REPORT_SOURCE_OPEN),context=metadataRange(html),values=metadataRange(html,REPORT_VALUES_OPEN);
- if(!source||!context||!values)return {error:'报告缺少完整的源码、上下文或引用值元数据节点。'};
- let meta:any,refs:unknown;
- try{meta=JSON.parse(html.slice(context.start,context.end));refs=JSON.parse(html.slice(values.start,values.end));}
+ const source=metadataRange(html,REPORT_SOURCE_OPEN),context=metadataRange(html);
+ if(!source||!context)return {error:'报告缺少完整的源码或上下文元数据节点。'};
+ let meta:any;
+ try{meta=JSON.parse(html.slice(context.start,context.end));}
  catch(cause){return {error:'报告元数据不是 JSON：'+errorText(cause)};}
- if(!isRecord(meta)||!isRecord(refs))return {error:'报告元数据必须是对象。'};
+ if(!isRecord(meta))return {error:'报告元数据必须是对象。'};
  if(meta.version!==1)return {error:'不支持的报告归档版本。'};
  const c=meta.context;
  if(!isRecord(c)||typeof c.run!=='string'||typeof c.batch!=='string'||typeof c.sourceHash!=='string'||typeof c.startedAt!=='string'||!Array.isArray(c.captures)||!Array.isArray(c.acquisitions))return {error:'报告执行上下文不完整。'};
- return {version:1,source:restoreSource(html.slice(source.start,source.end)),context:c as ReportArchive['context'],values:refs};
+ return {version:1,source:restoreSource(html.slice(source.start,source.end)),context:c as ReportArchive['context']};
 }
 
-/** Replace all three slots with the source and this report's actual referenced values. */
-export function withReportArchive(html:string,archive:ReportArchive,values:Record<string,unknown>={}):string {
+/** Replace source and execution metadata; displayed values live in HTML and SVG. */
+export function withReportArchive(html:string,archive:ReportArchive):string {
  const replacements=[
   {marker:REPORT_SOURCE_OPEN,text:sourceText(archive.dari.source)},
   {marker:REPORT_METADATA_OPEN,text:metadataJson({version:archive.version,context:archive.context})},
-  {marker:REPORT_VALUES_OPEN,text:metadataJson(values)},
  ].map(item=>{const range=metadataRange(html,item.marker);if(!range)throw new Error('报告缺少完整的元数据节点');return {...range,text:item.text};}).sort((a,b)=>b.start-a.start);
  for(const r of replacements)html=html.slice(0,r.start)+r.text+html.slice(r.end);
  return html;

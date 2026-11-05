@@ -16,7 +16,7 @@ import type { DataOrigin, ResultColumn } from '../results.ts';
 export type ValueSource = { display?: { kind: 'chart' | 'table'; content: string }; delivery?: { html: string; title: string }; origin: DataOrigin; at: (string | number)[]; path: (string | number)[] };
 /** Internal plan payload; carried by a whole value reference, never by JSON construction/projection. */
 export type QueryPlan = { environment: string; intent: unknown; sql: string; bindings: unknown[]; columns: ResultColumn[]; limit_slot: number };
-export type DraftValue = { logicalType?:unknown; data: unknown; sources: ValueSource[]; plan?: QueryPlan; reportValues?: Record<string,unknown>; reportReferences?: Record<string,unknown> };
+export type DraftValue = { logicalType?:unknown; data: unknown; sources: ValueSource[]; plan?: QueryPlan; reportValues?: Record<string,unknown> };
 export type Computed = { logicalType?:unknown; data: unknown; evidence?: unknown };
 export type CallContext = {
   operator: Operator;
@@ -367,7 +367,7 @@ export class DraftRuntime {
     const value=structuredClone(output.value);
     const source=value.sources.length===1?value.sources[0]:undefined;
     if(run.archive&&source?.delivery&&source.at.length===0&&source.path.length===0){
-      source.delivery.html=withReportArchive(source.delivery.html,run.archive,(value.reportReferences??{}));
+      source.delivery.html=withReportArchive(source.delivery.html,run.archive);
       value.data=structuredClone(run.archive);
     }
     return { run: run.id, sourceHash: run.sourceHash, stale: hash(currentSource) !== run.sourceHash, value };

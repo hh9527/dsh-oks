@@ -37,7 +37,7 @@ try{
  write(base+'</Dari>');
  const first=await resolve({figures:['figures.severity']});assert.equal(first.ok,true,JSON.stringify(first));
  const image=first.figures['figures.severity'];assert.deepEqual(Object.keys(image),['embedded']);assert.match(image.embedded,/^!\[级别分布\]\(/);
- const original=readFileSync(pathOf(image.embedded),'utf8');assert.match(original,/<svg/);assert.doesNotMatch(original,/<metadata|dsh-oks-chart-input/);assert.equal(renders,1,'unselected table is not rendered');
+ const original=readFileSync(pathOf(image.embedded),'utf8');assert.match(original,/<svg/);assert.match(original,/<metadata id="dari-data" data-format="csv">/);assert.match(original,/<metadata id="dari-spec" data-format="json">/);assert.doesNotMatch(original,/dsh-oks-chart-input/);assert.equal(renders,1,'unselected table is not rendered');
  assert.equal((await resolve({figures:['figures.severity']})).figures['figures.severity'].embedded,image.embedded);assert.equal(renders,1);
  failSave=true;await assert.rejects(resolve({figures:['figures.severity']}),/attachment store failed/);failSave=false;
  const source=base+report('overview','<p>见 <FigureRef ref="severity"/>。</p>'+fig('severity')+fig('details')+fig('severity'))+report('tables',fig('details')+fig('severity'))+'</Dari>';
@@ -48,7 +48,7 @@ try{
  assert.match(archived,/见 <span(?: data-oks-lit="")?>图 1<\/span>/);assert.equal((archived.match(/图 1：/g)??[]).length,2);assert.match(archived,/表 1：/);assert.doesNotMatch(archived,/图 2：/);
  assert.match(readFileSync(pathOf(result.reports['reports.tables'].embedded),'utf8'),/图 1：/);
  assert.match(result.figures['figures.details'].embedded,/^\| level \| n \|\n/);
- const reportData=readReportPage(archived);assert.ok(!('error' in reportData));assert.ok(Object.keys(reportData.values).length>0);
+ const reportData=readReportPage(archived);assert.ok(!('error' in reportData));assert(!('values' in reportData));assert(!archived.includes('id="dari-values"'));assert(archived.includes('id="dari-data"'));
  assert.equal(result.data,undefined,'presentation results do not duplicate facts');
  const values=await resolve({data:['rows','spec']});assert.equal(values.ok,true);assert.equal(values.data.rows.length,2);assert.equal(values.figures,undefined);assert.equal(values.reports,undefined);
  assert.equal((await resolve({figures:['rows']})).execution,'not performed');

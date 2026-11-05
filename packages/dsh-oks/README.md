@@ -94,7 +94,7 @@ answer := Answer [
 
 运行以有类型计划生成参数化 SQL，在每份分析稿的临时 SQLite 中执行；临时数据库闲置 15 分钟后回收。每个结果集保留 schema；查询与派生计算按依赖缓存，缓存命中也能恢复临时表。select_one 的动态多行约束会在运行时拒绝。截断输入、schema 漂移、值类型不符、资源超限均明确失败。
 
-图表写成 `figure chart := BarChart(spec = spec, data = result);`，检查器验证列名和数值映射。报告通过 `UseFigure(ref = chart, caption = "说明")` 编排，caption 可选。绑定不可变，先定义后引用。正常交付将 answer.embedded 原样贴回；UseFigure 生成图表嵌入，UseReport 生成可点击的报告链接。调试时通过 data/figures/reports 选择输出。报告归档保留上下文、查询与加工过程、正文引用值和最终绘图数据；SVG 只承载图形和标题。
+图表写成 `figure chart := BarChart(spec = spec, data = result);`，检查器验证列名和数值映射。报告通过 `UseFigure(ref = chart, caption = "说明")` 编排，caption 可选。绑定不可变，先定义后引用。正常交付将 answer.embedded 原样贴回；UseFigure 生成图表嵌入，UseReport 生成可点击的报告链接。调试时通过 data/figures/reports 选择输出。报告保留源码、上下文及执行元数据；SVG 内含最终绘图输入 CSV 和紧凑 JSON spec，表格与正文直接从 HTML 读取。
 
 ## 知识发现
 
@@ -241,7 +241,7 @@ workflow 负责工作顺序和知识导航，dari 负责语言、工具、类型
 
 ### 报告归档
 
-DARI 报告 HTML 使用三个非执行 script 节点：`dari-source`（text/plain）保存完整原始源码，`dari-context`（application/json）保存版本和实际执行上下文，`dari-values`（application/json）保存当前报告实际使用的引用值（含图表数据）。引用按表达式索引并去重，不保存未使用的中间绑定或其他报告的引用值。源码嵌入时转义 HTML 敏感字符，提取时无损还原；JSON 转义 `<` 等字符，避免结束标签截断节点。
+DARI 报告 HTML 保留两个非执行 script 节点：`dari-source`（text/plain）保存完整原始源码，`dari-context`（application/json）保存版本、实际上下文、执行时间和模型标识等元数据。删除重复的 `dari-values`；表格与正文值直接读取 HTML，图表输入在 SVG metadata 中：`dari-data` 保存 CSV，`dari-spec` 保存紧凑 JSON spec，网络图的 `dari-nodes` 保存节点 CSV。源码嵌入时转义 HTML 敏感字符，提取时无损还原；JSON 转义 `<` 等字符，避免结束标签截断节点。
 
 `report_extract_dari({src,sink})` 将源码写入新的本地 `.dari` 文件，并以行注释附上历史执行上下文；不覆盖文件、不刷新时间、不执行查询。运行期内部的完整归档仍受运行存储预算约束。
 
