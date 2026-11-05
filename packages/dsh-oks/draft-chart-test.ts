@@ -40,7 +40,7 @@ const chart=async({spec,data,nodes}:any)=>{
  const rowsExpression=data.length?'table('+dariLiteral(data)+',{kind:"example"})':'data('+dariLiteral({columns:[{name:spec.x,type:'String',nullable:false},{name:spec.value,type:'Float',nullable:false}],rows:[],truncated:false})+',{kind:"example"})';
  const source=`data rows = ${rowsExpression};
  ${nodes?`data nodes = table(${dariLiteral(nodes)},{kind:"example"});`:''}
- figure rendered = ${component}(spec=${dariLiteral(mapping)},data=rows${nodes?',nodes=nodes':''});
+ figure rendered = tree! { ${component}(spec=${dariLiteral(mapping)},data=rows${nodes?',nodes=nodes':''}) };
  answer tree! { Answer [UseFigure(ref=rendered)] };`;
  writeFileSync(join(DEV_ROOT,file),source);
  const publication=await call('dari_resolve',{src:file});assert(publication.ok,JSON.stringify(publication));

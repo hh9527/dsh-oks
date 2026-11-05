@@ -10,9 +10,9 @@ let queries=0,renders=0;
 const backend=createDraftBackend({entry:{} as WorkspaceEntry,file,contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge:{executorFor(){queries++;throw new Error('No SQL allowed');}}});
 const runtime=new DraftRuntime({...backend,execute(ctx){if(ctx.operator==='render_figure')renders++;return backend.execute(ctx);}},{file});
 const source=`data rows = table([{x:"A",n:2},{x:"B",n:3}],{kind:"example"});
-figure one = ColumnChart(spec={x:"x",value:"n"},data=rows);
-figure details = Table(spec={columns:["x","n"]},data=rows);
-figure two = LineChart(spec={xType:"String",x:"x",value:"n"},data=rows);
+figure one = tree! { ColumnChart(spec={x:"x",value:"n"},data=rows) };
+figure details = tree! { Table(spec={columns:["x","n"]},data=rows) };
+figure two = tree! { LineChart(spec={xType:"String",x:"x",value:"n"},data=rows) };
 report answer = tree! { Report [
  p ["参见 ",FigureRef(ref=one)],
  UseFigure(ref=one,caption="类别比较"),

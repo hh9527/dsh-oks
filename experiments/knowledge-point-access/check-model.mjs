@@ -5,7 +5,6 @@ import {createInterface} from 'node:readline';
 import {readBuildInformation} from '../../packages/dsh-oks/src/service-metadata.ts';
 import {collectProgrammedKnowledge} from '../../packages/dsh-oks/src/programmed-knowledge.ts';
 import {derivePublishedKnowledge} from '../../packages/dsh-oks/src/published-knowledge.ts';
-import {semanticKnowledge} from '../../packages/dsh-oks/src/semantic-knowledge.ts';
 import {discoverPoints,readPoints} from '../../packages/dsh-oks/src/point-knowledge.ts';
 const [domain,artifact,runner]=process.argv.slice(2);
 assert(['ic','ns'].includes(domain)&&artifact&&runner,'Usage: check-model.mjs ic|ns model.wasm telora-run');
@@ -17,7 +16,6 @@ const words=domain==='ic'?[['alarm_severity','critical_alarm_count','alarm_occur
  :[['ar_severity','ar_count','ar_occur_ms'],['sede_cpu_usage','sede_mem_usage','sede_sample_time'],['ps_name']];
 const anchors=datasets.map((name,i)=>({id:'datasets/'+name,terms:words[i]}));
 const bytes=x=>Buffer.byteLength(JSON.stringify(x));
-const baseline=datasets.map(id=>semanticKnowledge(graph,'card',{id:'datasets/'+id,section:'all'}));
 const started=performance.now(),cap=discoverPoints(graph,{anchors}),capMs=performance.now()-started;
 assert(cap.anchors.every(a=>!a.unresolved_terms.length),JSON.stringify(cap.anchors));
 let disconnected;
@@ -58,6 +56,6 @@ try{
  child.stdin.write(JSON.stringify({method:domain+'/transform',input:{intents}})+'\n');
  const first=await lines[Symbol.asyncIterator]().next();assert(!first.done,stderr);const response=JSON.parse(first.value);
  assert.equal(response.error,false,JSON.stringify(response));assert.equal(response.ok.accepted,true,JSON.stringify(response.ok.diagnostics));assert.equal(response.ok.queries.length,2);
- const selectedInfoBytes=bytes(info),capBytes=bytes(cap),baselineBytes=bytes(baseline);
- console.log(JSON.stringify({domain,anchors,disconnected,baselineBytes,capBytes,selectedInfoBytes,totalBytes:capBytes+selectedInfoBytes,reductionPercent:Math.round((1-(capBytes+selectedInfoBytes)/baselineBytes)*100),indexedPoints:Object.values(cap.index).reduce((n,ids)=>n+ids.length,0),readPoints:info.items.length,capMs:Math.round(capMs*100)/100,infoMs:Math.round(infoMs*100)/100,paths:cap.connections.map(c=>({from:c.from,to:c.to,candidates:c.paths.length,truncated:c.truncated})),transformAccepted:true,columns:response.ok.queries.map(q=>q.columns)},null,2));
+ const selectedInfoBytes=bytes(info),capBytes=bytes(cap);
+ console.log(JSON.stringify({domain,anchors,disconnected,capBytes,selectedInfoBytes,totalBytes:capBytes+selectedInfoBytes,indexedPoints:Object.values(cap.index).reduce((n,ids)=>n+ids.length,0),readPoints:info.items.length,capMs:Math.round(capMs*100)/100,infoMs:Math.round(infoMs*100)/100,paths:cap.connections.map(c=>({from:c.from,to:c.to,candidates:c.paths.length,truncated:c.truncated})),transformAccepted:true,columns:response.ok.queries.map(q=>q.columns)},null,2));
 }finally{clearTimeout(timer);lines.close();child.stdin.end();await closed;}

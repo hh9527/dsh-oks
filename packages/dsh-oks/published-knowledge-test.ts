@@ -1,4 +1,5 @@
-import {queryKnowledge} from './src/knowledge-methods.ts';
+import {searchPoints} from './src/point-navigation.ts';
+import {readPoints} from './src/point-knowledge.ts';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -59,7 +60,7 @@ const index = derivePublishedKnowledge(input);
 assert.equal(resolveFact(index.knowledge, `${ds}#dimensions/one`).projectable, false);
 assert.deepEqual((resolveFact(index.knowledge, group).referenced_by as any).bindings, [first, second]);
 assert.ok(index.keys.has(first) && index.keys.has(second));
-assert.equal((queryKnowledge(index.knowledge,'search',{query:'customer',type:'Entity'}) as any).items[0].key,'entities/customer');
+assert.equal(searchPoints(index.knowledge,{q:['customer'],scope:['entities']}).results[0].items[0].id,'entities/customer');
 if (process.argv[2]) {
   const metadata = readBuildInformation(readFileSync(process.argv[2]));
   assert.ok(metadata && Object.hasOwn(metadata, 'ontology.knowledge'));
@@ -73,7 +74,7 @@ if (process.argv[2]) {
   assert.ok(Object.keys(actual.knowledge.datasets).length >= 5);
   for (const root of ['entities', 'dimension_groups'] as const) assert.ok(Object.keys(actual.knowledge[root] ?? {}).length > 0, root);
   const dataset=Object.keys(actual.knowledge.datasets)[0];
-  queryKnowledge(actual.knowledge,'card',{id:dataset});
+  assert.equal(readPoints(actual.knowledge,{ids:['datasets/'+encodePart(dataset)]}).items.length,1);
   console.log(JSON.stringify({ artifact: process.argv[2], revision: actual.revision, counts: actual.meta.counts, facts: actual.keys.size, links: actual.links.length }));
 }
 console.log('static knowledge: no discovery calls, strict metadata, closed references, separate bindings and JS navigation passed');

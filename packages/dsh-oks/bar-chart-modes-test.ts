@@ -80,7 +80,7 @@ for(const [component,series,ok]of [
  ['ColumnChart',',series:"level"',false],['BarChart',',series:"level"',false],
  ['GroupedColumnChart','',false],['GroupedBarChart','',false],
 ] as const){
- const source=`data rows = table(${dariLiteral(rows)},{kind:"example"});\nfigure chart = ${component}(spec={x:"level",value:"n"${series}},data=rows);`;
+ const source=`data rows = table(${dariLiteral(rows)},{kind:"example"});\nfigure chart = tree! { ${component}(spec={x:"level",value:"n"${series}},data=rows) };`;
  const checked=await checkDesign(source,'modes.dari',backend);assert.equal(checked.ok,ok,component+' '+JSON.stringify(checked));
 }
 console.log('Plain/category colors, grouped/series colors, single-group legends, sorting, negative values and DARI checks passed');

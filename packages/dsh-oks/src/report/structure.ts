@@ -2,7 +2,7 @@
 import type { Span } from '../draft/pipeline.ts';
 const COMPILED_ELEMENTS:readonly string[]=['article','section','h1','h2','h3','p','div','span','figure','figcaption','table','caption','thead','tbody','tfoot','tr','th','td','ul','ol','li','blockquote','pre','code','strong','em','a','br','hr'];
 /** Source nodes are distinct from generated figure/caption containers. */
-export const AUTHOR_ELEMENTS:readonly string[]=['Report','section','h1','h2','h3','p','div','span','ul','ol','li','blockquote','pre','code','strong','em','a','br','hr','Value','value','Lit','UseFigure','FigureRef'];
+export const AUTHOR_ELEMENTS:readonly string[]=['Report','section','h1','h2','h3','p','div','span','ul','ol','li','blockquote','pre','code','strong','em','a','br','hr','Value','Lit','UseFigure','FigureRef'];
 export const AUTHOR_ATTRIBUTES:readonly string[]=['id','class','title','lang','data-oks-ref','data-oks-pick','data-oks-shrink','data-oks-lit','href','colspan','rowspan','scope'];
 /** Public authoring hides the literal marker behind Lit. */
 export const PUBLIC_AUTHOR_ATTRIBUTES=AUTHOR_ATTRIBUTES.filter(key=>!['data-oks-lit','colspan','rowspan','scope'].includes(key));

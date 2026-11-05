@@ -18,7 +18,7 @@ const plain=createDraftTools({knowledge:knowledge as any,timeContext:timeContext
 const call=async(name:string,args:object,tools=drafts)=>tools.tools.find(t=>t.name===name)!.execute(args as never,exec) as Promise<any>;
 const prefix=`data facts = query({limit:5});
 data summary = select_one({from:{f:facts},fields:r=>({n:r.f.n,flag:r.f.flag}),order_by:o=>[desc(o.n)],limit:1});
-figure chart = ColumnChart(spec={x:"label",value:"n"},data=facts);
+figure chart = tree! { ColumnChart(spec={x:"label",value:"n"},data=facts) };
 report file = tree! { Report [p ["报告内容"]] };
 `;
 let seq=0;
@@ -43,29 +43,29 @@ try{
  assert(text.includes('!['));assert.equal(saved.length,1);assert.equal(saved[0].name,'chart.svg');
  const reportText=await run("answer tree! { Answer [if (False) [UseFigure(ref=chart)] else [UseReport(ref=file)]] };",drafts);
  assert(reportText.includes('['));assert.equal(saved.length,2);assert.equal(saved[1].name,'file.report.html');
- const some='answer tree! { Answer [if let Some(i) = summary [p [value(ref=i.n)], if (i.n > 0) [p ["positive"]], if let Some(flag) = i.flag [p [value(ref=flag)]]] else [p ["empty"]]] };';
+ const some='answer tree! { Answer [if let Some(i) = summary [p [Value(data=i.n)], if (i.n > 0) [p ["positive"]], if let Some(flag) = i.flag [p [Value(data=flag)]]] else [p ["empty"]]] };';
  assert.equal(await run(some),'42\n\npositive\n\ntrue');
- assert.equal(await run('answer tree! { Answer [if let Some(i) = summary [p [value(ref=round(i.n / 2, 1))]] else []] };'),'21');
+ assert.equal(await run('answer tree! { Answer [if let Some(i) = summary [p [Value(data=round(i.n / 2, 1))]] else []] };'),'21');
  flag=false;
- assert.equal(await run('answer tree! { Answer [if let Some(i) = summary [if let Some(f) = i.flag [p [value(ref=f)]] else [p ["none"]]]] };'),'false');
+ assert.equal(await run('answer tree! { Answer [if let Some(i) = summary [if let Some(f) = i.flag [p [Value(data=f)]] else [p ["none"]]]] };'),'false');
  flag=null;
- assert.equal(await run('answer tree! { Answer [if let Some(i) = summary [if let Some(f) = i.flag [p [value(ref=f)]] else [p ["none"]]]] };'),'none');
+ assert.equal(await run('answer tree! { Answer [if let Some(i) = summary [if let Some(f) = i.flag [p [Value(data=f)]] else [p ["none"]]]] };'),'none');
  flag=true;
  empty=true;
  assert.equal(await run(some),'empty');
  // Inactive scoped expressions are typechecked but do not perform arithmetic at runtime.
- assert.equal(await run('answer tree! { Answer [if let Some(i) = summary [p [value(ref=i.n / 0)]] else [p ["empty"]]] };'),'empty');
+ assert.equal(await run('answer tree! { Answer [if let Some(i) = summary [p [Value(data=i.n / 0)]] else [p ["empty"]]] };'),'empty');
  empty=false;
  assert.equal(await run("answer tree! { Answer [if (False) [UseFigure(ref=chart)], if (True) [p [FigureRef(ref=chart)],UseFigure(ref=chart)]] };",drafts).then(t=>t.slice(0,3)),'图 1');
  for(const [body,pattern]of [
   ['if (1) []',/requires Bool/],['if ("yes") []',/requires Bool/],['if (summary?.flag) []',/requires Bool/],
-  ["if (False) [value(ref=summary?.missing)]",/Unknown field missing/],
+  ["if (False) [Value(data=summary?.missing)]",/Unknown field missing/],
   ["if (False) [p [h2 [\"bad\"]]]",/cannot be nested/],
   ["ul [if (False) [\"bad\"]]",/require li/],
   ["pre [if (False) [p [\"bad\"]]]",/pre accepts/],
-  ['if let Some(i) = summary [value(ref=i.missing)]',/Unknown field missing/],
-  ['if let Some(i) = summary [] else [value(ref=i.n)]',/Undefined or forward.*i/],
-  ['if let Some(i) = summary [], value(ref=i.n)',/Undefined or forward.*i/],
+  ['if let Some(i) = summary [Value(data=i.missing)]',/Unknown field missing/],
+  ['if let Some(i) = summary [] else [Value(data=i.n)]',/Undefined or forward.*i/],
+  ['if let Some(i) = summary [], Value(data=i.n)',/Undefined or forward.*i/],
   ['if let Some(facts) = summary []',/conflicting/],
   ['if let Some(chart) = summary []',/conflicting/],
   ['if let Some(i) = facts []',/requires Option|requires an Option/],

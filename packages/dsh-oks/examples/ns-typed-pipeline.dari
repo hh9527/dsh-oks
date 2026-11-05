@@ -15,7 +15,7 @@ data summary = select_one({
 });
 data spec = {x:"classification",value:"count"};
 
-figure classChart = ColumnChart(spec = spec, data = classes);
+figure classChart = tree! { ColumnChart(spec = spec, data = classes) };
 
 report full = tree! { Report(title = "NS 网元分类概览") [
   h1 [ "网元分类概览" ],

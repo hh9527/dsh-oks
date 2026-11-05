@@ -9,7 +9,7 @@ import type {TimeContext} from './src/time-context.ts';
 
 const root=mkdtempSync('/opt/userhome/h00629578/.cache/tmp/oks-approval-');mkdirSync(join(root,'.work'));
 const path=join(root,'.work/test.dari'),src='.work/test.dari';
-const source='data facts = query({limit:5}); data one = select_one({from:{f:facts},fields:r=>({n:r.f.n}),order_by:o=>[asc(o.n)],limit:1}); answer tree! { Answer [p [value(ref=one?.n)]] };';
+const source='data facts = query({limit:5}); data one = select_one({from:{f:facts},fields:r=>({n:r.f.n}),order_by:o=>[asc(o.n)],limit:1}); answer tree! { Answer [p [Value(data=one?.n)]] };';
 let executions=0,requests=0;
 const columns=[{name:'n',type:'Int',nullable:false}];
 const entry={root,modelHash:'test',settings:{domain:'test',queryMaxRows:100,requireRunApproval:true,dataFile:'fixture.sqlite'},runner:{async send(){return {ok:{accepted:true,queries:[{sql:'select n limit ?1',bindings:[5],limit_slot:0,columns}]}};}}} as unknown as WorkspaceEntry;
@@ -57,7 +57,7 @@ try{
  release('allowed-once');assert.equal((await pending).ok,true);assert.equal(executions,2);
  await assert.rejects(call({src,data:['facts'],approved:true}),/Expected only/);
  decide=async()=> 'allowed-once';
- const reportSource=source.slice(0,source.indexOf('answer tree!'))+'report full = tree! { Report [p [value(ref=one?.n)]] }; report other = tree! { Report [p ["Other"]] }; answer tree! { Answer [UseReport(ref=full),UseReport(ref=other)] };';
+ const reportSource=source.slice(0,source.indexOf('answer tree!'))+'report full = tree! { Report [p [Value(data=one?.n)]] }; report other = tree! { Report [p ["Other"]] }; answer tree! { Answer [UseReport(ref=full),UseReport(ref=other)] };';
  writeFileSync(path,reportSource);
  r=await call({src});assert.equal(r.ok,true,JSON.stringify(r));assert(r.answer.embedded.includes('full.report.html'));assert(r.answer.embedded.includes('other.report.html'));
  const beforeSelector=requests;

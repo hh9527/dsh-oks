@@ -143,7 +143,7 @@ console.log('Syntax diagnostics: original line, caret, expected delimiter and op
  ];
  for(const [spec,pattern] of invalid){
   const parsed=parseChartSpec({kind:'bar',...spec});assert('error' in parsed,JSON.stringify(spec));assert.match(parsed.error,pattern);
-  const source=`data rows = query({limit:5});\ndata spec = ${dariLiteral(spec)};\nfigure chart = BarChart(spec=spec,data=rows);`;
+  const source=`data rows = query({limit:5});\ndata spec = ${dariLiteral(spec)};\nfigure chart = tree! { BarChart(spec=spec,data=rows) };`;
   const checked=await check(source);assert.equal(checked.ok,false,JSON.stringify(spec));
   const diagnostic=checked.diagnostics.find(d=>pattern.test(d.message));assert(diagnostic,JSON.stringify(checked.diagnostics));assert.equal(diagnostic.file,'test.dari');
   assert(diagnostic.span.start.line>=2&&diagnostic.span.start.line<=3);
@@ -152,7 +152,7 @@ console.log('Syntax diagnostics: original line, caret, expected delimiter and op
  }
  assert.equal(reads,before,'invalid figure specs never acquire business rows in checking or execution');
  const good={...base,layout:{labelFont:12,titleFont:16,tickCount:5},style:{labels:true,sort:'desc',colors:['#123','#1234','#123456','#12345678']}};
- const checked=await check(`data rows = query({limit:5});data spec = ${dariLiteral(good)};figure chart = BarChart(spec=spec,data=rows);`);
+ const checked=await check(`data rows = query({limit:5});data spec = ${dariLiteral(good)};figure chart = tree! { BarChart(spec=spec,data=rows) };`);
  assert.equal(checked.ok,true,JSON.stringify(checked));assert.equal(reads,before);
  assert('spec' in parseChartSpec({kind:'line',x:'n',value:'n',xType:"Rfc3339"}));
  const nonfinite=parseChartSpec({kind:'bar',...base,marks:[{value:Infinity}]});assert('error' in nonfinite);assert.match(nonfinite.error,/finite/);

@@ -18,17 +18,18 @@ const plain=createDraftTools({knowledge:knowledge as any,timeContext:timeContext
 const call=async(name:string,args:object,tools=drafts)=>tools.tools.find(t=>t.name===name)!.execute(args as never,exec) as Promise<any>;
 const source=`data facts = query({limit:5});
 data summary = select_one({from:{f:facts},fields:r=>({n:r.f.n,label:r.f.label}),order_by:o=>[desc(o.n)],limit:1});
-figure chart = ColumnChart(spec={x:"label",value:"n"},data=facts);
+figure chart = tree! { ColumnChart(spec={x:"label",value:"n"},data=facts) };
 answer tree! { Answer [
     h2 ["资源概况"],
-    p [strong ["数值"],"：",value(ref=summary?.n),"；",em ["说明"],"：",value(ref=summary?.label)],
+    p [Lit ["1.2"]],
+    p [strong ["数值"],"：",Value(data=summary?.n),"；",em ["说明"],"：",Value(data=summary?.label)],
     ul [li ["甲"],li ["乙"]],
     blockquote [p ["客观统计"]],
     p [code ["a\u0060b"]],
     pre [code ["hello\\nworld"]],
     p [a(href="https://example.com/a(b)") ["来源"]]
 ] };
-report file = tree! { Report [p [value(ref=summary?.n)]] };
+report file = tree! { Report [p [Value(data=summary?.n)]] };
 `;
 try{
  writeFileSync(join(root,'answer.dari'),source);
@@ -36,12 +37,12 @@ try{
  const result=await call('dari_resolve',{src:'answer.dari'},plain);
  assert.equal(result.ok,true,JSON.stringify(result));assert.equal(files,0);
  const text=result.answer.embedded;
- assert.match(text,/^## 资源概况/);assert(text.includes('**数值**：42；*说明*'));
+ assert.match(text,/^## 资源概况/);assert(text.includes('1\\.2'));assert(text.includes('**数值**：42；*说明*'));
  assert(text.includes('\\*not emphasis\\* \\[link\\]\\(x\\) \\<tag\\>'));
  assert(text.includes('- 甲\n- 乙'));assert(text.includes('> 客观统计'));assert(text.includes('``a`b``'));
  assert(text.includes('```\nhello\nworld\n```'));assert(text.includes('https://example.com/a%28b%29'));
  writeFileSync(join(root,'table.dari'),`data rows = table([{level:"major",n:3},{level:"minor",n:2}],{kind:"example"});
-figure details = Table(spec={columns:["level","n"]},data=rows);
+figure details = tree! { Table(spec={columns:["level","n"]},data=rows) };
 answer tree! { Answer [h2 ["明细"],UseFigure(ref=details,caption="统计明细")] };`);
  const tabular=await call('dari_resolve',{src:'table.dari'},plain);
  assert.equal(tabular.ok,true,JSON.stringify(tabular));
@@ -55,7 +56,7 @@ answer tree! { Answer [h2 ["明细"],UseFigure(ref=details,caption="统计明细
  assert(attachedTable.answer.embedded.includes(markdown));assert.equal(files,0);
  const visual=source.replace('answer tree! { Answer [','answer tree! { Answer [UseFigure(ref=chart,caption="分布"),UseReport(ref=file),UseReport(ref=file),');
  // Reports must be declared before they are referenced.
- const report='report file = tree! { Report [p [value(ref=summary?.n)]] };';
+ const report='report file = tree! { Report [p [Value(data=summary?.n)]] };';
  writeFileSync(join(root,'visual.dari'),visual.replace(report,'').replace('answer tree!',report+'\nanswer tree!'));
  const mixed=await call('dari_resolve',{src:'visual.dari'});
  assert.equal(mixed.ok,true,JSON.stringify(mixed));assert(mixed.answer.embedded.includes('file.report.html'));assert(mixed.answer.embedded.includes('!['));assert.equal(mixed.reports,undefined);assert.equal(files,2);
@@ -75,10 +76,10 @@ answer tree! { Answer [h2 ["明细"],UseFigure(ref=details,caption="统计明细
  writeFileSync(join(root,'duplicate.dari'),source+'\nanswer tree! { Answer [p ["duplicate"]] };');
  assert.equal((await call('dari_check',{src:'duplicate.dari'})).ok,false);
  for(const [node,pattern]of [
-  ['value(ref=summary)',/scalar/],['value(ref=summary?.missing)',/missing/],
+  ['Value(data=summary)',/scalar/],['Value(data=summary?.missing)',/missing/],
   ['p(class="x") ["x"]',/cannot represent attribute/],['p [h2 ["x"]]',/cannot be nested/],
   ['a ["link"]',/requires href/],['ul ["bad"]',/require li/],['UseReport(ref=chart)',/report binding/],['UseReport(ref=missing)',/report binding/],
-  ['value(ref=summary?.n) ["ignored"]',/must be empty/],
+  ['Value(data=summary?.n) ["ignored"]',/must be empty/],
  ] as const){
   writeFileSync(join(root,'invalid.dari'),source.replace('h2 ["资源概况"]',node));
   const bad=await call('dari_check',{src:'invalid.dari'});assert.equal(bad.ok,false,node);assert(pattern.test(bad.text),JSON.stringify(bad));

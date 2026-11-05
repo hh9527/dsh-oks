@@ -1,4 +1,3 @@
-import {queryKnowledge} from './src/knowledge-methods.ts';
 // Usage: node knowledge-snapshot-test.ts <model.wasm> <domain> [<domain> ...]
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -32,12 +31,9 @@ try {
           if(['related','traversable','referenced_by'].includes(role)) for(const refs of Object.values(value as object) as string[][]) for(const ref of refs) assert.ok(resolveFact(index.knowledge,ref));
         }
       }
-      const result=queryKnowledge(index.knowledge,'search',{query:'a',type:'Dataset',take:1});
-
-      const row=(result as any).items[0];
-      assert.ok(index.knowledge.items.some(item=>item.key===row.key));
-      assert.ok(index.knowledge.datasets[row.id]);
-      const invalid=await runner.send(`${domain}/transform`,{intents:[{op:'Graph',root:'x',nodes:[{id:'x',entity:row.id,bogus:true}],edges:[],select:[],limit:1}]});
+      const id=Object.keys(index.knowledge.datasets)[0];
+      assert.ok(id);
+      const invalid=await runner.send(`${domain}/transform`,{intents:[{op:'Graph',root:'x',nodes:[{id:'x',entity:id,bogus:true}],edges:[],select:[],limit:1}]});
       assert.ok(JSON.stringify(invalid).includes('"accepted":false'));
       assert.ok(!JSON.stringify(invalid).includes('Schema/'));
       console.log(`${domain}: ${index.knowledge.items.length} facts; closed references, JS knowledge and diagnostic boundary passed`);

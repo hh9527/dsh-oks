@@ -5,9 +5,9 @@ data chartSpec = {x:"告警级别",value:"数量"};
 data tableSpec = {columns:["告警级别","数量"]};
 data summary = select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({total:sum(rows.f.count)})});
 
-figure comparison = ColumnChart(spec = chartSpec, data = rows);
+figure comparison = tree! { ColumnChart(spec = chartSpec, data = rows) };
 
-figure details = Table(spec = tableSpec, data = rows);
+figure details = tree! { Table(spec = tableSpec, data = rows) };
 
 report full = tree! { Report(title = "呈现示例") [
   h1 [ "示例结果" ],

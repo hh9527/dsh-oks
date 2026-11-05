@@ -17,11 +17,11 @@ data summary = select_one({from:{s:facts},group_by:(r)=>({}),
     fields:(g,rows)=>({returned_groups:count(rows)})});
 answer tree! { Answer [
     h1 ["对象概览"],
-    p ["返回分组数：",value(ref=summary?.returned_groups)],
+    p ["返回分组数：",Value(data=summary?.returned_groups)],
 ] };
 ```
 
-示例中的模型名称是占位符，以知识定义替换。`data` 定义不可变计算，`figure` 定义图表，`report` 定义报告；`answer tree! { Answer [...] }` 是唯一回答出口。report/answer 的节点树必须用 `tree! { ... }` 包围，内部仍用 `tag(...) [...]`；figure 接组件表达式。`=` 仅声明不可变绑定，不支持重新赋值。True/False/None 是 DARI 字面量，工具参数与返回 JSON 仍用 true/false/null。所有绑定共用命名空间，先定义后引用，每条声明以 `;` 结束；支持 `//` 和 `/* ... */` 注释。
+示例中的模型名称是占位符，以知识定义替换。扩展组件使用 PascalCase（如 Value、Lit、UseFigure），普通标签使用小写（如 p、strong）。`data` 定义不可变计算，`figure` 定义图表，`report` 定义报告；`answer tree! { Answer [...] }` 是唯一回答出口。figure/report/answer 的节点树必须用 `tree! { ... }` 包围，内部仍用 `tag(...) [...]`；figure 的根节点为图表组件或 Table。`=` 仅声明不可变绑定，不支持重新赋值。True/False/None 是 DARI 字面量，工具参数与返回 JSON 仍用 true/false/null。所有绑定共用命名空间，先定义后引用，每条声明以 `;` 结束；支持 `//` 和 `/* ... */` 注释。
 
 表达式使用字符串、数字、Bool（True/False）、None、对象、数组、函数和绑定引用。对象的中文、空格、括号键使用双引号，访问用 `row["设备分类"]`，不是 `row.设备分类` 或 `row."设备分类"`；可空对象使用 `map_opt(obj,r=>r["设备分类"])`。
 
@@ -203,7 +203,7 @@ GraphUnion 为 `{op:"GraphUnion",limit:500,branches:[{result_node,graph},...]}`�
 `tag(attr=expression,...) [children]`；属性或子节点为空可省略，children 为字符串或节点，以逗号分隔，允许尾逗号。中文、&、< 直接写，渲染器负责转义。figure 的 data 是 Table(T)，不加 `.rows`，组件标签决定图表类型，spec 不写 kind。
 
 ```dari
-figure counts = ColumnChart(spec={x:"name",value:"count"},data=grouped);
+figure counts = tree! { ColumnChart(spec={x:"name",value:"count"},data=grouped) };
 report full = tree! { Report [
     h1 ["对象统计"],
     p ["总数：",Value(data=summary?.total)],
@@ -232,14 +232,14 @@ Report 支持 section、h1/h2/h3、p、div/span、ul/ol/li、blockquote、pre/co
 
 Report 的动态数值用 `Value(data=round(summary?.cpu,2))`，普通记录先由 select_one 得到标量；`Lit ["1.2"]` 明确表示静态文本，只接受字符串子节点。
 
-唯一 Answer 使用同样节点风格：h1/h2/h3→Markdown 标题，strong/em→强调，p、列表、引用、代码、链接转为对应 Markdown。动态值写 `value(ref=summary?.total)`，null 显示破折号；文字和值转义 Markdown。Answer 不接受 class/id 等不能转成 Markdown 的属性。
+唯一 Answer 使用同样节点风格：h1/h2/h3→Markdown 标题，strong/em→强调，p、列表、引用、代码、链接转为对应 Markdown。动态值写 `Value(data=summary?.total)`，null 显示破折号；文字和值转义 Markdown。Answer 不接受 class/id 等不能转成 Markdown 的属性。
 
 Report/Answer 子节点支持条件分支，分支内仍以逗号分隔同级节点：
 
 ```dari
 answer tree! { Answer [
     if (summary?.total > 0 ?? False) [p ["有数据"]] else [p ["没有数据"]],
-    if let Some(i) = summary [p ["总数：",value(ref=i.total)]] else [],
+    if let Some(i) = summary [p ["总数：",Value(data=i.total)]] else [],
 ] };
 ```
 

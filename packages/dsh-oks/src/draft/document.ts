@@ -320,8 +320,8 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
         if(el.children.some(child=>typeof child!=='string'))fail('Lit accepts only literal text children',el.span.start.offset,el.span.end.offset);
         return reportElement('span',{'data-oks-lit':''},childrenOf(el),el.span);
       }
-      if(el.name==='Value'||el.name==='value'){
-        const attr=el.name==='value'?'ref':'data';
+      if(el.name==='Value'){
+        const attr='data';
         only(el.attrs,[attr]);if(el.children.some(child=>typeof child!=='string'||child.trim()!==''))fail('Value must be empty',el.span.start.offset);
         const ref=requiredRef(el,attr);const alias=`value_${inputs.length+1}`;
         inputs.push({key:alias,value:refExpr(ref)});bindings.add(ref.binding);refs[alias]={kind:'value',span:ref.span,code:ref.code??ref.path.reduce<string>((code,key,i)=>code+(ref.optional?.includes(i)?'?':'')+projectionCode('',[key]),ref.binding)};

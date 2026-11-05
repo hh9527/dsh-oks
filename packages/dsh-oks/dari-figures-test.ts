@@ -23,8 +23,8 @@ const caller={agent:{session:{id:'figures'}}};
 const resolve=async(exec=caller)=>drafts.tools.find(t=>t.name==='dari_resolve')!.execute({src:file} as never,exec) as Promise<any>;
 const write=(s:string)=>writeFileSync(physical,s);
 const base=`data rows = table([{level:"major",n:3},{level:"minor",n:2}],{kind:"example"});
-figure severity = PieChart(spec={x:"level",value:"n",title:"级别分布"},data=rows);
-figure details = Table(spec={columns:["level","n"]},data=rows);
+figure severity = tree! { PieChart(spec={x:"level",value:"n",title:"级别分布"},data=rows) };
+figure details = tree! { Table(spec={columns:["level","n"]},data=rows) };
 `;
 const links=(text:string)=>[...text.matchAll(/\]\(([^)]+)\)/g)].map(m=>decodeURI(m[1]));
 try{
@@ -49,12 +49,12 @@ answer tree! { Answer [UseFigure(ref=severity),UseFigure(ref=severity),UseFigure
  const bad=await resolve();assert.equal(bad.ok,false);assert.equal(bad.execution,'not performed');
  write(base+`data bad = select_one({from:{r:rows},fields:r=>({n:r.r.n})});
 data summary = select_one({from:{r:rows},group_by:r=>({}),fields:(g,rows)=>({n:sum(rows.r.n)})});
-answer tree! { Answer [p [value(ref=summary?.n)]] };`);
+answer tree! { Answer [p [Value(data=summary?.n)]] };`);
  const modern=await resolve();assert.equal(modern.ok,true,JSON.stringify(modern));assert.equal(modern.answer.embedded,'5');assert.equal(modern.counts.failed,0,'unused cardinality guard is not executed');
- write('data big = '+JSON.stringify('x'.repeat(20000))+';answer tree! { Answer [p [value(ref=big)]] };');
+ write('data big = '+JSON.stringify('x'.repeat(20000))+';answer tree! { Answer [p [Value(data=big)]] };');
  const large=await resolve();assert.equal(large.answer.embedded,'x'.repeat(20000));
  const tool=drafts.tools.find(t=>t.name==='dari_resolve')!;assert.equal((tool.output.render as Function)({},large)[0].text,large.answer.embedded);
- write('data value = 42;answer tree! { Answer [p [value(ref=value)]] };');
+ write('data value = 42;answer tree! { Answer [p [Value(data=value)]] };');
  assert.equal((await resolve({agent:{session:{id:'other'}}})).answer.embedded,'42');
  rmSync(physical);assert.equal(readFileSync(imagePath,'utf8'),original);assert.equal(readFileSync(reportPath,'utf8'),archived);
  assert.equal(queries,0);assert.equal(existsSync(join(root,'artifacts')),false);assert.equal(existsSync(join(root,'.oks')),false);

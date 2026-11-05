@@ -4,7 +4,6 @@ import {readFileSync} from 'node:fs';
 import {derivePublishedKnowledge} from './src/published-knowledge.ts';
 import {collectProgrammedKnowledge} from './src/programmed-knowledge.ts';
 import {readPoints} from './src/point-knowledge.ts';
-import {semanticKnowledge} from './src/semantic-knowledge.ts';
 import {renderDomainSummary} from './src/domain-summary.ts';
 const root=(key:string,value:any,reference_sites:any[]=[])=>({key,value,reference_sites,references:[...new Set(reference_sites.map(s=>s.target).filter(t=>t!==key))]});
 const input:any={knowledge_contract:'ontology-knowledge-v5',intent_contract:'ontology-intent-v1',addressing:'node-member-uri-v1',revision:'owned',items:[],facts:[
@@ -47,8 +46,6 @@ assert.equal(info.items[1].facts.reference_locations,undefined);
 const paths=routePoints(graph,{from:'datasets/current_alarm',to:'datasets/device'});
 assert.equal(paths.status,'connected');assert(paths.paths[0].edges[0].relation.startsWith('relations/'));
 assert(renderDomainSummary(graph,'fixture').includes('current_alarm'));
-const search=semanticKnowledge(graph,'search',{query:'critical',take:20}) as any;
-assert(search.items.some((v:any)=>v.node==='types/AlarmSeverity'&&v.path.join('/')==='values/critical'));
 const bad=structuredClone(input);bad.facts[0].references=['datasets/device'];assert.throws(()=>derivePublishedKnowledge(bad),/do not match/);
 for(const path of process.argv.slice(2)){
  const {graph:published,vocabulary}=await collectProgrammedKnowledge(JSON.parse(readFileSync(path,'utf8')));

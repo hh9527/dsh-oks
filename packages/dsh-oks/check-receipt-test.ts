@@ -18,7 +18,7 @@ const tools=createDraftTools({knowledge:knowledge as any,timeContext:{zones:new 
 const check=tools.tools.find(t=>t.name==='dari_check')!;
 const source=`data facts = query({limit:5});
 data unused = {b:1,a:"x"};
-figure chart = BarChart(spec={x:"n",value:"n"},data=facts);
+figure chart = tree! { BarChart(spec={x:"n",value:"n"},data=facts) };
 report report1 = tree! { Report [UseFigure(ref=chart)] };
 answer tree! { Answer [UseReport(ref=report1)] };`;
 const status=(text:string)=>text.split('\n').filter(x=>x.startsWith('- ')&&!x.includes(': Figure')&&!x.includes(': Table'));

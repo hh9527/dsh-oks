@@ -76,7 +76,7 @@ export function parseDomDraft(source:string,file:string){
       if(declarations.get(symbol)!==expected)fail('Undefined or forward '+expected+' binding '+symbol,part.start,part.end);
       return {kind:'text',value:symbol,span};
     }
-    if(componentKind(tag)!==undefined||['Value','value','if'].includes(tag)){
+    if(componentKind(tag)!==undefined||['Value','if'].includes(tag)){
       const binding='__dom'+sequence++;compile(part,binding,true,tag==='if');
       const ast=definitions.get(binding)!;
       // Keep direct projections canonical in provenance and reuse existing bindings.
@@ -107,6 +107,7 @@ export function parseDomDraft(source:string,file:string){
     whitespace();const start=at;
     if(depth>128)fail('Template nesting exceeds 128');if(++elements>2048)fail('Report exceeds 2048 template elements');
     const tag=name(true),attrs=new Map<string,Attribute>();
+    if(tag==='value'||tag==='lit')fail(`Component names use PascalCase; use ${tag==='value'?'Value(data = expression)':'Lit ["text"]'}`,start,at);
     if(tag==='if'){
       whitespace();let local:{name:string;input:N}|undefined;
       if(/^let\b/.test(source.slice(at))){
@@ -170,7 +171,7 @@ export function parseDomDraft(source:string,file:string){
         whitespace();if(source[at]===','){at++;whitespace();}else if(source[at]!==']')fail('Expected , between child nodes');
       }at++;
     }
-    if(!children.length&&(['value','Value','UseReport','UseFigure','FigureRef','br','hr'].includes(tag)||componentKind(tag)!==undefined))selfClosing=true;
+    if(!children.length&&(['Value','UseReport','UseFigure','FigureRef','br','hr'].includes(tag)||componentKind(tag)!==undefined))selfClosing=true;
     const result={name:tag,attrs,children,selfClosing,span:location(start)};
     childSpans.set(result,spans);return result;
   };
@@ -186,9 +187,9 @@ export function parseDomDraft(source:string,file:string){
     if(kind==='data'){
       const part=expression(new Set([';']));const node=compile(part,binding);eat(';');node.statement.span=location(start);
     }else{
-      if(kind!=='figure'){eat('tree');eat('!');eat('{');}
+      eat('tree');eat('!');eat('{');
       const tree=element();
-      if(kind!=='figure')eat('}');
+      eat('}');
       eat(';');
       if(kind==='figure'){
         if(componentKind(tree.name)===undefined)fail('figure requires a chart component or Table',tree.span.start.offset,tree.span.end.offset);

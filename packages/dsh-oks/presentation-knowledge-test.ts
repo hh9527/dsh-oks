@@ -1,5 +1,4 @@
 import {dariLiteral} from './test-dari.ts';
-import {queryKnowledge} from './src/knowledge-methods.ts';
 import { COMPONENT_KINDS } from './src/draft/components.ts';
 import { parseDraft } from './src/draft/document.ts';
 import { parseMarkdownFixture } from './test-markdown.ts';
@@ -20,16 +19,11 @@ const graph=buildSemanticGraph([]).graph;
 mountPresentationKnowledge(graph);
 const backend=createDraftBackend({knowledge:{executorFor(){throw new Error('Presentation examples must not execute SQL');}},entry:{} as WorkspaceEntry,file:'.work/presentation.md',contextZone:()=>({kind:'resolved',timeZone:'Asia/Shanghai'})});
 try {
- const run=async(name:string,args:Record<string,unknown>)=>queryKnowledge(graph,name,args) as any;
  const overview=createSelector('tools.render_figure.kinds:keys')(graph as unknown as JsonValue) as any;
  assert.equal(overview.tools.render_figure['kinds:keys'].length,16);
  assert.ok(overview.tools.render_figure['kinds:keys'].includes('column'));
 
  for(const item of graph.items)assert.ok(resolveFact(graph,item.key),item.key);
- for(const word of ['图表','表头','DARI','stack','series','Value'])assert.ok((await run('search',{query:word})).total>0,word);
- const read=await run('read',{key:'tools/render_figure#kinds/column'});
- assert.equal(read.items.length,1);assert.equal(read.facts.topics,undefined);
- assert.ok(Buffer.byteLength(JSON.stringify(read))<2048);
  const values={stack:'total',size:'size',bins:3,second:{value:'other'},marks:[{value:1}],donut:true,connectNulls:true,entityColor:true};
  const kinds=graph.tools.render_figure.kinds as Record<string,any>;
  assert.deepEqual(Object.keys(kinds),[...CHART_KINDS,'table']);
@@ -54,7 +48,7 @@ try {
   const source=`data rows = table(${dariLiteral(example.rows)},{kind:"example"});
 ${example.nodes?`data nodes = table(${dariLiteral(example.nodes)},{kind:"example"});`:''}
 data spec = ${dariLiteral(Object.fromEntries(Object.entries(example.spec).filter(([key])=>key!=="kind")))};
-figure chart = ${Object.entries(COMPONENT_KINDS).find(([,value])=>value===kind)![0]}(spec = spec, data = rows${example.nodes?', nodes = nodes':''});
+figure chart = tree! { ${Object.entries(COMPONENT_KINDS).find(([,value])=>value===kind)![0]}(spec = spec, data = rows${example.nodes?', nodes = nodes':''}) };
 report answer = tree! { Report [ UseFigure(ref = chart), ] };`;
   const runtime=new FixtureRuntime(backend);const result=await runtime.run(source);
   assert.equal(result.status,'complete',`${kind}: ${result.error}`);
@@ -70,5 +64,5 @@ report answer = tree! { Report [ UseFigure(ref = chart), ] };`;
  const failed=await new FixtureRuntime(backend).run(invalid);
  assert.equal(failed.status,'invalid');assert.match(failed.error!,/rename data keys in select fields/);
  for(const columns of [[{key:'level',label:'告警级别'}],[],['n','n'],[''],42])assert.throws(()=>parseTableSpec({kind:'table',columns}),/columns/);
- console.log('presentation knowledge: paged discovery/navigation, exact slices, 16 executable figure examples, renderer matrix, table headers and DARI bindings passed');
+ console.log('presentation knowledge: 16 executable figure examples, renderer matrix, table headers and DARI bindings passed');
 }finally{}

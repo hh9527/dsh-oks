@@ -20,7 +20,7 @@ const backend=createDraftBackend({entry,file:'dom.dari',contextZone:()=>({kind:'
 const source=`// Immutable data, shared by independently declared figures and reports.
 data facts = query({limit:10});
 data winner = select_one({from:{f:facts},fields:(r)=>({name:r.f.name,cpu:r.f.cpu}),order_by:(o)=>[desc(o.cpu),asc(o.name)],limit:1});
-figure cpu = BarChart(spec = {x:"name",value:"cpu"}, data = facts);
+figure cpu = tree! { BarChart(spec = {x:"name",value:"cpu"}, data = facts) };
 report answer = tree! { Report(title = "CPU & memory") [
  h1 [ "CPU & <memory>" ],
  p [ "首项：", Value(data = winner?.name), "; CPU：", Value(data = round(winner?.cpu, 1)), ],
@@ -69,7 +69,7 @@ try{
   ['data x = 1,',/Unexpected content|Expected/],
   ['data x = y;',/Undefined or forward/],
   ['data x = 1; data x = 2;',/Duplicate binding/],
-  ['data x = 1; figure x = BarChart(spec={},data=x);',/Duplicate binding/],
+  ['data x = 1; figure x = tree! { BarChart(spec={},data=x) };',/Duplicate binding/],
   ['data x = 1; report x = tree! { Report [] };',/Duplicate binding/],
   ['data query = 1;',/Reserved binding/],
   ['data __dom0 = 1;',/Reserved binding/],
@@ -78,11 +78,14 @@ try{
   ['data x = 1; report r = tree! { Report [p [x],] };',/Unsupported report element/],
   ['report r = tree! { Report [p ["a" "b"],] };',/between child/],
   ['report r = tree! { Report [p(class="x",class="y") ["x"],] };',/Duplicate attribute/],
-  ['figure f = Report [];',/requires a chart/],
+  ['figure f = tree! { Report [] };',/requires a chart/],
+  ['figure f = BarChart();',/Expected "tree"/],
+  ['report r = tree! { Report [value(ref=1)] };',/PascalCase.*Value/],
+  ['report r = tree! { Report [lit ["text"]] };',/PascalCase.*Lit/],
   ['report r = tree! { BarChart() };',/requires Report/],
-  ['report r = tree! { Report [UseFigure(ref = f),] };figure f = BarChart();',/Undefined or forward figure/],
+  ['report r = tree! { Report [UseFigure(ref = f),] };figure f = tree! { BarChart() };',/Undefined or forward figure/],
   ['data x = 1; report r = tree! { Report [UseFigure(ref = x),] };',/figure binding/],
-  ['figure f = BarChart(spec={},data=missing);',/Undefined or forward/],
+  ['figure f = tree! { BarChart(spec={},data=missing) };',/Undefined or forward/],
   ['report r = tree! { Report [Script ["bad"],] };',/Unknown DARI component/],
   ['report r = tree! { Report [p(onclick="bad") ["x"],] };',/Unsupported report attribute/],
   ['report r = tree! { Report [a(href="javascript:bad") ["x"],] };',/Unsupported link/],
@@ -93,7 +96,7 @@ try{
  assert.equal(parseDraft('/*hi*/ data x = {s:";}",a:[1,2]}; // trailing').nodes.length,1);
  const many='data items = [1,2];data qs = map(items,(x)=>query({limit:10,x:x}));';
  assert.equal((await checkDesign(many,'dom.dari',backend)).ok,true);
- const src='.work/test.dari',path=join(root,'.work/test.dari');const delivered=source.replace('report answer =','report full =')+'\nanswer tree! { Answer [p [value(ref=winner?.name)],UseFigure(ref=cpu),UseReport(ref=full)] };';writeFileSync(path,delivered);
+ const src='.work/test.dari',path=join(root,'.work/test.dari');const delivered=source.replace('report answer =','report full =')+'\nanswer tree! { Answer [p [Value(data=winner?.name)],UseFigure(ref=cpu),UseReport(ref=full)] };';writeFileSync(path,delivered);
  const drafts=createDraftTools({knowledge,attachments:()=>testAttachments(root),timeContext:{zones:new Map()} as TimeContext,approval:()=>({async request(){approvals++;return 'allowed-once';}})});
  const caller={callId:'dom-run',agent:{session:{id:'dom'}}} as ToolExec;
  const call=async(name:string,args:object)=>drafts.tools.find(t=>t.name===name)!.execute(args as never,caller) as Promise<any>;

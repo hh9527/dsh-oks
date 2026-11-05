@@ -18,9 +18,9 @@ const call=async(name:string,args:object,caller=exec)=>drafts.tools.find(t=>t.na
 const source=`data ctx = context();
 data facts = query({limit:5});
 data summary = select_one({from:{f:facts},group_by:r=>({}),fields:(g,rows)=>({n:sum(rows.f.n)})});
-figure chart = ColumnChart(spec={x:"n",value:"n"},data=facts);
+figure chart = tree! { ColumnChart(spec={x:"n",value:"n"},data=facts) };
 report full = tree! { Report [p [Value(data=summary?.n)],UseFigure(ref = chart)] };
-answer tree! { Answer [p [value(ref=summary?.n)],p [value(ref=ctx.utc.epochMillis)],UseFigure(ref=chart),UseReport(ref=full)] };`;
+answer tree! { Answer [p [Value(data=summary?.n)],p [Value(data=ctx.utc.epochMillis)],UseFigure(ref=chart),UseReport(ref=full)] };`;
 const src='analysis.dari',absolute=join(root,src);
 const originalNow=Date.now;
 let now=originalNow();Date.now=()=>now;
