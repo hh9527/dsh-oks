@@ -1,3 +1,4 @@
+import {dariLiteral} from './test-dari.ts';
 import assert from 'node:assert/strict';
 import {checkDesign,parseExecutableDesign} from './src/draft/design.ts';
 import {createDraftBackend} from './src/draft/backend.ts';
@@ -9,19 +10,19 @@ const columns=[{name:'n',type:'Int',nullable:false}];
 const entry={modelHash:'test',settings:{domain:'test',queryMaxRows:100},runner:{async send(_m:string,{intents}:any){if(intents[0].bad)throw new Error('Invalid model intent');return {ok:{accepted:true,queries:[{sql:'SELECT n LIMIT ?',bindings:[intents[0].limit],limit_slot:0,columns}]}};}}} as unknown as WorkspaceEntry;
 const backend=createDraftBackend({entry,file:'test.dari',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),contextNow:()=>Date.parse('2026-10-19T00:00:00Z'),knowledge:{executorFor(){reads++;return {manifest:null,executor:{async send(){return {rows:[{n:7}],columns:['n'],truncated:false};},dispose(){}}};}}});
 const check=async(source:string)=>{const r=await checkDesign(source,'test.dari',backend);assert.deepEqual(r,JSON.parse(JSON.stringify(r)));return r;};
-const source=`data ctx := context(); data days := time_windows(ctx,{unit:"day",count:7,mode:"complete"}); data range := {start:days[0].start.epochMillis,end:days[6].end.epochMillis}; data a := query({limit:5,start:range.start}); data after := select({from:{a},fields:(r)=>({n:r.a.n})});`;
+const source=`data ctx = context(); data days = time_windows(ctx,{unit:"day",count:7,mode:"complete"}); data range = {start:days[0].start.epochMillis,end:days[6].end.epochMillis}; data a = query({limit:5,start:range.start}); data after = select({from:{a},fields:(r)=>({n:r.a.n})});`;
 let r=await check(source);assert.equal(r.ok,true,JSON.stringify(r));assert(r.types.days.includes('DateTimeUtc'));assert(r.types.days.includes('EpochMillis'));assert.equal(reads,0);
-for(const invalid of ['data a := query({limit:5,bad:true});','data a := exec_query(query({limit:5}));','data a := query({limit:5}); data b := query({limit:5,value:a.rows[0]});','data a := jq("a.jq",{});','data a := context(); data w := time_windows(a,{unit:"day",count:0,mode:"current"});'])assert.equal((await check(invalid)).ok,false,invalid);
+for(const invalid of ["data a = query({limit:5,bad:True});",'data a = exec_query(query({limit:5}));','data a = query({limit:5}); data b = query({limit:5,value:a.rows[0]});','data a = jq("a.jq",{});','data a = context(); data w = time_windows(a,{unit:"day",count:0,mode:"current"});'])assert.equal((await check(invalid)).ok,false,invalid);
 assert.equal(reads,0);
 const runtime=new DraftRuntime(backend,{parse:parseExecutableDesign});
 try{assert.equal((await runtime.run(source)).status,'complete');assert.deepEqual(runtime.read('after',source).value.data.rows,[{n:7}]);await runtime.run(source);assert.equal(reads,1);}finally{runtime.dispose();}
 const sample=[...helpFiles['oks://help/dari.md'].matchAll(/```dari\n([\s\S]*?)```/g)].map(m=>m[1]).find(s=>s.includes('alarm_occur_utc_raw'));assert(sample);assert.equal((await check(sample)).ok,true);
 console.log('Design: typed JS time boundaries, remote schema checks, no business reads, invalid DSL and cache passed');
 
-const cascaded=await check(`data a := query({limit:5});
-data broken := select({from:{a},fields:(r)=>({n:r.a.missing})});
-data downstream := select({from:{b:broken},fields:(r)=>({n:r.b.n})});
-data independent := select({from:{a},fields:(r)=>({n:r.a.other_missing})});`);
+const cascaded=await check(`data a = query({limit:5});
+data broken = select({from:{a},fields:(r)=>({n:r.a.missing})});
+data downstream = select({from:{b:broken},fields:(r)=>({n:r.b.n})});
+data independent = select({from:{a},fields:(r)=>({n:r.a.other_missing})});`);
 assert.equal(cascaded.ok,false);
 assert.equal(cascaded.status,'invalid');
 assert(cascaded.diagnostics.some(d=>d.message.includes('Unknown field missing')));
@@ -30,7 +31,7 @@ assert(!cascaded.diagnostics.some(d=>d.message==='Upstream type is unavailable')
 assert.equal(reads,1,'diagnostic filtering never executes business queries');
 console.log('Design diagnostics: root and independent errors retained, upstream cascades hidden, invalid status preserved');
 
-const badBracket='// 中文定位\n\tdata total := select_one({from:{f:[]},fields:(g,rows)=>({n:1}));';
+const badBracket='// 中文定位\n\tdata total = select_one({from:{f:[]},fields:(g,rows)=>({n:1}));';
 const syntax=await check(badBracket);
 assert.equal(syntax.ok,false);
 const diagnostic=syntax.diagnostics[0];
@@ -41,10 +42,10 @@ assert(diagnostic.excerpt?.text.includes('data total'));
 assert(diagnostic.excerpt?.marker.endsWith('^'));
 assert.equal(diagnostic.related?.[0].message,'Opening { requires }');
 assert.equal(diagnostic.related?.[0].span.start.offset,badBracket.indexOf('{from'));
-const missingClose=await check('data a := {x:1');
+const missingClose=await check('data a = {x:1');
 assert.equal(missingClose.diagnostics[0].expected,'}');
 assert.equal(missingClose.diagnostics[0].found,'end of input');
-const missingSemicolon=await check('data a := 1');
+const missingSemicolon=await check('data a = 1');
 assert.equal(missingSemicolon.diagnostics[0].expected,';');
 assert.equal(missingSemicolon.diagnostics[0].found,'end of input');
 assert.equal(reads,1,'syntax diagnostics never execute business queries');
@@ -62,11 +63,11 @@ console.log('Syntax diagnostics: original line, caret, expected delimiter and op
  }}} as unknown as WorkspaceEntry;
  const real=createDraftBackend({entry:model,file:'phase.dari',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),contextNow:()=>{clockReads++;return now;},knowledge:{executorFor(){businessReads++;return {manifest:null,executor:{async send(){return {rows:[{n:7}],columns:['n'],truncated:false};}}} as any;}}});
  const analysis={...real,async execute(){throw new Error('Analysis invoked execution');},async analyze(ctx:Parameters<NonNullable<typeof real.analyze>>[0]){analyzed.push(ctx.operator);return real.analyze!(ctx);}};
- const text=`data ctx := context();
- data days := time_windows(ctx,{unit:"day",count:3,mode:"complete"});
- data parts := map(days,(day,index)=>select({from:{q:query({limit:5,day:index,start:day.start.epochMillis})},fields:(r)=>({n:r.q.n})}));
- data facts := union_all(parts);
- data summary := select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({n:sum(rows.f.n)})});`;
+ const text=`data ctx = context();
+ data days = time_windows(ctx,{unit:"day",count:3,mode:"complete"});
+ data parts = map(days,(day,index)=>select({from:{q:query({limit:5,day:index,start:day.start.epochMillis})},fields:(r)=>({n:r.q.n})}));
+ data facts = union_all(parts);
+ data summary = select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({n:sum(rows.f.n)})});`;
  const semantic=parseAnalysisDesign(text,'phase.dari'),executable=parseExecutableDesign(text,'phase.dari');
  assert.equal((semantic.nodes[2].statement.value as any).operator,'analysis_map');assert.equal(executable.nodes[2].statement.value.kind,'array');
  assert.deepEqual(semantic.nodes[2].statement.span,executable.nodes[2].statement.span);
@@ -78,20 +79,20 @@ console.log('Syntax diagnostics: original line, caret, expected delimiter and op
  assert(intents.every(i=>i.start<ANALYSIS_CONTEXT_TIME));
  now+=86400000;assert.deepEqual(await checkDesign(text,'phase.dari',analysis),checked);
  assert.equal(intents.length,3,'repeated transform checks reuse deterministic cache');
- const rejected=await checkDesign('data parts := map([1,2,3],(day)=>query({limit:5,day:day,reject:true}));','phase.dari',analysis);
+ const rejected=await checkDesign("data parts = map([1,2,3],(day)=>query({limit:5,day:day,reject:True}));",'phase.dari',analysis);
  assert.equal(rejected.ok,false);assert(rejected.diagnostics.some(d=>/second window rejected/.test(d.message)));
  const typo=await checkDesign(text.replace('n:r.q.n','n:r.q.missing'),'phase.dari',analysis);
  assert.equal(typo.ok,false);assert(typo.diagnostics.some(d=>/Unknown field missing/.test(d.message)));
- const business=await checkDesign(text+'data next := query({limit:5,n:summary?.n});','phase.dari',analysis);
+ const business=await checkDesign(text+'data next = query({limit:5,n:summary?.n});','phase.dari',analysis);
  assert.equal(business.ok,false);assert(business.diagnostics.some(d=>/query parameters must be known/.test(d.message)));
- const pure=await checkDesign('data offsets := map([1,2],(n)=>n+1);data parts := map(offsets,(day)=>query({limit:5,day:day}));','phase.dari',analysis);
+ const pure=await checkDesign('data offsets = map([1,2],(n)=>n+1);data parts = map(offsets,(day)=>query({limit:5,day:day}));','phase.dari',analysis);
  assert.equal(pure.ok,true,JSON.stringify(pure));
- const given=await checkDesign('data parts := map([1,2],(n)=>table([{n:n}]));data all := union_all(parts);','phase.dari',analysis);
+ const given=await checkDesign('data parts = map([1,2],(n)=>table([{n:n}]));data all = union_all(parts);','phase.dari',analysis);
  assert.equal(given.ok,true,JSON.stringify(given));assert.match(given.types.all,/n:Int/);
- const nested=await checkDesign('data parts := map([1,2],(a)=>union_all(map([3,4],(b)=>query({limit:5,a:a,b:b}))));','phase.dari',analysis);
+ const nested=await checkDesign('data parts = map([1,2],(a)=>union_all(map([3,4],(b)=>query({limit:5,a:a,b:b}))));','phase.dari',analysis);
  assert.equal(nested.ok,true,JSON.stringify(nested));assert.equal(intents.filter(i=>'a' in i&&'b' in i).length,4);
  const before=analyzed.filter(op=>op==='relational').length;
- const tables=await checkDesign('data a := query({limit:5});data b := query({limit:5});data parts := map([a,b],(t)=>select({from:{t},fields:(r)=>({n:r.t.n})}));data all := union_all(parts);','phase.dari',analysis);
+ const tables=await checkDesign('data a = query({limit:5});data b = query({limit:5});data parts = map([a,b],(t)=>select({from:{t},fields:(r)=>({n:r.t.n})}));data all = union_all(parts);','phase.dari',analysis);
  assert.equal(tables.ok,true,JSON.stringify(tables));assert.equal(analyzed.filter(op=>op==='relational').length-before,1);
  assert.equal(businessReads,0);assert.equal(clockReads,0);
  const rt=new DraftRuntime(real,{parse:parseExecutableDesign});
@@ -142,7 +143,7 @@ console.log('Syntax diagnostics: original line, caret, expected delimiter and op
  ];
  for(const [spec,pattern] of invalid){
   const parsed=parseChartSpec({kind:'bar',...spec});assert('error' in parsed,JSON.stringify(spec));assert.match(parsed.error,pattern);
-  const source=`data rows := query({limit:5});\ndata spec := ${JSON.stringify(spec)};\nfigure chart := BarChart(spec=spec,data=rows);`;
+  const source=`data rows = query({limit:5});\ndata spec = ${dariLiteral(spec)};\nfigure chart = BarChart(spec=spec,data=rows);`;
   const checked=await check(source);assert.equal(checked.ok,false,JSON.stringify(spec));
   const diagnostic=checked.diagnostics.find(d=>pattern.test(d.message));assert(diagnostic,JSON.stringify(checked.diagnostics));assert.equal(diagnostic.file,'test.dari');
   assert(diagnostic.span.start.line>=2&&diagnostic.span.start.line<=3);
@@ -151,7 +152,7 @@ console.log('Syntax diagnostics: original line, caret, expected delimiter and op
  }
  assert.equal(reads,before,'invalid figure specs never acquire business rows in checking or execution');
  const good={...base,layout:{labelFont:12,titleFont:16,tickCount:5},style:{labels:true,sort:'desc',colors:['#123','#1234','#123456','#12345678']}};
- const checked=await check(`data rows := query({limit:5});data spec := ${JSON.stringify(good)};figure chart := BarChart(spec=spec,data=rows);`);
+ const checked=await check(`data rows = query({limit:5});data spec = ${dariLiteral(good)};figure chart = BarChart(spec=spec,data=rows);`);
  assert.equal(checked.ok,true,JSON.stringify(checked));assert.equal(reads,before);
  assert('spec' in parseChartSpec({kind:'line',x:'n',value:'n',xType:"Rfc3339"}));
  const nonfinite=parseChartSpec({kind:'bar',...base,marks:[{value:Infinity}]});assert('error' in nonfinite);assert.match(nonfinite.error,/finite/);
@@ -166,24 +167,24 @@ for (const [expression, hint] of [
  ['row?.设备分类', 'map_opt(value, row => row["设备分类"])'],
  ['{设备分类:1}', '{"设备分类": value}'],
 ] as const) {
- const result = await check(`data row := {"设备分类":"交换机"}; data result := ${expression};`);
+ const result = await check(`data row = {"设备分类":"交换机"}; data result = ${expression};`);
  assert.equal(result.ok, false);
  assert(result.diagnostics.some(d => d.message.includes(hint)), JSON.stringify(result));
 }
-const chineseKeys = await check('data row := {"设备分类":"交换机","CPU 平均使用率(%)":42}; data result := {category:row["设备分类"],cpu:row["CPU 平均使用率(%)"]};');
+const chineseKeys = await check('data row = {"设备分类":"交换机","CPU 平均使用率(%)":42}; data result = {category:row["设备分类"],cpu:row["CPU 平均使用率(%)"]};');
 assert.equal(chineseKeys.ok, true, JSON.stringify(chineseKeys));
 console.log('Chinese keys: bracket access accepted and invalid syntax has actionable diagnostics');
 
 const fieldExamples=Object.fromEntries(Array.from({length:12},(_,i)=>['field_'+i,i]));
-const boundedFields=await check(`data row := ${JSON.stringify(fieldExamples)}; data result := row.missing;`);
+const boundedFields=await check(`data row = ${dariLiteral(fieldExamples)}; data result = row.missing;`);
 assert.equal(boundedFields.ok,false);
 const fieldDiagnostic=boundedFields.diagnostics.find(d=>d.message.includes('Unknown field missing'))!;
 assert(fieldDiagnostic.message.includes('on row;'));
 assert(fieldDiagnostic.message.includes('up to 8 of 12'));
 assert(fieldDiagnostic.message.includes('"field_7"'));
 assert(!fieldDiagnostic.message.includes('"field_8"'));
-const nestedField=await check('data rows := table([{a_alarm_severity:1}]); data result := select({from:{a:rows},fields:r=>({severity:r.a.alarm_severity})});');
+const nestedField=await check('data rows = table([{a_alarm_severity:1}]); data result = select({from:{a:rows},fields:r=>({severity:r.a.alarm_severity})});');
 assert(nestedField.diagnostics.some(d=>d.message.includes('Unknown field alarm_severity on r.a;')&&d.message.includes('"a_alarm_severity"')));
-const emptyFields=await check('data row := {}; data result := row.missing;');
+const emptyFields=await check('data row = {}; data result = row.missing;');
 assert(emptyFields.diagnostics.some(d=>d.message.includes('up to 8 of 0): (none)')));
 console.log('Missing fields: access object identified, examples capped at 8, empty records handled');

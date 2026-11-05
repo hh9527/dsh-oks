@@ -1,3 +1,4 @@
+import {dariLiteral} from './test-dari.ts';
 import {queryKnowledge} from './src/knowledge-methods.ts';
 import { COMPONENT_KINDS } from './src/draft/components.ts';
 import { parseDraft } from './src/draft/document.ts';
@@ -50,11 +51,11 @@ try {
    }
    for(const required of fact.required){const spec={kind,...example.spec};delete spec[required];assert.ok('error' in parseChartSpec(spec),`${kind} requires ${required}`);}
   }
-  const source=`data rows := table(${JSON.stringify(example.rows)},{kind:"example"});
-${example.nodes?`data nodes := table(${JSON.stringify(example.nodes)},{kind:"example"});`:''}
-data spec := ${JSON.stringify(Object.fromEntries(Object.entries(example.spec).filter(([key])=>key!=="kind")))};
-figure chart := ${Object.entries(COMPONENT_KINDS).find(([,value])=>value===kind)![0]}(spec = spec, data = rows${example.nodes?', nodes = nodes':''});
-report answer := Report [ UseFigure(ref = chart), ];`;
+  const source=`data rows = table(${dariLiteral(example.rows)},{kind:"example"});
+${example.nodes?`data nodes = table(${dariLiteral(example.nodes)},{kind:"example"});`:''}
+data spec = ${dariLiteral(Object.fromEntries(Object.entries(example.spec).filter(([key])=>key!=="kind")))};
+figure chart = ${Object.entries(COMPONENT_KINDS).find(([,value])=>value===kind)![0]}(spec = spec, data = rows${example.nodes?', nodes = nodes':''});
+report answer = tree! { Report [ UseFigure(ref = chart), ] };`;
   const runtime=new FixtureRuntime(backend);const result=await runtime.run(source);
   assert.equal(result.status,'complete',`${kind}: ${result.error}`);
   for(const [name,output]of result.outputs)assert.ok(output.value,`${kind}/${name}: ${output.error}`);

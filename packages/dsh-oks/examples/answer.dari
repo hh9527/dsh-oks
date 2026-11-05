@@ -1,15 +1,15 @@
-data facts := table([{level:"major",count:3}],{kind:"example"});
-data rows := select({from:{f:facts},fields:(r)=>({"告警级别":r.f.level,"数量":r.f.count})});
-data winner := select_one({from:{f:facts},fields:(r)=>({level:r.f.level}),order_by:(o)=>[asc(o.level)],limit:1});
-data chartSpec := {x:"告警级别",value:"数量"};
-data tableSpec := {columns:["告警级别","数量"]};
-data summary := select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({total:sum(rows.f.count)})});
+data facts = table([{level:"major",count:3}],{kind:"example"});
+data rows = select({from:{f:facts},fields:(r)=>({"告警级别":r.f.level,"数量":r.f.count})});
+data winner = select_one({from:{f:facts},fields:(r)=>({level:r.f.level}),order_by:(o)=>[asc(o.level)],limit:1});
+data chartSpec = {x:"告警级别",value:"数量"};
+data tableSpec = {columns:["告警级别","数量"]};
+data summary = select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({total:sum(rows.f.count)})});
 
-figure comparison := ColumnChart(spec = chartSpec, data = rows);
+figure comparison = ColumnChart(spec = chartSpec, data = rows);
 
-figure details := Table(spec = tableSpec, data = rows);
+figure details = Table(spec = tableSpec, data = rows);
 
-report full := Report(title = "呈现示例") [
+report full = tree! { Report(title = "呈现示例") [
   h1 [ "示例结果" ],
   p [
     "数量：",
@@ -21,9 +21,9 @@ report full := Report(title = "呈现示例") [
   ],
   UseFigure(ref = comparison, caption = "类别比较"),
   UseFigure(ref = details, caption = "明细"),
-];
+] };
 
-answer := Answer [
+answer tree! { Answer [
     p ["分析已完成，详见报告"],
     UseReport(ref=full)
-];
+] };

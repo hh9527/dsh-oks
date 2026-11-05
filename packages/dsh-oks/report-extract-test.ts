@@ -7,7 +7,7 @@ import {reportArchiveNodes} from './src/report/page.ts';
 import {parseExecutableDesign} from './src/draft/design.ts';
 const root=mkdtempSync(join(tmpdir(),'oks-extract-'));
 let mode='workspace-write',decision='allowed-once';
-const archive={version:1,context:{run:'run1',batch:'batch1',sourceHash:'hash',startedAt:'2026-11-02T00:00:00Z',model:{hash:'model',domain:'ic'},captures:[{binding:'ctx',value:{now:'historical */\nnot code'}}],acquisitions:[]},dari:{source:'data ctx := context();\nanswer := Answer [p ["原稿"]];',pipeline:'',title:'报告',notes:'',assets:{},reports:{},figures:{},values:{}}};
+const archive={version:1,context:{run:'run1',batch:'batch1',sourceHash:'hash',startedAt:'2026-11-02T00:00:00Z',model:{hash:'model',domain:'ic'},captures:[{binding:'ctx',value:{now:'historical */\nnot code'}}],acquisitions:[]},dari:{source:'data ctx = context();\nanswer tree! { Answer [p ["原稿"]] };',pipeline:'',title:'报告',notes:'',assets:{},reports:{},figures:{},values:{}}};
 const html=reportArchiveNodes(archive as any);
 const options={knowledge:{ensureWorkspace:()=>({root})} as any,filePolicy:()=>({resolve:()=>({mode,workspaceRoot:root})}),approval:()=>({async request(){return decision;}}) as any};
 const tool=reportExtractDariTool(options),exec={agent:{session:{}}} as any;

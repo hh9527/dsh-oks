@@ -15,7 +15,7 @@ export function presentationManuals():Record<string,string> {
   return Object.fromEntries([
     ...Object.entries(COMPONENT_KINDS).map(([component,kind])=>[
       `oks://help/figure-${kind}.md`,
-      `# ${component}\n\n组件标签确定图表类型，spec 省略 kind。使用 figure name := ${component}(spec = spec, data = rows); 声明图表，data 引用 Table(T)。先在 query/select 中完成聚合，映射字段使用检查返回的列名。\n\n`+
+      `# ${component}\n\n组件标签确定图表类型，spec 省略 kind。使用 figure name = ${component}(spec = spec, data = rows); 声明图表，data 引用 Table(T)。规格材料使用 JSON 表示；写入 DARI 源码时布尔值与空值使用 True/False/None。先在 query/select 中完成聚合，映射字段使用检查返回的列名。\n\n`+
       block(presentationFacts.roots.render_figure.kinds[kind])+
       '\n通用规格和开关见 oks://help/figure-options.md；图表、报告及回答语法已载入 oks://help/dari.md。\n',
     ]),

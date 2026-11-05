@@ -30,11 +30,11 @@ async function scenario(source:string,rows:{n:number}[],truncated:boolean,verify
 }
 
 test('truncated query preserves root failure through multi-hop blocked report',async()=>{
- await scenario(`data facts := query({limit:3});
-data devMap := select({from:{f:facts},fields:r=>({n:r.f.n})});
-data mapped := select({from:{d:devMap},fields:r=>({n:r.d.n})});
-data top1 := select_one({from:{m:mapped},fields:r=>({n:r.m.n}),order_by:o=>[asc(o.n)],limit:1});
-report answer := Report [p [Value(data=top1?.n)]];`,[{n:1}],true,async(result,read)=>{
+ await scenario(`data facts = query({limit:3});
+data devMap = select({from:{f:facts},fields:r=>({n:r.f.n})});
+data mapped = select({from:{d:devMap},fields:r=>({n:r.d.n})});
+data top1 = select_one({from:{m:mapped},fields:r=>({n:r.m.n}),order_by:o=>[asc(o.n)],limit:1});
+report answer = tree! { Report [p [Value(data=top1?.n)]] };`,[{n:1}],true,async(result,read)=>{
   assert.equal(result.ok,false);assert.equal(result.computation,'partial');assert.equal(result.status,'complete');
   assert.equal(result.approval,'not-required');
   assert.equal(result.reports,undefined);assert.equal(result.counts.failed,1);assert(result.counts.blocked>=3);
@@ -46,9 +46,9 @@ report answer := Report [p [Value(data=top1?.n)]];`,[{n:1}],true,async(result,re
 });
 
 test('select_one cardinality failure returns a receipt instead of a report-read exception',async()=>{
- await scenario(`data facts := query({limit:3});
-data top1 := select_one({from:{f:facts},fields:r=>({n:r.f.n})});
-report answer := Report [p [Value(data=top1?.n)]];`,[{n:1},{n:2}],false,result=>{
+ await scenario(`data facts = query({limit:3});
+data top1 = select_one({from:{f:facts},fields:r=>({n:r.f.n})});
+report answer = tree! { Report [p [Value(data=top1?.n)]] };`,[{n:1},{n:2}],false,result=>{
   assert.equal(result.ok,false);
   assert.equal(result.failures[0].name,'top1');assert.equal(result.failures[0].at.line,2);
   assert.match(result.failures[0].error,/CardinalityViolation/);assert.equal(result.reports,undefined);
@@ -56,19 +56,19 @@ report answer := Report [p [Value(data=top1?.n)]];`,[{n:1},{n:2}],false,result=>
 });
 
 test('empty select_one remains a successful optional result',async()=>{
- await scenario(`data facts := query({limit:3});
-data top1 := select_one({from:{f:facts},fields:r=>({n:r.f.n}),order_by:o=>[asc(o.n)],limit:1});
-report answer := Report [p [Value(data=top1?.n)]];`,[],false,result=>{
+ await scenario(`data facts = query({limit:3});
+data top1 = select_one({from:{f:facts},fields:r=>({n:r.f.n}),order_by:o=>[asc(o.n)],limit:1});
+report answer = tree! { Report [p [Value(data=top1?.n)]] };`,[],false,result=>{
   assert.equal(result.ok,true);assert.equal(result.counts.failed,0);assert.equal(result.counts.blocked,0);
   assert.match(result.reports.answer.embedded,/^\[/);
  });
 });
 
 test('unrequested failing binding is not executed',async()=>{
- await scenario(`data facts := query({limit:3});
-data bad := select_one({from:{f:facts},fields:r=>({n:r.f.n})});
-data summary := select_one({from:{f:facts},group_by:r=>({}),fields:(g,rows)=>({n:count(rows)})});
-report answer := Report [p [Value(data=summary?.n)]];`,[{n:1},{n:2}],false,result=>{
+ await scenario(`data facts = query({limit:3});
+data bad = select_one({from:{f:facts},fields:r=>({n:r.f.n})});
+data summary = select_one({from:{f:facts},group_by:r=>({}),fields:(g,rows)=>({n:count(rows)})});
+report answer = tree! { Report [p [Value(data=summary?.n)]] };`,[{n:1},{n:2}],false,result=>{
   assert.equal(result.ok,true);assert.equal(result.counts.failed,0);assert.equal(result.counts.blocked,0);
   assert.match(result.reports.answer.embedded,/^\[/);
  });

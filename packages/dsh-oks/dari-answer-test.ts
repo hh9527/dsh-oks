@@ -16,10 +16,10 @@ const attachments=testAttachments(root);
 const drafts=createDraftTools({knowledge:knowledge as any,timeContext:timeContext as any,attachments:()=>({...attachments,saveFile:async args=>{files++;saved.push({name:args.name!,content:Buffer.from(args.data).toString()});return attachments.saveFile(args);}})});
 const plain=createDraftTools({knowledge:knowledge as any,timeContext:timeContext as any});
 const call=async(name:string,args:object,tools=drafts)=>tools.tools.find(t=>t.name===name)!.execute(args as never,exec) as Promise<any>;
-const source=`data facts := query({limit:5});
-data summary := select_one({from:{f:facts},fields:r=>({n:r.f.n,label:r.f.label}),order_by:o=>[desc(o.n)],limit:1});
-figure chart := ColumnChart(spec={x:"label",value:"n"},data=facts);
-answer := Answer [
+const source=`data facts = query({limit:5});
+data summary = select_one({from:{f:facts},fields:r=>({n:r.f.n,label:r.f.label}),order_by:o=>[desc(o.n)],limit:1});
+figure chart = ColumnChart(spec={x:"label",value:"n"},data=facts);
+answer tree! { Answer [
     h2 ["资源概况"],
     p [strong ["数值"],"：",value(ref=summary?.n),"；",em ["说明"],"：",value(ref=summary?.label)],
     ul [li ["甲"],li ["乙"]],
@@ -27,8 +27,8 @@ answer := Answer [
     p [code ["a\u0060b"]],
     pre [code ["hello\\nworld"]],
     p [a(href="https://example.com/a(b)") ["来源"]]
-];
-report file := Report [p [value(ref=summary?.n)]];
+] };
+report file = tree! { Report [p [value(ref=summary?.n)]] };
 `;
 try{
  writeFileSync(join(root,'answer.dari'),source);
@@ -40,9 +40,9 @@ try{
  assert(text.includes('\\*not emphasis\\* \\[link\\]\\(x\\) \\<tag\\>'));
  assert(text.includes('- 甲\n- 乙'));assert(text.includes('> 客观统计'));assert(text.includes('``a`b``'));
  assert(text.includes('```\nhello\nworld\n```'));assert(text.includes('https://example.com/a%28b%29'));
- writeFileSync(join(root,'table.dari'),`data rows := table([{level:"major",n:3},{level:"minor",n:2}],{kind:"example"});
-figure details := Table(spec={columns:["level","n"]},data=rows);
-answer := Answer [h2 ["明细"],UseFigure(ref=details,caption="统计明细")];`);
+ writeFileSync(join(root,'table.dari'),`data rows = table([{level:"major",n:3},{level:"minor",n:2}],{kind:"example"});
+figure details = Table(spec={columns:["level","n"]},data=rows);
+answer tree! { Answer [h2 ["明细"],UseFigure(ref=details,caption="统计明细")] };`);
  const tabular=await call('dari_resolve',{src:'table.dari',answer:true,figures:['details']},plain);
  assert.equal(tabular.ok,true,JSON.stringify(tabular));
  const markdown='| level | n |\n| --- | ---: |\n| major | 3 |\n| minor | 2 |\n';
@@ -55,10 +55,10 @@ answer := Answer [h2 ["明细"],UseFigure(ref=details,caption="统计明细")];`
  assert.equal(cachedTable.counts.executed,0);assert(cachedTable.answer.embedded.includes(markdown));
  const attachedTable=await call('dari_resolve',{src:'table.dari',answer:true,figures:['details']});
  assert.equal(attachedTable.figures.details.embedded,markdown);assert.equal(files,0);
- const visual=source.replace('answer := Answer [','answer := Answer [UseFigure(ref=chart,caption="分布"),UseReport(ref=file),UseReport(ref=file),');
+ const visual=source.replace('answer tree! { Answer [','answer tree! { Answer [UseFigure(ref=chart,caption="分布"),UseReport(ref=file),UseReport(ref=file),');
  // Reports must be declared before they are referenced.
- const report='report file := Report [p [value(ref=summary?.n)]];';
- writeFileSync(join(root,'visual.dari'),visual.replace(report,'').replace('answer :=',report+'\nanswer :='));
+ const report='report file = tree! { Report [p [value(ref=summary?.n)]] };';
+ writeFileSync(join(root,'visual.dari'),visual.replace(report,'').replace('answer tree!',report+'\nanswer tree!'));
  const mixed=await call('dari_resolve',{src:'visual.dari',answer:true,reports:['file'],figures:['chart']});
  assert.equal(mixed.ok,true,JSON.stringify(mixed));assert.match(mixed.reports.file.embedded,/^\[/);assert(mixed.answer.embedded.includes('!['));assert(mixed.answer.embedded.includes(mixed.reports.file.embedded));assert.equal(files,2);
  const svg=saved.find(f=>f.name==='chart.svg')!.content;
@@ -76,9 +76,9 @@ answer := Answer [h2 ["明细"],UseFigure(ref=details,caption="统计明细")];`
  }
  await assert.rejects(call('dari_resolve',{src:'answer.dari'}),/explicitly/);
  await assert.rejects(call('dari_resolve',{src:'answer.dari',answer:false}),/Select at least/);
- writeFileSync(join(root,'missing.dari'),'data n := 1;');
+ writeFileSync(join(root,'missing.dari'),'data n = 1;');
  await assert.rejects(call('dari_resolve',{src:'missing.dari',answer:true}),/Missing answer/);
- writeFileSync(join(root,'duplicate.dari'),source+'\nanswer := Answer [p ["duplicate"]];');
+ writeFileSync(join(root,'duplicate.dari'),source+'\nanswer tree! { Answer [p ["duplicate"]] };');
  assert.equal((await call('dari_check',{src:'duplicate.dari'})).ok,false);
  for(const [node,pattern]of [
   ['value(ref=summary)',/scalar/],['value(ref=summary?.missing)',/missing/],

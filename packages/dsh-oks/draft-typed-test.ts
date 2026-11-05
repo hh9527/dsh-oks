@@ -49,7 +49,7 @@ async function checkedRun(body:string){const text=small(body);const checked=awai
  try{assert.deepEqual((rt.read('left',text).value.data as any).rows,[{id:'a',cpu:35,matched:true},{id:'b',cpu:0,matched:false},{id:'c',cpu:0,matched:false}]);}finally{rt.dispose();}
 }
 {
- const {rt,run,text}=await checkedRun(`empty <-select({from:{x:a},where:(r)=>false,fields:(r)=>({cpu:r.x.cpu})});
+ const {rt,run,text}=await checkedRun(`empty <-select({from:{x:a},where:(r)=>False,fields:(r)=>({cpu:r.x.cpu})});
  one <-select_one({from:{x:empty},fields:(r)=>({cpu:r.x.cpu})});
  aggregate <-select_one({from:{x:empty},group_by:(r)=>({}),fields:(g,rows)=>({n:count(rows),total:sum(rows.x.cpu),mean:avg(rows.x.cpu)})});
  label <-one?.cpu ?? -1;`);

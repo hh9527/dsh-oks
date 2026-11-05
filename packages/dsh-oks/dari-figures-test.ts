@@ -61,22 +61,22 @@ try{
  write(base.replace('"level","n"','"missing"')+report('broken',fig('details'))+'</Dari>');
  const bad=await resolve({reports:['reports.broken']});assert.equal(bad.ok,false);assert.equal(bad.execution,'not performed');
  // DOM bindings: shared dependency closure, optional/scalar/table values and no Report requirement.
- write(`data rows := data({columns:[{name:"name",type:"String",nullable:false},{name:"n",type:"Int",nullable:false}],rows:[{name:"A",n:3},{name:"B",n:2}],truncated:false},{kind:"example"});
-data summary := select_one({from:{r:rows},group_by:r=>({}),fields:(g,rows)=>({n:sum(rows.r.n)})});
-data absent := null;
-data scalar := 7;
-data bad := select_one({from:{r:rows},fields:r=>({n:r.r.n})});
-figure chart := BarChart(spec={x:"name",value:"n"},data=rows);
-report answer := Report [p [Value(data=summary?.n)],UseFigure(ref = chart)];`);
+ write(`data rows = data({columns:[{name:"name",type:"String",nullable:False},{name:"n",type:"Int",nullable:False}],rows:[{name:"A",n:3},{name:"B",n:2}],truncated:False},{kind:"example"});
+data summary = select_one({from:{r:rows},group_by:r=>({}),fields:(g,rows)=>({n:sum(rows.r.n)})});
+data absent = None;
+data scalar = 7;
+data bad = select_one({from:{r:rows},fields:r=>({n:r.r.n})});
+figure chart = BarChart(spec={x:"name",value:"n"},data=rows);
+report answer = tree! { Report [p [Value(data=summary?.n)],UseFigure(ref = chart)] };`);
  const modern=await resolve({data:['summary','absent','scalar','rows'],figures:['chart'],reports:['answer']});assert.equal(modern.ok,true,JSON.stringify(modern));assert.deepEqual(modern.data.summary,{n:5});assert.equal(modern.data.absent,null);assert.equal(modern.data.scalar,7);
  assert.equal(modern.counts.failed,0,'unselected cardinality failure is never executed');
  assert.deepEqual(Object.keys(modern.figures),['chart']);assert.deepEqual(Object.keys(modern.reports),['answer']);
  assert(!Object.hasOwn(modern.data,'bad'));assert.equal((await resolve({data:['bad']})).ok,false);
  // Data-only outputs need neither report nor attachment service; large values are returned intact.
- write('data big := '+JSON.stringify('x'.repeat(20000))+';');
+ write('data big = '+JSON.stringify('x'.repeat(20000))+';');
  const large=await resolve({data:['big']});assert.equal(large.data.big.length,20000);
  const tool=drafts.tools.find(t=>t.name==='dari_resolve')!;const rendered=(tool.output.render as Function)({},large)[0].text;assert.match(rendered,/^Succeed\n-------/);assert.equal(JSON.parse(rendered.match(/```json\n([\s\S]*?)\n```/)[1]).length,20000);
- write('data value := 42;');const other=await resolve({data:['value']},{agent:{session:{id:'other'}}});assert.equal(other.ok,true);assert.equal(other.data.value,42,'each session resolves independently');
+ write('data value = 42;');const other=await resolve({data:['value']},{agent:{session:{id:'other'}}});assert.equal(other.ok,true);assert.equal(other.data.value,42,'each session resolves independently');
  rmSync(physical);assert.equal(readFileSync(pathOf(image.embedded),'utf8'),original);assert.equal(readFileSync(pathOf(embedded),'utf8'),archived);
  assert.equal(queries,0);assert.equal(existsSync(join(root,'artifacts')),false);assert.equal(existsSync(join(root,'.oks')),false);
  console.log('DARI resolve: independent figures, embedded reports, explicit data, dependency closure, caches, durable artifacts, selection validation and session isolation passed');

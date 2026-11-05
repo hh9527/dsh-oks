@@ -98,7 +98,7 @@ export function parseDomDraft(source:string,file:string){
     if(ast.k!=='lit')fail('Document attributes require static strings or booleans',part.start,part.end);
     let value:unknown=ast.v;
     if(typeof value==='boolean'&&['data-oks-lit','data-oks-shrink'].includes(key)){
-      if(!value)fail(key+' must be true when present',part.start,part.end);value='';
+      if(!value)fail(key+' must be True when present',part.start,part.end);value='';
     }
     if(typeof value!=='string')fail('Document attributes require static strings',part.start,part.end);
     return {kind:'text',value:value as string,span};
@@ -174,7 +174,7 @@ export function parseDomDraft(source:string,file:string){
     const result={name:tag,attrs,children,selfClosing,span:location(start)};
     childSpans.set(result,spans);return result;
   };
-  const reserved=new Set(['if','else','let','Some','data','figure','report','export','true','false','null','query','context','select','select_one','table','map','union_all','time_windows','is_some','is_none','map_opt','round','case_when','lookup','concat','to_datetime_utc','to_epoch_millis','asc','desc','count','sum','avg','min','max']);
+  const reserved=new Set(['tree','if','else','let','Some','data','figure','report','export','True','False','None','true','false','null','query','context','select','select_one','table','map','union_all','time_windows','is_some','is_none','map_opt','round','case_when','lookup','concat','to_datetime_utc','to_epoch_millis','asc','desc','count','sum','avg','min','max']);
   whitespace();while(at<source.length){
     if(declarations.size>=512)fail('DARI is limited to 512 declarations');
     const start=at,kind=name();
@@ -182,11 +182,14 @@ export function parseDomDraft(source:string,file:string){
     whitespace();const bindingStart=at,binding=kind==='answer'?'answer':name();
     if(kind!=='answer'&&(binding.startsWith('__')||reserved.has(binding)))fail('Reserved binding name '+binding,bindingStart,at);
     if(declarations.has(binding))fail('Duplicate binding '+binding,bindingStart,at);
-    eat(':=');
+    if(kind!=='answer')eat('=');
     if(kind==='data'){
       const part=expression(new Set([';']));const node=compile(part,binding);eat(';');node.statement.span=location(start);
     }else{
-      const tree=element();eat(';');
+      if(kind!=='figure'){eat('tree');eat('!');eat('{');}
+      const tree=element();
+      if(kind!=='figure')eat('}');
+      eat(';');
       if(kind==='figure'){
         if(componentKind(tree.name)===undefined)fail('figure requires a chart component or Table',tree.span.start.offset,tree.span.end.offset);
         if(tree.children.length)fail('Chart components have attributes and no children',tree.span.start.offset,tree.span.end.offset);

@@ -1,14 +1,14 @@
-data facts := table([{name:"设备甲",cpu:42.5}],{kind:"example"});
-data summary := select_one({from:{f:facts},fields:r=>({cpu:r.f.cpu}),order_by:o=>[desc(o.cpu)],limit:1});
-figure trend := ColumnChart(spec={x:"name",value:"cpu"},data=facts);
-report full := Report(title="设备资源报告") [
+data facts = table([{name:"设备甲",cpu:42.5}],{kind:"example"});
+data summary = select_one({from:{f:facts},fields:r=>({cpu:r.f.cpu}),order_by:o=>[desc(o.cpu)],limit:1});
+figure trend = ColumnChart(spec={x:"name",value:"cpu"},data=facts);
+report full = tree! { Report(title="设备资源报告") [
     h1 ["设备资源报告"],
     p ["CPU：",value(ref=summary?.cpu)],
     UseFigure(ref=trend,caption="设备 CPU")
-];
-answer := Answer [
+] };
+answer tree! { Answer [
     h2 ["设备资源概况"],
     p [strong ["CPU"],"：",value(ref=summary?.cpu)],
     UseFigure(ref=trend,caption="设备 CPU"),
     UseReport(ref=full)
-];
+] };

@@ -62,30 +62,30 @@ dari_resolve({src: "draft.dari", answer: true})
 
 ## DARI 有类型 Pipeline
 
-`.dari` 使用 data、figure、report 声明不可变计算、图表和报告，使用唯一的 `answer := Answer [...]` 定义回答。图表、报告和回答统一使用 `tag(attrs) [ children ]` 构造表达式。语法规范见 [RFC 0021](../../rfc/0021-typed-relational-pipeline.md)，使用说明见 [Pipeline 手册](src/help/pipeline.md)。
+`.dari` 使用 data、figure、report 声明不可变计算、图表和报告，使用唯一的 `answer tree! { Answer [...] }` 定义回答。图表、报告和回答统一使用 `tag(attrs) [ children ]` 构造表达式。当前语法与使用说明见 [DARI 手册](src/help/dari.md)，早期设计见 [RFC 0021](../../rfc/0021-typed-relational-pipeline.md)。
 
 ```text
-data facts := query({...});
-data result := select({
+data facts = query({...});
+data result = select({
   from:{f:facts},
   fields:(r)=>({name:r.f.name,value:r.f.value}),
   order_by:(out)=>[desc(out.value),asc(out.name)]
 });
-data first := select_one({
+data first = select_one({
   from:{r:result},fields:(row)=>({name:row.r.name,value:row.r.value}),
   order_by:(out)=>[desc(out.value),asc(out.name)],limit:1
 });
-figure chart := BarChart(spec = {x:"name",value:"value"}, data = result);
-report full := Report [
+figure chart = BarChart(spec = {x:"name",value:"value"}, data = result);
+report full = tree! { Report [
   h1 [ "分析结果" ],
   p [ "首项：", value(ref = first?.name), ],
   UseFigure(ref = chart),
-];
-answer := Answer [
+] };
+answer tree! { Answer [
   p ["分析已完成"],
   UseFigure(ref = chart),
   UseReport(ref = full),
-];
+] };
 ```
 
 模型在 check 时返回 query 的 columns，直接构成 Table(T) 的行类型。select 根据表类型、行作用域和表达式签名推导新的 Table(U)；select_one 得到普通的 Option(U)。表列通过行函数访问，报告标量使用可选对象投影，例如 `value(ref = first?.name)`。
@@ -94,7 +94,7 @@ answer := Answer [
 
 运行以有类型计划生成参数化 SQL，在每份分析稿的临时 SQLite 中执行；临时数据库闲置 15 分钟后回收。每个结果集保留 schema；查询与派生计算按依赖缓存，缓存命中也能恢复临时表。select_one 的动态多行约束会在运行时拒绝。截断输入、schema 漂移、值类型不符、资源超限均明确失败。
 
-图表写成 `figure chart := BarChart(spec = spec, data = result);`，检查器验证列名和数值映射。报告通过 `UseFigure(ref = chart, caption = "说明")` 编排，caption 可选。绑定不可变，先定义后引用。正常交付将 answer.embedded 原样贴回；UseFigure 生成图表嵌入，UseReport 生成可点击的报告链接。调试时通过 data/figures/reports 选择输出。报告保留源码、上下文及执行元数据；SVG 内含最终绘图输入 CSV 和紧凑 JSON spec，表格与正文直接从 HTML 读取。
+图表写成 `figure chart = BarChart(spec = spec, data = result);`，检查器验证列名和数值映射。报告通过 `UseFigure(ref = chart, caption = "说明")` 编排，caption 可选。绑定不可变，先定义后引用。正常交付将 answer.embedded 原样贴回；UseFigure 生成图表嵌入，UseReport 生成可点击的报告链接。调试时通过 data/figures/reports 选择输出。报告保留源码、上下文及执行元数据；SVG 内含最终绘图输入 CSV 和紧凑 JSON spec，表格与正文直接从 HTML 读取。
 
 ## 知识发现
 
@@ -115,8 +115,8 @@ oks_read({path:"oks://help/"})
 ## 时间与缓存
 
 ```js
-data ctx := context();
-data months := time_windows(ctx,{unit:"month",count:3,mode:"complete"});
+data ctx = context();
+data months = time_windows(ctx,{unit:"month",count:3,mode:"complete"});
 ```
 
 complete 为最近 N 个完整期间；current 含当前期间，末端可能在未来；rolling 以捕获时刻为末端按日历回移。

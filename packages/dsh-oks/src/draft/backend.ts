@@ -318,7 +318,7 @@ export function createDraftBackend(options: {
       });
       for(const [name,reference]of Object.entries(ctx.asset.references??{}))if(reference.kind==='condition')check(()=>{
         const t=typeOf(second[name]);
-        if(t.kind!=='scalar'||t.name!=='Bool'||t.nullable)throw new Error('if condition requires Bool, got '+show(t)+'; use ?? false for Option(Bool)');
+        if(t.kind!=='scalar'||t.name!=='Bool'||t.nullable)throw new Error('if condition requires Bool, got '+show(t)+'; use ?? False for Option(Bool)');
       },reference.span);
       for(const [name,reference]of Object.entries(ctx.asset.references??{}))if(reference.kind==='value'&&isBox(second[name]))check(()=>{const t=typeOf(second[name]);if(t.kind!=='scalar'&&t.kind!=='null')throw new Error('Value.data must select a scalar, got '+show(t));},reference.span);
       for(const [name,reference]of Object.entries(ctx.asset.references??{}))if(reference.kind==='value'&&known(second[name]))check(()=>{

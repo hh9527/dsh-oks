@@ -5,25 +5,25 @@
 用宿主文件工具读写 `.dari`。src 是工作区内的相对路径或绝对路径。`remove_file({path})` 只删一个文件；`move_entry({src,sink})` 的两个参数都是最终名称。`oks_read` 只读取内置手册。
 
 ```dari
-data ctx := context();
-data weeks := time_windows(ctx,{unit:"week",count:2,mode:"complete"});
-data prev := weeks[0];
-data last := weeks[1];
-data facts := query({
+data ctx = context();
+data weeks = time_windows(ctx,{unit:"week",count:2,mode:"complete"});
+data prev = weeks[0];
+data last = weeks[1];
+data facts = query({
     op:"Graph",root:"d",nodes:[{id:"d",entity:"<数据集短名称>"}],edges:[],
     select:[],count:"d",limit:100
 });
-data summary := select_one({from:{s:facts},group_by:(r)=>({}),
+data summary = select_one({from:{s:facts},group_by:(r)=>({}),
     fields:(g,rows)=>({returned_groups:count(rows)})});
-answer := Answer [
+answer tree! { Answer [
     h1 ["对象概览"],
     p ["返回分组数：",value(ref=summary?.returned_groups)],
-];
+] };
 ```
 
-示例中的模型名称是占位符，以知识定义替换。`data` 定义不可变计算，`figure` 定义图表，`report` 定义报告；`answer := Answer [...]` 是唯一回答出口。所有绑定共用命名空间，先定义后引用，每条声明以 `;` 结束；支持 `//` 和 `/* ... */` 注释。
+示例中的模型名称是占位符，以知识定义替换。`data` 定义不可变计算，`figure` 定义图表，`report` 定义报告；`answer tree! { Answer [...] }` 是唯一回答出口。report/answer 的节点树必须用 `tree! { ... }` 包围，内部仍用 `tag(...) [...]`；figure 接组件表达式。`=` 仅声明不可变绑定，不支持重新赋值。True/False/None 是 DARI 字面量，工具参数与返回 JSON 仍用 true/false/null。所有绑定共用命名空间，先定义后引用，每条声明以 `;` 结束；支持 `//` 和 `/* ... */` 注释。
 
-表达式使用字符串、数字、Bool、null、对象、数组、函数和绑定引用。对象的中文、空格、括号键使用双引号，访问用 `row["设备分类"]`，不是 `row.设备分类` 或 `row."设备分类"`；可空对象使用 `map_opt(obj,r=>r["设备分类"])`。
+表达式使用字符串、数字、Bool（True/False）、None、对象、数组、函数和绑定引用。对象的中文、空格、括号键使用双引号，访问用 `row["设备分类"]`，不是 `row.设备分类` 或 `row."设备分类"`；可空对象使用 `map_opt(obj,r=>r["设备分类"])`。
 
 ## 检查与解析
 
@@ -68,9 +68,9 @@ resolve 先检查，再执行所选产物及依赖。answer 是必填 Bool；dat
 按知识中的时间维度逻辑类型选择 epochMillis 或 dateTimeUtc；rfc3339 和 zone 用于展示。query.time_windows.dimension 使用实际维度短名称，不是时间角色 ID。日期标签不能替代边界。
 
 ```dari
-data ctx := context();
-data days := time_windows(ctx,{unit:"day",count:7,mode:"complete"});
-data facts := query({
+data ctx = context();
+data days = time_windows(ctx,{unit:"day",count:7,mode:"complete"});
+data facts = query({
     op:"Graph",root:"a",nodes:[{id:"a",entity:"current_alarm"}],edges:[],
     select:[{node:"a",dimension:"alarm_tenant_id"}],
     measures:[{node:"a",measure:"alarm_count"}],
@@ -86,14 +86,14 @@ data facts := query({
 query 返回 Table(T)，列名和可空性由模型 columns 决定。行结构是 `r.<from别名>.<完整列名>`：若列叫 a_alarm_severity，访问 `r.s.a_alarm_severity`，不是 `r.s.a.alarm_severity`。使用检查返回的列名。
 
 ```dari
-data comparison := select({
+data comparison = select({
     from:{b:base},
     joins:[{kind:"inner",source:{c:current},on:r=>r.b.server_id==r.c.server_id}],
     where:r=>is_some(r.b.cpu)&&is_some(r.c.cpu),
     fields:r=>({id:r.b.server_id,delta:r.c.cpu-r.b.cpu}),
     order_by:out=>[desc(out.delta),asc(out.id)],limit:3
 });
-data winner := select_one({from:{s:comparison},fields:r=>({id:r.s.id,delta:r.s.delta}),
+data winner = select_one({from:{s:comparison},fields:r=>({id:r.s.id,delta:r.s.delta}),
     order_by:out=>[desc(out.delta),asc(out.id)],limit:1});
 ```
 
@@ -102,7 +102,7 @@ from 恰好一个别名和表，joins 顺序引入 inner/left 连接。on/where 
 fields 返回标量记录，决定列名；order_by 读取投影后的 out，asc/desc 默认空值排最后，可加 `{nulls:"first"}`。select_one 返回 Option(记录)：零行 None，一行对象，多行 CardinalityViolation；第一名用显式排序和 limit:1。
 
 ```dari
-data groups := select({from:{s:samples},group_by:r=>({tenant:r.s.tenant_id}),
+data groups = select({from:{s:samples},group_by:r=>({tenant:r.s.tenant_id}),
     fields:(g,rows)=>({tenant:g.tenant,n:count(rows),valid:count(rows.s.cpu),cpu:avg(rows.s.cpu)}),
     having:out=>out.valid>0,order_by:out=>[desc(out.cpu),asc(out.tenant)]});
 ```
@@ -111,7 +111,7 @@ data groups := select({from:{s:samples},group_by:r=>({tenant:r.s.tenant_id}),
 
 | 表达式 | 语义 |
 | --- | --- |
-| is_some(x) / is_none(x) | Option → Bool；`x==null` 等价 is_none(x) |
+| is_some(x) / is_none(x) | Option → Bool；`x==None` 等价 is_none(x) |
 | x?.field / x ?? fallback | 可选投影展平 Option；显式缺失行为 |
 | map_opt(x,v=>expr) | 处理可选普通对象或标量 |
 | round(x,digits) | 保留数值类型/可空性，digits 已知 0..15 |
@@ -119,7 +119,7 @@ data groups := select({from:{s:samples},group_by:r=>({tenant:r.s.tenant_id}),
 | case_when(test,a,b) | test 为 Bool，两分支类型兼容 |
 | lookup(x,[{value,label},...]) | 精确静态查表，返回 Option(LabelType) |
 
-Int/Float 可提升，String 与数字不隐式转换；Option 算术仍是 Option，不补零。除法返回 Option(Float)，零除为 None；可空比较返回 Option(Bool)，谓词显式用 `(r.s.cpu>0) ?? false`。
+Int/Float 可提升，String 与数字不隐式转换；Option 算术仍是 Option，不补零。除法返回 Option(Float)，零除为 None；可空比较返回 Option(Bool)，谓词显式用 `(r.s.cpu>0) ?? False`。
 
 lookup 的映射是检查期已知非空数组，每项恰好 value/label。value 同类型非空标量且匹配输入类型，重复报错；label 为兼容标量，可含 null。输入 null 或未命中返回 null，用 `??` 给默认值；映射可复用。
 
@@ -163,7 +163,7 @@ measure_having 的度量要在 measures 中。常见合法结构是 group_by_ide
 - Eq/Ne 比较兼容逻辑值；Gt/Ge/Lt/Le 用于授权的数值/时间等有序类型。Bool/Ipv4 不支持有序比较，Text 字典序不代表数字或时间顺序。Ne 不包含 NULL。
 - Contains/NotContains/StartsWith/EndsWith 仅用于授权的 Text 维度，字面文本、当前忽略大小写，不接收 SQL/正则。
 - InSubnet/NotInSubnet 仅用于授权 Ipv4 维度，value 是规范 CIDR，如 10.4.16.0/20；掩码 0..32，主机位零、无前导零，不包含 NULL，不支持 IPv6/隐式 Text 转换。
-- 半开放枚举已知概念用列出的业务 ID；`{unknown:"原始值"}` 匹配一个未知底层值，`{unknowns:true}` 匹配所有未知非空值。结果标记列见维度 value_contract。筛选输入不提供 kind。
+- 半开放枚举已知概念用列出的业务 ID；`{unknown:"原始值"}` 匹配一个未知底层值，`{unknowns:True}` 匹配所有未知非空值。结果标记列见维度 value_contract。筛选输入不提供 kind。
 - 逻辑类型与物理存储分开。字段为 String/Int 不代表获得字符串或数值操作；ops、filterable、projectable、input_kinds 和规范值依知识声明，类型能力本身不授予权限。
 - DateTimeUtc 是规范三位毫秒 UTC 文本，EpochMillis 是整数毫秒；Date 不含时区，DateTime 是无时区日历日期时间，转换成绝对时刻需要明确时区。
 - 使用声明的 UTC 分桶维度按小时/天/月聚合，无 granularity 参数；先对原始时间加窗口。UTC 桶不是客户端自然日，月底按日历计算。
@@ -195,7 +195,7 @@ align_by 非空，配对相同实体的完整身份，节点不重复；每侧�
 | Ratio | numerator,denominator,direction,take | 分子侧/分母侧 |
 | GrowthRate | current,baseline,direction,take | (当前侧−基线侧)/基线侧 |
 
-侧名 Left/Right 且互异，direction=Asc|Desc，take=1..1000。两指标数值且单位兼容，不同指标 ID 要相同非 null 单位。NULL 排除；Ratio 排除零分母，GrowthRate 排除非正基线。追加 comparison_value，按该值排名，身份并列升序；Subtract 保留单位（百分数相减为百分点），Ratio/GrowthRate 无量纲，0.2 增长率表示 20%。rank_by 与 count_groups:true 不能并用；无排名时 count_groups 计所有对齐身份，无 comparison_value。
+侧名 Left/Right 且互异，direction=Asc|Desc，take=1..1000。两指标数值且单位兼容，不同指标 ID 要相同非 null 单位。NULL 排除；Ratio 排除零分母，GrowthRate 排除非正基线。追加 comparison_value，按该值排名，身份并列升序；Subtract 保留单位（百分数相减为百分点），Ratio/GrowthRate 无量纲，0.2 增长率表示 20%。rank_by 与 count_groups:True 不能并用；无排名时 count_groups 计所有对齐身份，无 comparison_value。
 
 GraphUnion 为 `{op:"GraphUnion",limit:500,branches:[{result_node,graph},...]}`：至少两个 Graph 返回相同实体、按相同顺序选相同维度，分支是无序原始行，按完整结果身份并集去重。
 
@@ -204,17 +204,17 @@ GraphUnion 为 `{op:"GraphUnion",limit:500,branches:[{result_node,graph},...]}`�
 `tag(attr=expression,...) [children]`；属性或子节点为空可省略，children 为字符串或节点，以逗号分隔，允许尾逗号。中文、&、< 直接写，渲染器负责转义。figure 的 data 是 Table(T)，不加 `.rows`，组件标签决定图表类型，spec 不写 kind。
 
 ```dari
-figure counts := ColumnChart(spec={x:"name",value:"count"},data=grouped);
-report full := Report [
+figure counts = ColumnChart(spec={x:"name",value:"count"},data=grouped);
+report full = tree! { Report [
     h1 ["对象统计"],
     p ["总数：",Value(data=summary?.total)],
     UseFigure(ref=counts,caption="类别分布"),
-];
-answer := Answer [
+] };
+answer tree! { Answer [
     p ["分析结果如下"],
     UseFigure(ref=counts,caption="类别分布"),
     UseReport(ref=full),
-];
+] };
 ```
 
 {{figureIndex}}
@@ -225,7 +225,7 @@ BarChart/ColumnChart 单组，不接受 series，颜色按 x 类别使用 style.
 
 LineChart/AreaChart 的 xType 必填 Int|Float|String|Rfc3339|EpochMillis，不推断编码。Int/Float 数值轴，String 类别轴；Rfc3339 接受带时区 RFC3339 文本，EpochMillis 接受整数毫秒。检查列类型、运行校验实际值；数值/时间 x 在各序列内非递减。
 
-排版用 `layout:{labelFont:12,titleFont:16}`，行高、条厚、间距和画布高度依字号与类别/序列数推导，不设置 height/rowHeight。排序/标签用 `style:{sort:"desc",labels:true}`。未知键及层级放错在检查中报错；颜色、标题、轴名和单位等专用键见所选分册。
+排版用 `layout:{labelFont:12,titleFont:16}`，行高、条厚、间距和画布高度依字号与类别/序列数推导，不设置 height/rowHeight。排序/标签用 `style:{sort:"desc",labels:True}`。未知键及层级放错在检查中报错；颜色、标题、轴名和单位等专用键见所选分册。
 
 ## Report 与 Answer
 
@@ -238,13 +238,13 @@ Report 的动态数值用 `Value(data=round(summary?.cpu,2))`，普通记录先�
 Report/Answer 子节点支持条件分支，分支内仍以逗号分隔同级节点：
 
 ```dari
-answer := Answer [
-    if (summary?.total > 0 ?? false) [p ["有数据"]] else [p ["没有数据"]],
+answer tree! { Answer [
+    if (summary?.total > 0 ?? False) [p ["有数据"]] else [p ["没有数据"]],
     if let Some(i) = summary [p ["总数：",value(ref=i.total)]] else [],
-];
+] };
 ```
 
-条件必须为 Bool，Option(Bool) 显式用 `?? false` 等处理；else 可省略或接 else if。if let 要求 Option(T)，Some 绑定仅在第一个分支内有效，类型为 T；含下标的待解包表达式用括号包围，如 `if let Some(i) = (items[0]) [...]`。所有分支都检查类型、节点和溯源；运行只展示选中分支，未选中的 UseFigure/UseReport 不发布附件。条件不改变 query 取数计划。
+条件必须为 Bool，Option(Bool) 显式用 `?? False` 等处理；else 可省略或接 else if。if let 要求 Option(T)，Some 绑定仅在第一个分支内有效，类型为 T；含下标的待解包表达式用括号包围，如 `if let Some(i) = (items[0]) [...]`。所有分支都检查类型、节点和溯源；运行只展示选中分支，未选中的 UseFigure/UseReport 不发布附件。条件不改变 query 取数计划。
 
 UseFigure 在 Answer 中发布图形并嵌入图片，Table 直接嵌入 Markdown 表格；在 Report 中嵌入图形/表格并自动编号。UseReport 仅用于 Answer，发布已声明 Report 的可点击链接，无需另调 present；同一次解析同一产物仅发布一次。
 

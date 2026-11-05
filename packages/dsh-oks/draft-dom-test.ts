@@ -18,10 +18,10 @@ const entry={root,modelHash:'dom-test',settings:{domain:'test',queryMaxRows:100,
 const knowledge={ensureWorkspace:()=>entry,executorFor(){reads++;return {manifest:null,executor:{async send(){return {columns:['name','cpu'],truncated:false,rows:[{name:'A&B <x>',cpu:30},{name:'B',cpu:null}]};},dispose(){}}};}} as unknown as Knowledge;
 const backend=createDraftBackend({entry,file:'dom.dari',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge});
 const source=`// Immutable data, shared by independently declared figures and reports.
-data facts := query({limit:10});
-data winner := select_one({from:{f:facts},fields:(r)=>({name:r.f.name,cpu:r.f.cpu}),order_by:(o)=>[desc(o.cpu),asc(o.name)],limit:1});
-figure cpu := BarChart(spec = {x:"name",value:"cpu"}, data = facts);
-report answer := Report(title = "CPU & memory") [
+data facts = query({limit:10});
+data winner = select_one({from:{f:facts},fields:(r)=>({name:r.f.name,cpu:r.f.cpu}),order_by:(o)=>[desc(o.cpu),asc(o.name)],limit:1});
+figure cpu = BarChart(spec = {x:"name",value:"cpu"}, data = facts);
+report answer = tree! { Report(title = "CPU & memory") [
  h1 [ "CPU & <memory>" ],
  p [ "首项：", Value(data = winner?.name), "; CPU：", Value(data = round(winner?.cpu, 1)), ],
  p [ "文本里的 ; } ] , // /* 不参与语法" ],
@@ -29,7 +29,7 @@ report answer := Report(title = "CPU & memory") [
  p [ "版本：", Lit ["1.2"], ],
  p [ "参考 ", FigureRef(ref = cpu), ],
  UseFigure(ref = cpu, caption = "窗口平均值"),
-];`;
+] };`;
 try{
  const {helpFiles}=await import('./src/help-files.ts');
  const manual=helpFiles['oks://help/dari.md'];assert(manual.includes('Lit'));assert(!manual.includes('data-oks-lit'));
@@ -59,39 +59,39 @@ try{
  for(const [text,pattern]of [
   ['',/Expected data, figure or report/],
   ['export answer;',/Expected data, figure or report/],
-  ['report r := Report [Lit [p ["1.2"]]];',/Lit accepts only literal text/],
-  ['report r := Report [Lit(class="x") ["1.2"]];',/Unknown attribute/],
-  ['report r := Report {p {"old"};};',/Node children use/],
-  ['report r := Report [p ["a";"b"]];',/Expected , between child/],
-  ['report r := Report [,p ["a"]];',/Expected.*name/],
-  ['report r := Report [p ["a"],,];',/Expected.*name/],
-  ['report r := Report [p ["a"],',/Missing \]/],
-  ['data x := 1,',/Unexpected content|Expected/],
-  ['data x := y;',/Undefined or forward/],
-  ['data x := 1; data x := 2;',/Duplicate binding/],
-  ['data x := 1; figure x := BarChart(spec={},data=x);',/Duplicate binding/],
-  ['data x := 1; report x := Report [];',/Duplicate binding/],
-  ['data query := 1;',/Reserved binding/],
-  ['data __dom0 := 1;',/Reserved binding/],
-  ['data x := 1',/Expected ";"/],
-  ['data x := {a:1];',/Unmatched/],
-  ['data x := 1; report r := Report [p [x],];',/Unsupported report element/],
-  ['report r := Report [p ["a" "b"],];',/between child/],
-  ['report r := Report [p(class="x",class="y") ["x"],];',/Duplicate attribute/],
-  ['figure f := Report [];',/requires a chart/],
-  ['report r := BarChart();',/requires Report/],
-  ['report r := Report [UseFigure(ref = f),];figure f := BarChart();',/Undefined or forward figure/],
-  ['data x := 1; report r := Report [UseFigure(ref = x),];',/figure binding/],
-  ['figure f := BarChart(spec={},data=missing);',/Undefined or forward/],
-  ['report r := Report [Script ["bad"],];',/Unknown DARI component/],
-  ['report r := Report [p(onclick="bad") ["x"],];',/Unsupported report attribute/],
-  ['report r := Report [a(href="javascript:bad") ["x"],];',/Unsupported link/],
+  ['report r = tree! { Report [Lit [p ["1.2"]]] };',/Lit accepts only literal text/],
+  ['report r = tree! { Report [Lit(class="x") ["1.2"]] };',/Unknown attribute/],
+  ['report r = tree! { Report {p {"old"};} };',/Node children use/],
+  ['report r = tree! { Report [p ["a";"b"]] };',/Expected , between child/],
+  ['report r = tree! { Report [,p ["a"]] };',/Expected.*name/],
+  ['report r = tree! { Report [p ["a"],,] };',/Expected.*name/],
+  ['report r = tree! { Report [p ["a"],',/Missing \]/],
+  ['data x = 1,',/Unexpected content|Expected/],
+  ['data x = y;',/Undefined or forward/],
+  ['data x = 1; data x = 2;',/Duplicate binding/],
+  ['data x = 1; figure x = BarChart(spec={},data=x);',/Duplicate binding/],
+  ['data x = 1; report x = tree! { Report [] };',/Duplicate binding/],
+  ['data query = 1;',/Reserved binding/],
+  ['data __dom0 = 1;',/Reserved binding/],
+  ['data x = 1',/Expected ";"/],
+  ['data x = {a:1];',/Unmatched/],
+  ['data x = 1; report r = tree! { Report [p [x],] };',/Unsupported report element/],
+  ['report r = tree! { Report [p ["a" "b"],] };',/between child/],
+  ['report r = tree! { Report [p(class="x",class="y") ["x"],] };',/Duplicate attribute/],
+  ['figure f = Report [];',/requires a chart/],
+  ['report r = tree! { BarChart() };',/requires Report/],
+  ['report r = tree! { Report [UseFigure(ref = f),] };figure f = BarChart();',/Undefined or forward figure/],
+  ['data x = 1; report r = tree! { Report [UseFigure(ref = x),] };',/figure binding/],
+  ['figure f = BarChart(spec={},data=missing);',/Undefined or forward/],
+  ['report r = tree! { Report [Script ["bad"],] };',/Unknown DARI component/],
+  ['report r = tree! { Report [p(onclick="bad") ["x"],] };',/Unsupported report attribute/],
+  ['report r = tree! { Report [a(href="javascript:bad") ["x"],] };',/Unsupported link/],
  ] as const)assert.throws(()=>parseDraft(text,'bad.dari'),pattern,text);
  // Omitted and empty node bodies have the same leaf semantics; strings are JSON strings.
- assert.equal(parseDraft('report r := Report [h1 ["标题"],br [],p ["x",],];').answers[0],'r');
- assert.equal(parseDraft('report r := Report(title = "title" /* comment */) [p(class = "x" // comment\n) ["ok"],];').title,'title');
- assert.equal(parseDraft('/*hi*/ data x := {s:";}",a:[1,2]}; // trailing').nodes.length,1);
- const many='data items := [1,2];data qs := map(items,(x)=>query({limit:10,x:x}));';
+ assert.equal(parseDraft('report r = tree! { Report [h1 ["标题"],br [],p ["x",],] };').answers[0],'r');
+ assert.equal(parseDraft('report r = tree! { Report(title = "title" /* comment */) [p(class = "x" // comment\n) ["ok"],] };').title,'title');
+ assert.equal(parseDraft('/*hi*/ data x = {s:";}",a:[1,2]}; // trailing').nodes.length,1);
+ const many='data items = [1,2];data qs = map(items,(x)=>query({limit:10,x:x}));';
  assert.equal((await checkDesign(many,'dom.dari',backend)).ok,true);
  const src='.work/test.dari',path=join(root,'.work/test.dari');writeFileSync(path,source);
  const drafts=createDraftTools({knowledge,attachments:()=>testAttachments(root),timeContext:{zones:new Map()} as TimeContext,approval:()=>({async request(){approvals++;return 'allowed-once';}})});
@@ -105,7 +105,7 @@ try{
   assert(readFileSync(artifact(result.reports.answer.embedded),'utf8').includes('CPU &amp;'));
   assert.deepEqual(result.data.winner,{name:'A&B <x>',cpu:30});
   assert.deepEqual(Object.keys(result.figures),['cpu']);assert.deepEqual(Object.keys(result.figures.cpu),['embedded']);assert(!JSON.stringify(result).includes('__dom'));
-  writeFileSync(path,source+'\nreport other := Report(title = "其他报告") [p ["另一份"],];');
+  writeFileSync(path,source+'\nreport other = tree! { Report(title = "其他报告") [p ["另一份"],] };');
   result=await call('dari_resolve',{answer:false,src,reports:['answer','other']});assert.equal(result.ok,true,JSON.stringify(result));assert.deepEqual(Object.keys(result.reports),['answer','other']);
   assert.equal(result.data,undefined);
  }finally{drafts.dispose();}

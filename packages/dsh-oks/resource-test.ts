@@ -19,10 +19,10 @@ try {
  for(const path of paths){const manual=await call('oks_read',{path});assert(manual.lines.length);}
  for(const path of ['analysis.dari',join(root,'analysis.dari'),'.work/a.dari','oks://help/../x','oks://knowledge'])await assert.rejects(call('oks_read',{path}),/built-in manuals/);
  mkdirSync(join(root,'reports'));
- const local=join(root,'reports/a.dari');writeFileSync(local,'data a := 1;');
+ const local=join(root,'reports/a.dari');writeFileSync(local,'data a = 1;');
  for(const path of ['reports/a.dari','./reports/a.dari',local])assert.equal(readDariSource(root,path,'test').file,'reports/a.dari');
  symlinkSync(local,join(root,'alias.dari'));assert.equal(readDariSource(root,'alias.dari','test').file,'reports/a.dari');
- writeFileSync(join(outside,'escape.dari'),'data a := 1;');symlinkSync(outside,join(root,'escape'));
+ writeFileSync(join(outside,'escape.dari'),'data a = 1;');symlinkSync(outside,join(root,'escape'));
  for(const path of [join(outside,'escape.dari'),'../escape.dari','escape/escape.dari','.work/a.dari'])assert.throws(()=>readDariSource(root,path,'test'));
  await assert.rejects(call('dari_check',{src:'reports/a.dari',answer:'a'}),/Expected only src/);
  assert.equal((await call('dari_check',{src:'reports/a.dari'})).ok,true);

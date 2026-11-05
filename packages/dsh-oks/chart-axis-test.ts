@@ -35,7 +35,7 @@ assert.equal(axisValue('3','Int'),null);assert.equal(axisValue(3,'String'),null)
 let reads=0,columnType='String';
 const entry={modelHash:'axis-test',settings:{domain:'test',queryMaxRows:100},runner:{async send(){return {ok:{accepted:true,queries:[{sql:'SELECT at,n LIMIT ?',bindings:[3],limit_slot:0,columns:[{name:'at',type:columnType,nullable:false},{name:'n',type:'Float',nullable:false}]}]}};}}} as unknown as WorkspaceEntry;
 const newBackend=()=>createDraftBackend({entry,file:'axis.dari',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge:{executorFor(){reads++;throw new Error('check must not acquire data');}}});
-const source=(xType:string)=>`data rows := query({limit:3});figure f := LineChart(spec={x:"at",value:"n",xType:"${xType}"},data=rows);`;
+const source=(xType:string)=>`data rows = query({limit:3});figure f = LineChart(spec={x:"at",value:"n",xType:"${xType}"},data=rows);`;
 for(const [xType,allowed]of Object.entries({Int:['Int'],Float:['Int','Float'],String:['String'],Rfc3339:['String','DateTimeUtc'],EpochMillis:['Int','EpochMillis']})){
  for(const ty of ['Int','Float','String','DateTimeUtc','EpochMillis','Bool']){
   columnType=ty;const checked=await checkDesign(source(xType),'axis.dari',newBackend());
@@ -43,7 +43,7 @@ for(const [xType,allowed]of Object.entries({Int:['Int'],Float:['Int','Float'],St
  }
 }
 for(const [xType,at]of [['EpochMillis','123.5'],['Rfc3339','"2026-02-30T00:00:00Z"']] as const){
- const checked=await checkDesign(`data rows := data([{at:${at},n:1}]);figure f := AreaChart(spec={x:"at",value:"n",xType:"${xType}"},data=rows);`,'axis.dari',newBackend());
+ const checked=await checkDesign(`data rows = data([{at:${at},n:1}]);figure f = AreaChart(spec={x:"at",value:"n",xType:"${xType}"},data=rows);`,'axis.dari',newBackend());
  assert.equal(checked.ok,false,JSON.stringify(checked));
 }
 assert.equal(reads,0);

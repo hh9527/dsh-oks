@@ -1,23 +1,23 @@
-data facts := query({
+data facts = query({
   op:"Graph",root:"d",limit:500,
   nodes:[{id:"d",entity:"network-element"}],edges:[],
   select:[{node:"d",dimension:"ne_classification"}],
   measures:[{node:"d",measure:"ne_count"}]
 });
-data classes := select({
+data classes = select({
   from:{n:facts},
   fields:(r)=>({classification:r.n.d_ne_classification,count:r.n.d_ne_count}),
   order_by:(out)=>[desc(out.count),asc(out.classification)]
 });
-data summary := select_one({
+data summary = select_one({
   from:{n:classes},group_by:(r)=>({}),
   fields:(g,rows)=>({classification_count:count(rows),element_count:sum(rows.n.count)})
 });
-data spec := {x:"classification",value:"count"};
+data spec = {x:"classification",value:"count"};
 
-figure classChart := ColumnChart(spec = spec, data = classes);
+figure classChart = ColumnChart(spec = spec, data = classes);
 
-report full := Report(title = "NS 网元分类概览") [
+report full = tree! { Report(title = "NS 网元分类概览") [
   h1 [ "网元分类概览" ],
   p [
     "共 ",
@@ -27,9 +27,9 @@ report full := Report(title = "NS 网元分类概览") [
     " 个网元。",
   ],
   UseFigure(ref = classChart),
-];
+] };
 
-answer := Answer [
+answer tree! { Answer [
     p ["分析已完成，详见报告"],
     UseReport(ref=full)
-];
+] };

@@ -47,11 +47,11 @@ console.log('Preloaded manuals: same-source order, final rules, no figure payloa
 const {checkDesign}=await import('./src/draft/design.ts');
 const {createDraftBackend}=await import('./src/draft/backend.ts');
 const backend=createDraftBackend({entry:{modelHash:'manual-test',settings:{domain:'test',queryMaxRows:500},runner:{async send(_method:any,{intents}:any){return {ok:{accepted:true,queries:[{sql:'SELECT 1 AS n LIMIT ?',bindings:[intents[0].limit],limit_slot:0,columns:[{name:'n',type:'Int',nullable:false}]}]}};}}} as any,file:'manual.dari',contextZone:()=>({kind:'resolved',timeZone:'Asia/Shanghai'}),knowledge:{executorFor(){throw Error('Manual checks must not read business data');}} as any});
-const fixtures=`data base := table([{server_id:"a",cpu:7},{server_id:"b",cpu:null}],{kind:"example"});
-data current := table([{server_id:"a",cpu:9},{server_id:"b",cpu:null}],{kind:"example"});
-data samples := table([{tenant_id:"a",cpu:7},{tenant_id:"b",cpu:null}],{kind:"example"});
-data grouped := table([{name:"a",count:3}],{kind:"example"});
-data summary := select_one({from:{g:grouped},group_by:r=>({}),fields:(g,rows)=>({total:sum(rows.g.count)})});`;
+const fixtures=`data base = table([{server_id:"a",cpu:7},{server_id:"b",cpu:None}],{kind:"example"});
+data current = table([{server_id:"a",cpu:9},{server_id:"b",cpu:None}],{kind:"example"});
+data samples = table([{tenant_id:"a",cpu:7},{tenant_id:"b",cpu:None}],{kind:"example"});
+data grouped = table([{name:"a",count:3}],{kind:"example"});
+data summary = select_one({from:{g:grouped},group_by:r=>({}),fields:(g,rows)=>({total:sum(rows.g.count)})});`;
 for(const [i,match] of [...helpFiles['oks://help/dari.md'].matchAll(/```dari\n([\s\S]*?)```/g)].entries()){
   const code=match[1],fragment=!code.includes('query(');
   const checked=await checkDesign((fragment?fixtures+'\n':'')+code,'manual-'+i+'.dari',backend);

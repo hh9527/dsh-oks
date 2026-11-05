@@ -73,7 +73,7 @@ export class TypedCompiler{
     return {type,known:false,column,sql:op==='/'?'(1.0*'+this.sql(a,n)+'/NULLIF('+this.sql(b,n)+',0))':'('+this.sql(a,n)+op+this.sql(b,n)+')'};
    }
    if(['==','!=','<','>','<=','>='].includes(op)){
-    if(a.type.kind==='null'||b.type.kind==='null'){if(!['==','!='].includes(op))fail(n,'Use == null or != null');const v=a.type.kind==='null'?b:a;return {type:scalar('Bool'),known:k,column,...(k?{value:op==='=='?v.value===null:v.value!==null}:{sql:'('+this.sql(v,n)+(op==='=='?' IS NULL)':' IS NOT NULL)')})};}
+    if(a.type.kind==='null'||b.type.kind==='null'){if(!['==','!='].includes(op))fail(n,'Use == None or != None');const v=a.type.kind==='null'?b:a;return {type:scalar('Bool'),known:k,column,...(k?{value:op==='=='?v.value===null:v.value!==null}:{sql:'('+this.sql(v,n)+(op==='=='?' IS NULL)':' IS NOT NULL)')})};}
     common(a.type,b.type);if(!scalarType(a.type)||!scalarType(b.type))fail(n,'Comparison requires scalar operands');const type=scalar('Bool',a.type.nullable||b.type.nullable);
     const value=k?(a.value===null||b.value===null?null:op==='=='?a.value===b.value:op==='!='?a.value!==b.value:op==='<'?a.value<b.value:op==='>'?a.value>b.value:op==='<='?a.value<=b.value:a.value>=b.value):undefined;
     return {type,known:k,column,...(k?{value}:{sql:'('+this.sql(a,n)+(op==='=='?'=':op==='!='?'<>':op)+this.sql(b,n)+')'})};
@@ -160,5 +160,5 @@ export class TypedCompiler{
  }
  presence(v:V,n:N):string{if(v.presence)return v.presence;if(v.type.kind==='record')return this.param(v.known?(v.value===null?null:1):null);return this.sql(v,n);}
  callback(n:N,args:V[],env:Record<string,V>):V{if(n.k!=='lambda'||n.params?.length!==args.length)fail(n,'Expected a row function with '+args.length+' parameter(s)');return this.compile(n.body!,{...env,...Object.fromEntries(n.params!.map((p,i)=>[p,args[i]]))});}
- bool(v:V,n:N){if(v.type.kind!=='scalar'||v.type.name!=='Bool'||v.type.nullable||v.column)fail(n,'Predicate must return Bool; use ?? false for Option(Bool)');}
+ bool(v:V,n:N){if(v.type.kind!=='scalar'||v.type.name!=='Bool'||v.type.nullable||v.column)fail(n,'Predicate must return Bool; use ?? False for Option(Bool)');}
 }

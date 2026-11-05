@@ -250,13 +250,13 @@ if(!member)throw new Error('没有发现数据集');
 const countIntent={op:'Graph',root:'x',nodes:[{id:'x',entity:member.dataset}],edges:[],select:[],count:'x',limit:5};
 mkdirSync(join(DEV_ROOT,'.work'),{recursive:true});
 const draftFile='.work/smoke_answer.dari';
-const draftSource=`data ctx := context();
-data months := time_windows(ctx,{unit:"month",count:2,mode:"complete"});
-data facts := query(${JSON.stringify(countIntent)});
-data total := select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({groups:count(rows)})});
-report answer := Report(title = "集成冒烟") [
+const draftSource=`data ctx = context();
+data months = time_windows(ctx,{unit:"month",count:2,mode:"complete"});
+data facts = query(${JSON.stringify(countIntent)});
+data total = select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({groups:count(rows)})});
+report answer = tree! { Report(title = "集成冒烟") [
   p [ "返回组数 ", Value(data = total?.groups), ],
-];`;
+] };`;
 writeFileSync(join(DEV_ROOT,draftFile),draftSource);
 // 模拟真实宿主：用户 RPC 建立时区，知识子会话的结果随后触发内部续跑。
 const timeSession = sessionFor(DEV_ROOT).agent.session;
@@ -293,13 +293,13 @@ for(const [name,patch] of [
  const dir=join(SCRATCH,name);mkdirSync(join(dir,'.work'),{recursive:true});
  writeFileSync(join(SCRATCH,'not-sqlite'),'not a database');
  writeFileSync(join(dir,'oks.json'),JSON.stringify({...baseConfig,model:settings.model,...patch}));
- writeFileSync(join(dir,draftFile),draftSource.replace('data ctx := context();','').replace('data months := time_windows(ctx,{unit:"month",count:2,mode:"complete"});',''));
+ writeFileSync(join(dir,draftFile),draftSource.replace('data ctx = context();','').replace('data months = time_windows(ctx,{unit:"month",count:2,mode:"complete"});',''));
  const result=await call('dari_check',{src:draftFile},dir);
  ok('设计检查不依赖业务数据库',result.value.ok===true);
 }
 const nested=join(SCRATCH,'nested');mkdirSync(join(nested,'.work'),{recursive:true});
 writeFileSync(join(nested,'oks.json'),JSON.stringify({...baseConfig,model:relative(nested,settings.model),dataFile:relative(nested,settings.dataFile)}));
-writeFileSync(join(nested,draftFile),draftSource.replace('data ctx := context();','').replace('data months := time_windows(ctx,{unit:"month",count:2,mode:"complete"});',''));
+writeFileSync(join(nested,draftFile),draftSource.replace('data ctx = context();','').replace('data months = time_windows(ctx,{unit:"month",count:2,mode:"complete"});',''));
 ok('模型与数据源相对 oks.json 解析',(await call('dari_check',{src:draftFile},nested)).value.ok===true);
 const bare=join(SCRATCH,'bare');mkdirSync(bare,{recursive:true});
 ok('缺工作区配置明确拒绝',!!await refusalOf(()=>call('oks_info',{ids:["datasets/"+encodeURIComponent(datasetId)]},bare)));
@@ -593,13 +593,13 @@ console.log('=== 自包含（把 lib/ 整个目录放进空目录）===');
 
 console.log('=== DARI 路径与符号链接边界 ===');
 const outside=mkdtempSync(join(tmpdir(),'dari-boundary-'));
-writeFileSync(join(outside,'protected.dari'),'data n := 1;');
+writeFileSync(join(outside,'protected.dari'),'data n = 1;');
 symlinkSync(outside,resolve(DEV_ROOT,'.work/escape-test'),'dir');
 try {
  for(const name of ['dari_check','dari_renew_context'])
   ok('执行入口拒绝符号链接逃逸',!!await refusalOf(()=>call(name,{src:'.work/escape-test/protected.dari'})));
  ok('内置读取拒绝本地文件',!!await refusalOf(()=>call('oks_read',{path:'.work/escape-test/protected.dari'})));
- ok('拒绝后外部文件不变',readFileSync(join(outside,'protected.dari'),'utf8')==='data n := 1;');
+ ok('拒绝后外部文件不变',readFileSync(join(outside,'protected.dari'),'utf8')==='data n = 1;');
 } finally {rmSync(resolve(DEV_ROOT,'.work/escape-test'));rmSync(outside,{recursive:true,force:true});}
 for(const dispose of disposers.reverse())dispose();
 rmSync(SCRATCH,{recursive:true,force:true});

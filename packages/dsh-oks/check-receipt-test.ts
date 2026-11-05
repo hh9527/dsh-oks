@@ -16,11 +16,11 @@ const backend=createDraftBackend({entry:entry as any,knowledge:knowledge as any,
 const exec={agent:{session:{id:'receipt'}}} as any;
 const tools=createDraftTools({knowledge:knowledge as any,timeContext:{zones:new Map([[exec.agent.session,{kind:'resolved',timeZone:'UTC'}]])} as any});
 const check=tools.tools.find(t=>t.name==='dari_check')!;
-const source=`data facts := query({limit:5});
-data unused := {b:1,a:"x"};
-figure chart := BarChart(spec={x:"n",value:"n"},data=facts);
-report report1 := Report [UseFigure(ref=chart)];
-answer := Answer [UseReport(ref=report1)];`;
+const source=`data facts = query({limit:5});
+data unused = {b:1,a:"x"};
+figure chart = BarChart(spec={x:"n",value:"n"},data=facts);
+report report1 = tree! { Report [UseFigure(ref=chart)] };
+answer tree! { Answer [UseReport(ref=report1)] };`;
 const status=(text:string)=>text.split('\n').filter(x=>x.startsWith('- ')&&!x.includes(': Figure')&&!x.includes(': Table'));
 try{
  writeFileSync(join(root,'receipt.dari'),source);
@@ -46,7 +46,7 @@ try{
  const different=await check.execute({src:'receipt.dari'} as never,exec) as any;
  assert.notEqual(different.text.match(/data.unused: (\S+)/)[1],basic.text.match(/data.unused: (\S+)/)[1]);
  // Failure still exposes valid shapes and marks dependent nodes unavailable.
- const bad=source.replace('data unused := {b:1,a:"x"};','data broken := select({from:{f:facts},fields:r=>({n:r.f.missing})});\ndata blocked := select({from:{b:broken},fields:r=>({n:r.b.n})});');
+ const bad=source.replace('data unused = {b:1,a:"x"};','data broken = select({from:{f:facts},fields:r=>({n:r.f.missing})});\ndata blocked = select({from:{b:broken},fields:r=>({n:r.b.n})});');
  writeFileSync(join(root,'receipt.dari'),bad);
  const failed=await check.execute({src:'receipt.dari',inspect:{data:['facts','broken']}} as never,exec) as any;
  assert.equal(failed.ok,false);assert.match(failed.text,/- data.facts: t1-/);assert.match(failed.text,/- data.broken: \?/);assert.match(failed.text,/- data.blocked: \?/);
@@ -63,7 +63,7 @@ try{
  for(const raw of [null,[],{data:'facts'},{figures:[1]},{data:['']},{data:Array(33).fill('facts')}])assert.throws(()=>parseInspect(raw));
  const brokenFigure=await checkDesign(source.replace('value:"n"','value:"missing"'),'receipt.dari',backend);
  assert.match(checkReceipt(brokenFigure).text,/- figure.chart: \?/);assert.match(checkReceipt(brokenFigure).text,/- report.report1: \?/);
- const many=source+'\n'+Array.from({length:25},(_,i)=>`data bad${i} := select({from:{f:facts},fields:r=>({n:r.f.absent${i}})});`).join('\n');
+ const many=source+'\n'+Array.from({length:25},(_,i)=>`data bad${i} = select({from:{f:facts},fields:r=>({n:r.f.absent${i}})});`).join('\n');
  const capped=checkReceipt(await checkDesign(many,'receipt.dari',backend)).text;
  assert.equal(capped.split('\n').filter(l=>/^- L\d/.test(l)).length,20);assert.match(capped,/5 more errors omitted/);
  const table=(nullable:boolean,reverse=false):Ty=>({kind:'table',columns:(reverse?['b','a']:['a','b']).map(name=>({name,type:'Int',nullable}))});
@@ -71,7 +71,7 @@ try{
  assert.notEqual(shapeFingerprint(table(false)),shapeFingerprint(table(false,true)));
  assert.equal(shapeFingerprint(record({b:scalar('String'),a:scalar('Int')})),shapeFingerprint(record({a:scalar('Int'),b:scalar('String')})));
  assert.equal(shapeFingerprint({kind:'array',element:scalar('Int'),length:1,nullable:false}),shapeFingerprint({kind:'array',element:scalar('Int'),length:9,nullable:false}));
- const syntax=checkReceipt(await checkDesign('data a := ;','receipt.dari',backend));assert.equal(syntax.ok,false);assert.match(syntax.text,/^CheckFailed\n-----------\n\n# ready-status:\n\n# errors:/);
+ const syntax=checkReceipt(await checkDesign('data a = ;','receipt.dari',backend));assert.equal(syntax.ok,false);assert.match(syntax.text,/^CheckFailed\n-----------\n\n# ready-status:\n\n# errors:/);
  assert.equal(acquired,0);
  const {checkedBindings:_,...legacy}=await checkDesign(source,"receipt.dari",backend);
  const legacyChars=JSON.stringify(legacy).length;assert(basic.text.length<legacyChars/4);

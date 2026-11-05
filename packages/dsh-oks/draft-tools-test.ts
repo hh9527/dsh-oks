@@ -15,11 +15,11 @@ const other={agent:{session:{id:'two'}}} as any;
 const timeContext={zones:new Map([[exec.agent.session,{kind:'resolved',timeZone:'UTC'}],[other.agent.session,{kind:'resolved',timeZone:'UTC'}]])};
 const drafts=createDraftTools({knowledge:knowledge as any,timeContext:timeContext as any,attachments:()=>testAttachments(root)});
 const call=async(name:string,args:object,caller=exec)=>drafts.tools.find(t=>t.name===name)!.execute(args as never,caller) as Promise<any>;
-const source=`data ctx := context();
-data facts := query({limit:5});
-data summary := select_one({from:{f:facts},group_by:r=>({}),fields:(g,rows)=>({n:sum(rows.f.n)})});
-figure chart := ColumnChart(spec={x:"n",value:"n"},data=facts);
-report answer := Report [p [Value(data=summary?.n)],UseFigure(ref = chart)];`;
+const source=`data ctx = context();
+data facts = query({limit:5});
+data summary = select_one({from:{f:facts},group_by:r=>({}),fields:(g,rows)=>({n:sum(rows.f.n)})});
+figure chart = ColumnChart(spec={x:"n",value:"n"},data=facts);
+report answer = tree! { Report [p [Value(data=summary?.n)],UseFigure(ref = chart)] };`;
 const src='analysis.dari',absolute=join(root,src);
 const originalNow=Date.now;
 let now=originalNow();Date.now=()=>now;
@@ -49,7 +49,7 @@ try {
  assert.equal((await call('dari_resolve',{answer:false,src:'second.dari',data:['facts']})).batch,second.batch);
  assert.equal((await call('dari_resolve',{answer:false,src,data:['facts']},other)).batch,isolated.batch);assert.equal(executions,before);
  // Full-draft checking catches errors even in unselected bindings.
- writeFileSync(absolute,source+'\ndata unused := no_such_function();');
+ writeFileSync(absolute,source+'\ndata unused = no_such_function();');
  checked=await call('dari_check',{src});assert.equal(checked.ok,false);
  assert.equal((await call('dari_resolve',{answer:false,src,data:['facts']})).ok,false);assert.equal(executions,before);
  writeFileSync(absolute,source);

@@ -220,7 +220,7 @@ export function createDraftTools(options: {
           const doc=parseDesign(read.text,read.file);
           const answers=new Set([...doc.assets.values()].filter(a=>a.format==='markdown').map(a=>a.name.slice('@report/'.length)));
           const reports=new Set(doc.answers.filter(name=>!answers.has(name)));
-          if(args.answer&&!answers.has('answer'))throw new Error('Missing answer := Answer [...]; use answer:false for explicit debug selections');
+          if(args.answer&&!answers.has('answer'))throw new Error('Missing answer tree! { Answer [...] }; use answer:false for explicit debug selections');
           const figures=new Set(Object.values(doc.authoring?.figures??{}).map(f=>f.binding));
           const bindings=new Set(doc.nodes.filter(n=>!n.internal&&n.statement.kind==='binding').map(n=>n.statement.kind==='binding'?n.statement.name:''));
           const diagnostics=[];
