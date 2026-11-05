@@ -7,7 +7,7 @@ export const AUTHOR_ATTRIBUTES:readonly string[]=['id','class','title','lang','d
 /** Public authoring hides the literal marker behind Lit. */
 export const PUBLIC_AUTHOR_ATTRIBUTES=AUTHOR_ATTRIBUTES.filter(key=>!['data-oks-lit','colspan','rowspan','scope'].includes(key));
 export type ReportNode={kind:'text';text:string;span:Span}|{kind:'comment';text:string;span:Span}|ReportElement;
-export type ReportElement={kind:'element';name:string;attrs:Record<string,string>;children:ReportNode[];span:Span};
+export type ReportElement={kind:'element';name:string;attrs:Record<string,string>;children:ReportNode[];span:Span;figureKind?:'chart'|'table';figureReference?:string};
 export type ReportError={code:string;message:string;line:number;column:number;element:string|null};
 export type ReportProgram={root:ReportElement;errors:ReportError[];refs:string[];picks:{ref:string;pick:string|undefined}[];figures:string[];headings:{level:number;text:string;id:string|null}[];NumWithoutSource:{line:number;column:number;snippet:string}[];LitNotOnSpan:{line:number;column:number;tag:string}[]};
 export const escapeText=(s:string)=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -18,7 +18,9 @@ export const textOf=(node:ReportNode):string=>node.kind==='comment'?'':node.kind
 export function serializeReport(node:ReportNode):string {
   if(node.kind==='text')return escapeText(node.text);
   if(node.kind==='comment')return `<!--${node.text}-->`;
-  const open=`<${node.name}${attributeText(node.attrs)}`;
+  if(node.name==='#if')return `<!-- if ${escapeText(node.attrs['data-oks-ref'])} -->`+node.children.map(serializeReport).join('<!-- else -->')+'<!-- endif -->';
+  if(node.name==='#branch')return node.children.map(serializeReport).join('');
+  const open=(node.figureReference?`<!-- FigureRef ${node.figureReference} -->`:'')+`<${node.name}${attributeText(node.attrs)}`;
   return ['br','hr'].includes(node.name)?open+' />':open+'>'+node.children.map(serializeReport).join('')+`</${node.name}>`;
 }
 /** 作者文本只支持五个基础实体与数值实体，错误直接定位到原始 DARI。 */
@@ -48,6 +50,12 @@ export function compileReport(root:ReportElement):ReportProgram {
       return;
     }
     const {name,attrs}=node;
+    if(name==='#if'){
+      out.refs.push(attrs['data-oks-ref']);
+      for(const branch of node.children)walk(branch,quiet);
+      return;
+    }
+    if(name==='#branch'){for(const child of node.children)walk(child,quiet);return;}
     if(!COMPILED_ELEMENTS.includes(name))error(node,'author-element',`Unsupported report element <${name}>`);
     for(const [key,value]of Object.entries(attrs)){
       if(!AUTHOR_ATTRIBUTES.includes(key))error(node,'author-attribute',`Unsupported report attribute ${key}`);
@@ -71,3 +79,34 @@ export function compileReport(root:ReportElement):ReportProgram {
   if(root.name!=='article')error(root,'author-root','Report root must be article');
   walk(root);return out;
 }
+
+/** Both branches are checked; only the selected siblings enter presentation and publication. */
+export function selectReport(program:ReportProgram,values:Record<string,unknown>):ReportProgram {
+  const select=(node:ReportNode):ReportNode[]=>{
+    if(node.kind!=='element')return [node];
+    if(node.name==='#if'){
+      const ref=node.attrs['data-oks-ref'],value=values[ref];
+      if(typeof value!=='boolean')throw new Error('if condition requires Bool: '+ref);
+      return select(node.children[value?0:1]);
+    }
+    const children=node.children.flatMap(select);
+    return node.name==='#branch'?children:[{...node,children}];
+  };
+  const root=select(program.root)[0] as ReportElement;
+  const labels=new Map<string,string>();let charts=0,tables=0;
+  const visit=(node:ReportNode,fn:(node:ReportElement)=>void)=>{if(node.kind==='element'){fn(node);node.children.forEach(child=>visit(child,fn));}};
+  visit(root,node=>{
+    if(node.name==='figure'&&node.figureKind){const ref=node.attrs['data-oks-ref'];if(!labels.has(ref))labels.set(ref,node.figureKind==='table'?'表 '+(++tables):'图 '+(++charts));}
+  });
+  visit(root,node=>{
+    if(node.figureReference){
+      const label=labels.get(node.figureReference);
+      if(!label)throw new Error('FigureRef requires a UseFigure in the selected branches');
+      node.children=[{kind:'text',text:label,span:node.span}];
+    }
+  });
+  return compileReport(root);
+}
+/** Check transparent branches with the surrounding parent's structural rules. */
+export const allBranchChildren=(node:ReportElement):ReportNode[]=>node.children.flatMap(child=>
+  child.kind==='element'&&['#if','#branch'].includes(child.name)?allBranchChildren(child):[child]);

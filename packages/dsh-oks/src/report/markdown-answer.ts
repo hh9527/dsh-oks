@@ -1,4 +1,4 @@
-import type {ReportNode,ReportProgram} from './structure.ts';
+import {allBranchChildren,selectReport,type ReportNode,type ReportProgram} from './structure.ts';
 
 const inline=new Set(['span','strong','em','a','code','br']);
 const blocks=new Set(['article','section','div','h1','h2','h3','p','ul','ol','li','blockquote','pre','hr','figure','figcaption']);
@@ -7,15 +7,16 @@ export function validateMarkdownAnswer(program:ReportProgram):void {
     const error=(node:ReportNode,message:string)=>program.errors.push({code:'answer-markdown',message,line:node.span.start.line,column:node.span.start.column,element:node.kind==='element'?node.name:null});
     const walk=(node:ReportNode,parent?:string)=>{
         if(node.kind!=='element')return;
+        if(['#if','#branch'].includes(node.name)){for(const child of allBranchChildren(node))walk(child,parent);return;}
         if(!inline.has(node.name)&&!blocks.has(node.name))error(node,`Unsupported Answer node ${node.name}`);
         for(const key of Object.keys(node.attrs))if(!['data-oks-ref','data-oks-lit'].includes(key)&&!(node.name==='a'&&key==='href'))error(node,`Answer cannot represent attribute ${key} on ${node.name}`);
         if(parent&&(inline.has(parent)||/^h[123]$/.test(parent)||parent==='p')&&blocks.has(node.name))error(node,`Answer block ${node.name} cannot be nested in ${parent}`);
         if(parent&&['ul','ol'].includes(parent)&&node.name!=='li')error(node,'Answer lists require li children');
         if(node.name==='a'&&!node.attrs.href)error(node,'Answer link requires href');
         if(node.name==='li'&&!['ul','ol'].includes(parent??''))error(node,'Answer li requires a list parent');
-        if(node.name==='code'&&node.children.some(n=>n.kind==='element'&&n.name!=='span'))error(node,'Answer code accepts text and scalar values');
-        if(node.name==='pre'&&node.children.some(n=>n.kind==='element'&&!['code','span'].includes(n.name)))error(node,'Answer pre accepts text, code and scalar values');
-        for(const child of node.children){
+        if(node.name==='code'&&allBranchChildren(node).some(n=>n.kind==='element'&&n.name!=='span'))error(node,'Answer code accepts text and scalar values');
+        if(node.name==='pre'&&allBranchChildren(node).some(n=>n.kind==='element'&&!['code','span'].includes(n.name)))error(node,'Answer pre accepts text, code and scalar values');
+        for(const child of allBranchChildren(node)){
             if(['ul','ol'].includes(node.name)&&child.kind==='text'&&child.text.trim())error(child,'Answer lists require li children');
             walk(child,node.name);
         }
@@ -77,5 +78,5 @@ export function renderMarkdownAnswer(program:ReportProgram,values:Record<string,
             default:throw new Error('Unsupported Answer node '+n.name);
         }
     };
-    return render(program.root).trim();
+    return render(selectReport(program,values).root).trim();
 }

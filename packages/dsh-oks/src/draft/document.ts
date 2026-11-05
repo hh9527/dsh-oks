@@ -13,7 +13,7 @@ import { compileReport,element as reportElement,serializeReport,decodeAuthorText
 export type Reference = { source:string; binding:string; path:(string|number)[]; optional?:number[]; code?:string; span:Span };
 export type Attribute = { kind:'text'; value:string; span:Span; valueStart?:number } | ({kind:'reference'} & Reference);
 export type Element = { selfClosing:boolean;name:string; attrs:Map<string,Attribute>; children:(Element|string)[]; span:Span };
-export type DraftAsset = { title?:string;format?:'markdown';program?:ReportProgram;figurePlacement?:'before-caption';name:string;language:'sql'|'report';source:string;span:Span;body:Position;fragment?:SourceFragment;references?:Record<string,{kind:'value'|'figure'|'report';span:Span;code?:string}> };
+export type DraftAsset = { title?:string;format?:'markdown';program?:ReportProgram;figurePlacement?:'before-caption';name:string;language:'sql'|'report';source:string;span:Span;body:Position;fragment?:SourceFragment;references?:Record<string,{kind:'value'|'figure'|'report'|'condition';span:Span;code?:string}> };
 export type DraftDocument = {syntax?:'dom';declarations?:Map<string,'data'|'figure'|'report'|'answer'>;authoring?:DariAuthoring;title?:string;notes?:string;nodes:PipelineNode[];assets:Map<string,DraftAsset>;pipeline:Span;answers:string[];file:string;diagnostics?:SourceDiagnostic[]};
 
 export function parseDraft(source:string,file='draft.dari'):DraftDocument {
@@ -291,6 +291,13 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
     };
     const childrenOf=(el:Element):ReportNode[]=>el.children.map((child,i)=>typeof child==='string'?textNode(child,childSpans.get(el)?.get(i)??el.span):lower(child));
     const lower=(el:Element):ReportNode=>{
+      if(el.name==='#if'){
+        const ref=requiredRef(el,'condition'),alias='condition_'+(inputs.length+1);
+        inputs.push({key:alias,value:refExpr(ref)});bindings.add(ref.binding);
+        refs[alias]={kind:'condition',span:ref.span,code:ref.source};
+        return reportElement('#if',{'data-oks-ref':alias},childrenOf(el),el.span);
+      }
+      if(el.name==='#branch')return reportElement('#branch',{},childrenOf(el),el.span);
       if(el.name==='UseReport'){
         if(template.format!=='markdown')fail('UseReport is only supported inside Answer',el.span.start.offset);
         only(el.attrs,['ref']);if(!el.selfClosing)fail('UseReport must be empty',el.span.start.offset);
@@ -306,7 +313,7 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
         only(el.attrs,['ref']);if(!el.selfClosing)fail('FigureRef must be self-closing',el.span.start.offset);
         const key=literal(el.attrs,'ref')!;const number=figureNumbers.get(key);
         if(!number)fail(`FigureRef ${key} requires a UseFigure in this Report`,el.span.start.offset);
-        return reportElement('span',{'data-oks-lit':''},[{kind:'text',text:number!,span:el.span}],el.span);
+        return {...reportElement('span',{'data-oks-lit':''},[{kind:'text',text:number!,span:el.span}],el.span),figureReference:figureInput(key,el.span)};
       }
       if(el.name==='Lit'){
         only(el.attrs,[]);
@@ -327,7 +334,7 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
         const captionAttr=el.attrs.get('caption');
         const caption=literal(el.attrs,'caption',false);
         const captionNode=reportElement('figcaption',{},caption===undefined?[]:[textNode(caption,captionAttr!.span)],el.span);
-        return reportElement('figure',{'data-oks-ref':alias},[captionNode],el.span);
+        return {...reportElement('figure',{'data-oks-ref':alias},[captionNode],el.span),figureKind:componentKind(figures.get(key)!.name)==='table'?'table':'chart'};
       }
       if(['Figure','figure','figurecaption','figcaption','table','caption','thead','tbody','tfoot','tr','td','th'].includes(el.name))
         fail(`Unsupported report element ${el.name}; use UseFigure(ref = name, caption = "...") with a declared chart or Table`,el.span.start.offset,el.span.end.offset);

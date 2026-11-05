@@ -9,6 +9,7 @@ export function parseDomDraft(source:string,file:string){
   const original=new SourceFile(file,source);
   let at=0,sequence=0,elements=0;
   const definitions=new Map<string,N>();
+  const scopes:{name:string;input:N}[]=[];
   const declarations=new Map<string,'data'|'figure'|'report'|'answer'>();
   const nodes:PipelineNode[]=[];
   const figures=new Map<string,Element>();
@@ -62,8 +63,8 @@ export function parseDomDraft(source:string,file:string){
     const end=at;if(!source.slice(start,end).trim())fail('Expected an expression',start);
     return {start,end,text:source.slice(start,end)};
   };
-  const compile=(part:{start:number;end:number;text:string},binding:string,internal=false)=>{
-    const result=parseTypedPipeline(part.text,original.position(part.start),{definitions,expressionName:binding})[0];
+  const compile=(part:{start:number;end:number;text:string},binding:string,internal=false,condition=false,presence?:string)=>{
+    const result=parseTypedPipeline(part.text,original.position(part.start),{definitions,expressionName:binding,templateScopes:scopes,templateCondition:condition,templatePresence:presence})[0];
     if(internal)result.internal=true;
     nodes.push(result);return result;
   };
@@ -75,8 +76,8 @@ export function parseDomDraft(source:string,file:string){
       if(declarations.get(symbol)!==expected)fail('Undefined or forward '+expected+' binding '+symbol,part.start,part.end);
       return {kind:'text',value:symbol,span};
     }
-    if(componentKind(tag)!==undefined||(tag==='Value'||tag==='value')){
-      const binding='__dom'+sequence++;compile(part,binding,true);
+    if(componentKind(tag)!==undefined||['Value','value','if'].includes(tag)){
+      const binding='__dom'+sequence++;compile(part,binding,true,tag==='if');
       const ast=definitions.get(binding)!;
       // Keep direct projections canonical in provenance and reuse existing bindings.
       const path:(string|number)[]=[],optional:number[]=[];let base=ast;
@@ -106,6 +107,48 @@ export function parseDomDraft(source:string,file:string){
     whitespace();const start=at;
     if(depth>128)fail('Template nesting exceeds 128');if(++elements>2048)fail('Report exceeds 2048 template elements');
     const tag=name(true),attrs=new Map<string,Attribute>();
+    if(tag==='if'){
+      whitespace();let local:{name:string;input:N}|undefined;
+      if(/^let\b/.test(source.slice(at))){
+        at+=3;eat('Some');eat('(');const begin=at,binder=name();eat(')');eat('=');
+        if(binder.startsWith('__')||reserved.has(binder)||definitions.has(binder)||declarations.has(binder)||scopes.some(s=>s.name===binder))fail('Reserved or conflicting if let binding '+binder,begin);
+        const part=expression(new Set(['['])),binding='__some'+sequence++;
+        compile(part,binding,true);
+        const ref:Reference={source:part.text.trim(),binding,path:[],span:location(part.start,part.end)};
+        references.push(ref);
+        // is_some also checks the source Option even if the Some body has no expressions.
+        const condition='__dom'+sequence++;
+        compile(part,condition,true,true,binding);
+        const conditionRef:Reference={...ref,binding:condition};references.push(conditionRef);
+        attrs.set('condition',{kind:'reference',...conditionRef});
+        local={name:binder,input:{k:'ref',name:binding,s:ref.span}};
+      }else{
+        eat('(');const part=expression(new Set([')']));eat(')');
+        attrs.set('condition',attribute('if','condition',part));
+      }
+      const branch=():Element=>{
+        const begin=at;eat('[');const children:(Element|string)[]=[],spans=new Map<number,Span>();whitespace();
+        while(source[at]!==']'){
+          if(at>=source.length)fail('Missing ] for if branch',begin,at);
+          const start=at;
+          if(source[at]==='"'){children.push(string());spans.set(children.length-1,location(start));}
+          else children.push(element(depth+1));
+          whitespace();if(source[at]===','){at++;whitespace();}else if(source[at]!==']')fail('Expected , between child nodes');
+        }
+        at++;const result:Element={name:'#branch',attrs:new Map(),children,selfClosing:false,span:location(begin)};
+        childSpans.set(result,spans);return result;
+      };
+      if(local)scopes.push(local);
+      const yes=branch();
+      if(local)scopes.pop();
+      whitespace();let no:Element={name:'#branch',attrs:new Map(),children:[],selfClosing:false,span:location(at,at)};
+      if(/^else\b/.test(source.slice(at))){
+        at+=4;whitespace();
+        no=/^if\b/.test(source.slice(at))?{...no,children:[element(depth+1)]}:branch();
+      }
+      return {name:'#if',attrs,children:[yes,no],selfClosing:false,span:location(start)};
+    }
+    if(tag==='else')fail('else must immediately follow an if branch',start,at);
     if(['Figure','figure','figurecaption','figcaption','table','caption','thead','tbody','tfoot','tr','td','th'].includes(tag))
       fail(`Unsupported report element ${tag}; use UseFigure(ref = name, caption = "...")`,start,at);
     whitespace();if(source[at]==='('){
@@ -131,7 +174,7 @@ export function parseDomDraft(source:string,file:string){
     const result={name:tag,attrs,children,selfClosing,span:location(start)};
     childSpans.set(result,spans);return result;
   };
-  const reserved=new Set(['data','figure','report','export','true','false','null','query','context','select','select_one','table','map','union_all','time_windows','is_some','is_none','map_opt','round','case_when','lookup','concat','to_datetime_utc','to_epoch_millis','asc','desc','count','sum','avg','min','max']);
+  const reserved=new Set(['if','else','let','Some','data','figure','report','export','true','false','null','query','context','select','select_one','table','map','union_all','time_windows','is_some','is_none','map_opt','round','case_when','lookup','concat','to_datetime_utc','to_epoch_millis','asc','desc','count','sum','avg','min','max']);
   whitespace();while(at<source.length){
     if(declarations.size>=512)fail('DARI is limited to 512 declarations');
     const start=at,kind=name();

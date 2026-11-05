@@ -27,6 +27,24 @@ export class TypedCompiler{
   try{return this.expr(n,env);}catch(e){if(e instanceof DraftSyntaxError)throw e;return fail(n,e instanceof Error?e.message:String(e));}
  }
  expr(n:N,env:Record<string,V>):V{
+  if(n.k==='template_presence'){
+   const input=this.compile(n.input!,env);
+   if(!nullable(input.type)||input.type.kind==='null')fail(n,'if let Some requires Option with a known inner type');
+   return {type:scalar('Bool'),known:input.known,...(input.known?{value:input.value!==null}:{})};
+  }
+  if(n.k==='template_scope'){
+   const input=this.compile(n.a![0],env),f=n.a![1];
+   if(!nullable(input.type)||input.type.kind==='null')fail(n,'if let Some requires an Option with a known inner type');
+   // Check the body with a present binding even when the runtime value is absent.
+   const inner={...input,type:present(input.type),known:input.known&&input.value!==null};
+   const checker=input.known&&input.value===null&&!this.checking?new TypedCompiler({}, {}, true):this;
+   const out=checker.compile(f.body!,{...env,[f.params![0]]:inner});
+   if(n.op==='condition'){
+    if(out.type.kind!=='scalar'||out.type.name!=='Bool'||out.type.nullable)fail(f.body!,'if condition requires Bool, got '+show(out.type));
+    return {type:scalar('Bool'),known:input.known&&(input.value===null||out.known),...(input.known?{value:input.value===null?false:out.value}:{})};
+   }
+   return {type:optional(out.type),known:input.known&&(input.value===null||out.known),...(input.known?{value:input.value===null?null:out.value}:{})};
+  }
   if(n.k==='lit'){const type=typeOf(n.v);this.validNumber(n.v,type,n);return {type,known:true,value:n.v};}
   if(n.k==='ref'){if(!Object.hasOwn(env,n.name!))fail(n,'Unknown binding '+n.name);return env[n.name!];}
   if(n.k==='object'){const fields=Object.fromEntries(n.entries!.map(e=>[e.key,this.compile(e.value,env)]));const k=Object.values(fields).every(v=>v.known);return {type:record(Object.fromEntries(Object.entries(fields).map(([k,v])=>[k,v.type]))),known:k,fields,...(k?{value:Object.fromEntries(Object.entries(fields).map(([k,v])=>[k,v.value]))}:{})};}

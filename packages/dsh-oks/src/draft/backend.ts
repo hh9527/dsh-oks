@@ -19,6 +19,7 @@ import { tableMarkdown } from '../view/table.ts';
 import { buildOption, CHART_WIDTH } from '../chart/option.ts';
 import { renderEchartsSvg } from '../chart/echarts.ts';
 import { chartTitle, missingColumns, parseChartSpec, parseTableSpec, shapeProblem } from '../chart/spec.ts';
+import {selectReport} from '../report/structure.ts';
 import { assembleReport } from '../report/assemble.ts';
 import type { ReportBinding } from '../report/assemble.ts';
 import { restoreAssets } from '../report/page.ts';
@@ -315,6 +316,10 @@ export function createDraftBackend(options: {
         const unused=Object.keys(second).filter(key=>!refs.has(key));
         if(missing.length||unused.length)throw new Error(`Template bindings mismatch: missing [${missing}], unused [${unused}]`);
       });
+      for(const [name,reference]of Object.entries(ctx.asset.references??{}))if(reference.kind==='condition')check(()=>{
+        const t=typeOf(second[name]);
+        if(t.kind!=='scalar'||t.name!=='Bool'||t.nullable)throw new Error('if condition requires Bool, got '+show(t)+'; use ?? false for Option(Bool)');
+      },reference.span);
       for(const [name,reference]of Object.entries(ctx.asset.references??{}))if(reference.kind==='value'&&isBox(second[name]))check(()=>{const t=typeOf(second[name]);if(t.kind!=='scalar'&&t.kind!=='null')throw new Error('Value.data must select a scalar, got '+show(t));},reference.span);
       for(const [name,reference]of Object.entries(ctx.asset.references??{}))if(reference.kind==='value'&&known(second[name]))check(()=>{
         const value=unbox(second[name]);
@@ -419,8 +424,9 @@ export function createDraftBackend(options: {
     }
     if (ctx.operator === 'render_report') {
       if (!isRecord(ctx.args[1].data)) throw new Error('Report inputs must be a named object');
-      for(const [name,ref]of Object.entries(ctx.asset!.references??{}))if(ref.kind==='value'){
+      for(const [name,ref]of Object.entries(ctx.asset!.references??{}))if(ref.kind==='value'||ref.kind==='condition'){
         const value=ctx.args[1].data[name];
+        if(ref.kind==='condition'&&typeof value!=='boolean')fail('if condition requires Bool',ref.span);
         if(value!==null&&!['string','number','boolean'].includes(typeof value))fail('Value.data must select a scalar; construct a summary in pipeline',ref.span);
       }
       return { data: { items: ctx.args[1].data } };
@@ -448,19 +454,21 @@ export function createDraftBackend(options: {
     };
     let origin = appendNode(parents, node, computed.data);
     if (ctx.operator === 'render_report') {
-      const bindings = bindingsOf(ctx.args[1]);
+      let bindings = bindingsOf(ctx.args[1]);
+      const items=Object.fromEntries(Object.entries(bindings).map(([name,binding])=>[name,binding.value]));
+      const selected=selectReport(ctx.asset!.program!,items);
       const title = ctx.asset?.title ?? ctx.title ?? ctx.asset!.name.replace(/^@report\//,'');
       if(ctx.asset?.format==='markdown'){
-        const items=Object.fromEntries(Object.entries(bindings).map(([name,binding])=>[name,binding.value]));
-        const reportValues=Object.fromEntries(Object.entries(ctx.asset.references??{}).filter(([,ref])=>ref.kind==='value').map(([alias,ref])=>[ref.code??alias,bindings[alias].value]));
+        const reportValues=Object.fromEntries(Object.entries(ctx.asset.references??{}).filter(([alias,ref])=>ref.kind==='value'&&selected.refs.includes(alias)).map(([alias,ref])=>[ref.code??alias,bindings[alias].value]));
         return {data:{items},reportValues,sources:[{origin,at:[],path:[]}]};
       }
-      const report = assembleReport({ name: 'answer', title, subtitle: null, category: '即时分析', at: resultStamp(), draft: node.draft, motivation: node.motivation, program:ctx.asset!.program!, figurePlacement:ctx.asset!.figurePlacement, bindings,
+      bindings=Object.fromEntries(Object.entries(bindings).filter(([name])=>selected.refs.includes(name)));
+      const report = assembleReport({ name: 'answer', title, subtitle: null, category: '即时分析', at: resultStamp(), draft: node.draft, motivation: node.motivation, program:selected, figurePlacement:ctx.asset!.figurePlacement, bindings,
         valueOf: (ref, pick) => pickScalar(bindings[ref]?.value, pick),
       });
       if ('error' in report) throw new Error(report.error);
       origin = restoreAssets(report.origin, report.assets);
-      const picks=Object.entries(ctx.asset!.references!).filter(([,reference])=>reference.kind==='value').map(([ref])=>({ref,pick:undefined as string|undefined}));
+      const picks=Object.entries(ctx.asset!.references!).filter(([ref,reference])=>reference.kind==='value'&&selected.refs.includes(ref)).map(([ref])=>({ref,pick:undefined as string|undefined}));
       const reportValues=Object.fromEntries(picks.map(({ref,pick})=>{
         let value=bindings[ref].value;
         if(pick&&pick!=='.')for(const key of pick.slice(1).split('.'))value=(value as Record<string,unknown>)[key];

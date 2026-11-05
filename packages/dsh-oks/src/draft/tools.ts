@@ -1,3 +1,4 @@
+import {selectReport} from '../report/structure.ts';
 import {renderResolveReceipt} from './resolve-receipt.ts';
 import {checkReceipt,parseInspect} from './check-receipt.ts';
 import {renderMarkdownAnswer} from '../report/markdown-answer.ts';
@@ -248,7 +249,7 @@ export function createDraftTools(options: {
           if(approvedEnvironment!==environment())return {ok:false,status:'environment-changed',execution:'not performed',sourceHash};
           if(readDariSource(entry.root,args.src,'dari_resolve').text!==read.text)return {ok:false,status:'source-changed',execution:'not performed',sourceHash};
           const answerAsset=args.answer?doc.assets.get('@report/answer'):undefined;
-          const presentationNames=[...selection.figures,...selection.reports,...Object.values(answerAsset?.references??{}).filter(r=>r.kind!=='value').map(r=>r.code!)];
+          const presentationNames=[...selection.figures,...selection.reports];
           const needsAttachment=presentationNames.some(name=>{
             const value=doc.nodes.find(n=>n.statement.kind==='binding'&&n.statement.name===name)?.statement.value;
             return !(value?.kind==='call'&&value.operator==='render_figure'&&value.figureKind==='table');
@@ -274,8 +275,9 @@ export function createDraftTools(options: {
             if(args.answer){
               const asset=answerAsset!;
               const presentations:Record<string,string>=Object.create(null);
-              for(const [alias,reference]of Object.entries(asset.references??{}))if(reference.kind!=='value')presentations[alias]=(await publishOnce(reference.code!)).embedded;
               const value=record.runtime.read('answer',read.text).value.data as {items:Record<string,unknown>};
+              const active=new Set(selectReport(asset.program!,value.items).refs);
+              for(const [alias,reference]of Object.entries(asset.references??{}))if(active.has(alias)&&(reference.kind==='figure'||reference.kind==='report'))presentations[alias]=(await publishOnce(reference.code!)).embedded;
               answer={embedded:renderMarkdownAnswer(asset.program!,value.items,presentations)};
             }
             // Receipts describe failures, not unrequested values or intermediate bindings.

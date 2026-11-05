@@ -235,6 +235,17 @@ Report 的动态数值用 `Value(data=round(summary?.cpu,2))`，普通记录先�
 
 唯一 Answer 使用同样节点风格：h1/h2/h3→Markdown 标题，strong/em→强调，p、列表、引用、代码、链接转为对应 Markdown。动态值写 `value(ref=summary?.total)`，null 显示破折号；文字和值转义 Markdown。Answer 不接受 class/id 等不能转成 Markdown 的属性。
 
+Report/Answer 子节点支持条件分支，分支内仍以逗号分隔同级节点：
+
+```dari
+answer := Answer [
+    if (summary?.total > 0 ?? false) [p ["有数据"]] else [p ["没有数据"]],
+    if let Some(i) = summary [p ["总数：",value(ref=i.total)]] else [],
+];
+```
+
+条件必须为 Bool，Option(Bool) 显式用 `?? false` 等处理；else 可省略或接 else if。if let 要求 Option(T)，Some 绑定仅在第一个分支内有效，类型为 T；含下标的待解包表达式用括号包围，如 `if let Some(i) = (items[0]) [...]`。所有分支都检查类型、节点和溯源；运行只展示选中分支，未选中的 UseFigure/UseReport 不发布附件。条件不改变 query 取数计划。
+
 UseFigure 在 Answer 中发布图形并嵌入图片，Table 直接嵌入 Markdown 表格；在 Report 中嵌入图形/表格并自动编号。UseReport 仅用于 Answer，发布已声明 Report 的可点击链接，无需另调 present；同一次解析同一产物仅发布一次。
 
 报告归档保留两个不执行的 script：dari-source 保存源码，dari-context 保存实际上下文、执行时间及模型标识等元数据；不再重复保存 dari-values。所有 SVG 在非显示 metadata 节点内携带最终图表输入 CSV（dari-data；网络图另有 dari-nodes）与紧凑 JSON spec（dari-spec），便于读图；不附源码、上下文或溯源信息。表格与正文引用值直接从 HTML 读取；报告仍保留源码与执行元数据。

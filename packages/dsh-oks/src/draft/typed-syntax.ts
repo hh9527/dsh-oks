@@ -1,7 +1,7 @@
 import {DraftSyntaxError,type Expr,type PipelineNode,type Position,type Span,type Operator} from './pipeline.ts';
 export type N={k:string;s:Span;v?:any;a?:N[];entries?:{key:string;value:N}[];name?:string;input?:N;key?:string|number;optional?:boolean;params?:string[];body?:N;op?:string;left?:N;right?:N};
 const calls=new Set(['query','context','time_windows','data','select','select_one','table','map','union_all','is_some','is_none','map_opt','round','case_when','lookup','concat','to_datetime_utc','to_epoch_millis','asc','desc','count','sum','avg','min','max']);
-export function parseTypedPipeline(source:string,base:Position,options:{definitions?:Map<string,N>;expressionName?:string}={}):PipelineNode[]{
+export function parseTypedPipeline(source:string,base:Position,options:{definitions?:Map<string,N>;expressionName?:string;templateScopes?:{name:string;input:N}[];templateCondition?:boolean;templatePresence?:string}={}):PipelineNode[]{
  let at=0;const lines=[0];for(let i=0;i<source.length;i++)if(source[i]==='\n')lines.push(i+1);
  const pos=(n:number):Position=>{let l=0;while(l+1<lines.length&&lines[l+1]<=n)l++;return {offset:base.offset+n,line:base.line+l,column:l?n-lines[l]+1:base.column+n};};
  type Tok={text:string;value?:any;start:number;end:number;kind:string;comments:string[]};
@@ -66,7 +66,9 @@ export function parseTypedPipeline(source:string,base:Position,options:{definiti
   return payload('typed_value',n,[...refs(n)].map(name=>({key:name,value:{kind:'ref',name,span:n.s}})));
  };
  if(options.expressionName!==undefined){
-  const n=expr();if(token.kind!=='eof')fail('Unexpected content after expression');
+  let n=expr();if(token.kind!=='eof')fail('Unexpected content after expression');
+  if(options.templatePresence)n={k:'template_presence',input:{k:'ref',name:options.templatePresence,s:n.s},s:n.s};
+  for(const scope of [...options.templateScopes??[]].reverse())n={k:'template_scope',op:options.templateCondition?'condition':'value',a:[scope.input,{k:'lambda',params:[scope.name],body:n,s:n.s}],s:n.s};
   const dependencies=[...refs(n)];for(const ref of dependencies)if(!defs.has(ref))throw new DraftSyntaxError('Undefined or forward data binding '+ref,n.s);
   const name=options.expressionName;defs.set(name,n);return [{typed:true,analysis:lower(n,'analysis'),statement:{kind:'binding',name,value:lower(n),span:n.s,motivation:''},bindings:dependencies,assets:[]}];
  }
