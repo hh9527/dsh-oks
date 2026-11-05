@@ -8,8 +8,8 @@
 | 工具 | 职责 |
 | --- | --- |
 | `ka_ask({query})` | 咨询领域概念与知识入口；主 agent 自主检索和读取详情 |
-| `oks_search({query,type?,dataset?,skip?,take?})` | 按领域词汇检索关联知识点 |
-| `oks_cap({anchors,max_depth?})` | 联合发现知识点、词汇命中与连接候选 |
+| `oks_search({q:[...],scope:[...]})` | 多个词在共享范围内检索根节点、内容分类或直接引用点 |
+| `oks_routes({from,to,max_depth?})` | 查找路径，内联方向、基数和连接键 |
 | `oks_info({ids})` | 批量读取精确知识点 |
 | `oks_read({path,offset?,limit?})` | 只读内置手册；path 为 oks://help/ 时列出手册 |
 | `dari_check({src})` | 全稿检查，返回列类型和诊断；不执行业务 SQL |
@@ -31,8 +31,8 @@ agent 先设计和检查分析稿，使用 `dari_resolve({src,answer:true})` 返
 助手保留完整领域摘要与词汇表的固定系统前缀，每轮把前缀之后的历史问答和旧标记收起为一个固定标记，
 再加入当前问题。模型上下文不随咨询次数增长，原始问答完整保留在会话日志中。
 工具面为空，权限为只读。
-主 agent 每次把用户原始问题与明确约束交给 `ka_ask`，工具返回子会话 ID 与消息 ID；
-答案由宿主作为子 agent 消息送回主 agent，收到后自主使用 search/cap/info 获取相关局部知识。
+主 agent 可按需把用户问题与明确约束交给 `ka_ask`，工具返回阅读清单与词汇参考；
+工具等待 KA/VA 完成后返回两段文本，主 agent 随后自主使用 search/routes/info 获取相关局部知识。
 首次调用使用 `startActivation`，续问使用 `sendMessage`，均采用官方宿主的原生生命周期。
 模型路由继承父会话当前请求。DeepSeek 模型的知识助手默认使用 `off`，其他模型默认继承推理档位；显式配置优先，模型须支持配置的档位。
 这些选项写在父预设的 OKS 插件行 `config` 中：
@@ -100,11 +100,11 @@ answer := Answer [
 
 数据分析流程直接进入预制 prompt，并以同一份文本在 `oks://help/workflow.md` 提供：理解意图、发现词汇和知识、批量检查查询及列类型、建立后处理后执行、审视数据并形成报告。
 
-模型的全局领域摘要以 Markdown 进入 KA，完整词汇表进入独立 VA 的固定系统上下文，覆盖全部 Entity、Dataset、查询能力数量与关系导航；主 agent 按需咨询 KA，自主使用 search/cap/info 读取局部知识。摘要不含反向连接，图表能力说明单独进入主 agent 上下文。摘要按模型缓存，不累积重复注入；主 agent 通过 ka_ask 获得领域导航。局部 cap/info 保持结构化 JSON，携带事实与必要说明。
+模型的全局领域摘要以 Markdown 进入 KA，完整词汇表进入独立 VA 的固定系统上下文，覆盖全部 Entity、Dataset、查询能力数量与关系导航；主 agent 按需咨询 KA，自主使用 search/routes/info 读取局部知识。摘要不含反向连接，图表能力说明单独进入主 agent 上下文。摘要按模型缓存，不累积重复注入；主 agent 通过 ka_ask 获得领域导航。search/routes/info 的公开回执为紧凑 Markdown，内部保留结构化结果。
 
 ```js
 ka_ask({query:"业务说法"})
-oks_cap({anchors:[{id:"datasets/device",terms:["device_class"]}]})
+oks_search({q:["device_class"],scope:["datasets/device"]})
 oks_info({ids:["datasets/device/dimensions/device_class"]})
 oks_read({path:"oks://help/"})
 ```

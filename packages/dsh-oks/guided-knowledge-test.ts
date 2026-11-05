@@ -21,32 +21,34 @@ const stub = (name:string):ToolDefinition => ({name,description:'stub',parameter
 const knowledge = {ensureWorkspace(){return {settings:{domain:'demo'}} as WorkspaceEntry;},async ensureIndex(){return {knowledge:graph};}} as unknown as Knowledge;
 const tools=guidedTools(['report_extract_dari','move_entry','remove_file','ka_ask','dari_check','dari_resolve','dari_renew_context'].map(stub),knowledge);
 const call=async(name:string,args:object)=>tools.find(t=>t.name===name)!.execute(args as never,{});
-assert.deepEqual(tools.map(t=>t.name).sort(),['report_extract_dari','move_entry','remove_file','oks_read','ka_ask','dari_check','dari_resolve','dari_renew_context','oks_search','oks_cap','oks_info'].sort());
-await call('oks_cap',{anchors:[{id:'datasets/d'}]});
+assert.deepEqual(tools.map(t=>t.name).sort(),['report_extract_dari','move_entry','remove_file','oks_read','ka_ask','dari_check','dari_resolve','dari_renew_context','oks_search','oks_routes','oks_info'].sort());
+await call('oks_routes',{from:'datasets/d',to:'datasets/d'});
 const info=await call('oks_info',{ids:['datasets/d']}) as any;
 assert.equal(info.data.items[0].dataset,'d');assert(!('dimensions' in info.data.items[0].facts));
-const found=await call('oks_search',{query:'Dataset',dataset:'d',take:3}) as any;
-assert.equal(found.data.items[0].id,'datasets/d');
-await assert.rejects(call('oks_search',{query:' '}),/nonempty/);
-await assert.rejects(call('oks_cap',{dataset:'d'}));
-const cap=await call('oks_cap',{anchors:[{id:'datasets/d',terms:['id']}]}) as any;
-assert(cap.data.index.Dimension.includes('datasets/d/dimensions/id'));
-assert.equal((await call('oks_info',{ids:cap.data.index.Dimension}) as any).data.items[0].dimension,'id');
+const found=await call('oks_search',{q:['Dataset'],scope:['datasets']}) as any;
+assert.equal(found.data.results[0].items[0].id,'datasets/d');
+await assert.rejects(call('oks_search',{q:[' '],scope:['datasets']}),/nonempty/);
+await assert.rejects(call('oks_routes',{dataset:'d'}));
+const search=await call('oks_search',{q:['id'],scope:['datasets/d']}) as any;
+assert.equal(search.data.results[0].items[0].id,'datasets/d/dimensions/id');
+assert.equal((await call('oks_info',{ids:[search.data.results[0].items[0].id]}) as any).data.items[0].dimension,'id');
 const {apply}=await import('./src/index.ts');
 const registered:ToolDefinition[]=[];const disposers:(()=>void)[]=[];
 apply({get(){},logger:{info(){}},tools:{register(t:ToolDefinition){registered.push(t);}},effect(fn:()=>unknown){const d=fn();if(typeof d==='function')disposers.push(d as ()=>void);},on(){return ()=>{};}} as never,{});
 try {
  assert.deepEqual(registered.map(t=>t.name).sort(),tools.map(t=>t.name).sort());
- const value={ok:true,data:{text:'x'.repeat(20000)}};
- for(const name of ['oks_cap','oks_info']) {
-  const definition=registered.find(t=>t.name===name)!;
-  assert.deepEqual(JSON.parse(definition.output.render({} as never,value as never).map(b=>b.text??'').join('')),value);
- }
+ const infoTool=registered.find(t=>t.name==='oks_info')!;
+ const infoValue=await call('oks_info',{ids:['datasets/d/dimensions/id']});
+ const infoText=infoTool.output.render({} as never,infoValue as never).map(b=>b.text??'').join('');
+ assert.match(infoText,/## datasets\/d\/dimensions\/id/);assert.match(infoText,/dimension="id"/);
+ const searchTool=registered.find(t=>t.name==='oks_search')!;
+ const text=searchTool.output.render({} as never,search as never).map(b=>b.text??'').join('');
+ assert.match(text,/## datasets\/d\/dimensions/);assert.match(text,/- id: Int/);
  const check=registered.find(t=>t.name==='dari_check')!;
  const receipt={ok:true,text:'# ready-status:\n- data.facts: t1-test'};
  assert.equal(check.output.render({} as never,receipt as never).map(b=>b.text??'').join(''),receipt.text);
 } finally {disposers.reverse().forEach(d=>d());}
-console.log('Public knowledge tools: exact surface, domain boundaries, search/cap/info and full result rendering passed');
+console.log('Public knowledge tools: exact surface, domain boundaries, search/routes/info and full result rendering passed');
 
 // Public tools throw failed receipts; internal definitions keep structured results.
 for (const name of ['dari_check','dari_resolve']) {

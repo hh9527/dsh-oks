@@ -12,7 +12,7 @@ const definitions=createTools({knowledge,ka:{} as any,timeContext:{zones:new Map
 const tools=guidedTools(definitions,knowledge),exec={agent:{session:{id:'resources'}}} as any;
 const call=async(name:string,args:unknown)=>tools.find(t=>t.name===name)!.execute(args as never,exec) as Promise<any>;
 try {
- assert.deepEqual(tools.map(t=>t.name).sort(),['report_extract_dari','move_entry','remove_file','ka_ask','oks_search','oks_cap','oks_info','oks_read','dari_check','dari_resolve','dari_renew_context'].sort());
+ assert.deepEqual(tools.map(t=>t.name).sort(),['report_extract_dari','move_entry','remove_file','ka_ask','oks_search','oks_routes','oks_info','oks_read','dari_check','dari_resolve','dari_renew_context'].sort());
  const index=await call('oks_read',{path:'oks://help/'});
  const paths=index.lines.map((line:any)=>line.text);
  for(const path of ['oks://help/workflow.md','oks://help/figures.md','oks://help/report.md'])assert(paths.includes(path));

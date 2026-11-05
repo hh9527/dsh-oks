@@ -1,16 +1,17 @@
+import {renderInfo} from './info-receipt.ts';
+import {renderSearch,renderRoutes} from './navigation-receipt.ts';
+import {searchPoints,routePoints} from './point-navigation.ts';
 import {renderResolveReceipt} from './draft/resolve-receipt.ts';
-import { discoverPoints, readPoints } from './point-knowledge.ts';
-import { semanticKnowledge } from './semantic-knowledge.ts';
+import { readPoints } from './point-knowledge.ts';
 import { isRecord, type ToolDefinition, type ToolExec } from './host.ts';
 import type { Knowledge } from './knowledge.ts';
 import { readTextLines } from './results.ts';
 import { helpFiles, helpEntries } from './help-files.ts';
 import { presentationManuals } from './presentation-guide.ts';
-import { OBJECT_OUTPUT, renderValue, renderWorkRead } from './response.ts';
+import { OBJECT_OUTPUT, renderWorkRead } from './response.ts';
 
 /** Agent surface: fixed knowledge queries; typed relation expressions stay in data analysis drafts. */
 export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge): ToolDefinition[] {
-  const output = { schema: OBJECT_OUTPUT, render: renderValue };
   const files = { ...helpFiles };
   Object.assign(files,presentationManuals());
   const check = (args: unknown, allowed: string[]): Record<string, unknown> => {
@@ -22,32 +23,27 @@ export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge)
     const entry=knowledge.ensureWorkspace(exec);
     const index=await knowledge.ensureIndex(entry);
     exec.signal?.throwIfAborted();
-    return {ok:true,model:entry.modelHash,data:name==='info'?readPoints(index.knowledge,args):name==='cap'?discoverPoints(index.knowledge,args):semanticKnowledge(index.knowledge,name,args)};
-  };
-  const properties = {
-    skip: { type: 'integer', minimum: 0 }, take: { type: 'integer', minimum: 1, maximum: 50 },
+    return {ok:true,model:entry.modelHash,data:name==='info'?readPoints(index.knowledge,args):name==='routes'?routePoints(index.knowledge,args):searchPoints(index.knowledge,args)};
   };
   const fixed: ToolDefinition[] = [
     {
-      name: 'oks_search', description: 'Fuzzy lexical search over knowledge IDs, names and documentation. Multiple words match alternatives; results matching more words rank first. Supports partial words and small English spelling errors. Returns knowledge node IDs for oks_info; optional type (case-insensitive, e.g. Dimension) and short dataset name restrict matches. Does not query business data.',
-      parameters: {type:'object',properties:{query:{type:'string'},type:{type:'string'},dataset:{type:'string'},...properties},required:['query'],additionalProperties:false},
-      output,
-      async execute(raw, exec) {
-        const args = check(raw, ['query','type','dataset','skip','take']);
-        if (typeof args.query !== 'string' || !args.query.trim()) throw new Error('query must be nonempty domain vocabulary');
-        return method('search', args, exec);
-      },
+      name:'oks_search',
+      description:'Lexical knowledge search: {q:[...],scope:[...]}. Both arrays are required and nonempty; all q terms share the same scope. Example: {q:["CPU","memory"],scope:["datasets/device_kpi"]}. Make separate calls when terms need different scopes. One concept per term. Category scopes datasets/entities/types find roots of that category; exact root IDs search their members (including Type enum values), excluding the root itself. Content directories such as datasets/device/fields, datasets/device/dimensions, datasets/device/measures and types/AlarmSeverity/values restrict search to that section. types/AlarmSeverity/references searches exact direct reference sites only when the model enables reverse_references. No recursive references or relationship expansion. Multiple scopes form a union, deduplicated by ID before ranking. Valid empty scopes return no matches; unknown or unsupported scopes are errors. Coverage ranks first, then exactness; partial words and small English typos are supported. Returns at most 10 matches per term; no total row cap across terms. Returns compact Markdown grouped by parent ID; append the displayed relative name to that exact parent to obtain an oks_info ID. Explicitly reports no matches and truncation. Use ka_ask when vocabulary or relationships are unclear; its vocabulary names are copied into q, not the user wording after the colon. No business data reads.',
+      parameters:{type:'object',properties:{q:{type:'array',minItems:1,maxItems:12,items:{type:'string',minLength:1,maxLength:200}},scope:{type:'array',minItems:1,maxItems:12,items:{type:'string'}}},required:['q','scope'],additionalProperties:false},
+      output:{schema:OBJECT_OUTPUT,render:renderSearch},
+      async execute(raw,exec){return method('search',check(raw,['q','scope']),exec);},
     },
     {
-      name: 'oks_cap', description: 'Discover knowledge jointly using anchors:[{id,terms?}] assembled from the KA natural-language reading list. Returns verified term matches, classified point IDs and bounded shortest connection candidates. Copy needed IDs to oks_info. A connection is not proof that aggregation across it is safe; read Relation cardinality and Measure constraints, then check the query.',
-      parameters: {type:'object', properties:{anchors:{type:'array',minItems:1,maxItems:12,items:{type:'object',properties:{id:{type:'string'},terms:{type:'array',maxItems:20,items:{type:'string'}}},required:['id'],additionalProperties:false}},max_depth:{type:'integer',minimum:0,maximum:3}},required:['anchors'],additionalProperties:false},
-      output,
-      async execute(raw, exec) { return method('cap', check(raw, ['anchors','max_depth']), exec); },
+      name:'oks_routes',
+      description:'Find bounded shortest relationship paths for one pair of exact Dataset/Entity root IDs: {from,to,max_depth?}. Includes direct one-hop relations; Entity endpoints resolve through datasets carrying their identity. Default max_depth=2, max 3, at most 8 shortest paths and 10000 expansions. Returns full node/relation IDs, declared edge direction, traversal cardinality, complete join keys, role IDs and guards. Explicit no-path/truncation status; no via parameter. These declarations do not prove aggregation safety: read the relevant measure constraints with oks_info and validate the query with dari_check.',
+      parameters:{type:'object',properties:{from:{type:'string'},to:{type:'string'},max_depth:{type:'integer',minimum:1,maximum:3}},required:['from','to'],additionalProperties:false},
+      output:{schema:OBJECT_OUTPUT,render:renderRoutes},
+      async execute(raw,exec){return method('routes',check(raw,['from','to','max_depth']),exec);},
     },
     {
-      name: 'oks_info', description: 'Read exact knowledge points from cap.index or cap term matches. ids is a batch of 1..64 complete node IDs; each item contains only its own definition, no recursive navigation or inline child graph. Empty descriptions are omitted. Types, enums, formulas, predicates, identity parts and query constraints are retained. Unknown IDs are reported individually. Query names stay short as defined by each point ID and its facts.',
+      name: 'oks_info', description: 'Read exact knowledge points from scoped search results or routes. Returns Markdown sections headed by exact IDs, explicit short query names and complete definitions; complex expressions remain JSON blocks. ids is a batch of 1..64 complete node IDs; each item contains only its own definition, no recursive navigation or inline child graph. Empty descriptions are omitted. Types, enums, formulas, predicates, identity parts and query constraints are retained. Unknown IDs are reported individually. Query names stay short as defined by each point ID and its facts.',
       parameters:{type:'object',properties:{ids:{type:'array',minItems:1,maxItems:64,items:{type:'string'}}},required:['ids'],additionalProperties:false},
-      output,
+      output: {schema:OBJECT_OUTPUT,render:renderInfo},
       async execute(raw,exec){return method('info',check(raw,['ids']),exec);},
     },
 

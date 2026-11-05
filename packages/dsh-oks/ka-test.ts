@@ -109,7 +109,7 @@ test('KA 只装配关系地图，VA 词汇独立，工具清单为空',async()=>
  parent.ctx.tools.restrict=(v:any)=>{allowed=v.allow};
  const result=await assemble({},{agent:parent},async()=>({sections:[]}));
  assert.deepEqual(allowed,[]);
- assert.match(result.sections[0].text,/device/);assert.match(result.sections[0].text,/vocabulary/);
+ assert.match(result.sections[0].text,/device/);assert.match(result.sections[0].text,/词汇参考/);
  assert(!result.sections[0].text.includes('VOCABULARY_ONLY'));
 });
 
@@ -167,11 +167,17 @@ test('固定先 VA 后 KA，同问合并，返回两份原始回答',async()=>{
  const runtime=createKnowledgeConsultation(ka,va),parent=caller(),signal=new AbortController().signal;
  const first=runtime.ask(parent,'p','CPU 原始约束',signal),same=runtime.ask(parent,'p','CPU 原始约束',signal);
  await flush();assert.equal(calls.length,1);assert.equal(calls[0][0],'va');
- const vocabulary='[datasets/kpi]\n- CPU,cpu_usage;说明';complete({helper:'va',messageId:'v',answer:vocabulary});
+ const vocabulary='### datasets/kpi\n- CPU,cpu_usage;说明';complete({helper:'va',messageId:'v',answer:vocabulary});
  const result=await first;assert.deepEqual(await same,result);assert.equal(calls.length,2);
- assert.deepEqual(JSON.parse(calls[1][3]),{question:'CPU 原始约束',vocabulary});assert.equal(calls[1][4],signal);
+ assert.equal(calls[1][3],`## 用户问题
+
+CPU 原始约束
+
+## 词汇参考
+
+${vocabulary}`);assert.equal(calls[1][4],signal);
  assert.equal(result.vocabulary,vocabulary);assert.equal(result.readingList,'datasets/kpi：指标');
- assert.equal(renderAsk({},result)[0].text,`## 阅读清单\n\ndatasets/kpi：指标\n\n## 词汇对照\n\n${vocabulary}`);
+ assert.equal(renderAsk({},result)[0].text,`## 阅读清单\n\ndatasets/kpi：指标\n\n## 词汇参考\n\n${vocabulary}`);
 });
 test('VA 失败或阶段间取消时不调用 KA',async()=>{
  let called=false;const ka={ask:async()=>{called=true;throw Error('unexpected')}};

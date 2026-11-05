@@ -10,7 +10,7 @@ const normalize = (value:string) => value.normalize('NFKC').toLowerCase().replac
 const record = (value:unknown):value is Fact => value !== null && typeof value === 'object' && !Array.isArray(value);
 const unique = (values:string[]) => [...new Set(values)].sort();
 const cached = new WeakMap<object,Map<string,Point>>();
-function points(graph:SemanticGraph):Map<string,Point> {
+export function knowledgePoints(graph:SemanticGraph):Map<string,Point> {
   let index=cached.get(graph);if(index)return index;
   index=new Map();
   const docs=new Map((graph.items??[]).map(item=>[item.key,item]));
@@ -32,97 +32,10 @@ function points(graph:SemanticGraph):Map<string,Point> {
 }
 function getPoint(graph:SemanticGraph,id:string):Point {
   knowledgeNode(graph,id);
-  const point=points(graph).get(id);
+  const point=knowledgePoints(graph).get(id);
   if(!point)throw new Error('Not a public knowledge point: '+id);
   return point;
 }
-function references(value:unknown,index:Map<string,Point>,into:Set<string>):void {
-  if(typeof value==='string'){
-    try{const id=semanticId(value);if(index.has(id))into.add(id);}catch{}
-    for(const match of value.matchAll(/types\/[A-Za-z0-9_.~%\-]+/g)){try{const id=semanticId(match[0]);if(index.has(id))into.add(id);}catch{}}
-  }else if(Array.isArray(value))for(const v of value)references(v,index,into);
-  else if(record(value))for(const key of ['type','types','identity','logical_type','raw','item','element','key','value','fields','variants','args'])if(Object.hasOwn(value,key))references(value[key],index,into);
-}
-const typeKeys=['type','types','identity','logical_type','field_types','arguments','variants','parts'];
-function typeDependencies(point:Point,index:Map<string,Point>):string[] {
-  const refs=new Set<string>();
-  for(const key of typeKeys)references(point.fact[key],index,refs);
-  return [...refs].filter(id=>id.startsWith('types/'));
-}
-
-export interface KnowledgeAnchor {id:string;terms?:string[]}
-/** Resolve lexical anchors and index points without serializing their definitions. */
-export function discoverPoints(graph:SemanticGraph,args:Record<string,any>) {
-  if(Object.keys(args).some(key=>!['anchors','max_depth'].includes(key)))throw new Error('Point discovery accepts anchors and max_depth');
-  if(!Array.isArray(args.anchors)||!args.anchors.length||args.anchors.length>12)throw new Error('anchors requires 1..12 {id,terms?} entries');
-  const maxDepth=args.max_depth??2;
-  if(!Number.isInteger(maxDepth)||maxDepth<0||maxDepth>3)throw new Error('max_depth must be 0..3');
-  const index=points(graph),selected=new Set<string>(),datasets=new Set<string>();
-  const anchors=args.anchors.map((a:any)=>{
-    if(!record(a)||Object.keys(a).some(k=>!['id','terms'].includes(k))||typeof a.id!=='string'||(a.terms!==undefined&&(!Array.isArray(a.terms)||a.terms.length>20||a.terms.some((t:any)=>typeof t!=='string'||!normalize(t)||t.length>200))))throw new Error('Each anchor needs id and at most 20 nonempty terms');
-    const point=getPoint(graph,a.id);
-    const scope=[...index.values()].filter(p=>p.id===point.id||(point.id===point.root&&p.root===point.root));
-    for(const p of scope)selected.add(p.id);
-    if(point.root.startsWith('datasets/'))datasets.add(point.root);
-    const matches=(a.terms??[]).map((term:string)=>({term,ids:scope.filter(p=>p.words.some(word=>word.includes(normalize(term)))).map(p=>p.id).sort()}));
-    return {id:point.id,kind:point.kind,matches,unresolved_terms:matches.filter((m:any)=>!m.ids.length).map((m:any)=>m.term)};
-  });
-  if(hasOwnedNodes(graph))for(const anchor of anchors){
-    const p=index.get(anchor.id)!;
-    if(p.kind==='Type'&&p.fact.reverse_references===true)for(const site of p.fact.reference_locations??[]){
-      if(typeof site.node!=='string')continue;
-      const root=semanticId(site.node);if(!index.has(root))continue;
-      selected.add(root);if(root.startsWith('datasets/'))datasets.add(root);
-      if(Array.isArray(site.path)&&site.path.length===2){const id=root+'/'+site.path.map((x:string,i:number)=>i?encodePart(x):x).join('/');if(index.has(id))selected.add(id);}
-    }
-  }
-  // Entity anchors retain candidate carriers; only explicitly selected datasets
-  // participate in paths, so a popular Entity cannot fan out into the whole graph.
-  const carriers=anchors.filter((a:any)=>a.kind==='Entity').map((a:any)=>({entity:a.id,datasets:unique([...index.values()].filter(p=>p.kind==='Role'&&p.fact.entity===a.id).map(p=>p.root))}));
-  const adjacency=new Map<string,{to:string;relation:string}[]>();
-  const connect=(from:string,to:string,relation:string)=>{
-    if(!index.has(from)||!index.has(to)||!index.has(relation))return;
-    for(const [a,b] of [[from,to],[to,from]]){const list=adjacency.get(a)??[];list.push({to:b,relation});adjacency.set(a,list);}
-  };
-  if(hasOwnedNodes(graph)){
-    for(const point of index.values())if(point.kind==='Dataset'&&record(point.fact.peers)){
-      for(const [peer,descriptor] of Object.entries(point.fact.peers))if(record(descriptor)&&Array.isArray(descriptor.by)){
-        for(const by of descriptor.by)if(record(by)&&by.direction==='forward'&&typeof by.id==='string')connect(point.id,semanticId(peer),semanticId(by.id));
-      }
-    }
-  }else for(const point of index.values())if(point.kind==='Relation'){
-    const {from_dataset:from,to_dataset:to}=point.fact;
-    if(typeof from==='string'&&typeof to==='string')connect(from,to,point.id);
-  }
-  for(const list of adjacency.values())list.sort((a,b)=>a.relation.localeCompare(b.relation,'en')||a.to.localeCompare(b.to,'en'));
-  const targets=unique([...datasets]),connections:any[]=[];
-  for(let i=0;i<targets.length;i++)for(let j=i+1;j<targets.length;j++){
-    const from=targets[i],to=targets[j];let frontier=[{nodes:[from],relations:[] as string[]}],paths:typeof frontier=[];let truncated=false,expanded=0;
-    for(let depth=0;depth<maxDepth&&!paths.length;depth++){
-      const next:typeof frontier=[];
-      search:for(const path of frontier)for(const edge of adjacency.get(path.nodes.at(-1)!)??[]){
-        if(++expanded>10000){truncated=true;break search;}
-        if(path.nodes.includes(edge.to))continue;
-        const p={nodes:[...path.nodes,edge.to],relations:[...path.relations,edge.relation]};
-        if(edge.to===to){if(paths.length<8)paths.push(p);else truncated=true;}else next.push(p);
-      }
-      frontier=next;if(truncated)break;
-    }
-    for(const path of paths){for(const id of path.nodes)selected.add(id);for(const id of path.relations)selected.add(id);}
-    connections.push({from,to,paths,truncated,status:paths.length?'connected':truncated?'incomplete':'not_found_within_depth'});
-  }
-  // Publish named type dependencies as IDs; their values remain individually readable.
-  const queue=[...selected];
-  for(let i=0;i<queue.length;i++)for(const id of typeDependencies(index.get(queue[i])!,index))if(!selected.has(id)){
-    selected.add(id);queue.push(id);
-    for(const p of index.values())if(p.root===id&&!selected.has(p.id)){selected.add(p.id);queue.push(p.id);}
-  }
-  const grouped:Record<string,string[]>={};
-  for(const id of [...selected].sort()){const kind=index.get(id)!.kind;(grouped[kind]??=[]).push(id);}
-  const locations=hasOwnedNodes(graph)?Object.fromEntries([...selected].sort().map(id=>{const p=index.get(id)!;return [id,{node:p.root,path:knowledgeNode(graph,id).path.slice(2)}];})):undefined;
-  return {anchors,index:grouped,connections,carriers,max_depth:maxDepth,...(locations?{locations}:{})};
-}
-
 const navigation=new Set(['peers','reference_locations','referenced_by','related','traversable','bindings','binding','group','dimension_groups','measure_groups','types','datasets','entities','dimensions','measures','time_roles','business_links','relations','fields','roles']);
 function publicRef(value:any):any {
   if(typeof value!=='string')return value;

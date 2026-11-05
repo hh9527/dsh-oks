@@ -128,9 +128,15 @@ export function createKnowledgeConsultation(ka: KaRuntime, va: KaRuntime): KaRun
         const vocabulary = await va.ask(caller, key, query, signal);
         signal?.throwIfAborted();
         const navigation = await ka.ask(caller, key,
-          JSON.stringify({ question: query, vocabulary: vocabulary.answer }), signal);
+          `## 用户问题
+
+${query}
+
+## 词汇参考
+
+${vocabulary.answer}`, signal);
         return { ...navigation, readingList: navigation.answer, vocabulary: vocabulary.answer,
-          answer: `## 阅读清单\n\n${navigation.answer}\n\n## 词汇对照\n\n${vocabulary.answer}` };
+          answer: `## 阅读清单\n\n${navigation.answer}\n\n## 词汇参考\n\n${vocabulary.answer}` };
       });
     },
   };

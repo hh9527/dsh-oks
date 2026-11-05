@@ -17,7 +17,7 @@ const collapsedMessage = () => ({
   content: [{ type: 'text', text: COLLAPSED }], source: { kind: 'user' },
 });
 const PERSONA = '你是领域知识助手：根据关系地图和词汇助手提供的锚点，为当前问题推荐最少的相关知识入口，每项只给准确地址和一句用途说明。'
-  + '主 agent 自主使用 cap/info 获取详细知识并设计查询。你只提供知识导航，不执行查询、不读取文件。';
+  + '主 agent 自主使用 search/routes/info 获取详细知识并设计查询。你只提供知识导航，不执行查询、不读取文件。';
 
 /** 沿用固定边界收起：保留系统前缀，旧标记与全部问答一起替换，原始日志保留。 */
 export function resetKnowledgeContext(session: SessionLike): void {

@@ -1,8 +1,9 @@
+import {searchPoints,routePoints} from './src/point-navigation.ts';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {derivePublishedKnowledge} from './src/published-knowledge.ts';
 import {collectProgrammedKnowledge} from './src/programmed-knowledge.ts';
-import {discoverPoints,readPoints} from './src/point-knowledge.ts';
+import {readPoints} from './src/point-knowledge.ts';
 import {semanticKnowledge} from './src/semantic-knowledge.ts';
 import {renderDomainSummary} from './src/domain-summary.ts';
 const root=(key:string,value:any,reference_sites:any[]=[])=>({key,value,reference_sites,references:[...new Set(reference_sites.map(s=>s.target).filter(t=>t!==key))]});
@@ -33,16 +34,18 @@ assert.deepEqual(readPoints(graph,{ids:['relations/alarm_device']}).items[0].fac
 assert(index.links.every(e=>!e.source.includes('#')&&!e.target.includes('#')));
 assert.deepEqual({...graph.types.AlarmSeverity.referenced_by},{datasets:['datasets/current_alarm']});
 assert.equal(graph.types.Percent.referenced_by,undefined);
-const cap=discoverPoints(graph,{anchors:[{id:'types/AlarmSeverity',terms:['critical']}]});
-assert(cap.index.Dataset.includes('datasets/current_alarm'));
-assert(cap.index.Dimension.includes('datasets/current_alarm/dimensions/alarm_severity'));
-assert(cap.anchors[0].matches[0].ids.includes('types/AlarmSeverity/values/critical'));
-assert.deepEqual(cap.locations!['datasets/current_alarm/dimensions/alarm_severity'],{node:'datasets/current_alarm',path:['dimensions','alarm_severity']});
+const hits=searchPoints(graph,{q:['critical'],scope:['types/AlarmSeverity']});
+assert(hits.results[0].items.some(p=>p.id==='types/AlarmSeverity/values/critical'));
+const uses=searchPoints(graph,{q:['alarm_severity'],scope:['types/AlarmSeverity/references']});
+assert.deepEqual(uses.results[0].items.map(p=>p.id),['datasets/current_alarm/dimensions/alarm_severity']);
+assert.equal(readPoints(graph,{ids:uses.results[0].items.map(p=>p.id)}).items.length,1);
+assert.equal(searchPoints(graph,{q:['alarm_severity'],scope:['types/AlarmSeverity/references','datasets/current_alarm/dimensions']}).results[0].items.length,1);
+assert.equal(searchPoints(graph,{q:['cpu'],scope:['types/Percent/references']}).results[0].items.length,0);
 const info=readPoints(graph,{ids:['datasets/current_alarm/dimensions/alarm_severity','types/AlarmSeverity']});
 assert.equal(info.items[0].node,'datasets/current_alarm');assert.equal(info.items[0].dimension,'alarm_severity');
 assert.equal(info.items[1].facts.reference_locations,undefined);
-const paths=discoverPoints(graph,{anchors:[{id:'datasets/current_alarm'},{id:'datasets/device'}]});
-assert.equal(paths.connections[0].status,'connected');assert(paths.connections[0].paths[0].relations[0].startsWith('relations/'));
+const paths=routePoints(graph,{from:'datasets/current_alarm',to:'datasets/device'});
+assert.equal(paths.status,'connected');assert(paths.paths[0].edges[0].relation.startsWith('relations/'));
 assert(renderDomainSummary(graph,'fixture').includes('current_alarm'));
 const search=semanticKnowledge(graph,'search',{query:'critical',take:20}) as any;
 assert(search.items.some((v:any)=>v.node==='types/AlarmSeverity'&&v.path.join('/')==='values/critical'));
@@ -61,8 +64,8 @@ for(const path of process.argv.slice(2)){
  assert(actual.links.every(e=>!e.source.includes('#')&&!e.target.includes('#')));
  if(actual.knowledge.datasets.current_alarm){
   const key=Object.entries(actual.knowledge.types).find(([,t])=>t.name==='icloud_model/typed/current_alarm::AlarmSeverity')![0];
-  const discovery=discoverPoints(actual.knowledge,{anchors:[{id:'types/'+key,terms:['critical']}]});
-  assert(discovery.index.Dataset.includes('datasets/current_alarm'));
+  const discovery=searchPoints(actual.knowledge,{q:['critical'],scope:['types/'+key]});
+  assert(discovery.results[0].items.length>0);
   const measure=readPoints(actual.knowledge,{ids:['datasets/device_kpi/measures/cpu_usage']}).items[0];assert.equal(measure.facts.unit,'%');assert.equal(measure.facts.statistic,'Mean');
  }
  console.log(path+': '+published.facts.length+' independent nodes; content, policies and navigation passed');
