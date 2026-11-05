@@ -239,7 +239,7 @@ export class DraftRuntime {
           }
           const args: DraftValue[] = [];
           for (const arg of expr.args) args.push(await evaluate(arg));
-          const asset = expr.operator === 'sql' || expr.operator === 'render_report' ? document.assets.get(args[0].data as string) : undefined;
+          const asset = expr.operator === 'render_report' ? document.assets.get(args[0].data as string) : undefined;
           const context: CallContext = { operator: expr.operator, figureKind:expr.figureKind, args, asset, statement, span: expr.span, run: run.id, batch: run.batch, sourceHash: run.sourceHash, title: document.title, signal: options.signal };
           const acquisition = expr.operator === 'exec_query' || expr.operator === 'context';
           const environment = this.backend.environment(expr.operator);

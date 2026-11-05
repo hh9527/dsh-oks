@@ -99,7 +99,7 @@ export function renderStructure(input:{
   program:ReportProgram;
   figurePlacement?:'before-caption';
   outline:ReadonlyArray<{level:number;text:string;id:string}>;
-  valueOf:(ref:string,pick:string|undefined)=>string;
+  valueOf:(ref:string)=>string;
   inlineOf:(ref:string)=>{html:string;label:string;table?:boolean}|undefined;
 }):{article:string} {
   let heading=0;
@@ -111,10 +111,10 @@ export function renderStructure(input:{
     const inline=name==='figure'&&ref!==undefined?input.inlineOf(ref):undefined;
     if(['h1','h2','h3'].includes(name)){const entry=input.outline[heading++];if(entry&&attrs.id===undefined)attrs.id=entry.id;}
     if(inline?.table)attrs.class=[attrs.class,'table-block'].filter(Boolean).join(' ');
-    if(name==='span'&&ref!==undefined&&attrs.title===undefined)attrs.title=ref+(attrs['data-oks-pick']&&attrs['data-oks-pick']!=='.'?attrs['data-oks-pick']:'');
+    if(name==='span'&&ref!==undefined&&attrs.title===undefined)attrs.title=ref;
     const open=`<${name}${attributeText(attrs)}`;
     if(['br','hr'].includes(name))return open+' />';
-    const body=name==='span'&&ref!==undefined?escapeText(input.valueOf(ref,attrs['data-oks-pick'])):node.children.map(child=>render(child,name==='figure'?inline:figure)).join('');
+    const body=name==='span'&&ref!==undefined?escapeText(input.valueOf(ref)):node.children.map(child=>render(child,name==='figure'?inline:figure)).join('');
     const caption=name==='figcaption'&&figure?`<span class="item-no">${escapeText(figure.label)}${input.figurePlacement?'：':''}</span>`:'';
     const before=inline&&input.figurePlacement?inline.html:'';
     const after=inline&&!input.figurePlacement?inline.html:'';

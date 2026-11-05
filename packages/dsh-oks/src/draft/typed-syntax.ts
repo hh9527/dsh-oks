@@ -1,7 +1,7 @@
 import {DraftSyntaxError,type Expr,type PipelineNode,type Position,type Span,type Operator} from './pipeline.ts';
 export type N={k:string;s:Span;v?:any;a?:N[];entries?:{key:string;value:N}[];name?:string;input?:N;key?:string|number;optional?:boolean;params?:string[];body?:N;op?:string;left?:N;right?:N};
 const calls=new Set(['query','context','time_windows','data','select','select_one','table','map','union_all','is_some','is_none','map_opt','round','case_when','lookup','concat','to_datetime_utc','to_epoch_millis','asc','desc','count','sum','avg','min','max']);
-export function parseTypedPipeline(source:string,base:Position,options:{definitions?:Map<string,N>;expressionName?:string;templateScopes?:{name:string;input:N}[];templateCondition?:boolean;templatePresence?:string}={}):PipelineNode[]{
+export function parseTypedExpression(source:string,base:Position,options:{definitions?:Map<string,N>;expressionName:string;templateScopes?:{name:string;input:N}[];templateCondition?:boolean;templatePresence?:string}):PipelineNode{
  let at=0;const lines=[0];for(let i=0;i<source.length;i++)if(source[i]==='\n')lines.push(i+1);
  const pos=(n:number):Position=>{let l=0;while(l+1<lines.length&&lines[l+1]<=n)l++;return {offset:base.offset+n,line:base.line+l,column:l?n-lines[l]+1:base.column+n};};
  type Tok={text:string;value?:any;start:number;end:number;kind:string;comments:string[]};
@@ -10,7 +10,7 @@ export function parseTypedPipeline(source:string,base:Position,options:{definiti
  const id=/^[A-Za-z_$][A-Za-z0-9_$]*/.exec(source.slice(at));if(id){at+=id[0].length;return {text:id[0],start,end:at,kind:'id',comments};}
  if(source[at]==='"'){at++;while(at<source.length&&source[at]!=='"'){if(source[at]==='\\')at++;at++;}at++;const text=source.slice(start,at);try{return {text,value:JSON.parse(text),start,end:at,kind:'literal',comments};}catch{throw new DraftSyntaxError('Invalid JSON string',{start:pos(start),end:pos(Math.min(at,source.length))});}}
  const num=/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/.exec(source.slice(at));if(num){at+=num[0].length;return {text:num[0],value:Number(num[0]),start,end:at,kind:'literal',comments};}
- for(const op of ['<-','=>','?.','??','==','!=','<=','>=','&&','||'])if(source.startsWith(op,at)){at+=op.length;return {text:op,start,end:at,kind:'symbol',comments};}
+ for(const op of ['=>','?.','??','==','!=','<=','>=','&&','||'])if(source.startsWith(op,at)){at+=op.length;return {text:op,start,end:at,kind:'symbol',comments};}
  return {text:source[at++],start,end:at,kind:'symbol',comments};};
  let token=lex(),end=0;const take=()=>{const t=token;end=t.end;token=lex();return t;};
  const fail=(m:string,t=token):never=>{throw new DraftSyntaxError(m,{start:pos(t.start),end:pos(t.end)});};
@@ -32,7 +32,7 @@ export function parseTypedPipeline(source:string,base:Position,options:{definiti
   while(prec[token.text]!==undefined&&prec[token.text]>=min){const op=take().text;const right=expr(prec[op]+1,depth+1);n={k:'binary',op,left:n,right,s:span(start)};}
   return n;
  };
- const defs=options.definitions??new Map<string,N>(),nodes:PipelineNode[]=[];
+ const defs=options.definitions??new Map<string,N>();
  const cloneSub=(n:N,subs:Map<string,N>):N=>{if(n.k==='ref'&&subs.has(n.name!))return subs.get(n.name!)!;if(n.k==='lambda'){const inner=new Map(subs);n.params!.forEach(p=>inner.delete(p));return {...n,body:cloneSub(n.body!,inner)};}return {...n,...(n.a?{a:n.a.map(x=>cloneSub(x,subs))}:{}),...(n.entries?{entries:n.entries.map(e=>({...e,value:cloneSub(e.value,subs)}))}:{}),...(n.input?{input:cloneSub(n.input,subs)}:{}),...(n.left?{left:cloneSub(n.left,subs)}:{}),...(n.right?{right:cloneSub(n.right,subs)}:{})};};
  const refs=(n:N,locals=new Set<string>(),out=new Set<string>()):Set<string>=>{if(n.k==='ref'&&!locals.has(n.name!))out.add(n.name!);if(n.k==='lambda'){const l=new Set([...locals,...n.params!]);refs(n.body!,l,out);}else{n.a?.forEach(a=>refs(a,locals,out));n.entries?.forEach(e=>refs(e.value,locals,out));if(n.input)refs(n.input,locals,out);if(n.left)refs(n.left,locals,out);if(n.right)refs(n.right,locals,out);}return out;};
  const arrayLength=(n:N,seen=new Set<string>()):number|undefined=>{if(n.k==='array')return n.a!.length;if(n.k==='ref'&&defs.has(n.name!)&&!seen.has(n.name!)){seen.add(n.name!);return arrayLength(defs.get(n.name!)!,seen);}if(n.k==='call'&&n.name==='time_windows'){const count=n.a?.[1]?.entries?.find(e=>e.key==='count')?.value;if(count?.k==='lit'&&Number.isInteger(count.v)&&count.v>=1&&count.v<=50)return count.v;}if(n.k==='call'&&n.name==='map')return arrayLength(n.a![0],seen);return undefined;};
@@ -65,20 +65,9 @@ export function parseTypedPipeline(source:string,base:Position,options:{definiti
   if(n.k==='lambda')throw new DraftSyntaxError('Functions can only appear in typed operator arguments',n.s);
   return payload('typed_value',n,[...refs(n)].map(name=>({key:name,value:{kind:'ref',name,span:n.s}})));
  };
- if(options.expressionName!==undefined){
   let n=expr();if(token.kind!=='eof')fail('Unexpected content after expression');
   if(options.templatePresence)n={k:'template_presence',input:{k:'ref',name:options.templatePresence,s:n.s},s:n.s};
   for(const scope of [...options.templateScopes??[]].reverse())n={k:'template_scope',op:options.templateCondition?'condition':'value',a:[scope.input,{k:'lambda',params:[scope.name],body:n,s:n.s}],s:n.s};
   const dependencies=[...refs(n)];for(const ref of dependencies)if(!defs.has(ref))throw new DraftSyntaxError('Undefined or forward data binding '+ref,n.s);
-  const name=options.expressionName;defs.set(name,n);return [{typed:true,analysis:lower(n,'analysis'),statement:{kind:'binding',name,value:lower(n),span:n.s,motivation:''},bindings:dependencies,assets:[]}];
- }
- while(token.kind!=='eof'){
-  if(nodes.length>=512)fail('Pipeline is limited to 512 statements');const head=token;let name:string|undefined,n:N;
-  if(is('{')){n=expr();if(is(';'))take();if(token.kind!=='eof')fail('Output must be the final statement');}
-  else{if(token.kind!=='id')fail('Expected binding name');name=take().text;if(calls.has(name)||name.startsWith('__'))fail('Reserved binding name '+name,head);if(defs.has(name))fail('Duplicate binding '+name,head);eat('<-');n=expr();eat(';');}
-  const dependencies=[...refs(n)];for(const ref of dependencies)if(!defs.has(ref))throw new DraftSyntaxError('Undefined or forward binding '+ref,n.s);
-  const value=lower(n),s=span(head.start);nodes.push({typed:true,analysis:lower(n,'analysis'),statement:name?{kind:'binding',name,value,span:s,motivation:head.comments.join('\n')}:{kind:'output',value,span:s,motivation:head.comments.join('\n')},bindings:dependencies,assets:[]});if(name)defs.set(name,n);
- }
- let acquisitions=0;const visit=(e:Expr)=>{if(e.kind==='call'){if(e.operator==='query')acquisitions++;e.args.forEach(visit);}else if(e.kind==='array')e.values.forEach(visit);else if(e.kind==='object')e.entries.forEach(x=>visit(x.value));else if(e.kind==='project')visit(e.input);};nodes.forEach(n=>visit(n.statement.value));if(acquisitions>128)throw new DraftSyntaxError('Pipeline exceeds 128 queries',nodes[0].statement.span);
- return nodes;
+  const name=options.expressionName;defs.set(name,n);return {typed:true,analysis:lower(n,'analysis'),statement:{kind:'binding',name,value:lower(n),span:n.s,motivation:''},bindings:dependencies};
 }

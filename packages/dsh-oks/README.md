@@ -195,8 +195,6 @@ bin/telora -C <模型目录> build <模型名> --staged \
 
 ## 开发与验收
 
-`mdast-util-from-markdown` 仅供旧 Markdown 草稿的迁移脚本与测试夹具使用，属于开发依赖，不进入插件运行产物。
-
 
 TypeScript 在 src/，发布产物为单文件 lib/index.mjs。知识查询由固定 JS 方法实现，日历计算使用内联的 Temporal，后处理使用 typed pipeline 编译到 SQLite。
 echarts 依赖及技能源码在构建期打包，运行不依赖源码或 node_modules。
@@ -214,7 +212,7 @@ build/prepare/pretest 直接更新 lib，运行中的 link 安装需先暂停服
 源码解析、依赖/缓存/来源、只读生命周期、图表/DARI 报告、知识索引、JS 日历和临时数据库生命周期各有独立测试。
 真实模型/只读 SQLite 的工具集成使用 model-integration-test.ts，可对只含两份产物的独立目录验收。
 
-源码格式见 [RFC 0015](../../rfc/0015-report-template-syntax.md)；执行与来源协议见 [RFC 0013](../../rfc/0013-answer-source.md)。
+语法、执行和交付方式见 [DARI 手册](src/help/dari.md)。
 
 ### 呈现知识
 

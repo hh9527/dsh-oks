@@ -1,5 +1,5 @@
 import {DraftSyntaxError,type PipelineNode,type Span,type Expr,type SourceDiagnostic} from './pipeline.ts';
-import {parseTypedPipeline,type N} from './typed-syntax.ts';
+import {parseTypedExpression,type N} from './typed-syntax.ts';
 import {SourceFile} from './source.ts';
 import {componentKind} from './components.ts';
 import type {Element,Attribute,Reference} from './document.ts';
@@ -64,7 +64,7 @@ export function parseDomDraft(source:string,file:string){
     return {start,end,text:source.slice(start,end)};
   };
   const compile=(part:{start:number;end:number;text:string},binding:string,internal=false,condition=false,presence?:string)=>{
-    const result=parseTypedPipeline(part.text,original.position(part.start),{definitions,expressionName:binding,templateScopes:scopes,templateCondition:condition,templatePresence:presence})[0];
+    const result=parseTypedExpression(part.text,original.position(part.start),{definitions,expressionName:binding,templateScopes:scopes,templateCondition:condition,templatePresence:presence});
     if(internal)result.internal=true;
     nodes.push(result);return result;
   };
@@ -93,7 +93,7 @@ export function parseDomDraft(source:string,file:string){
       return {kind:'reference',...ref};
     }
     const temporary='__attribute'+sequence++;
-    parseTypedPipeline(part.text,original.position(part.start),{definitions,expressionName:temporary});
+    parseTypedExpression(part.text,original.position(part.start),{definitions,expressionName:temporary});
     const ast=definitions.get(temporary)!;definitions.delete(temporary);
     if(ast.k!=='lit')fail('Document attributes require static strings or booleans',part.start,part.end);
     let value:unknown=ast.v;
@@ -136,18 +136,18 @@ export function parseDomDraft(source:string,file:string){
           else children.push(element(depth+1));
           whitespace();if(source[at]===','){at++;whitespace();}else if(source[at]!==']')fail('Expected , between child nodes');
         }
-        at++;const result:Element={name:'#branch',attrs:new Map(),children,selfClosing:false,span:location(begin)};
+        at++;const result:Element={name:'#branch',attrs:new Map(),children,empty:false,span:location(begin)};
         childSpans.set(result,spans);return result;
       };
       if(local)scopes.push(local);
       const yes=branch();
       if(local)scopes.pop();
-      whitespace();let no:Element={name:'#branch',attrs:new Map(),children:[],selfClosing:false,span:location(at,at)};
+      whitespace();let no:Element={name:'#branch',attrs:new Map(),children:[],empty:false,span:location(at,at)};
       if(/^else\b/.test(source.slice(at))){
         at+=4;whitespace();
         no=/^if\b/.test(source.slice(at))?{...no,children:[element(depth+1)]}:branch();
       }
-      return {name:'#if',attrs,children:[yes,no],selfClosing:false,span:location(start)};
+      return {name:'#if',attrs,children:[yes,no],empty:false,span:location(start)};
     }
     if(tag==='else')fail('else must immediately follow an if branch',start,at);
     if(['Figure','figure','figurecaption','figcaption','table','caption','thead','tbody','tfoot','tr','td','th'].includes(tag))
@@ -159,10 +159,10 @@ export function parseDomDraft(source:string,file:string){
         whitespace();if(source[at]!==',')break;at++;whitespace();
       }eat(')');
     }
-    const children:(Element|string)[]=[],spans=new Map<number,Span>();let selfClosing=true;
+    const children:(Element|string)[]=[],spans=new Map<number,Span>();let empty=true;
     whitespace();if(source[at]==='{')fail('Node children use [ ... ] with commas; records use { ... }');
     if(source[at]==='['){
-      selfClosing=false;at++;whitespace();
+      empty=false;at++;whitespace();
       while(source[at]!==']'){
         if(at>=source.length)fail('Missing ] for '+tag,start,at);
         const begin=at;
@@ -171,8 +171,8 @@ export function parseDomDraft(source:string,file:string){
         whitespace();if(source[at]===','){at++;whitespace();}else if(source[at]!==']')fail('Expected , between child nodes');
       }at++;
     }
-    if(!children.length&&(['Value','UseReport','UseFigure','FigureRef','br','hr'].includes(tag)||componentKind(tag)!==undefined))selfClosing=true;
-    const result={name:tag,attrs,children,selfClosing,span:location(start)};
+    if(!children.length&&(['Value','UseReport','UseFigure','FigureRef','br','hr'].includes(tag)||componentKind(tag)!==undefined))empty=true;
+    const result={name:tag,attrs,children,empty,span:location(start)};
     childSpans.set(result,spans);return result;
   };
   const reserved=new Set(['tree','if','else','let','Some','data','figure','report','export','True','False','None','true','false','null','query','context','select','select_one','table','map','union_all','time_windows','is_some','is_none','map_opt','round','case_when','lookup','concat','to_datetime_utc','to_epoch_millis','asc','desc','count','sum','avg','min','max']);
@@ -194,7 +194,7 @@ export function parseDomDraft(source:string,file:string){
       if(kind==='figure'){
         if(componentKind(tree.name)===undefined)fail('figure requires a chart component or Table',tree.span.start.offset,tree.span.end.offset);
         if(tree.children.length)fail('Chart components have attributes and no children',tree.span.start.offset,tree.span.end.offset);
-        tree.selfClosing=true;
+        tree.empty=true;
         if(tree.attrs.has('name'))fail('Figure name is supplied by its binding',tree.span.start.offset);
         tree.attrs.set('name',{kind:'text',value:binding,span:location(bindingStart,bindingStart+binding.length)});figures.set(binding,tree);
       }else{
@@ -206,7 +206,7 @@ export function parseDomDraft(source:string,file:string){
         if(!templates.length)title=ownTitle;
         if(reportTitle)tree.attrs.delete('title');
         // Report itself is the article root; no extra wrapper is needed in source.
-        tree.name='article';tree.selfClosing=false;templates.push({name:binding,title:ownTitle,element:tree,span:location(start),...(kind==='answer'?{format:'markdown' as const}:{})});
+        tree.name='article';tree.empty=false;templates.push({name:binding,title:ownTitle,element:tree,span:location(start),...(kind==='answer'?{format:'markdown' as const}:{})});
       }
     }
     declarations.set(binding,kind as 'data'|'figure'|'report'|'answer');whitespace();

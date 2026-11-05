@@ -4,9 +4,6 @@ import type { Acquisition, DraftRun } from './runtime.ts';
 export type DariAuthoring = {
   source: string;
   title: string;
-  notes: string;
-  assets: Record<string,string>;
-  pipeline: string;
   reports: Record<string,string>;
   figures: Record<string,{code:string;binding:string}>;
 };

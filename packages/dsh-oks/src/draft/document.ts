@@ -5,16 +5,15 @@ import type { DariAuthoring } from './archive.ts';
 import { componentKind } from './components.ts';
 /** Located DARI data, figure and report compiler. */
 import { SourceFile } from './source.ts';
-import type { SourceFragment } from './source.ts';
-import { DraftSyntaxError, parsePipeline } from './pipeline.ts';
-import type { Expr, PipelineNode, Position, Span, SourceDiagnostic } from './pipeline.ts';
-import { compileReport,element as reportElement,serializeReport,decodeAuthorText,type ReportNode,type ReportProgram } from '../report/structure.ts';
+import { DraftSyntaxError } from './pipeline.ts';
+import type { Expr, PipelineNode, Span, SourceDiagnostic } from './pipeline.ts';
+import { compileReport,element as reportElement,serializeReport,validateAuthorText,PUBLIC_AUTHOR_ATTRIBUTES,type ReportNode,type ReportProgram } from '../report/structure.ts';
 
 export type Reference = { source:string; binding:string; path:(string|number)[]; optional?:number[]; code?:string; span:Span };
-export type Attribute = { kind:'text'; value:string; span:Span; valueStart?:number } | ({kind:'reference'} & Reference);
-export type Element = { selfClosing:boolean;name:string; attrs:Map<string,Attribute>; children:(Element|string)[]; span:Span };
-export type DraftAsset = { title?:string;format?:'markdown';program?:ReportProgram;figurePlacement?:'before-caption';name:string;language:'sql'|'report';source:string;span:Span;body:Position;fragment?:SourceFragment;references?:Record<string,{kind:'value'|'figure'|'report'|'condition';span:Span;code?:string}> };
-export type DraftDocument = {syntax?:'dom';declarations?:Map<string,'data'|'figure'|'report'|'answer'>;authoring?:DariAuthoring;title?:string;notes?:string;nodes:PipelineNode[];assets:Map<string,DraftAsset>;pipeline:Span;answers:string[];file:string;diagnostics?:SourceDiagnostic[]};
+export type Attribute = { kind:'text'; value:string; span:Span } | ({kind:'reference'} & Reference);
+export type Element = { empty:boolean;name:string; attrs:Map<string,Attribute>; children:(Element|string)[]; span:Span };
+export type DraftAsset = { title?:string;format?:'markdown';program?:ReportProgram;figurePlacement?:'before-caption';name:string;source:string;span:Span;references?:Record<string,{kind:'value'|'figure'|'report'|'condition';span:Span;code?:string}> };
+export type DraftDocument = {syntax?:'dom';declarations?:Map<string,'data'|'figure'|'report'|'answer'>;authoring?:DariAuthoring;title?:string;nodes:PipelineNode[];assets:Map<string,DraftAsset>;pipeline:Span;answers:string[];file:string;diagnostics?:SourceDiagnostic[]};
 
 export function parseDraft(source:string,file='draft.dari'):DraftDocument {
   const document=parseDraftForValidation(source,file);
@@ -25,197 +24,23 @@ export function parseDraft(source:string,file='draft.dari'):DraftDocument {
 /** Collect independent section diagnostics; an invalid container still prevents reliable section recovery. */
 export function parseDraftForValidation(source:string,file='draft.dari'):DraftDocument {
 
-  const prepared=source.trimStart().startsWith('<')?undefined:parseDomDraft(source,file);
+  const prepared=parseDomDraft(source,file);
   const diagnostics:SourceDiagnostic[]=[];
   let stage='container',unit:string|undefined;
   const collect=(run:()=>void)=>{try{run();}catch(error){if(!(error instanceof DraftSyntaxError))throw error;diagnostics.push(...(error.diagnostics.length?error.diagnostics:[{file,stage,message:error.message,span:error.span}]).map(d=>({...d,stage:d.stage==='container'?stage:d.stage,...(unit?{asset:unit}:{})})));}};
   const original=new SourceFile(file,source);
-  const pos=(offset:number):Position=>original.position(offset);
-  const childSpans=prepared?.childSpans??new WeakMap<Element,Map<number,Span>>();
-  let at=0;
-  const span=(start:number,end=at):Span=>({start:pos(start),end:pos(end)});
-  const fail=(message:string,start=at,end=Math.min(source.length,at+1)):never=>{const location=span(start,end);throw new DraftSyntaxError(message,location,[{file,stage:'container',message,span:location}]);};
-  if(Buffer.byteLength(source)>256*1024)fail('Report exceeds 256 KiB',0,1);
-  const whitespace=()=>{while(/\s/.test(source[at]??'')&&at<source.length)at++;};
-  const expect=(text:string)=>{if(!source.startsWith(text,at))fail(`Expected ${text}`);at+=text.length;};
-  const name=()=>{const match=/^[A-Za-z_$][A-Za-z0-9_$:-]*/.exec(source.slice(at));if(!match)return fail('Expected a name');at+=match[0].length;return match[0];};
-  const references:Reference[]=prepared?.references??[];
-  const reference=():Attribute=>{
-    const start=at;expect('{');whitespace();const begin=at;
-    const binding=name();if(!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(binding))fail('Expected a pipeline binding',begin);
-    const path:(string|number)[]=[];const optional:number[]=[];
-    while(true){
-      whitespace();
-      if(source[at]==='.'||source.startsWith('?.',at)){
-        if(source.startsWith('?.',at)){optional.push(path.length);at++;}at++;whitespace();const key=name();if(!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key))fail('Expected a static field');path.push(key);
-      } else if(source[at]==='['){
-        at++;whitespace();
-        if(source[at]==='"'){
-          const keyStart=at;at++;while(at<source.length&&source[at]!=='"'){if(source[at]==='\\')at++;at++;}
-          if(source[at]!=='"')fail('Unterminated projection string',keyStart);
-          at++;let key:string;try{key=JSON.parse(source.slice(keyStart,at));}catch{return fail('Invalid projection string',keyStart);}
-          path.push(key);
-        }else{
-          const index=/^(0|[1-9][0-9]*)/.exec(source.slice(at));
-          if(!index||!Number.isSafeInteger(Number(index[0])))fail('Projection requires a static string or safe array index');
-          path.push(Number(index![0]));at+=index![0].length;
-        }
-        whitespace();expect(']');
-      }else break;
-    }
-    const end=at;
-    if(source[at]!=='}')fail('Template expressions allow only a pipeline binding and static projections',start);
-    at++;const ref={source:source.slice(begin,end).trim(),binding,path,optional,span:span(start)};references.push(ref);
-    return {kind:'reference',...ref};
-  };
-  const open=()=>{
-    const start=at;expect('<');const tag=name();const attrs=new Map<string,Attribute>();
-    while(true){
-      whitespace();if(source.startsWith('/>',at)){at+=2;return {tag,attrs,start,selfClosing:true};}
-      if(source[at]==='>'){at++;return {tag,attrs,start,selfClosing:false};}
-      if(at>=source.length)fail('Unterminated opening tag',start);
-      const keyStart=at;const key=name();if(attrs.has(key))fail(`Duplicate attribute ${key}`,keyStart);
-      whitespace();
-      if(source[at]!=='=' && (key==='data-oks-shrink'||key==='data-oks-lit')){
-        attrs.set(key,{kind:'text',value:'',span:span(keyStart)});
-        continue;
-      }
-      expect('=');whitespace();
-      if(source[at]==='{')attrs.set(key,reference());
-      else{
-        expect('"');const begin=at;while(at<source.length&&source[at]!=='"'&&source[at]!=='\n')at++;
-        if(source[at]!=='"')fail('Unterminated attribute string',begin-1);const value=source.slice(begin,at);at++;
-        attrs.set(key,{kind:'text',value,span:span(keyStart),valueStart:begin});
-      }
-    }
-  };
-  const close=(tag:string)=>{expect('</');const start=at;const actual=name();if(actual!==tag)fail(`Expected </${tag}>, got </${actual}>`,start);whitespace();expect('>');};
+  const span=(start:number,end=start):Span=>original.span(start,end);
+  const fail=(message:string,start=0,end=Math.min(source.length,start+1)):never=>{const location=span(start,end);throw new DraftSyntaxError(message,location,[{file,stage,message,span:location}]);};
   const literal=(attrs:Map<string,Attribute>,key:string,required=true)=>{
     const attr=attrs.get(key);if(!attr){if(required)fail(`Missing ${key} attribute`);return undefined;}
     if(attr.kind!=='text')fail(`${key} must be a static string`,attr.span.start.offset,attr.span.end.offset);
     return (attr as Extract<Attribute,{kind:'text'}>).value;
   };
   const only=(attrs:Map<string,Attribute>,allowed:string[])=>{for(const [key,attr]of attrs)if(!allowed.includes(key))fail(`Unknown attribute ${key}`,attr.span.start.offset,attr.span.end.offset);};
-  const raw=(tag:string,language='pipeline')=>{
-    const begin=at;const closing=`</${tag}>`;
-    if(language==='text'){const end=source.indexOf(closing,at);if(end<0)return fail(`Missing </${tag}>`,begin);at=end;const body=source.slice(begin,at);close(tag);return {body,begin};}
-    if(language==='sql'){
-      let quote='';let comment='';
-      while(at<source.length){
-        if(!quote&&!comment&&source.startsWith(closing,at)){const body=source.slice(begin,at);close(tag);return {body,begin};}
-        const ch=source[at],next=source[at+1];
-        if(comment==='line'){at++;if(ch==='\n')comment='';continue;}
-        if(comment==='block'){if(ch==='*'&&next==='/'){at+=2;comment='';}else at++;continue;}
-        if(quote){at++;if(ch===quote){if(source[at]===quote)at++;else quote='';}continue;}
-        if(ch==='-'&&next==='-'){comment='line';at+=2;}else if(ch==='/'&&next==='*'){comment='block';at+=2;}
-        else {if(ch==="'"||ch==='"'||ch==='`')quote=ch;else if(ch==='[')quote=']';at++;}
-      }
-      return fail('Missing </Asset>',begin);
-    }
-    type Mode={kind:'code'|'string'|'line'|'block';depth?:number};
-    const stack:Mode[]=[{kind:'code'}];let fallback=-1;
-    while(at<source.length){
-      const state=stack.at(-1)!;
-      if(source.startsWith(closing,at)){
-        if(stack.length===1){const body=source.slice(begin,at);close(tag);return {body,begin};}
-        if(fallback<0&&/^[ \t]*$/.test(source.slice(source.lastIndexOf('\n',at-1)+1,at)))fallback=at;
-      }
-      const ch=source[at];
-      if(state.kind==='line'){at++;if(ch==='\n')stack.pop();continue;}
-      if(state.kind==='block'){if(source.startsWith('*/',at)){at+=2;stack.pop();}else at++;continue;}
-      if(state.kind==='string'){
-        if(ch==='\\'){
-          at+=Math.min(2,source.length-at);
-        }else{at++;if(ch==='"')stack.pop();}
-        continue;
-      }
-      if(ch==='"'){at++;stack.push({kind:'string'});continue;}
-      if(language==='pipeline'&&source.startsWith('//',at)){at+=2;stack.push({kind:'line'});continue;}
-      if(language==='pipeline'&&source.startsWith('/*',at)){at+=2;stack.push({kind:'block'});continue;}
-      if(state.depth!==undefined){if(ch==='(')state.depth++;if(ch===')'&&--state.depth===0){at++;stack.pop();continue;}}
-      at++;
-    }
-    // Let the independent compiler diagnose an unclosed string/comment before a standalone delimiter.
-    if(fallback>=0){at=fallback;const body=source.slice(begin,at);close(tag);return {body,begin};}
-    return fail(`Missing </${tag}>`,begin);
-  };
-  let elementCount=0;
-  const element=(depth=0):Element=>{
-    if(depth>128)fail('Template nesting exceeds 128');const header=open();
-    if(++elementCount>2048)fail('Report exceeds 2048 template elements',header.start);
-    if(['Asset','Pipeline','Template','Report','Figures','Dari','Notes'].includes(header.tag))fail(`Unexpected template element ${header.tag}`,header.start);
-    const children:(Element|string)[]=[];const locations=new Map<number,Span>();
-    if(!header.selfClosing){
-      while(!source.startsWith('</',at)){
-        if(at>=source.length)fail(`Missing </${header.tag}>`,header.start);
-        if(source.startsWith('<!--',at)){
-          const begin=at;const end=source.indexOf('-->',at+4);if(end<0)fail('Unterminated comment',begin);at=end+3;locations.set(children.length,span(begin,at));children.push(source.slice(begin,at));
-        }else if(source[at]==='<')children.push(element(depth+1));
-        else{const begin=at;while(at<source.length&&source[at]!=='<'){if(source[at]==='{')fail('Place pipeline references in Value/chart component attributes');at++;}locations.set(children.length,span(begin,at));children.push(source.slice(begin,at));}
-      }
-      close(header.tag);
-    }
-    const result={selfClosing:header.selfClosing,name:header.tag,attrs:header.attrs,children,span:span(header.start)};childSpans.set(result,locations);return result;
-  };
-  let title=prepared?.title??'Report';
-  let pipeline:{body:string;begin:number}|undefined=prepared?{body:source,begin:0}:undefined;let notes:string|undefined;
-  const figures=prepared?.figures??new Map<string,Element>();let hasFigures=false;
-  const assets=new Map<string,DraftAsset>();const templates:{title?:string;format?:'markdown';legacy?:boolean;name:string;element:Element;span:Span}[]=prepared?.templates??[];
-  let rootStart=0;
-  if(!prepared){
-  whitespace();const root=open();rootStart=root.start;if(root.tag!=='Dari'||root.selfClosing)fail('Expected a Dari root',root.start);only(root.attrs,['title']);title=decodeAuthorText(literal(root.attrs,'title',false)??'Report',(message,offset)=>fail(message,((root.attrs.get('title') as {valueStart?:number}|undefined)?.valueStart??0)+offset));
-  while(true){
-    whitespace();if(source.startsWith('</',at))break;const header=open();
-    if(header.selfClosing)fail('Report blocks require a body',header.start);
-    if(header.tag==='Pipeline'){
-      stage='pipeline';unit=undefined;collect(()=>{only(header.attrs,[]);if(pipeline)fail('Duplicate pipeline',header.start);});
-      const body=raw('Pipeline');if(!pipeline)pipeline=body;stage='container';
-    }else if(header.tag==='Notes'){
-      only(header.attrs,[]);if(notes!==undefined)fail('Duplicate notes',header.start);notes=raw('Notes','text').body;
-    }else if(header.tag==='Asset'){
-      only(header.attrs,['language','name']);const language=literal(header.attrs,'language');if(language!=='sql')fail('Asset language must be sql',header.start);
-      const asset=literal(header.attrs,'name')!;if(!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(asset)||!asset.endsWith(`.${language}`))fail('Asset name must be a single filename matching its language',header.start);
-      if(assets.has(asset))fail(`Duplicate asset ${asset}`,header.start);const fragment=raw('Asset',language);const located=original.fragment(asset,language as 'sql',fragment.begin,fragment.begin+fragment.body.length);assets.set(asset,{name:asset,language:language as 'sql',source:fragment.body,span:span(header.start),body:pos(fragment.begin),fragment:located});
-    }else if(header.tag==='Figures'){
-      stage='figure';unit='Figures';collect(()=>{only(header.attrs,[]);if(hasFigures)fail('Duplicate Figures',header.start);});hasFigures=true;
-      while(true){
-        whitespace();if(source.startsWith('</',at))break;
-        const chart=element();unit=chart.attrs.get('name')?.kind==='text'?`figures.${(chart.attrs.get('name') as Extract<Attribute,{kind:'text'}>).value}`:`figure:${chart.span.start.line}:${chart.span.start.column}`;
-        collect(()=>{
-          const kind=componentKind(chart.name);
-          if(!kind)fail('Figures requires chart components or Table',chart.span.start.offset);
-          const key=literal(chart.attrs,'name')!;
-          if(!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key))fail('Figure name must be an identifier',chart.span.start.offset);
-          if(figures.has(key))fail(`Duplicate figure ${key}`,chart.span.start.offset);
-          figures.set(key,chart);
-        });
-      }
-      close('Figures');stage='container';unit=undefined;
-    }else if(header.tag==='Report'||header.tag==='Template'){
-      whitespace();const tree=element();whitespace();close(header.tag);
-      stage='template';unit=header.attrs.get('name')?.kind==='text'?`reports.${(header.attrs.get('name') as Extract<Attribute,{kind:'text'}>).value}`:`report:${pos(header.start).line}`;
-      collect(()=>{
-        only(header.attrs,['name']);const templateName=literal(header.attrs,'name')!;
-        if(!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(templateName))fail(`${header.tag} name must be an identifier`,header.start);
-        if(templates.some(t=>t.name===templateName))fail(`Duplicate ${header.tag} ${templateName}`,header.start);
-        if(tree.name!=='article')fail(`${header.tag} root must be article`,tree.span.start.offset);
-        templates.push({legacy:header.tag==='Template',name:templateName,element:tree,span:span(header.start)});
-      });stage='container';unit=undefined;
-    }else fail(`Unknown report block ${header.tag}`,header.start);
-  }
-  close('Dari');whitespace();if(at!==source.length)fail('Unexpected content after report');
-  }
-  stage='pipeline';
-  const missingPipeline=!pipeline;
-  if(missingPipeline){collect(()=>fail('Missing pipeline',rootStart));pipeline={body:'',begin:source.length};}
-  const pipelineFragment=original.fragment('pipeline','pipeline',pipeline!.begin,pipeline!.begin+pipeline!.body.length);
-  let nodes:PipelineNode[];
-  const beforePipeline=diagnostics.length;
-  nodes=[];stage='pipeline';collect(()=>{nodes=prepared?.nodes??parsePipeline(pipelineFragment.text,original.position(pipelineFragment.start));});
-  const pipelineValid=!missingPipeline&&diagnostics.length===beforePipeline;
+  const {childSpans,references,title,figures,templates,nodes}=prepared;
+  const assets=new Map<string,DraftAsset>();
   const names=new Set(nodes.flatMap(n=>n.statement.kind==='binding'?[n.statement.name]:[]));
-  if(pipelineValid)for(const ref of references)if(!names.has(ref.binding))collect(()=>fail(`Undefined pipeline binding ${ref.binding}`,ref.span.start.offset,ref.span.end.offset));
-  for(const node of nodes)for(const asset of node.assets)if(assets.get(asset.name)?.language!==asset.language)collect(()=>fail(`Missing ${asset.language} asset ${asset.name}`,asset.span.start.offset,asset.span.end.offset));
+  for(const ref of references)if(!names.has(ref.binding))collect(()=>fail(`Undefined pipeline binding ${ref.binding}`,ref.span.start.offset,ref.span.end.offset));
   const refExpr=(ref:Reference):Expr=>{
     if(ref.optional?.length||(ref.path.length&&nodes.some(n=>n.typed))){
       let n:import('./typed-syntax.ts').N={k:'ref',name:ref.binding,s:ref.span};
@@ -234,36 +59,34 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
   };
   const answers:string[]=[];
   for(const node of nodes)if(node.statement.kind==='binding'&&node.statement.value.kind==='call'&&node.statement.value.operator==='render_report')answers.push(node.statement.name);
-  const authoring:DariAuthoring={source,title,notes:notes??'',pipeline:pipeline!.body,
-    assets:Object.fromEntries([...assets].map(([name,asset])=>[name,asset.source])),
+  const authoring:DariAuthoring={source,title,
     reports:Object.fromEntries(templates.map(template=>[template.name,source.slice(template.element.span.start.offset,template.element.span.end.offset)])),
-    figures:Object.fromEntries([...figures].map(([name,chart])=>[name,{binding:prepared?name:`figures.${name}`,code:source.slice(chart.span.start.offset,chart.span.end.offset)}])),
+    figures:Object.fromEntries([...figures].map(([name,chart])=>[name,{binding:name,code:source.slice(chart.span.start.offset,chart.span.end.offset)}])),
   };
   stage='figure';
   for(const [key,chart]of figures){
-    unit=prepared?key:`figures.${key}`;collect(()=>{
+    unit=key;collect(()=>{
     const kind=componentKind(chart.name)!;
     only(chart.attrs,kind==='graph'?['name','spec','data','nodes']:['name','spec','data']);
-    if(!chart.selfClosing)fail(`${chart.name} must be self-closing`,chart.span.start.offset);
+    if(!chart.empty)fail(`${chart.name} must be empty`,chart.span.start.offset);
     const spec=requiredRef(chart,'spec'),data=requiredRef(chart,'data');
     const nodeRef=chart.attrs.has('nodes')?requiredRef(chart,'nodes'):undefined;
-    const location=chart.span;const name=prepared?key:`figures.${key}`;
+    const location=chart.span;const name=key;
     const value:Expr={kind:'call',operator:'render_figure',figureKind:kind,args:[refExpr(spec),objectExpr([{key:'data',value:refExpr(data)},...nodeRef?[{key:'nodes',value:refExpr(nodeRef)}]:[]],location)],span:location};
-    nodes.push({statement:{kind:'binding',name,value,span:location,motivation:''},bindings:[...new Set([spec.binding,data.binding,...nodeRef?[nodeRef.binding]:[]])],assets:[]});
+    nodes.push({statement:{kind:'binding',name,value,span:location,motivation:''},bindings:[...new Set([spec.binding,data.binding,...nodeRef?[nodeRef.binding]:[]])]});
     });
   }
   stage='template';
   for(const template of templates){
-    unit=prepared||template.legacy?template.name:`reports.${template.name}`;collect(()=>{
-    if(template.legacy&&names.has(template.name))fail(`Template name conflicts with binding ${template.name}`,template.span.start.offset);
-    names.add(template.name);answers.push(prepared||template.legacy?template.name:`reports.${template.name}`);
+    unit=template.name;collect(()=>{
+    names.add(template.name);answers.push(template.name);
     const inputs:{key:string;value:Expr}[]=[];const bindings=new Set<string>();
     const refs:NonNullable<DraftAsset['references']>={};
     const figureAliases=new Map<string,string>();const figureNumbers=new Map<string,string>();
     let chartNumber=0,tableNumber=0;
     const scan=(el:Element):void=>{
       if(el.name==='UseFigure'){
-        only(el.attrs,['ref','caption']);if(!el.selfClosing)fail('UseFigure must be self-closing',el.span.start.offset);
+        only(el.attrs,['ref','caption']);if(!el.empty)fail('UseFigure must be empty',el.span.start.offset);
         const key=literal(el.attrs,'ref')!;const chart=figures.get(key);
         if(!chart)fail(`Unknown figure ${key}`,el.span.start.offset);
         if(!figureNumbers.has(key))figureNumbers.set(key,componentKind(chart!.name)==='table'?`表 ${++tableNumber}`:`图 ${++chartNumber}`);
@@ -273,20 +96,17 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
     const figureInput=(key:string,location:Span)=>{
       if(!figures.has(key))fail(`Unknown figure ${key}`,location.start.offset);
       let alias=figureAliases.get(key);
-      if(!alias){alias=`named_figure_${figureAliases.size+1}`;figureAliases.set(key,alias);const name=prepared?key:`figures.${key}`;
+      if(!alias){alias=`named_figure_${figureAliases.size+1}`;figureAliases.set(key,alias);const name=key;
         inputs.push({key:alias,value:{kind:'ref',name,span:location}});bindings.add(name);refs[alias]={kind:'figure',span:location,code:name};}
       return alias;
     };
-    const decoded=(value:string,location:Span)=>decodeAuthorText(prepared?value.replaceAll('&','&amp;'):value,(message,offset)=>fail(message,Math.min(location.start.offset+offset,source.length)));
+    const decoded=(value:string,location:Span)=>validateAuthorText(value,(message,offset)=>fail(message,Math.min(location.start.offset+offset,source.length)));
     const attrsOf=(el:Element)=>Object.fromEntries([...el.attrs].map(([key,attr])=>{
+      if(!PUBLIC_AUTHOR_ATTRIBUTES.includes(key))fail(`Unsupported report attribute ${key}`,attr.span.start.offset,attr.span.end.offset);
       if(attr.kind!=='text')fail('Ordinary report attributes must be static strings',attr.span.start.offset,attr.span.end.offset);
-      return [key,decoded((attr as Extract<Attribute,{kind:'text'}>).value,span((attr as Extract<Attribute,{kind:'text'}>).valueStart??attr.span.start.offset))];
+      return [key,decoded((attr as Extract<Attribute,{kind:'text'}>).value,attr.span)];
     }));
     const textNode=(raw:string,location:Span):ReportNode=>{
-      if(!prepared&&raw.startsWith('<!--')){
-        const text=raw.slice(4,-3);if(text.includes('--')||text.endsWith('-'))fail('Invalid report comment',location.start.offset);
-        return {kind:'comment',text,span:location};
-      }
       return {kind:'text',text:decoded(raw,location),span:location};
     };
     const childrenOf=(el:Element):ReportNode[]=>el.children.map((child,i)=>typeof child==='string'?textNode(child,childSpans.get(el)?.get(i)??el.span):lower(child));
@@ -300,7 +120,7 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
       if(el.name==='#branch')return reportElement('#branch',{},childrenOf(el),el.span);
       if(el.name==='UseReport'){
         if(template.format!=='markdown')fail('UseReport is only supported inside Answer',el.span.start.offset);
-        only(el.attrs,['ref']);if(!el.selfClosing)fail('UseReport must be empty',el.span.start.offset);
+        only(el.attrs,['ref']);if(!el.empty)fail('UseReport must be empty',el.span.start.offset);
         const key=literal(el.attrs,'ref')!;
         const target=templates.find(t=>t.name===key&&t.format!=='markdown');
         if(!target)fail('Unknown report '+key,el.span.start.offset);
@@ -310,7 +130,7 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
         return reportElement('a',{'data-oks-ref':alias,href:'#'},[],el.span);
       }
       if(el.name==='FigureRef'){
-        only(el.attrs,['ref']);if(!el.selfClosing)fail('FigureRef must be self-closing',el.span.start.offset);
+        only(el.attrs,['ref']);if(!el.empty)fail('FigureRef must be empty',el.span.start.offset);
         const key=literal(el.attrs,'ref')!;const number=figureNumbers.get(key);
         if(!number)fail(`FigureRef ${key} requires a UseFigure in this Report`,el.span.start.offset);
         return {...reportElement('span',{'data-oks-lit':''},[{kind:'text',text:number!,span:el.span}],el.span),figureReference:figureInput(key,el.span)};
@@ -329,7 +149,7 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
       }
       if(el.name==='UseFigure'){
         only(el.attrs,['ref','caption']);
-        if(!el.selfClosing)fail('UseFigure must be self-closing',el.span.start.offset);
+        if(!el.empty)fail('UseFigure must be empty',el.span.start.offset);
         const key=literal(el.attrs,'ref')!;const alias=figureInput(key,el.span);
         const captionAttr=el.attrs.get('caption');
         const caption=literal(el.attrs,'caption',false);
@@ -340,7 +160,7 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
         fail(`Unsupported report element ${el.name}; use UseFigure(ref = name, caption = "...") with a declared chart or Table`,el.span.start.offset,el.span.end.offset);
       if(componentKind(el.name)!==undefined)fail(`${el.name} must be declared with a figure binding and referenced with UseFigure`,el.span.start.offset,el.span.end.offset);
       if(/^[A-Z]/.test(el.name))fail(`Unknown DARI component ${el.name}`,el.span.start.offset,el.span.end.offset);
-      if(['br','hr'].includes(el.name)&&!el.selfClosing)fail(`${el.name} must be self-closing`,el.span.start.offset);
+      if(['br','hr'].includes(el.name)&&!el.empty)fail(`${el.name} must be empty`,el.span.start.offset);
       return reportElement(el.name,attrsOf(el),childrenOf(el),el.span);
     };
     const tree=lower(template.element);
@@ -353,12 +173,12 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
       throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);
     }
     const name=`@report/${template.name}`;
-    assets.set(name,{...(markdown?{format:'markdown' as const}:{}),...(template.title?{title:template.title}:{}),program,figurePlacement:'before-caption',name,language:'report',source:serializeReport(tree),span:template.span,body:template.span.start,references:refs});
+    assets.set(name,{...(markdown?{format:'markdown' as const}:{}),...(template.title?{title:template.title}:{}),program,figurePlacement:'before-caption',name,source:serializeReport(tree),span:template.span,references:refs});
     const value:Expr={kind:'call',operator:'render_report',args:[literalExpr(name,template.span),objectExpr(inputs,template.span)],span:template.span};
-    nodes.push({statement:{kind:'binding',name:prepared||template.legacy?template.name:`reports.${template.name}`,value,span:template.span,motivation:''},bindings:[...bindings],assets:[]});
+    nodes.push({statement:{kind:'binding',name:template.name,value,span:template.span,motivation:''},bindings:[...bindings]});
     });
   }
   unit=undefined;stage='container';
   if(nodes.length>1024||assets.size>128)fail('DARI exceeds node or asset budget',0);
-  return {...(prepared?{syntax:'dom' as const,declarations:prepared.declarations}:{}),authoring,title,notes,nodes,assets,pipeline:original.span(pipelineFragment.start,pipelineFragment.end),answers,file,...(diagnostics.length?{diagnostics}:{})};
+  return {syntax:'dom' as const,declarations:prepared.declarations,authoring,title,nodes,assets,pipeline:original.span(0,source.length),answers,file,...(diagnostics.length?{diagnostics}:{})};
 }

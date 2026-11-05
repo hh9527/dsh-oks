@@ -93,7 +93,6 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
     const at=(line:number,column:number)=>{
       const offset=original.lines[line-1]+column-1;return original.span(offset,offset);
     };
-    for(const item of asset.program.LitNotOnSpan)diagnostics.push({file,stage:'provenance',asset:asset.name,message:`data-oks-lit is only allowed on span, not ${item.tag}`,span:at(item.line,item.column)});
   }
   const analyze=backend.analyze;
   if(!analyze)throw new Error('Backend does not provide an analysis implementation');
@@ -166,18 +165,6 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
       if(errors.length){diagnostics.push(...errors);return UNKNOWN;}
       if(e.operator==='render_figure'&&isRecord(args[1])){
         try{figureShape={kind:'figure',data:typeOf(args[1].data),...(args[1].nodes===undefined?{}:{nodes:typeOf(args[1].nodes)})};}catch{}
-      }
-      if(e.operator==='sql'){
-        let computed;
-        try{computed=await analyze(ctx);}catch(error){
-          if(signal?.aborted)throw error;
-          const asset=ctx.asset;
-          const diagnostic={file,stage:'sql',asset:asset?.name,message:error instanceof Error?error.message:String(error),span:asset?.span??e.span};
-          throw new DraftSyntaxError(diagnostic.message,diagnostic.span,[diagnostic]);
-        }
-        const columns=(computed.data as {columns:unknown}).columns;
-        queries.push({binding,at:e.span.start,columns,result:{rows:'runtime',columns:'checked',truncated:'runtime'}});
-        return {columns,rows:UNKNOWN,truncated:UNKNOWN};
       }
       if ((unknown(args)&&e.operator!=='data') || e.operator === 'render_figure' || e.operator === 'render_report') {
         deferred.push({binding,operator:e.operator,at:e.span.start,reason:unknown(args)?'Requires runtime data; not executed during checking':'Rendering is deferred until execution'});

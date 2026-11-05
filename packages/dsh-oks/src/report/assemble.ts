@@ -1,7 +1,7 @@
 /** 组装一份报告：校验正文 → 过滤绑定 → 编号 → 渲染 → 归档源码 → 拼页面。
  *
  *  这一层是**纯组装**：读材料、取值都由调用方注入，因此它不碰工作区、可以单测。
- *  它实现 RFC 0008 §4 的几条硬规则：正文引用的每一项都必须有绑定、绑定不能多也不能少；
+ *  报告结构约束：正文引用的每一项都必须有绑定、绑定不能多也不能少；
  *  图与表各自按正文出现顺序编号；被引用的每一项都进来源链（含只出现一次的数值）。
  */
 import { appendNode } from '../results.ts';
@@ -34,7 +34,7 @@ export interface AssembleInput {
   figurePlacement?: 'before-caption';
   bindings: Record<string, ReportBinding>;
   /** 取一个 span 的值：超范围的形状（对象、数组）在这里明确报错，不留给渲染层。 */
-  valueOf: (ref: string, pick: string | undefined) => { value: string } | { error: string };
+  valueOf: (ref: string) => { value: string } | { error: string };
 }
 
 export type AssembleResult = { error: string } | {
@@ -46,8 +46,6 @@ export type AssembleResult = { error: string } | {
   tableCount: number;
   /** 报告正文里「既没有 ref、也没有用 lit 声明」的数字个数（告警）。 */
   NumWithoutSource: number;
-  /** `data-oks-lit` 写在 span 以外的次数（告警）。 */
-  LitNotOnSpan: number;
 };
 
 /** 正文里 figure 引用的出现顺序。 */
@@ -73,10 +71,10 @@ export function assembleReport(input: AssembleInput): AssembleResult {
   }
   // 取值先行：形状不对的绑定在这里就报出来，渲染层只负责填字。
   const values = new Map<string, string>();
-  for (const { ref, pick } of checked.picks) {
-    const resolved = input.valueOf(ref, pick);
+  for (const ref of checked.valueRefs) {
+    const resolved = input.valueOf(ref);
     if ('error' in resolved) return { error: resolved.error };
-    values.set(`${ref}\u0000${pick ?? ''}`, resolved.value);
+    values.set(ref, resolved.value);
   }
   const outline = outlineOf(checked.headings);
   // figure 引用的是**完整展示件**：绑到普通数据材料会画出空图，绑到切片会与 items 不一致，
@@ -91,7 +89,7 @@ export function assembleReport(input: AssembleInput): AssembleResult {
     }
     if (binding.root !== '.data') {
       return {
-        error: `figure 引用的 ${ref} 只能整件展示：将 render_figure 的完整结果绑定到 figure；要取标量就用 span 的 data-oks-pick。`,
+        error: `figure 引用的 ${ref} 只能整件展示：使用 UseFigure 引用完整图表；标量使用 Value(data = expression)。`,
       };
     }
   }
@@ -114,7 +112,7 @@ export function assembleReport(input: AssembleInput): AssembleResult {
     program: input.program,
     figurePlacement: input.figurePlacement,
     outline,
-    valueOf: (ref, pick) => values.get(`${ref}\u0000${pick ?? ''}`) ?? '',
+    valueOf: (ref) => values.get(ref) ?? '',
     inlineOf: (ref) => {
       const binding = input.bindings[ref];
       const label = numbers.get(ref);
@@ -152,5 +150,5 @@ export function assembleReport(input: AssembleInput): AssembleResult {
     outline,
   });
   return { page, origin: archived.origin, assets: archived.assets, items, figureCount, tableCount,
-    NumWithoutSource: checked.NumWithoutSource.length, LitNotOnSpan: checked.LitNotOnSpan.length };
+    NumWithoutSource: checked.NumWithoutSource.length };
 }

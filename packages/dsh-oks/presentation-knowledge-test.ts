@@ -1,7 +1,6 @@
 import {dariLiteral} from './test-dari.ts';
 import { COMPONENT_KINDS } from './src/draft/components.ts';
 import { parseDraft } from './src/draft/document.ts';
-import { parseMarkdownFixture } from './test-markdown.ts';
 import assert from 'node:assert/strict';
 import { DraftRuntime } from './src/draft/runtime.ts';
 class FixtureRuntime extends DraftRuntime { constructor(backend:ConstructorParameters<typeof DraftRuntime>[0], options:ConstructorParameters<typeof DraftRuntime>[1]={}) { super(backend,{...options,parse:(source,file)=>parseDraft(source,file)}); } }

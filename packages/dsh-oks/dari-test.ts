@@ -7,9 +7,8 @@ const source='data text = "中😀";\nreport r = tree! { Report [p [Value(data=t
 const doc=parseDraft(source,file);assert(doc.nodes.length>0);
 assert.throws(()=>parseDraft('data x = jq("x.jq",{});',file));
 const original=new SourceFile(file,'中😀\r\nabc');
-const fragment=original.fragment('p','pipeline',0,original.text.length);
-assert.equal(fragment.locate(Buffer.byteLength('中😀\r\n'),Buffer.byteLength('中😀\r\nabc'),'utf8').span.start.line,2);
-assert.throws(()=>fragment.locate(1,2,'utf8'),/code point/);
+assert.deepEqual(original.position(5),{offset:5,line:2,column:1});
+assert.throws(()=>original.span(5,4),/Invalid original source range/);
 console.log('DARI source coordinates, Unicode and retired jq syntax rejection passed');
 
 for(const [text,value]of [['True',true],['False',false],['None',null]] as const){

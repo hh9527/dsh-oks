@@ -2,7 +2,7 @@ import {embedFigureCsv} from '../chart/svg-data.ts';
 import {runTyped,validateTypedRows} from './typed-runtime.ts';
 import {isBox,typeOf,show,unbox,record,scalar,type Ty} from './typed-types.ts';
 import {SqlWorkspace} from './sql.ts';
-import { projectionCode, projectionError } from './projection.ts';
+import { projectionError } from './projection.ts';
 import { componentSpec } from './components.ts';
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
@@ -25,7 +25,7 @@ import type { ReportBinding } from '../report/assemble.ts';
 import { restoreAssets } from '../report/page.ts';
 import { DraftSyntaxError } from './pipeline.ts';
 import type { Expr, Operator, Span, SourceDiagnostic } from './pipeline.ts';
-import type { DraftAsset, DraftDocument } from './document.ts';
+import type { DraftDocument } from './document.ts';
 import type { CallContext, Computed, DraftBackend, DraftValue, QueryPlan } from './runtime.ts';
 
 /** Stable analysis fixture; execution always captures the real clock independently. */
@@ -96,14 +96,7 @@ function bindingsOf(input: DraftValue): Record<string, ReportBinding> {
   }));
 }
 
-function pickScalar(value: unknown, raw: string | undefined): { value: string } | { error: string } {
-  if (raw && raw !== '.') {
-    if (!/^\.(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+)(?:\.(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+))*$/.test(raw)) return { error: `Invalid scalar pick ${raw}` };
-    for (const key of raw.slice(1).split('.')) {
-      if (!value || typeof value !== 'object' || !Object.hasOwn(value, key)) return { error: `Missing scalar pick ${raw}` };
-      value = (value as Record<string, unknown>)[key];
-    }
-  }
+function scalarText(value: unknown): { value: string } | { error: string } {
   return value === null || ['string', 'number', 'boolean'].includes(typeof value)
     ? { value: value===null?'无数据':typeof value === 'string' ? value : JSON.stringify(value) }
     : { error: 'Template span must select a JSON scalar' };
@@ -129,7 +122,6 @@ export function createDraftBackend(options: {
   const environment = (operator: Operator): unknown => operator === 'query' ? planEnvironment() : operator === 'exec_query' ? queryEnvironment()
     : operator === 'context' ? { clock: 1 }
     : operator === 'time_windows' ? {calendar:'Temporal',version:TIME_WINDOWS_VERSION}
-    : operator === 'sql' ? {sqlite:process.versions.sqlite,node:process.versions.node,version:1}
     : { operator, version: 2 };
   type PreparedQuery = { sql: string; bindings: unknown[]; columns: ResultColumn[]; limit_slot: number };
   const lower = async (intent: unknown, signal?: AbortSignal): Promise<PreparedQuery> => {
@@ -164,28 +156,6 @@ export function createDraftBackend(options: {
     return result;
   };
   const sqlWorkspace=new SqlWorkspace();
-  const checkAsset = async (asset: DraftAsset, signal?: AbortSignal) => {
-    if(asset.language==='report')return;
-    const key = digest({ language: asset.language, source: asset.source, checker: 3 });
-    let checked = checks.get(key);
-    if (!checked) {
-      if(asset.language==='sql'){
-        try{await sqlWorkspace.execute('syntax',asset.source,{},true,signal);checked={};}
-        catch(error){
-          if(signal?.aborted)throw error;
-          const message=error instanceof Error?error.message:String(error);
-          checked=/no such (table|column)/i.test(message)?{}:{error:message};
-        }
-      }
-      checked??={};
-      checks.set(key, checked);
-    }
-    if(checked.error){
-      const diagnostics:SourceDiagnostic[]=[];
-      if(!diagnostics.length)diagnostics.push({file,stage:asset.language,asset:asset.name,message:checked.error.slice(0,1000),span:asset.span});
-      throw new DraftSyntaxError(diagnostics[0].message,diagnostics[0].span,diagnostics);
-    }
-  };
   const validateFigure = (raw: unknown) => {
     if (!isRecord(raw)) throw new Error('render_figure spec must be an object');
     if (raw.kind === 'table') return parseTableSpec(raw);
@@ -195,8 +165,6 @@ export function createDraftBackend(options: {
   };
   const preflight = async (document: DraftDocument, signal?: AbortSignal) => {
     const diagnostics:SourceDiagnostic[]=[...document.diagnostics??[]];
-    const assets=[...document.assets.values()];
-    const assetChecks=Promise.allSettled(assets.map(asset=>checkAsset(asset,signal)));
     const plannedQueries:{intent:unknown;span:Span}[]=[];
     const constants = new Map<string, unknown>();
     const visit = async (expr: Expr): Promise<void> => {
@@ -208,7 +176,7 @@ export function createDraftBackend(options: {
         try {
           const first = expr.args[0] ? constant(expr.args[0], constants) : UNKNOWN;
           const second = expr.args[1] ? constant(expr.args[1], constants) : UNKNOWN;
-          if (['sql', 'render_figure', 'render_report'].includes(expr.operator) && second !== UNKNOWN && !isRecord(second)) throw new Error(`${expr.operator} inputs must be a named object`);
+          if (['render_figure', 'render_report'].includes(expr.operator) && second !== UNKNOWN && !isRecord(second)) throw new Error(`${expr.operator} inputs must be a named object`);
           if (expr.operator === 'render_figure' && second !== UNKNOWN && isRecord(second) && (!Object.hasOwn(second, 'data') || Object.keys(second).some(key => key !== 'data' && key !== 'nodes'))) throw new Error('render_figure inputs must be {data,nodes?}');
           if (expr.operator === 'time_windows' && second !== UNKNOWN) timeWindowOptions(second);
           if (expr.operator === 'query' && first !== UNKNOWN) plannedQueries.push({intent:first,span:expr.span});
@@ -241,16 +209,11 @@ export function createDraftBackend(options: {
           if (value !== UNKNOWN) constants.set(statement.name, value);
         }
       } catch(error) {
-        if(signal?.aborted) {await assetChecks;throw error;}
-        if(!(error instanceof DraftSyntaxError)){await assetChecks;throw error;}
+        if(signal?.aborted)throw error;
+        if(!(error instanceof DraftSyntaxError))throw error;
         const figure=statement.kind==='binding'&&statement.value.kind==='call'&&statement.value.operator==='render_figure';
         diagnostics.push(...(error.diagnostics.length?error.diagnostics:[{file,stage:figure?'figure':'validation',message:error.message,span:error.span}]).map(d=>({...d,...(statement.kind==='binding'?{asset:statement.name}:{})})));
       }
-    }
-    for(const [index,outcome] of (await assetChecks).entries())if(outcome.status==='rejected'){
-      if(signal?.aborted)throw outcome.reason;
-      if(outcome.reason instanceof DraftSyntaxError)diagnostics.push(...outcome.reason.diagnostics);
-      else diagnostics.push({file,stage:assets[index].language==='report'?'template':assets[index].language,asset:assets[index].name,message:outcome.reason instanceof Error?outcome.reason.message:String(outcome.reason),span:assets[index].span});
     }
     // Model-dependent checks need a locally valid document; they never execute business SQL.
     if(!diagnostics.length)for(const query of plannedQueries){
@@ -264,7 +227,6 @@ export function createDraftBackend(options: {
     const check=(work:()=>void,span=ctx.span)=>{try{work();}catch(error){diagnostics.push({file,stage:ctx.operator==='render_figure'?'figure':ctx.operator==='render_report'?'template':'validation',message:error instanceof Error?error.message:String(error),span});}};
     const first=ctx.args[0]?.data,second=ctx.args[1]?.data;
     if(['sql','render_figure','render_report'].includes(ctx.operator)&&ctx.args[1]&&known(second))check(()=>{if(!isRecord(second))throw new Error(`${ctx.operator} inputs must be a named object`);});
-    if(ctx.operator==='sql'&&ctx.asset?.language!=='sql')check(()=>{throw new Error('Missing sql asset');});
     if(ctx.operator==='data'&&ctx.args[1]&&known(second))check(()=>{dataNature(second);});
     if(ctx.operator==='time_windows'&&known(second))check(()=>{timeWindowOptions(second);});
     if(ctx.operator==='render_figure'){
@@ -325,15 +287,7 @@ export function createDraftBackend(options: {
         const value=unbox(second[name]);
         if(value!==null&&!['string','number','boolean'].includes(typeof value))throw new Error('Value.data must select a scalar; construct a summary in pipeline');
       },reference.span);
-      for(const {ref,pick}of program.picks)if(Object.hasOwn(second,ref))check(()=>{
-        let value=second[ref];
-        if(pick&&pick!=='.')for(const key of pick.slice(1).split('.')){
-          if(!known(value)&&!isRecord(value)&&!Array.isArray(value))return;
-          if(value===null||typeof value!=='object'||!Object.hasOwn(value,key))throw new Error(`Missing scalar pick ${pick}`);
-          value=(value as Record<string,unknown>)[key];
-        }
-        if(known(value)){const selected=pickScalar(unbox(value),undefined);if('error' in selected)throw new Error(selected.error);}
-      },ctx.asset.references?.[ref]?.span??ctx.span);
+
     }
     return diagnostics;
   };
@@ -396,7 +350,6 @@ export function createDraftBackend(options: {
       const data = { rows: described.rows, columns: lowered.columns ?? described.columns, truncated };
       return { data, evidence: { ...observed, acquiredAt, model: entry.modelHash, domain: entry.settings.domain, batch: ctx.batch, manifest } };
     }
-    if(ctx.operator==='sql')return {data:await sqlWorkspace.execute(ctx.run,ctx.asset!.source,ctx.args[1].data,false,ctx.signal)};
     if (ctx.operator === 'render_figure') {
       const raw = componentSpec(ctx.args[0].data,ctx.figureKind);
       validateFigure(raw);
@@ -448,7 +401,6 @@ export function createDraftBackend(options: {
       ...(ctx.operator === 'data' || ctx.operator === 'context' ? { data: computed.data } : {}),
       ...(ctx.operator === 'data' ? { nature: dataNature(ctx.args[1]?.data) } : {}),
       ...(['typed_value','relational','relational_one','table_union','typed_table'].includes(ctx.operator)?{method:'pipeline' as const,snip:typeof ctx.args[0]?.data==='string'?ctx.args[0].data:ctx.operator,inputShape:'named' as const,outputs:1}:{}),
-      ...(ctx.operator === 'sql' ? {method:'sql' as const,snip:ctx.asset!.source,snipFile:`${file}#${ctx.asset!.name}`,inputShape:'named' as const,outputs:1} : {}),
       ...(ctx.operator === 'time_windows' ? {method:'pipeline' as const,snip:JSON.stringify({operator:'time_windows',version:TIME_WINDOWS_VERSION,options:ctx.args[1].data}),inputShape:'named' as const,outputs:1} : {}),
       ...(ctx.operator === 'render_figure' ? { spec: (computed.data as {spec:unknown}).spec } : {}),
     };
@@ -464,18 +416,13 @@ export function createDraftBackend(options: {
       }
       bindings=Object.fromEntries(Object.entries(bindings).filter(([name])=>selected.refs.includes(name)));
       const report = assembleReport({ name: 'answer', title, subtitle: null, category: '即时分析', at: resultStamp(), draft: node.draft, motivation: node.motivation, program:selected, figurePlacement:ctx.asset!.figurePlacement, bindings,
-        valueOf: (ref, pick) => pickScalar(bindings[ref]?.value, pick),
+        valueOf: (ref) => scalarText(bindings[ref]?.value),
       });
       if ('error' in report) throw new Error(report.error);
       origin = restoreAssets(report.origin, report.assets);
-      const picks=Object.entries(ctx.asset!.references!).filter(([ref,reference])=>reference.kind==='value'&&selected.refs.includes(ref)).map(([ref])=>({ref,pick:undefined as string|undefined}));
-      const reportValues=Object.fromEntries(picks.map(({ref,pick})=>{
-        let value=bindings[ref].value;
-        if(pick&&pick!=='.')for(const key of pick.slice(1).split('.'))value=(value as Record<string,unknown>)[key];
-        const path=pick&&pick!=='.'?pick.slice(1).split('.').map(key=>/^\d+$/.test(key)?Number(key):key):[];
-        const code=ctx.asset!.references?.[ref]?.code??projectionCode(ref,path);
-        return [code,value];
-      }));
+      const reportValues=Object.fromEntries(Object.entries(ctx.asset!.references!)
+        .filter(([ref,reference])=>reference.kind==='value'&&selected.refs.includes(ref))
+        .map(([ref,reference])=>[reference.code??ref,bindings[ref].value]));
       return { data: { assets: report.assets, items: report.items }, reportValues, sources: [{ origin, at: [], path: [], delivery: { html: report.page, title } }] };
     }
     const evidence = computed.evidence as { display?: { kind: 'chart' | 'table'; content: string } } | undefined;
@@ -485,7 +432,6 @@ export function createDraftBackend(options: {
   const analyze = async (ctx:CallContext):Promise<Computed> => {
     if(ctx.operator==='context')return contextValue(ANALYSIS_CONTEXT_TIME);
     if(['typed_value','relational','relational_one','table_union','typed_table'].includes(ctx.operator))return runTyped(ctx,sqlWorkspace,true);
-    if(ctx.operator==='sql')return {data:await sqlWorkspace.execute(ctx.run,ctx.asset!.source,ctx.args[1]?.data,true,ctx.signal)};
     // These implementations only compute parameter values or transform an intent into a schema/plan.
     if(['data','time_windows','query'].includes(ctx.operator))return parameterValue(ctx);
     throw new DraftSyntaxError('Operator is not available during analysis: '+ctx.operator,ctx.span);

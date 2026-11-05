@@ -11,38 +11,34 @@ const knowledge={executorFor(){queries++;throw new Error('No SQL allowed');}} as
 const backend=createDraftBackend({knowledge,entry,file:'analysis.dari',contextZone:()=>({kind:'resolved',timeZone:'Asia/Shanghai'})});
 const execute=backend.execute;backend.execute=ctx=>{if(ctx.operator==='context')contexts++;return execute(ctx);};
 const runtime=new DraftRuntime(backend,{file:'analysis.dari'});
-const source=`<Dari title="归档测试">
-<Notes>保留原始口径与注释</Notes>
-<Pipeline>
+const source=`// 保留原始口径与注释
 // 同一问题的探索与呈现
-ctx <- context();
-rows <- data([{label:"甲",n:3}]);
-spec <- {x:"label",value:"n"};
-badSpec <- {columns:["missing"]};
-</Pipeline>
-<Asset language="sql" name="unused.sql">SELECT '</script>&]]>中文🙂' AS text</Asset>
-<Figures>
-<ColumnChart name="used" spec={spec} data={rows} />
-<ColumnChart name="unused" spec={spec} data={rows} />
-<Table name="bad" spec={badSpec} data={rows} />
-</Figures>
-<Report name="answer"><article><h1>报告</h1><p><Value data={rows[0].n}/></p><UseFigure ref="used" caption="说明"/></article></Report>
-<Report name="other"><article><p>独立报告</p><Value data={ rows [ 0 ] ["n"] }/></article></Report>
-</Dari>`;
-const read=(current=source)=>runtime.read('reports.answer',current);
+ data ctx = context();
+ data rows = table([{label:"甲",n:3}],{kind:"example"});
+ data first = select_one({from:{r:rows},fields:r=>({n:r.r.n}),order_by:o=>[asc(o.n)],limit:1});
+ data payload = "</script>&]]>中文🙂";
+ data spec = {x:"label",value:"n"};
+ data badSpec = {columns:["missing"]};
+ figure used = tree! { ColumnChart(spec=spec,data=rows) };
+ figure unused = tree! { ColumnChart(spec=spec,data=rows) };
+ figure bad = tree! { Table(spec=badSpec,data=rows) };
+ report answer = tree! { Report(title="归档测试") [h1 ["报告"],p [Value(data=first?.n)],UseFigure(ref=used,caption="说明")] };
+ report other = tree! { Report [p ["独立报告"],Value(data=first?.n)] };
+`;
+const read=(current=source)=>runtime.read('answer',current);
 try{
- const first=await runtime.run(source);assert.equal(first.status,'complete');assert.equal(first.outputs.get('figures.bad')?.status,'failed');
+ const first=await runtime.run(source);assert.equal(first.status,'complete');assert.equal(first.outputs.get('bad')?.status,'failed');
  const before=contexts,retained=read(),data=retained.value.data as any;
  assert.deepEqual(Object.keys(data).sort(),['context','dari','version']);
- assert.deepEqual(data.dari.values,{'rows[0].n':3});
+ assert.deepEqual(data.dari.values,{'first?.n':3});
  assert.equal(data.context.bindings,undefined);
  assert.equal(data.version,1);assert.equal(data.context.model.hash,'fixture-model');
  assert.equal(data.context.run,first.id);assert.equal(data.context.batch,first.batch);assert.equal(data.context.sourceHash,first.sourceHash);
  assert.equal(data.context.captures.length,1);assert.deepEqual(data.context.captures[0].value,first.outputs.get('ctx')!.value!.data);
- assert.equal(data.dari.source,source);assert.equal(data.dari.notes,'保留原始口径与注释');assert.ok(data.dari.pipeline.includes('// 同一问题'));
- assert.ok(data.dari.assets['unused.sql'].includes('</script>&]]>中文🙂'));assert.equal(Object.keys(data.dari.assets).length,1);
+ assert.equal(data.dari.source,source);assert.ok(data.dari.source.includes('// 同一问题'));
+ assert.ok(data.dari.source.includes('</script>&]]>中文🙂'));
  assert.ok(data.dari.reports.other.includes('独立报告'));
- assert.equal(data.dari.figures.unused.code,'<ColumnChart name="unused" spec={spec} data={rows} />');
+ assert.equal(data.dari.figures.unused.code.trim(),'ColumnChart(spec=spec,data=rows)');
  assert.deepEqual(data.dari.figures.unused.data.rows,[{label:'甲',n:3}]);
  assert.equal(data.dari.figures.bad.status,'failed');assert.match(data.dari.figures.bad.error,/missing/);assert.equal(data.dari.figures.bad.data,undefined);
  const page=retained.value.sources[0].delivery!.html,parsed=readReportPage(page);assert.ok(!('error' in parsed));
@@ -54,7 +50,7 @@ try{
  assert.equal((page.match(/id="dari-source"/g)||[]).length,1);assert.equal((page.match(/id="dari-context"/g)||[]).length,1);assert.equal((page.match(/id="dari-values"/g)||[]).length,0);
  assert.deepEqual(parseDraft(parsed.source).authoring,parseDraft(source).authoring);
  assert.equal(queries,0);assert.equal(contexts,before);assert.equal(read().value.sources[0].delivery!.html,page);
- assert.equal((runtime.read('reports.other',source).value.data as any).context.run,first.id);
+ assert.equal((runtime.read('other',source).value.data as any).context.run,first.id);
  const projection=createSelector('{context.{batch,captures},dari.figures.unused.data.rows}')(data) as any;
  assert.deepEqual(projection.dari.figures.unused.data.rows,[{label:'甲',n:3}]);
  const changed=source.replace('保留原始口径与注释','新的口径');assert.equal(read(changed).stale,true);assert.equal((read(changed).value.data as any).dari.source,source);
@@ -64,10 +60,10 @@ try{
  assert.ok(reused.context.acquisitions.some((a:any)=>a.operator==='context'&&a.status==='cached'&&a.fromRun===first.id));
  const third=await runtime.run(changed,{refresh:true});assert.notEqual(third.batch,first.batch);assert.equal(contexts,before+1);
  assert.equal((read(changed).value.data as any).context.batch,third.batch);
- const noClock=source.replace('ctx <- context();','');await runtime.run(noClock);assert.deepEqual((read(noClock).value.data as any).context.captures,[]);
+ const noClock=source.replace('data ctx = context();','');await runtime.run(noClock);assert.deepEqual((read(noClock).value.data as any).context.captures,[]);
  assert.ok(page.includes(REPORT_METADATA_OPEN));
  assert.equal(parsed.source,first.archive!.dari.source);assert(!page.includes('oks-metadata'));assert(page.includes(REPORT_SOURCE_OPEN));assert(!page.includes('id="dari-values"'));
- const malformedBody=page.slice(0,page.indexOf('</head>'))+'</head><body><not-xml> & 未闭合';
+ const malformedBody=page.slice(0,page.indexOf('</head>'))+'</head><body><unclosed> & 未闭合';
  assert.deepEqual(readReportPage(malformedBody),parsed,'回读不解析 HTML 正文');
  assert.deepEqual(readReportPage(withReportArchive(malformedBody,first.archive!)),parsed);
  assert.match((readReportPage('<html/>') as {error:string}).error,/元数据/);
@@ -77,12 +73,12 @@ try{
  assert.throws(()=>withReportArchive('<html/>',first.archive!),/元数据/);
  const invalidPage=withReportArchive(page,{...first.archive!,version:2} as any);
  assert.match((readReportPage(invalidPage) as {error:string}).error,/版本/);
- const failedReference=source.replace('<p>独立报告</p><Value data={ rows [ 0 ] ["n"] }/>','<UseFigure ref="bad"/>');
+ const failedReference=source.replace('p ["独立报告"],Value(data=first?.n)','UseFigure(ref=bad)');
  const failedRun=await runtime.run(failedReference);assert.equal(failedRun.status,'complete',failedRun.error);
- assert.equal(failedRun.outputs.get('reports.other')?.status,'blocked');
- assert.equal((runtime.read('reports.answer',failedReference).value.data as any).dari.figures.bad.status,'failed');
+ assert.equal(failedRun.outputs.get('other')?.status,'blocked');
+ assert.equal((runtime.read('answer',failedReference).value.data as any).dari.figures.bad.status,'failed');
  const huge=source.replace('保留原始口径与注释','长'.repeat(40000)),limited=new DraftRuntime(backend,{maxOutputBytes:120000});
- const over=await limited.run(huge);assert.equal(over.archive,undefined);assert.match(over.outputs.get('reports.other')!.error!,/budget/);
- assert.throws(()=>limited.read('reports.other',huge),/budget/);limited.dispose();
- console.log('报告归档：整稿恢复、全部资产和图表、失败分支、上下文缓存与刷新、固定标记回读、安全转义、投影及预算通过');
+ const over=await limited.run(huge);assert.equal(over.archive,undefined);assert.match(over.outputs.get('other')!.error!,/budget/);
+ assert.throws(()=>limited.read('other',huge),/budget/);limited.dispose();
+ console.log('报告归档：整稿恢复、图表、失败分支、上下文缓存与刷新、固定标记回读、安全转义、投影及预算通过');
 }finally{runtime.dispose();}

@@ -47,7 +47,7 @@ try{
  for(const [body,expected]of [
   ['UseFigure(ref=one,caption=rows)',/static strings/],
   ['UseFigure(ref=one,other="x")',/Unknown attribute/],
-  ['UseFigure(ref=one) ["child"]',/self-closing/],
+  ['UseFigure(ref=one) ["child"]',/must be empty/],
   ['UseFigure()',/Missing ref/],
   ['UseFigure(ref=missing)',/Undefined or forward figure/],
   ['UseFigure(ref=rows)',/figure binding/],

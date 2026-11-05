@@ -43,8 +43,6 @@ try{
  decide=async()=> 'rejected';r=await call();assert.equal(r.execution,'not performed');assert.equal(executions,2,'Prior approval cannot authorize a cached result read');
  const invalid=source.replace('limit:5','limit:0');writeFileSync(path,invalid);const beforeInvalid=requests;
  r=await call();assert.equal(r.status,'invalid');assert.equal(requests,beforeInvalid);assert.equal(executions,2);writeFileSync(path,source);
- writeFileSync(path,'<Dari><Pipeline>facts <-query({limit:5});</Pipeline><Report name="r"><article><p data-oks-lit>Total 42</p></article></Report></Dari>');
- const beforeProvenance=requests;r=await call();assert.equal(r.ok,false);assert(r.diagnostics.some((d:any)=>d.stage==='provenance'));assert.equal(requests,beforeProvenance);assert.equal(executions,2);writeFileSync(path,source);
  const controller=new AbortController();
  decide=async()=>{controller.abort();return 'allowed-once';};
  await assert.rejects(call({src},{...caller,signal:controller.signal}));assert.equal(executions,2);
