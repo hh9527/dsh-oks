@@ -4,6 +4,7 @@
 图表和自包含 HTML 报告通过宿主附件交付，生命周期由宿主管理。
 
 - `packages/dsh-oks/`：知识工具、只读取数、DARI 运行与附件导出。
+- `packages/dsh-markdown-message/`：Web 客户端通用能力，把 host 插件推送的 Markdown 消息渲染成对话卡片。
 - `rfc/`：设计与变更记录。
 - `justfile`：构建和安装 OKS profile。
 

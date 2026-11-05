@@ -18,8 +18,17 @@ class InstallTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="oks-install-") as tmp:
             root = Path(tmp)
             repo = root / "source repo"
-            shutil.copytree(REPO, repo, ignore=shutil.ignore_patterns(
-                ".git", "node_modules", "target", "lib", "__pycache__"))
+            base_ignore = shutil.ignore_patterns(
+                ".git", "node_modules", "target", "__pycache__")
+
+            def ignore(directory, names):
+                # Only the plugin build output is generated; the client package ships lib/.
+                ignored = set(base_ignore(directory, names))
+                if Path(directory).name == "dsh-oks" and Path(directory).parent.name == "packages":
+                    ignored |= {name for name in names if name == "lib"}
+                return ignored
+
+            shutil.copytree(REPO, repo, ignore=ignore)
             tools = root / "bin"
             tools.mkdir()
             stub = '''#!/usr/bin/env python3
@@ -80,7 +89,9 @@ elif args[0]=='plugin':
             manifest = json.loads((target / "profiles/web/package.json").read_text())
             published = target / "packages/dsh-oks"
             self.assertEqual(manifest['dependencies']['@local/dsh-oks'], f"link:{published}")
-            self.assertEqual(manifest['dsh']['profile']['bundles'], ['@deepseek-ai/dsh-web-app'])
+            self.assertEqual(manifest['dsh']['profile']['bundles'], ['@deepseek-ai/dsh-web-app', '@local/dsh-markdown-message'])
+            self.assertEqual(manifest['dependencies']['@local/dsh-markdown-message'], f"link:{target / 'packages/dsh-markdown-message'}")
+            self.assertTrue((target / 'packages/dsh-markdown-message/lib/client.js').exists())
             self.assertNotIn('scripts', json.loads((published / 'package.json').read_text()))
             self.assertFalse((repo / "packages/dsh-oks/lib").exists())
             patch = (target / "profiles/web/cordis.patch.yml").read_text()

@@ -10,8 +10,15 @@ let release:(()=>void)|undefined;
 const columns=[{name:'n',type:'Int',nullable:false}];
 const entry={root,modelHash:'test',settings:{workspaceRoot:root,domain:'test',queryMaxRows:200},runner:{async send(){return {ok:{accepted:true,queries:[{sql:'select n',bindings:[5],limit_slot:0,columns}]}};}}};
 const knowledge={ensureWorkspace:()=>entry,executorFor:()=>({executor:{async send(){executions++;if(release)await new Promise<void>(resolve=>{release=resolve;});return {rows:[{n:executions}],columns:['n'],truncated:false};},dispose(){}}})};
-const exec={agent:{session:{id:'one'}}} as any;
-const other={agent:{session:{id:'two'}}} as any;
+const sessionFor=(id:string)=>{
+ const session:any={id,events:[{type:'step/start',seq:0,data:{turn:1,step:1}}],delivered:[] as any[]};
+ session.snapshotEvents=()=>session.events;
+ session.append=(type:string,data:unknown,options:unknown)=>{session.delivered.push({type,data,options});return{seq:session.events.length+1};};
+ return session;
+};
+const agentFor=(id:string)=>{const agent:any={session:sessionFor(id),injected:[] as any[]};agent.inject=(message:unknown)=>agent.injected.push(message);return agent;};
+const exec={agent:agentFor('one')} as any;
+const other={agent:agentFor('two')} as any;
 const timeContext={zones:new Map([[exec.agent.session,{kind:'resolved',timeZone:'UTC'}],[other.agent.session,{kind:'resolved',timeZone:'UTC'}]])};
 const drafts=createDraftTools({knowledge:knowledge as any,timeContext:timeContext as any,attachments:()=>testAttachments(root)});
 const call=async(name:string,args:object,caller=exec)=>drafts.tools.find(t=>t.name===name)!.execute(args as never,caller) as Promise<any>;
@@ -32,6 +39,10 @@ try {
  assert.equal(first.ok,true,JSON.stringify(first));assert.equal(executions,1);
  assert(first.answer.embedded.startsWith('1\n\n'+now));assert(first.answer.embedded.includes('!['));assert(first.answer.embedded.includes('full.report.html'));
  assert.equal(first.data,undefined);assert.equal(first.figures,undefined);assert.equal(first.reports,undefined);
+ assert.equal(exec.agent.injected.length,1);
+ assert.equal(exec.agent.injected[0].role,'user');
+ assert.equal(exec.agent.injected[0].source.kind,'tool-generated-markdown');assert.equal(exec.agent.injected[0].source.label,'dsh-oks');
+ assert.equal(exec.agent.injected[0].content[0].text,first.answer.embedded);
  now+=60000;
  const cached=await call('dari_resolve',{src:absolute});
  assert.equal(cached.batch,first.batch);assert.equal(cached.counts.executed,0);assert.equal(executions,1);assert.equal(cached.answer.embedded.split('[full]')[0],first.answer.embedded.split('[full]')[0]);

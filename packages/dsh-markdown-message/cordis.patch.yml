@@ -1,0 +1,5 @@
+# 仅承载 Web 客户端能力；宿主侧为空插件。
+- insert:
+    - id: markdown-message
+      name: '@local/dsh-markdown-message'
+      config: {}

@@ -54,7 +54,7 @@ answer tree! { Answer [p [Value(data=summary?.n)]] };`);
  const modern=await resolve();assert.equal(modern.ok,true,JSON.stringify(modern));assert.equal(modern.answer.embedded,'5');assert.equal(modern.counts.failed,0,'unused cardinality guard is not executed');
  write('data big = '+JSON.stringify('x'.repeat(20000))+';answer tree! { Answer [p [Value(data=big)]] };');
  const large=await resolve();assert.equal(large.answer.embedded,'x'.repeat(20000));
- const tool=drafts.tools.find(t=>t.name==='dari_resolve')!;assert.equal((tool.output.render as Function)({},large)[0].text,large.answer.embedded);
+ const tool=drafts.tools.find(t=>t.name==='dari_resolve')!;{const receipt=(tool.output.render as Function)({},large)[0].text;assert.match(receipt,/^Succeed/);assert(!receipt.includes('large.svg'),"the answer body lives in the delivered message");}
  write('data value = 42;answer tree! { Answer [p [Value(data=value)]] };');
  assert.equal((await resolve({agent:{session:{id:'other'}}})).answer.embedded,'42');
  rmSync(physical);assert.equal(readFileSync(imagePath,'utf8'),original);assert.equal(readFileSync(reportPath,'utf8'),archived);

@@ -32,6 +32,20 @@ const assertKeys = (args: unknown, keys: string[]) => {
   if (!isRecord(args) || Object.keys(args).some(key => !keys.includes(key))) throw new Error(`Expected only ${keys.join(', ')}`);
 };
 
+/** Queue the resolved Answer as model-facing context for the next step, which the conversation surfaces to the user too. */
+const deliverAnswer = (agent: unknown, text: string,
+): { ok: true; messageId: string } | { ok: false; error: string; unsupported?: boolean } => {
+  const target = agent as { inject?(message: unknown): void } | undefined;
+  if (typeof target?.inject !== 'function') return { ok: false, error: 'agent context injection unavailable', unsupported: true };
+  try {
+    const messageId = randomUUID();
+    target.inject({ id: messageId, role: 'user', source: { kind: 'tool-generated-markdown', label: 'dsh-oks' }, content: [{ type: 'text', text }] });
+    return { ok: true, messageId };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+};
+
 type RecordState = { contextTime:number; runtime: DraftRuntime; zone: ContextTimeZone; touched: number; active: boolean };
 
 export function createDraftTools(options: {
@@ -191,7 +205,7 @@ export function createDraftTools(options: {
     },
     {
       name:'dari_resolve',
-      description:'Check and execute a DARI source, then return only its unique Answer as ready-to-use Markdown. Accepts only src. First copy the entire returned Markdown verbatim into the user-visible reply. Do not summarize, rewrite, omit content, alter image/report links, or wrap it in a code block. Any additional commentary must follow separately and must not replace the returned Answer. Figures and reports are published through UseFigure/UseReport in the selected Answer branches. Executes Answer dependencies and reuses cached computations; unused bindings do not run. Failures remain concise tool errors. requireRunApproval controls native approval; dari_renew_context starts a fresh acquisition batch.',
+      description:'Check and execute a DARI source, then deliver its unique Answer into the conversation as a visible message that both the user and you can read, and return only a short receipt naming that message. Accepts only src. Do not repeat, summarize or rewrite the Answer in your reply, and do not wrap it in a code block. Only when the receipt explicitly says delivery failed must you forward the returned Markdown verbatim. Additional commentary belongs in a separate message and never replaces the Answer. Figures and reports are published through UseFigure/UseReport in the selected Answer branches. Executes Answer dependencies and reuses cached computations; unused bindings do not run. Failures remain concise tool errors. requireRunApproval controls native approval; dari_renew_context starts a fresh acquisition batch.',
       parameters:{type:'object',properties:{src:{type:'string'}},required:['src'],additionalProperties:false},
       output:{schema:OBJECT,render:(_args:unknown,value:unknown)=>[{type:'text',text:renderResolveReceipt(value)}]},
       async execute(args:{src?:unknown},exec:ToolExec){
@@ -242,7 +256,9 @@ export function createDraftTools(options: {
             const active=new Set(selectReport(answerAsset.program!,value.items).refs);
             for(const [alias,reference]of Object.entries(answerAsset.references??{}))if(active.has(alias)&&(reference.kind==='figure'||reference.kind==='report'))presentations[alias]=(await publishOnce(reference.code!)).embedded;
             const answer={embedded:renderMarkdownAnswer(answerAsset.program!,value.items,presentations)};
-            return {ok:true,run:run.id,sourceHash:run.sourceHash,batch:run.batch,counts:base.counts,approval:approvalStatus,answer};
+            const delivery=deliverAnswer(exec.agent,answer.embedded);
+            return {ok:true,run:run.id,sourceHash:run.sourceHash,batch:run.batch,counts:base.counts,approval:approvalStatus,answer,
+              ...(delivery.ok||delivery.unsupported?{}:{deliveryNote:`交付失败（${delivery.error}）。请把下面的 Answer 原文完整转发给用户。`})};
           }finally{record.active=false;record.touched=Date.now();if(closed)record.runtime.dispose();}
         }finally{pending.delete(key);}
       },

@@ -13,13 +13,13 @@
 | `oks_info({ids})` | 批量读取精确知识点 |
 | `oks_read({path,offset?,limit?})` | 只读内置手册；path 为 oks://help/ 时列出手册 |
 | `dari_check({src})` | 全稿检查，返回列类型和诊断；不执行业务 SQL |
-| `dari_resolve({src})` | 固定交付唯一 Answer Markdown；批准由配置控制 |
+| `dari_resolve({src})` | 把唯一 Answer 作为会话消息交付，回执只给消息 id 与计数；批准由配置控制 |
 | `dari_renew_context({src})` | 更新时间基准和采集批次，使旧结果失效；不执行查询 |
 
 
 领域摘要进入 KA 的固定系统上下文，词汇表进入独立 VA 的固定系统上下文，主 agent 保留工作方法和图表能力。预制工具完整返回其结果，输出规模由查询范围、分页和工具内部结构控制。
 
-agent 先设计和检查分析稿，使用 `dari_resolve({src})` 返回唯一 Answer 的 Markdown。只执行 Answer 依赖，运行批准由配置控制。内部宿主运行器保留执行、缓存、来源和呈现能力。
+agent 先设计和检查分析稿，使用 `dari_resolve({src})` 把唯一 Answer 作为消息交付到会话。只执行 Answer 依赖，运行批准由配置控制。内部宿主运行器保留执行、缓存、来源和呈现能力。
 
 ## 知识子会话
 
@@ -94,7 +94,7 @@ answer tree! { Answer [
 
 运行以有类型计划生成参数化 SQL，在每份分析稿的临时 SQLite 中执行；临时数据库闲置 15 分钟后回收。每个结果集保留 schema；查询与派生计算按依赖缓存，缓存命中也能恢复临时表。select_one 的动态多行约束会在运行时拒绝。截断输入、schema 漂移、值类型不符、资源超限均明确失败。
 
-图表写成 `figure chart = tree! { BarChart(spec = spec, data = result) };`，检查器验证列名和数值映射。报告通过 `UseFigure(ref = chart, caption = "说明")` 编排，caption 可选。绑定不可变，先定义后引用。正常交付直接使用返回的 Answer Markdown；UseFigure 生成图表嵌入，UseReport 生成可点击的报告链接。简单问数、简单报表各一次 resolve；探索任务每步一次，保留原稿过程并替换 Answer 为增量结果。解读数据后的观点在对话中补充，除非用户要求，不重新生成报告或 Answer。报告保留源码、上下文及执行元数据；SVG 内含最终绘图输入 CSV 和紧凑 JSON spec，表格与正文直接从 HTML 读取。
+图表写成 `figure chart = tree! { BarChart(spec = spec, data = result) };`，检查器验证列名和数值映射。报告通过 `UseFigure(ref = chart, caption = "说明")` 编排，caption 可选。绑定不可变，先定义后引用。Answer 作为消息进入对话；UseFigure 生成图表嵌入，UseReport 生成可点击的报告链接。简单问数、简单报表各一次 resolve；探索任务每步一次，保留原稿过程并替换 Answer 为增量结果。解读数据后的观点在对话中补充，除非用户要求，不重新生成报告或 Answer。报告保留源码、上下文及执行元数据；SVG 内含最终绘图输入 CSV 和紧凑 JSON spec，表格与正文直接从 HTML 读取。
 
 ## 知识发现
 
@@ -127,7 +127,7 @@ unit 为 year/quarter/month/week/day，count 为 1..50。周从周一开始，�
 
 dari_check 返回 queries（模型查询及关系节点的列）、types（各绑定的推导类型）、diagnostics 和 deferred。query columns 在本次检查内参与所有后续类型推导；检查不读业务数据库，不把未知事实折叠成空表、零或 None。业务值决定下一次 query 的写法会被拒绝。
 
-dari_resolve 重新检查当前稿件，冻结检查与执行共享的时间上下文，按配置申请本次用户批准后执行。修改后处理不会重新采集未变化的 query；dari_renew_context({src}) 创建新采集上下文。运行期验证真实 schema、值域、来源与单行守卫，只返回唯一 Answer 的 Markdown，图表和报告通过其 UseFigure/UseReport 引用交付。
+dari_resolve 重新检查当前稿件，冻结检查与执行共享的时间上下文，按配置申请本次用户批准后执行。修改后处理不会重新采集未变化的 query；dari_renew_context({src}) 创建新采集上下文。运行期验证真实 schema、值域、来源与单行守卫，把唯一 Answer 作为消息交付到会话，图表和报告通过其 UseFigure/UseReport 引用交付。
 
 ## 工作区与运行配置
 
@@ -224,7 +224,7 @@ DARI 手册已包含一行一图的能力索引和必填 spec 键，由实际图
 - `oks://help/*.md`：独立的只读文本手册
 - 图表和报告由宿主附件服务持久保存，回执返回附件引用与呈现指引
 
-agent 可检查稿件并通过 dari_resolve 运行；默认直接运行，配置 requireRunApproval=true 时先申请批准；dari_resolve 仅接收 src，固定返回可直接交付的 Answer Markdown。
+agent 可检查稿件并通过 dari_resolve 运行；默认直接运行，配置 requireRunApproval=true 时先申请批准；dari_resolve 仅接收 src，把可直接交付的 Answer 作为消息推入会话。
 
 ### 已载入手册与按需分册
 
@@ -236,6 +236,12 @@ workflow 负责工作顺序和知识导航，dari 负责语言、工具、类型
 
 文本读取：`oks_read` 与标准 read 使用相同窗口规则：默认/最多 2000 行，单行保留 2000 字符并标注截断，正文上限 50 KiB，返回续读 offset；偏移越界报错。本地目录由宿主内置文件工具列出。
 
+
+### Answer 交付
+
+dari_resolve 把唯一 Answer 作为一条 user 消息推入会话：`source.kind` 为 `tool-generated-markdown`，`label` 为 `dsh-oks`，正文即 Answer Markdown。工具回执只给消息 id、run 和计数，不再复制正文。模型在下一步读到这条消息，回复中不重复它；交付失败时回执退回完整 Answer 并要求转发。
+
+对话流里的可见卡片由独立的客户端包 [@local/dsh-markdown-message](../dsh-markdown-message/README.md) 提供：它认领该 source kind 并渲染淡色卡片与来源标签。没有该客户端包时，消息仍是模型可见的上下文，但界面按默认策略隐藏。
 
 ### 报告归档
 

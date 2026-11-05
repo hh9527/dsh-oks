@@ -60,7 +60,7 @@ install-profile:
     command -v pnpm >/dev/null 2>&1 || fail '构建与安装需要 pnpm'
     BUILD_DIR="$(mktemp -d "${TMPDIR:-$HOME/.cache/tmp}/oks-profile.XXXXXX")"
     trap 'rm -rf -- "$BUILD_DIR"' EXIT
-    tar -C "$REPO_DIR" --exclude=.git --exclude=node_modules --exclude=target --exclude=lib -cf - . | tar -C "$BUILD_DIR" -xf -
+    tar -C "$REPO_DIR" --exclude=.git --exclude=node_modules --exclude=target --exclude='./packages/dsh-oks/lib' -cf - . | tar -C "$BUILD_DIR" -xf -
     (
       cd "$BUILD_DIR"
       pnpm install --frozen-lockfile --ignore-scripts || exit "$?"
@@ -81,6 +81,21 @@ install-profile:
     writeFileSync(join(target,'package.json'),JSON.stringify(manifest,null,2)+'\n');
     JS
     (cd "$PACKAGE_DIR" && pnpm install --prod --ignore-scripts) || fail '插件运行依赖安装失败'
+
+    # 客户端包：通用 Web 能力，作为 profile bundle 全局加载；内容为手写产物，无需构建。
+    CLIENT_PACKAGE='@local/dsh-markdown-message'
+    CLIENT_DIR="$DSH_HOME/packages/dsh-markdown-message"
+    BUILD_CLIENT="$BUILD_DIR/packages/dsh-markdown-message"
+    [ -f "$BUILD_CLIENT/package.json" ] || fail '缺少客户端包 dsh-markdown-message'
+    mkdir -p "$CLIENT_DIR"
+    BUILD_CLIENT="$BUILD_CLIENT" CLIENT_DIR="$CLIENT_DIR" node --input-type=module <<'JS'
+    import {readFileSync,writeFileSync,cpSync} from 'node:fs';
+    import {join} from 'node:path';
+    const source=process.env.BUILD_CLIENT, target=process.env.CLIENT_DIR;
+    const manifest=JSON.parse(readFileSync(join(source,'package.json'),'utf8'));
+    for(const name of ['lib','cordis.patch.yml'])cpSync(join(source,name),join(target,name),{recursive:true});
+    writeFileSync(join(target,'package.json'),JSON.stringify(manifest,null,2)+'\n');
+    JS
 
     # ── 2. profile ───────────────────────────────────────────────────────────────
     if [ ! -f "$MANIFEST" ]; then
@@ -111,16 +126,40 @@ install-profile:
         writeFileSync(file, `${JSON.stringify(manifest, undefined, 2)}\n`, { mode: 0o600 });
       ' || fail "写 $MANIFEST 失败"
     fi
+    # 客户端能力包必须进 bundles：客户端模块只扫描 profile 层的 loader entry，
+    # preset 里挂载的插件不会被发现。
+    if MANIFEST="$MANIFEST" CLIENT_PACKAGE="$CLIENT_PACKAGE" node --input-type=module -e '
+      import { readFileSync } from "node:fs";
+      const manifest = JSON.parse(readFileSync(process.env.MANIFEST, "utf8"));
+      process.exit((manifest.dsh?.profile?.bundles ?? []).includes(process.env.CLIENT_PACKAGE) ? 0 : 1);
+    '; then
+      say "bundles 已含 $CLIENT_PACKAGE"
+    else
+      say "把 $CLIENT_PACKAGE 加进 bundles"
+      MANIFEST="$MANIFEST" CLIENT_PACKAGE="$CLIENT_PACKAGE" node --input-type=module -e '
+        import { readFileSync, writeFileSync } from "node:fs";
+        const file = process.env.MANIFEST;
+        const manifest = JSON.parse(readFileSync(file, "utf8"));
+        const profile = manifest.dsh?.profile ?? {};
+        const bundles = [...(profile.bundles ?? []), process.env.CLIENT_PACKAGE];
+        manifest.dsh = { ...(manifest.dsh ?? {}), profile: { ...profile, bundles } };
+        writeFileSync(file, `${JSON.stringify(manifest, undefined, 2)}\n`, { mode: 0o600 });
+      ' || fail "写 $MANIFEST 失败"
+    fi
 
     # ── 3. 依赖 ──────────────────────────────────────────────────────────────────
     # 先写依赖、再 install：install 在跑之前就把这份清单读成 before，reconcile 因此不会把这个
     # 带 dsh.bundle 的包自动升成 profile bundle 层。
-    say "把 $PACKAGE 链接到发布目录 $PACKAGE_DIR"
-    MANIFEST="$MANIFEST" PACKAGE="$PACKAGE" PACKAGE_DIR="$PACKAGE_DIR" node --input-type=module <<'JS'
+    say "把 $PACKAGE 和 $CLIENT_PACKAGE 链接到发布目录"
+    MANIFEST="$MANIFEST" PACKAGE="$PACKAGE" PACKAGE_DIR="$PACKAGE_DIR" CLIENT_PACKAGE="$CLIENT_PACKAGE" CLIENT_DIR="$CLIENT_DIR" node --input-type=module <<'JS'
     import {readFileSync,writeFileSync} from 'node:fs';
     const file=process.env.MANIFEST;
     const manifest=JSON.parse(readFileSync(file,'utf8'));
-    manifest.dependencies={...(manifest.dependencies??{}),[process.env.PACKAGE]:`link:${process.env.PACKAGE_DIR}`};
+    manifest.dependencies={
+      ...(manifest.dependencies??{}),
+      [process.env.PACKAGE]:`link:${process.env.PACKAGE_DIR}`,
+      [process.env.CLIENT_PACKAGE]:`link:${process.env.CLIENT_DIR}`,
+    };
     writeFileSync(file,JSON.stringify(manifest,null,2)+'\n',{mode:0o600});
     JS
 
@@ -129,6 +168,7 @@ install-profile:
     DSH_HOME="$DSH_HOME_DIR" "${DSH_ARR[@]}" plugin --profile "$PROFILE" install \
       || fail "profile $PROFILE 的依赖安装失败"
     [ -f "$PROFILE_DIR/node_modules/$PACKAGE/package.json" ] || fail '插件链接未就位'
+    [ -f "$PROFILE_DIR/node_modules/$CLIENT_PACKAGE/package.json" ] || fail '客户端包链接未就位'
 
     # ── 5. preset ────────────────────────────────────────────────────────────────
     if grep -qE "^[[:space:]]*-[[:space:]]*id:[[:space:]]*${PATCH_ID}[[:space:]]*\$" "$PATCH_FILE"; then

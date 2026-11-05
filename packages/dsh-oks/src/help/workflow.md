@@ -7,7 +7,7 @@
 3. 需要关联时用 oks_routes 找路径，用 oks_info 批量读取涉及的维度、指标、身份、时间和连接约束，形成取数计划。
 4. 建立一份 `.dari` 分析稿，一次设计当前步骤所需查询，先用 dari_check 检查；按需 inspect 读取返回列及类型，依据诊断修正。
 5. 根据列类型建立 select/select_one 后处理、图表和交付节点，再检查全稿。形状指纹未变时沿用已读类型；选定图表后才读对应 figure 分册。
-6. 检查完整分析稿后，一次调用 dari_resolve({src})，获得唯一 Answer 的 Markdown，完整原样贴回用户可见回答（保留所有图片和报告链接，不摘要改写、不包代码块）
+6. 检查完整分析稿后，一次调用 dari_resolve({src})；Answer 会自动出现在对话里，不要重复贴出。回执说明交付失败时才转发原文
 
 ## 知识定位
 
@@ -41,8 +41,8 @@ references 返回实际引用点，如 datasets/current_alarm/dimensions/alarm_s
 
 仅当统计时区口径有实质歧义或 context 无有效时区时澄清；当前时间和客户端时区本来就能从 context() 获得。报告中注明实际采用的口径。
 
-- 简单问数任务：一次 dari_resolve，在 Answer 中直接回答；需要图表时用 UseFigure。将返回的 Answer 展现给用户，理解同次交付的数据后，在对话中补充观点。
-- 简单报表任务：一次 dari_resolve，在 Report 中定义报表，在 Answer 中用 UseReport 交付链接，回答保持简短。展现结果并理解数据后，在对话中补充观点；发现数据异常时可以建议调整。
+- 简单问数任务：一次 dari_resolve，在 Answer 中直接回答；需要图表时用 UseFigure。Answer 自动出现在对话里，理解同次交付的数据后，在对话中补充观点。
+- 简单报表任务：一次 dari_resolve，在 Report 中定义报表，在 Answer 中用 UseReport 交付链接，回答保持简短。Answer 自动交付后，在对话中补充观点；发现数据异常时可以建议调整。
 - 探索型任务：每个分析步骤一次 dari_resolve，在 Answer 中交付该步骤结果。新步骤直接修改同一分析稿，一般保留原有取数和分析过程，追加新的取数或分析过程，将 Answer 替换为新的增量分析结果。最终需要报表时，再整合为 Report，并由 Answer 用 UseReport 交付。
 
 原文交付在前，补充观点在后；观点另起段落写在对话中，不得替代或改写 resolve 返回的 Answer。不为此重新生成 Report 或 Answer，也不再次 resolve，除非用户要求。观点依据已交付数据，区分事实与推断；数据异常可以提出调整建议，不擅自修改取数计划。

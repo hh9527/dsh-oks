@@ -7,5 +7,8 @@ lib/
 # 冒烟测试用的工作区（指向真实的产物与数据库，落在仓库内以便写 oks-smoke）
 .smoke-ws/
 
+# 客户端能力包手写产物，随源码提交
+!packages/dsh-markdown-message/lib/
+
 # 本地工具构建缓存
 target/

@@ -27,5 +27,15 @@ export function renderResolveReceipt(value:unknown):string {
     return lines.join('\n');
   }
   if(!isRecord(value.answer)||typeof value.answer.embedded!=='string')throw new Error('Missing resolved Answer');
-  return value.answer.embedded;
+  // Delivery failed: the model is the only channel left, so hand it the full Answer.
+  if(typeof value.deliveryNote==='string')return value.deliveryNote+'\n\n'+value.answer.embedded;
+  const delivery=isRecord(value.delivery)?value.delivery:undefined;
+  const messageId=delivery?.ok===true&&typeof delivery.messageId==='string'?delivery.messageId:undefined;
+  const counts=isRecord(value.counts)?value.counts:undefined;
+  const lines=[receiptHeader('Succeed'),''];
+  lines.push(`- answer message: ${messageId??'(delivered)'}`);
+  if(typeof value.run==='string')lines.push(`- run: ${value.run}`);
+  if(counts&&typeof counts.executed==='number'&&typeof counts.cached==='number')lines.push(`- executed: ${counts.executed}, cached: ${counts.cached}`);
+  lines.push('','The Answer is the delivered message in the conversation; do not repeat it. Add commentary only when it helps the reader.');
+  return lines.join('\n');
 }

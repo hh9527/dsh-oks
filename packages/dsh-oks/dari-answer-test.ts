@@ -71,7 +71,7 @@ answer tree! { Answer [h2 ["明细"],UseFigure(ref=details,caption="统计明细
  for(const retired of [{answer:true},{answer:false},{data:['summary']},{figures:['chart']},{reports:['file']}])await assert.rejects(call('dari_resolve',{src:'visual.dari',...retired}),/Expected only src/);
  const tool=drafts.tools.find(t=>t.name==='dari_resolve')!;
  assert.deepEqual(Object.keys((tool.parameters as any).properties),['src']);
- assert.equal((tool.output.render as Function)({},cached)[0].text,cached.answer.embedded);
+ {const receipt=(tool.output.render as Function)({},cached)[0].text;assert.match(receipt,/^Succeed/);assert(!receipt.includes('**数值**：42'),"the answer body lives in the delivered message");}
  writeFileSync(join(root,'missing.dari'),'data n = 1;');
  await assert.rejects(call('dari_resolve',{src:'missing.dari'}),/Missing answer/);
  writeFileSync(join(root,'duplicate.dari'),source+'\nanswer tree! { Answer [p ["duplicate"]] };');
