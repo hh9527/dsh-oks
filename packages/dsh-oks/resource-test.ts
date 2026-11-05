@@ -19,7 +19,7 @@ try {
  for(const path of paths){const manual=await call('oks_read',{path});assert(manual.lines.length);}
  for(const path of ['analysis.dari',join(root,'analysis.dari'),'.work/a.dari','oks://help/../x','oks://knowledge'])await assert.rejects(call('oks_read',{path}),/built-in manuals/);
  mkdirSync(join(root,'reports'));
- const local=join(root,'reports/a.dari');writeFileSync(local,'data a = 1;');
+ const local=join(root,'reports/a.dari');writeFileSync(local,'data a = 1; answer tree! { Answer [p [value(ref=a)]] };');
  for(const path of ['reports/a.dari','./reports/a.dari',local])assert.equal(readDariSource(root,path,'test').file,'reports/a.dari');
  symlinkSync(local,join(root,'alias.dari'));assert.equal(readDariSource(root,'alias.dari','test').file,'reports/a.dari');
  writeFileSync(join(outside,'escape.dari'),'data a = 1;');symlinkSync(outside,join(root,'escape'));
@@ -27,7 +27,7 @@ try {
  await assert.rejects(call('dari_check',{src:'reports/a.dari',answer:'a'}),/Expected only src/);
  assert.equal((await call('dari_check',{src:'reports/a.dari'})).ok,true);
  await assert.rejects(call('dari_resolve',{answer:false,src:'reports/a.dari',data:['a'],refresh:true}),/Expected only/);
- const result=await call('dari_resolve',{answer:false,src:local,data:['a']});assert.equal(result.data.a,1);
- assert.equal((await call('dari_resolve',{answer:false,src:'reports/a.dari',data:['a']})).counts.executed,0);
+ const result=await call('dari_resolve',{src:local});assert.equal(result.answer.embedded,'1');
+ assert.equal((await call('dari_resolve',{src:'reports/a.dari'})).counts.executed,0);
  console.log('Public tools: exact ten-tool surface, built-in manuals, local file boundaries, canonical cache identity and rejected retired parameters passed');
 } finally {definitions.dispose();rmSync(root,{recursive:true,force:true});rmSync(outside,{recursive:true,force:true});}

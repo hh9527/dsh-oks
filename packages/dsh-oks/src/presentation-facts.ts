@@ -775,7 +775,7 @@ export const presentationFacts = {
             "figure": "UseFigure(ref = comparison, caption = \"说明\");",
             "bindings": "report full = tree! { Report [ p [ \"正文\" ], ] };",
             "spec": "组件 spec 省略 kind，标签决定图表类型；只有 NetworkGraph 接受 nodes。组件语法为 tag(attrs) [ children ]，属性或子节点为空时可省略对应部分。",
-            "structure": "唯一的 answer tree! { Answer [...] } 定义回答流 Markdown，动态值写作 value(ref=expression)。UseReport(ref=full) 在 Answer 中插入已声明报告的可点击链接；dari_resolve 必须显式提供 answer:true 或 answer:false。figure 声明具名图表。Report 使用 UseFigure(ref = chart, caption = \"说明\") 嵌入图表，caption 可选。FigureRef(ref = chart) 显示本报告的编号，目标须在同一 Report 中展示。图和表按文档顺序分别编号，图注位于图表之后。"
+            "structure": "唯一的 answer tree! { Answer [...] } 定义回答流 Markdown，动态值写作 value(ref=expression)。UseReport(ref=full) 在 Answer 中插入已声明报告的可点击链接；dari_resolve({src}) 固定返回唯一 Answer 的 Markdown。figure 声明具名图表。Report 使用 UseFigure(ref = chart, caption = \"说明\") 嵌入图表，caption 可选。FigureRef(ref = chart) 显示本报告的编号，目标须在同一 Report 中展示。图和表按文档顺序分别编号，图注位于图表之后。"
           }
         },
         "draft": {

@@ -13,13 +13,13 @@
 | `oks_info({ids})` | 批量读取精确知识点 |
 | `oks_read({path,offset?,limit?})` | 只读内置手册；path 为 oks://help/ 时列出手册 |
 | `dari_check({src})` | 全稿检查，返回列类型和诊断；不执行业务 SQL |
-| `dari_resolve({src,answer,data?,figures?,reports?})` | answer 必填：true 交付 Answer Markdown；false 调试所选绑定；批准由配置控制 |
+| `dari_resolve({src})` | 固定交付唯一 Answer Markdown；批准由配置控制 |
 | `dari_renew_context({src})` | 更新时间基准和采集批次，使旧结果失效；不执行查询 |
 
 
 领域摘要进入 KA 的固定系统上下文，词汇表进入独立 VA 的固定系统上下文，主 agent 保留工作方法和图表能力。预制工具完整返回其结果，输出规模由查询范围、分页和工具内部结构控制。
 
-agent 先设计和检查分析稿，使用 `dari_resolve({src,answer:true})` 返回唯一 Answer 的 Markdown；调试时使用 answer:false 并选择 data/figures/reports。只执行所选依赖，运行批准由配置控制。内部宿主运行器保留执行、缓存、来源和呈现能力。
+agent 先设计和检查分析稿，使用 `dari_resolve({src})` 返回唯一 Answer 的 Markdown。只执行 Answer 依赖，运行批准由配置控制。内部宿主运行器保留执行、缓存、来源和呈现能力。
 
 ## 知识子会话
 
@@ -55,7 +55,7 @@ kaPreset: oks-knowledge
 
 ```js
 dari_check({src: "draft.dari"})
-dari_resolve({src: "draft.dari", answer: true})
+dari_resolve({src: "draft.dari"})
 ```
 
 该示例明确使用演示数据。真实任务应先发现模型能力，用 query(Intent) 表达取数，再用 dari_check 检查查询及列类型。检查不要求 dataFile；后处理类型在检查期推导，业务数据和渲染在运行时取得。
@@ -94,7 +94,7 @@ answer tree! { Answer [
 
 运行以有类型计划生成参数化 SQL，在每份分析稿的临时 SQLite 中执行；临时数据库闲置 15 分钟后回收。每个结果集保留 schema；查询与派生计算按依赖缓存，缓存命中也能恢复临时表。select_one 的动态多行约束会在运行时拒绝。截断输入、schema 漂移、值类型不符、资源超限均明确失败。
 
-图表写成 `figure chart = BarChart(spec = spec, data = result);`，检查器验证列名和数值映射。报告通过 `UseFigure(ref = chart, caption = "说明")` 编排，caption 可选。绑定不可变，先定义后引用。正常交付将 answer.embedded 原样贴回；UseFigure 生成图表嵌入，UseReport 生成可点击的报告链接。调试时通过 data/figures/reports 选择输出。报告保留源码、上下文及执行元数据；SVG 内含最终绘图输入 CSV 和紧凑 JSON spec，表格与正文直接从 HTML 读取。
+图表写成 `figure chart = BarChart(spec = spec, data = result);`，检查器验证列名和数值映射。报告通过 `UseFigure(ref = chart, caption = "说明")` 编排，caption 可选。绑定不可变，先定义后引用。正常交付直接使用返回的 Answer Markdown；UseFigure 生成图表嵌入，UseReport 生成可点击的报告链接。简单问数、简单报表各一次 resolve；探索任务每步一次，保留原稿过程并替换 Answer 为增量结果。解读数据后的观点在对话中补充，除非用户要求，不重新生成报告或 Answer。报告保留源码、上下文及执行元数据；SVG 内含最终绘图输入 CSV 和紧凑 JSON spec，表格与正文直接从 HTML 读取。
 
 ## 知识发现
 
@@ -127,7 +127,7 @@ unit 为 year/quarter/month/week/day，count 为 1..50。周从周一开始，�
 
 dari_check 返回 queries（模型查询及关系节点的列）、types（各绑定的推导类型）、diagnostics 和 deferred。query columns 在本次检查内参与所有后续类型推导；检查不读业务数据库，不把未知事实折叠成空表、零或 None。业务值决定下一次 query 的写法会被拒绝。
 
-dari_resolve 重新检查当前稿件，冻结检查与执行共享的时间上下文，按配置申请本次用户批准后执行。修改后处理不会重新采集未变化的 query；dari_renew_context({src}) 创建新采集上下文。运行期验证真实 schema、值域、来源与单行守卫，只返回所选 data 的事实，以及所选 figures/reports 的 Markdown 展示引用。
+dari_resolve 重新检查当前稿件，冻结检查与执行共享的时间上下文，按配置申请本次用户批准后执行。修改后处理不会重新采集未变化的 query；dari_renew_context({src}) 创建新采集上下文。运行期验证真实 schema、值域、来源与单行守卫，只返回唯一 Answer 的 Markdown，图表和报告通过其 UseFigure/UseReport 引用交付。
 
 ## 工作区与运行配置
 
@@ -226,7 +226,7 @@ DARI 手册已包含一行一图的能力索引和必填 spec 键，由实际图
 - `oks://help/*.md`：独立的只读文本手册
 - 图表和报告由宿主附件服务持久保存，回执返回附件引用与呈现指引
 
-agent 可检查稿件并通过 dari_resolve 运行；默认直接运行，配置 requireRunApproval=true 时先申请批准；data 返回显式选择的结构化值；figures/reports 按绑定名返回 `{embedded}`，其中 embedded 为可原样嵌入回答的 Markdown 字符串。
+agent 可检查稿件并通过 dari_resolve 运行；默认直接运行，配置 requireRunApproval=true 时先申请批准；dari_resolve 仅接收 src，固定返回可直接交付的 Answer Markdown。
 
 ### 已载入手册与按需分册
 

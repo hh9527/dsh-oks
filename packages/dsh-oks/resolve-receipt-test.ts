@@ -1,24 +1,13 @@
 import assert from 'node:assert/strict';
 import {renderResolveReceipt,receiptHeader} from './src/draft/resolve-receipt.ts';
 const markdown='## 回答\n\n"引号"与 **强调**\n\n![CPU](/cpu.svg)';
-const data={summary:{n:36,ratio:0.45,missing:null,yes:true,rows:[{name:'中文',value:2}]},scalar:'```quoted```',nil:null};
-const result={ok:true,answer:{embedded:markdown},reports:{main:{embedded:'[报告](/main.html)'}},figures:{cpu:{embedded:'![CPU](/cpu.svg)'},table:{embedded:'| a |\n| --- |\n| 1 |'}},data,run:'hidden-run',sourceHash:'hidden-hash',batch:'hidden-batch',counts:{executed:1},approval:'not-required'};
+const result={ok:true,answer:{embedded:markdown},run:'hidden-run',sourceHash:'hidden-hash',batch:'hidden-batch',counts:{executed:1},approval:'not-required'};
 const original=structuredClone(result);
-const text=renderResolveReceipt(result);
-assert(text.startsWith('Succeed\n-------\n\n<!-- answer -->\n'+markdown));
-assert(text.includes('<!-- reports.main -->\n[报告](/main.html)'));
-assert(text.includes('<!-- figures.cpu -->\n![CPU](/cpu.svg)'));
-assert(text.includes('<!-- figures.table -->\n| a |\n| --- |\n| 1 |'));
-assert(text.indexOf('<!-- reports.main -->')<text.indexOf('<!-- figures.cpu -->'));
-assert(text.indexOf('<!-- figures.cpu -->')<text.indexOf('<!-- data.summary -->'));
-for(const [name,value] of Object.entries(data)){
- const block=text.slice(text.indexOf(`<!-- data.${name} -->`)).split('\n\n<!-- ')[0];
- const match=block.match(/\n(`{3,})json\n([\s\S]*)\n\1$/)!;
- assert(match,block);assert.deepEqual(JSON.parse(match[2]),value);
-}
-for(const secret of ['hidden-run','hidden-hash','hidden-batch','executed','not-required'])assert(!text.includes(secret));
+assert.equal(renderResolveReceipt(result),markdown);
 assert.deepEqual(result,original);
-assert.equal(renderResolveReceipt({ok:true,answer:{embedded:markdown}}),'Succeed\n-------\n\n<!-- answer -->\n'+markdown);
+assert.equal(renderResolveReceipt({...result,data:{secret:42},figures:{unused:{embedded:'hidden'}}}),markdown);
+assert.equal(renderResolveReceipt({ok:true,answer:{embedded:''}}),'');
+assert.throws(()=>renderResolveReceipt({ok:true}),/Missing resolved Answer/);
 const failed=renderResolveReceipt({ok:false,status:'failed',failures:[{name:'root',status:'failed',at:{line:3,column:5},error:'Truncated input'},{name:'blocked',status:'blocked',at:{line:4,column:1},error:'Upstream root is blocked'}],diagnostics:[{span:{start:{line:3,column:5}},message:'Truncated input'}],outputs:[{name:'unused',shape:'hidden-shape'}]});
 assert.equal(failed,'ResolveFailed\n-------------\n\n# errors:\n- L3:5: Truncated input');
 assert(!failed.includes('Upstream'));assert(!failed.includes('hidden-shape'));
@@ -27,4 +16,4 @@ assert.equal(errors.split('\n').filter(l=>l.startsWith('- L')).length,20);assert
 assert.equal(renderResolveReceipt({ok:false,status:'approval-rejected'}),'ResolveFailed\n-------------\n\n# errors:\n- approval-rejected');
 const check='CheckFailed\n-----------\n\n# errors:\n- bad type';assert.equal(renderResolveReceipt({ok:false,text:check}),check);
 assert.equal(receiptHeader('Succeed'),'Succeed\n-------');assert.equal(receiptHeader('CheckFailed'),'CheckFailed\n-----------');
-console.log('Resolve text: Markdown blocks, exact structured JSON round-trips, safe fences, hidden metadata, compact root failures and status headers passed');
+console.log('Resolve text: Answer Markdown only, no success wrapper or internal metadata, compact root failures and status headers passed');

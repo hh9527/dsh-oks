@@ -38,12 +38,11 @@ dari_check({src:"analysis.dari",inspect:{data:["facts","summary"],figures:["coun
 inspect 使用源码绑定名，每类最多 32 项，返回数据和图表输入的类型形状，不重述源码定义。没有读过所需列类型时按需 inspect；指纹未变则此前形状仍有效。指纹包含类型、字段、可空性、表列顺序，不含值、源码、数组长度或运行缓存。普通对象字段按名排序。
 
 ```js
-dari_resolve({src:"analysis.dari",answer:false,data:["summary"],reports:["full"]})
-dari_resolve({src:"analysis.dari",answer:true})
+dari_resolve({src:"analysis.dari"})
 dari_renew_context({src:"analysis.dari"})
 ```
 
-resolve 先检查，再执行所选产物及依赖。answer 是必填 Bool；data/figures/reports 为可选绑定名数组，answer:false 时至少选择一项。成功 Succeed 后按注释分块：answer 是 Markdown 正文，reports.name 是报告链接，figures.name 是图片或 Markdown 表格，data.name 是完整 JSON 代码块。检查失败 CheckFailed，执行或选择失败 ResolveFailed，均表现为失败工具调用。
+resolve 先检查全稿，再执行唯一 Answer 及其依赖，固定返回 Answer Markdown 正文。只接收 src，不提供 data/figures/reports/answer 选择参数。UseFigure/UseReport 在选中分支中发布图表与报告；Table 直接成为 Markdown 表格。检查失败 CheckFailed，执行失败 ResolveFailed，均表现为失败工具调用。
 
 同稿共享计算与缓存，改后处理不重新取数。采集上下文按会话及稿件真实路径冻结；renew_context 创建新上下文，下一次 resolve 重新取数，不接收 refresh。执行使用临时 SQLite 文件，最后一次运行结束后空闲 15 分钟关闭删除；检查使用独立内存库，不延长执行缓存。
 

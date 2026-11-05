@@ -1,3 +1,4 @@
+import {dariLiteral} from './test-dari.ts';
 import {testAttachments} from './test-attachments.ts';
 import { COMPONENT_KINDS } from './src/draft/components.ts';
 // Retained visual regression assertions now execute Markdown render_figure pipelines.
@@ -36,16 +37,14 @@ const chart=async({spec,data,nodes}:any)=>{
  const file='.work/chart.dari';
  const {kind,...mapping}=spec;
  const component=Object.keys(COMPONENT_KINDS).find(key=>COMPONENT_KINDS[key as keyof typeof COMPONENT_KINDS]===kind)!;
- const source=`<Dari title="图表回归"><Pipeline>
- rows <-data(${JSON.stringify(data)},{kind:"example"});
- ${nodes?`nodes <-data(${JSON.stringify(nodes)},{kind:"example"});`:''}
- chartSpec <-${JSON.stringify(mapping)};
- figure <-render_figure(${JSON.stringify(spec)},{data:rows${nodes?',nodes':''}});
- </Pipeline><Figures><${component} name="rendered" spec={chartSpec} data={rows}${nodes?' nodes={nodes}':''}/></Figures>
- <Template name="answer"><article><UseFigure ref="rendered"/></article></Template></Dari>`;
+ const rowsExpression=data.length?'table('+dariLiteral(data)+',{kind:"example"})':'data('+dariLiteral({columns:[{name:spec.x,type:'String',nullable:false},{name:spec.value,type:'Float',nullable:false}],rows:[],truncated:false})+',{kind:"example"})';
+ const source=`data rows = ${rowsExpression};
+ ${nodes?`data nodes = table(${dariLiteral(nodes)},{kind:"example"});`:''}
+ figure rendered = ${component}(spec=${dariLiteral(mapping)},data=rows${nodes?',nodes=nodes':''});
+ answer tree! { Answer [UseFigure(ref=rendered)] };`;
  writeFileSync(join(DEV_ROOT,file),source);
- const publication=await call('dari_resolve',{answer:false,src:file,figures:['figure']});assert(publication.ok,JSON.stringify(publication));
- const embedded=publication.figures.figure.embedded;const path=decodeURI(embedded.slice(embedded.indexOf('](')+2,-1));
+ const publication=await call('dari_resolve',{src:file});assert(publication.ok,JSON.stringify(publication));
+ const embedded=publication.answer.embedded;const path=decodeURI(/\]\(([^)]+)\)/.exec(embedded)![1]);
  const svg=readFileSync(path,'utf8');assert.match(svg,/<metadata id="dari-data" data-format="csv">/);assert.match(svg,/<metadata id="dari-spec" data-format="json">/);assert.doesNotMatch(svg,/dsh-oks-chart-input/);
  const input={data:lastChart!.data as any,origin:lastChart!.sources[0].origin};
  return {input,value:{ok:true,asset:path,rowCount:input.data.rows.length,spec:input.data.spec,title:embedded.slice(2,embedded.indexOf(']('))},text:embedded};
@@ -618,8 +617,9 @@ try {
   const graphRoot=graphInput.origin.nodes[graphInput.origin.root];
   assert.deepEqual(Object.keys(graphRoot.inputs!).sort(),['data','nodes']);
   for(const parent of Object.values(graphRoot.inputs!))assert.ok(graphInput.origin.nodes[parent]);
-  const publication=await call('dari_resolve',{answer:false,src:'.work/chart.dari',reports:['answer']});assert(publication.ok,JSON.stringify(publication));
-  const embedded=publication.reports.answer.embedded;
+  writeFileSync(join(DEV_ROOT,'.work/chart.dari'),readFileSync(join(DEV_ROOT,'.work/chart.dari'),'utf8').split('answer tree!')[0]+'report full = tree! { Report [UseFigure(ref=rendered)] }; answer tree! { Answer [UseReport(ref=full)] };');
+  const publication=await call('dari_resolve',{src:'.work/chart.dari'});assert(publication.ok,JSON.stringify(publication));
+  const embedded=publication.answer.embedded;
   const graphHtml=readFileSync(decodeURI(embedded.slice(embedded.indexOf('](')+2,-1)),'utf8');
   const graphReport=readReportPage(graphHtml);
   assert.ok(!('error' in graphReport));

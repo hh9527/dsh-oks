@@ -360,7 +360,7 @@ export function renderQuery(_args: unknown, value: QueryValue | null | undefined
         + `${result.truncated ? `（已到行数上限 ${value!.queryMaxRows}，结果还有更多）` : ''}`);
       lines.push(`asset:  ${result.asset}`);
       lines.push(`columns:  ${result.columns.map((column) => `${column.name}:${column.types.join('|')}`).join(', ')}`);
-      lines.push('（数据行与语句都不在回执里：数据按需用 dari_resolve 选择绑定获取，语句在执行记录里）');
+      lines.push('（数据行与语句都不在回执里：展示数据可从已生成的报告和图表读取，语句在执行记录里）');
       if (result.rowCount === 0 && value?.window) {
         lines.push(`提示：这份数据的窗口是 [${value.window.start}, ${value.window.endExclusive})，被过滤掉的可能是时间落在窗口之外。`);
       }

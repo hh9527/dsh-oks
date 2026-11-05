@@ -25,7 +25,7 @@ let seq=0;
 const run=async(body:string,tools=plain)=>{
  const src='if-'+seq+++'.dari';writeFileSync(join(root,src),prefix+body);
  const checked=await call('dari_check',{src},tools);assert.equal(checked.ok,true,JSON.stringify(checked));
- const result=await call('dari_resolve',{src,answer:true},tools);assert.equal(result.ok,true,JSON.stringify(result));return result.answer.embedded as string;
+ const result=await call('dari_resolve',{src},tools);assert.equal(result.ok,true,JSON.stringify(result));return result.answer.embedded as string;
 };
 try{
  assert.equal(await run("answer tree! { Answer [if (True) [p [\"yes\"],p [\"siblings\"]] else [p [\"no\"]]] };"),'yes\n\nsiblings');
@@ -36,7 +36,7 @@ try{
  const before=executions;
  writeFileSync(join(root,'dynamic.dari'),prefix+"answer tree! { Answer [if (summary?.flag ?? False) [p [\"present\"]] else [p [\"empty\"]]] };");
  assert.equal((await call('dari_check',{src:'dynamic.dari'})).ok,true);assert.equal(executions,before);
- assert.equal((await call('dari_resolve',{src:'dynamic.dari',answer:true},plain)).answer.embedded,'present');
+ assert.equal((await call('dari_resolve',{src:'dynamic.dari'},plain)).answer.embedded,'present');
  // Neither unselected figures nor reports require or use the attachment service.
  assert.equal(await run("answer tree! { Answer [if (False) [UseFigure(ref=chart),UseReport(ref=file)] else [p [\"text\"]]] };"),'text');
  const text=await run("answer tree! { Answer [if (True) [UseFigure(ref=chart)] else [UseReport(ref=file)]] };",drafts);
@@ -77,13 +77,13 @@ try{
  // Branch partition changes invalidate cached presentation even if all sibling nodes are identical.
  const branchA=prefix+"answer tree! { Answer [if (True) [p [\"alpha\"]] else [p [\"beta\"]]] };";
  writeFileSync(join(root,'cache.dari'),branchA);
- assert.equal((await call('dari_resolve',{src:'cache.dari',answer:true},plain)).answer.embedded,'alpha');
+ assert.equal((await call('dari_resolve',{src:'cache.dari'},plain)).answer.embedded,'alpha');
  writeFileSync(join(root,'cache.dari'),prefix+"answer tree! { Answer [if (True) [p [\"alpha\"],p [\"beta\"]] else []] };");
- assert.equal((await call('dari_resolve',{src:'cache.dari',answer:true},plain)).answer.embedded,'alpha\n\nbeta');
+ assert.equal((await call('dari_resolve',{src:'cache.dari'},plain)).answer.embedded,'alpha\n\nbeta');
  // HTML Report selects sibling branches too, including provenance checks on inactive text.
- writeFileSync(join(root,'report.dari'),prefix+"report shown = tree! { Report [if (False) [p [\"hidden\"],UseFigure(ref=chart)] else [h2 [\"visible\"],p [Value(data=summary?.n)]]] };");
+ writeFileSync(join(root,'report.dari'),prefix+"report shown = tree! { Report [if (False) [p [\"hidden\"],UseFigure(ref=chart)] else [h2 [\"visible\"],p [Value(data=summary?.n)]]] }; answer tree! { Answer [UseReport(ref=shown)] };");
  assert.equal((await call('dari_check',{src:'report.dari'})).ok,true);
- const htmlResult=await call('dari_resolve',{src:'report.dari',answer:false,reports:['shown']});assert.equal(htmlResult.ok,true,JSON.stringify(htmlResult));
+ const htmlResult=await call('dari_resolve',{src:'report.dari'});assert.equal(htmlResult.ok,true,JSON.stringify(htmlResult));
  const html=saved.at(-1)!.content;assert(html.includes('visible'));assert(!html.includes('>hidden<'));assert(!html.includes('<svg'));assert(html.includes('>42</span>'));
  writeFileSync(join(root,'provenance.dari'),"report r = tree! { Report [if (False) [p [\"42\"]]] };");
  const provenance=parseDraft("report r = tree! { Report [if (False) [p [\"42\"]]] };");

@@ -26,19 +26,6 @@ export function renderResolveReceipt(value:unknown):string {
     if(omitted>0)lines.push(`- ${omitted} more errors omitted`);
     return lines.join('\n');
   }
-  const sections=[receiptHeader('Succeed')];
-  if(isRecord(value.answer)&&typeof value.answer.embedded==='string')sections.push('<!-- answer -->\n'+value.answer.embedded);
-  for(const kind of ['reports','figures'] as const){
-    const outputs=value[kind];
-    if(isRecord(outputs))for(const [name,item] of Object.entries(outputs)){
-      if(isRecord(item)&&typeof item.embedded==='string')sections.push(`<!-- ${kind}.${name} -->\n`+item.embedded);
-    }
-  }
-  if(isRecord(value.data))for(const [name,data] of Object.entries(value.data)){
-    const json=JSON.stringify(data,null,2);
-    let longest=0;for(const match of json.matchAll(/`+/g))longest=Math.max(longest,match[0].length);
-    const fence='`'.repeat(Math.max(3,longest+1));
-    sections.push(`<!-- data.${name} -->\n${fence}json\n${json}\n${fence}`);
-  }
-  return sections.join('\n\n');
+  if(!isRecord(value.answer)||typeof value.answer.embedded!=='string')throw new Error('Missing resolved Answer');
+  return value.answer.embedded;
 }

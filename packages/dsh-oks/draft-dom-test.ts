@@ -93,21 +93,19 @@ try{
  assert.equal(parseDraft('/*hi*/ data x = {s:";}",a:[1,2]}; // trailing').nodes.length,1);
  const many='data items = [1,2];data qs = map(items,(x)=>query({limit:10,x:x}));';
  assert.equal((await checkDesign(many,'dom.dari',backend)).ok,true);
- const src='.work/test.dari',path=join(root,'.work/test.dari');writeFileSync(path,source);
+ const src='.work/test.dari',path=join(root,'.work/test.dari');const delivered=source.replace('report answer =','report full =')+'\nanswer tree! { Answer [p [value(ref=winner?.name)],UseFigure(ref=cpu),UseReport(ref=full)] };';writeFileSync(path,delivered);
  const drafts=createDraftTools({knowledge,attachments:()=>testAttachments(root),timeContext:{zones:new Map()} as TimeContext,approval:()=>({async request(){approvals++;return 'allowed-once';}})});
  const caller={callId:'dom-run',agent:{session:{id:'dom'}}} as ToolExec;
  const call=async(name:string,args:object)=>drafts.tools.find(t=>t.name===name)!.execute(args as never,caller) as Promise<any>;
  try{
   const before=reads;assert.equal((await call('dari_check',{src})).ok,true);assert.equal(reads,before);assert.equal(approvals,0);
-  let result=await call('dari_resolve',{answer:false,src,data:['winner'],figures:['cpu'],reports:['answer']});assert.equal(result.ok,true,JSON.stringify(result));assert.equal(approvals,1);
-  assert.match(result.figures.cpu.embedded,/^!\[/);
-  const artifact=(embedded:string)=>decodeURI(embedded.slice(embedded.indexOf('](')+2,-1));
-  assert(readFileSync(artifact(result.reports.answer.embedded),'utf8').includes('CPU &amp;'));
-  assert.deepEqual(result.data.winner,{name:'A&B <x>',cpu:30});
-  assert.deepEqual(Object.keys(result.figures),['cpu']);assert.deepEqual(Object.keys(result.figures.cpu),['embedded']);assert(!JSON.stringify(result).includes('__dom'));
-  writeFileSync(path,source+'\nreport other = tree! { Report(title = "其他报告") [p ["另一份"],] };');
-  result=await call('dari_resolve',{answer:false,src,reports:['answer','other']});assert.equal(result.ok,true,JSON.stringify(result));assert.deepEqual(Object.keys(result.reports),['answer','other']);
-  assert.equal(result.data,undefined);
+  let result=await call('dari_resolve',{src});assert.equal(result.ok,true,JSON.stringify(result));assert.equal(approvals,1);
+  assert(result.answer.embedded.includes('!['));
+  const links=[...result.answer.embedded.matchAll(/\]\(([^)]+)\)/g)].map(m=>decodeURI(m[1]));
+  assert(readFileSync(links.find(p=>p.endsWith('.report.html'))!,'utf8').includes('CPU &amp;'));
+  assert(result.answer.embedded.includes('A&B'));assert.equal(result.data,undefined);assert.equal(result.figures,undefined);assert.equal(result.reports,undefined);
+  writeFileSync(path,delivered.replace('answer tree!', 'report other = tree! { Report [p ["另一份"]] };\nanswer tree!').replace('UseReport(ref=full)]','UseReport(ref=full),UseReport(ref=other)]'));
+  result=await call('dari_resolve',{src});assert.equal(result.ok,true,JSON.stringify(result));assert(result.answer.embedded.includes('other.report.html'));
  }finally{drafts.dispose();}
  console.log('DOM DARI: grammar, original spans, types, Option, inline attributes, escaping, scopes, charts, report archives, one-shot approval and selected report facts passed');
 }finally{rmSync(root,{recursive:true,force:true});}

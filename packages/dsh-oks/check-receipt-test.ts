@@ -55,7 +55,7 @@ try{
  const publicCheck=guidedTools([check],knowledge as any).find(t=>t.name==='dari_check')!;
  await assert.rejects(publicCheck.execute({src:'receipt.dari',inspect:{data:['facts']}} as never,exec),e=>e instanceof Error&&e.message.includes('# errors:')&&e.message.includes('# inspect:')&&!e.message.includes('"diagnostics"'));
  const publicResolve=guidedTools(tools.tools,knowledge as any).find(t=>t.name==='dari_resolve')!;
- await assert.rejects(publicResolve.execute({src:'receipt.dari',answer:false,data:['facts']} as never,exec),e=>e instanceof Error&&e.message.startsWith('CheckFailed\n-----------')&&!e.message.includes('"queries"'));
+ await assert.rejects(publicResolve.execute({src:'receipt.dari'} as never,exec),e=>e instanceof Error&&e.message.startsWith('CheckFailed\n-----------')&&!e.message.includes('"queries"'));
  writeFileSync(join(root,'receipt.dari'),source);
  const unknown=await check.execute({src:'receipt.dari',inspect:{data:['chart','absent'],figures:['facts']}} as never,exec) as any;
  assert.equal(unknown.ok,false);assert.match(unknown.text,/Unknown data binding "chart"/);assert.match(unknown.text,/Unknown figure binding "facts"/);

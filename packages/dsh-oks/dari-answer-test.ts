@@ -33,7 +33,7 @@ report file = tree! { Report [p [value(ref=summary?.n)]] };
 try{
  writeFileSync(join(root,'answer.dari'),source);
  const checked=await call('dari_check',{src:'answer.dari'});assert.equal(checked.ok,true,JSON.stringify(checked));assert.equal(executions,0);assert.match(checked.text,/- answer: checked/);assert.match(checked.text,/- report.file: checked/);
- const result=await call('dari_resolve',{src:'answer.dari',answer:true},plain);
+ const result=await call('dari_resolve',{src:'answer.dari'},plain);
  assert.equal(result.ok,true,JSON.stringify(result));assert.equal(files,0);
  const text=result.answer.embedded;
  assert.match(text,/^## 资源概况/);assert(text.includes('**数值**：42；*说明*'));
@@ -43,41 +43,35 @@ try{
  writeFileSync(join(root,'table.dari'),`data rows = table([{level:"major",n:3},{level:"minor",n:2}],{kind:"example"});
 figure details = Table(spec={columns:["level","n"]},data=rows);
 answer tree! { Answer [h2 ["明细"],UseFigure(ref=details,caption="统计明细")] };`);
- const tabular=await call('dari_resolve',{src:'table.dari',answer:true,figures:['details']},plain);
+ const tabular=await call('dari_resolve',{src:'table.dari'},plain);
  assert.equal(tabular.ok,true,JSON.stringify(tabular));
  const markdown='| level | n |\n| --- | ---: |\n| major | 3 |\n| minor | 2 |\n';
- assert.equal(tabular.figures.details.embedded,markdown);
+ assert.equal(tabular.data,undefined);assert.equal(tabular.figures,undefined);assert.equal(tabular.reports,undefined);
  assert(tabular.answer.embedded.includes(markdown));assert(tabular.answer.embedded.includes('统计明细'));
  assert(!tabular.answer.embedded.includes('.html'));assert.equal(files,0);
- const tableOnly=await call('dari_resolve',{src:'table.dari',answer:false,figures:['details']},plain);
- assert.equal(tableOnly.figures.details.embedded,markdown);
- const cachedTable=await call('dari_resolve',{src:'table.dari',answer:true},plain);
+ const cachedTable=await call('dari_resolve',{src:'table.dari'},plain);
  assert.equal(cachedTable.counts.executed,0);assert(cachedTable.answer.embedded.includes(markdown));
- const attachedTable=await call('dari_resolve',{src:'table.dari',answer:true,figures:['details']});
- assert.equal(attachedTable.figures.details.embedded,markdown);assert.equal(files,0);
+ const attachedTable=await call('dari_resolve',{src:'table.dari'});
+ assert(attachedTable.answer.embedded.includes(markdown));assert.equal(files,0);
  const visual=source.replace('answer tree! { Answer [','answer tree! { Answer [UseFigure(ref=chart,caption="分布"),UseReport(ref=file),UseReport(ref=file),');
  // Reports must be declared before they are referenced.
  const report='report file = tree! { Report [p [value(ref=summary?.n)]] };';
  writeFileSync(join(root,'visual.dari'),visual.replace(report,'').replace('answer tree!',report+'\nanswer tree!'));
- const mixed=await call('dari_resolve',{src:'visual.dari',answer:true,reports:['file'],figures:['chart']});
- assert.equal(mixed.ok,true,JSON.stringify(mixed));assert.match(mixed.reports.file.embedded,/^\[/);assert(mixed.answer.embedded.includes('!['));assert(mixed.answer.embedded.includes(mixed.reports.file.embedded));assert.equal(files,2);
+ const mixed=await call('dari_resolve',{src:'visual.dari'});
+ assert.equal(mixed.ok,true,JSON.stringify(mixed));assert(mixed.answer.embedded.includes('file.report.html'));assert(mixed.answer.embedded.includes('!['));assert.equal(mixed.reports,undefined);assert.equal(files,2);
  const svg=saved.find(f=>f.name==='chart.svg')!.content;
  assert(svg.includes('<metadata id="dari-data" data-format="csv">'));
  const spec=JSON.parse(/<metadata id="dari-spec" data-format="json">([^<]*)<\/metadata>/.exec(svg)![1]);
  assert.equal(spec.kind,'column');assert.equal(spec.x,'label');assert.equal(spec.value,'n');
  assert(svg.includes('n,label\n42,*not emphasis* [link](x) &lt;tag&gt;'));
  assert(!svg.includes('SELECT')&&!svg.includes('modelHash')&&!svg.includes('sourceHash'));
- const standalone=await call('dari_resolve',{src:'visual.dari',answer:false,figures:['chart']});
- assert(standalone.ok);assert(saved.at(-1)!.content.includes('id="dari-data"'));
- const cached=await call('dari_resolve',{src:'visual.dari',answer:true});assert.equal(cached.counts.executed,0);assert(cached.answer.embedded.includes('**数值**：42；*说明*'));assert(cached.answer.embedded.includes('!['));
- const debug=await call('dari_resolve',{src:'visual.dari',answer:false,data:['summary']});assert.equal(debug.ok,true);assert(!('answer' in debug));
- for(const selection of [{reports:['answer']},{data:['answer']}]){
-  const bad=await call('dari_resolve',{src:'answer.dari',answer:false,...selection});assert.equal(bad.ok,false,JSON.stringify(bad));
- }
- await assert.rejects(call('dari_resolve',{src:'answer.dari'}),/explicitly/);
- await assert.rejects(call('dari_resolve',{src:'answer.dari',answer:false}),/Select at least/);
+ const cached=await call('dari_resolve',{src:'visual.dari'});assert.equal(cached.counts.executed,0);assert(cached.answer.embedded.includes('**数值**：42；*说明*'));assert(cached.answer.embedded.includes('!['));
+ for(const retired of [{answer:true},{answer:false},{data:['summary']},{figures:['chart']},{reports:['file']}])await assert.rejects(call('dari_resolve',{src:'visual.dari',...retired}),/Expected only src/);
+ const tool=drafts.tools.find(t=>t.name==='dari_resolve')!;
+ assert.deepEqual(Object.keys((tool.parameters as any).properties),['src']);
+ assert.equal((tool.output.render as Function)({},cached)[0].text,cached.answer.embedded);
  writeFileSync(join(root,'missing.dari'),'data n = 1;');
- await assert.rejects(call('dari_resolve',{src:'missing.dari',answer:true}),/Missing answer/);
+ await assert.rejects(call('dari_resolve',{src:'missing.dari'}),/Missing answer/);
  writeFileSync(join(root,'duplicate.dari'),source+'\nanswer tree! { Answer [p ["duplicate"]] };');
  assert.equal((await call('dari_check',{src:'duplicate.dari'})).ok,false);
  for(const [node,pattern]of [

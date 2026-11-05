@@ -20,8 +20,7 @@ const graph=derivePublishedKnowledge((collected as any).graph,undefined,(collect
 const dataset=Object.keys(graph.datasets).find(k=>!k.startsWith('source_'))!;
 const source=readFileSync(example,'utf8');
 const doc=parseDesign(source,example);
-const reports=doc.answers;
-const selection=reports.length?{reports}:{data:doc.nodes.filter(n=>!n.internal&&n.statement.kind==='binding').map(n=>n.statement.kind==='binding'?n.statement.name:'')};
+assert(doc.assets.get('@report/answer')?.format==='markdown','Integration source must define Answer');
 async function scenario(run:boolean){
  const cwd=join(root,run?'run':'check');
  const {mkdirSync}=await import('node:fs');mkdirSync(cwd);writeFileSync(join(cwd,'oks.json'),'{}');
@@ -44,10 +43,10 @@ async function scenario(run:boolean){
   writeFileSync(join(cwd,src),source);
   started=performance.now();const checked=await call('dari_check',{src});const checkMs=performance.now()-started;assert.equal(checked.ok,true,JSON.stringify(checked));
   if(!run)return {domain,mode:'check without database',routesMs:Math.round(routesMs),infoMs:Math.round(infoMs),checkMs:Math.round(checkMs),bindings:checked.queries.length};
-  started=performance.now();const result=await call('dari_resolve',{answer:false,src,...selection});const runMs=performance.now()-started;assert.equal(result.ok,true,JSON.stringify(result));assert.equal(result.approval,'not-required');assert.equal(approvalRequests,0);
-  assert(reports.length?Object.hasOwn(result,'reports'):Object.hasOwn(result,'data'));
-  started=performance.now();const cached=await call('dari_resolve',{answer:false,src,...selection});const cachedRunMs=performance.now()-started;assert.equal(cached.ok,true);assert.equal(cached.counts.executed,0);
-  return {domain,mode:'run',checkMs:Math.round(checkMs),runMs:Math.round(runMs),cachedRunMs:Math.round(cachedRunMs),figures:Object.keys(result.figures??{}).length,counts:result.counts};
+  started=performance.now();const result=await call('dari_resolve',{src});const runMs=performance.now()-started;assert.equal(result.ok,true,JSON.stringify(result));assert.equal(result.approval,'not-required');assert.equal(approvalRequests,0);
+  assert.equal(typeof result.answer.embedded,'string');assert(!('data' in result));
+  started=performance.now();const cached=await call('dari_resolve',{src});const cachedRunMs=performance.now()-started;assert.equal(cached.ok,true);assert.equal(cached.counts.executed,0);
+  return {domain,mode:'run',checkMs:Math.round(checkMs),runMs:Math.round(runMs),cachedRunMs:Math.round(cachedRunMs),counts:result.counts};
  }finally{disposers.reverse().forEach(fn=>fn());}
 }
 try{console.log(JSON.stringify(await scenario(false)));console.log(JSON.stringify(await scenario(true)));}

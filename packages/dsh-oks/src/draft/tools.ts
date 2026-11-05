@@ -191,21 +191,12 @@ export function createDraftTools(options: {
     },
     {
       name:'dari_resolve',
-      description:'Check a DARI source and resolve requested outputs. answer is required: true resolves the unique Answer; false selects only explicit data/figures/reports. Successful text begins Succeed and a divider, followed by comment-delimited blocks: <!-- answer -->, <!-- reports.name --> and <!-- figures.name --> contain ready-to-use Markdown; <!-- data.name --> contains structured JSON in a code fence. Copy requested Markdown verbatim into the reply, excluding receipt headers and markers. Executes only selected dependencies and reuses cached computations. Failures are concise tool errors. requireRunApproval controls native approval; dari_renew_context starts a fresh acquisition batch.',
-      parameters:{type:'object',properties:{src:{type:'string'},data:{type:'array',items:{type:'string'}},figures:{type:'array',items:{type:'string'}},reports:{type:'array',items:{type:'string'}},answer:{type:'boolean',description:'Required. true resolves the unique Answer; false selects only explicit data/figures/reports for debugging.'}},required:['src','answer'],additionalProperties:false},
+      description:'Check and execute a DARI source, then return only its unique Answer as ready-to-use Markdown. Accepts only src. First copy the entire returned Markdown verbatim into the user-visible reply. Do not summarize, rewrite, omit content, alter image/report links, or wrap it in a code block. Any additional commentary must follow separately and must not replace the returned Answer. Figures and reports are published through UseFigure/UseReport in the selected Answer branches. Executes Answer dependencies and reuses cached computations; unused bindings do not run. Failures remain concise tool errors. requireRunApproval controls native approval; dari_renew_context starts a fresh acquisition batch.',
+      parameters:{type:'object',properties:{src:{type:'string'}},required:['src'],additionalProperties:false},
       output:{schema:OBJECT,render:(_args:unknown,value:unknown)=>[{type:'text',text:renderResolveReceipt(value)}]},
-      async execute(args:{src?:unknown;data?:unknown;figures?:unknown;reports?:unknown;answer?:unknown},exec:ToolExec){
-        assertKeys(args,['src','answer','data','figures','reports']);
+      async execute(args:{src?:unknown},exec:ToolExec){
+        assertKeys(args,['src']);
         if(typeof args.src!=='string'||!args.src.endsWith('.dari'))throw new Error('src must be a local .dari path');
-        if(typeof args.answer!=='boolean')throw new Error('answer must be explicitly set to true or false');
-        const selection={data:[] as string[],figures:[] as string[],reports:[] as string[]};
-        for(const kind of ['data','figures','reports'] as const){
-          const names=args[kind];
-          if(names!==undefined&&(!Array.isArray(names)||names.some(n=>typeof n!=='string'||!n.length)))throw new Error(`${kind} must be an array of binding names`);
-          selection[kind]=[...new Set(names as string[]|undefined)];
-        }
-        const targets=[...Object.values(selection).flat(),...(args.answer?['answer']:[])];
-        if(!targets.length)throw new Error('Select at least one data, figure or report binding');
         if(!exec.agent?.session)throw new Error('dari_resolve requires a caller session');
         const entry=options.knowledge.ensureWorkspace(exec);
         const read=readDariSource(entry.root,args.src,'dari_resolve');
@@ -218,20 +209,8 @@ export function createDraftTools(options: {
           const checked=await checkSource(entry,read.file,read.text,exec,AbortSignal.any([signal,AbortSignal.timeout(120000)]));
           if(!checked.ok)return {...checked,...checkReceipt(checked),execution:'not performed'};
           const doc=parseDesign(read.text,read.file);
-          const answers=new Set([...doc.assets.values()].filter(a=>a.format==='markdown').map(a=>a.name.slice('@report/'.length)));
-          const reports=new Set(doc.answers.filter(name=>!answers.has(name)));
-          if(args.answer&&!answers.has('answer'))throw new Error('Missing answer tree! { Answer [...] }; use answer:false for explicit debug selections');
-          const figures=new Set(Object.values(doc.authoring?.figures??{}).map(f=>f.binding));
-          const bindings=new Set(doc.nodes.filter(n=>!n.internal&&n.statement.kind==='binding').map(n=>n.statement.kind==='binding'?n.statement.name:''));
-          const diagnostics=[];
-          for(const kind of ['data','figures','reports'] as const)for(const name of selection[kind]){
-            const node=doc.nodes.find(n=>n.statement.kind==='binding'&&n.statement.name===name);
-            // Pipeline chart bindings can directly call render_figure.
-            const figure=figures.has(name)||node?.statement.value.kind==='call'&&node.statement.value.operator==='render_figure';
-            const valid=bindings.has(name)&&(kind==='reports'?reports.has(name):kind==='figures'?figure:!reports.has(name)&&!answers.has(name)&&!figure);
-            if(!valid)diagnostics.push({file:read.file,stage:'selection',message:`Unknown ${kind} binding or wrong kind: ${name}`,span:node?.statement.span??doc.pipeline});
-          }
-          if(diagnostics.length)return {ok:false,status:'invalid',diagnostics,execution:'not performed'};
+          const answerAsset=doc.assets.get('@report/answer');
+          if(answerAsset?.format!=='markdown')throw new Error('Missing answer tree! { Answer [...] };');
           const requiresApproval=entry.settings.requireRunApproval===true;
           const approval=requiresApproval?options.approval?.():undefined;
           if(requiresApproval&&!approval)return {ok:false,status:'approval-unavailable',execution:'not performed'};
@@ -248,41 +227,22 @@ export function createDraftTools(options: {
           }
           if(approvedEnvironment!==environment())return {ok:false,status:'environment-changed',execution:'not performed',sourceHash};
           if(readDariSource(entry.root,args.src,'dari_resolve').text!==read.text)return {ok:false,status:'source-changed',execution:'not performed',sourceHash};
-          const answerAsset=args.answer?doc.assets.get('@report/answer'):undefined;
-          const presentationNames=[...selection.figures,...selection.reports];
-          const needsAttachment=presentationNames.some(name=>{
-            const value=doc.nodes.find(n=>n.statement.kind==='binding'&&n.statement.name===name)?.statement.value;
-            return !(value?.kind==='call'&&value.operator==='render_figure'&&value.figureKind==='table');
-          });
-          if(needsAttachment&&!options.attachments?.())throw new Error('The host attachments service is unavailable');
           const record=recordFor(entry,exec,read.file,true);
           if(record.active)throw new Error('This draft is already running; wait for it to finish');
           record.active=true;record.touched=Date.now();
           record.zone=structuredClone(options.timeContext.zones.get(exec.agent.session)??{kind:'missing'});
           try{
-            const run=await record.runtime.run(read.text,{targets,signal:AbortSignal.any([signal,AbortSignal.timeout(120000)])});
+            const run=await record.runtime.run(read.text,{targets:['answer'],signal:AbortSignal.any([signal,AbortSignal.timeout(120000)])});
             const base=receipt(run,read.file);
             if(!base.ok)return {...base,approval:approvalStatus};
-            const data:Record<string,unknown>=Object.create(null);
-            const figures:Record<string,{embedded:string}>=Object.create(null);
-            const reports:Record<string,{embedded:string}>=Object.create(null);
-            let answer:{embedded:string}|undefined;
             const published=new Map<string,{embedded:string}>();
             const publishOnce=async(name:string)=>{let value=published.get(name);if(!value){value=await publish(record,read.text,name,exec);published.set(name,value);}return value;};
-            for(const name of selection.data)data[name]=record.runtime.read(name,read.text).value.data;
-            for(const name of selection.figures)figures[name]=await publishOnce(name);
-            for(const name of selection.reports)reports[name]=await publishOnce(name);
-            if(args.answer){
-              const asset=answerAsset!;
-              const presentations:Record<string,string>=Object.create(null);
-              const value=record.runtime.read('answer',read.text).value.data as {items:Record<string,unknown>};
-              const active=new Set(selectReport(asset.program!,value.items).refs);
-              for(const [alias,reference]of Object.entries(asset.references??{}))if(active.has(alias)&&(reference.kind==='figure'||reference.kind==='report'))presentations[alias]=(await publishOnce(reference.code!)).embedded;
-              answer={embedded:renderMarkdownAnswer(asset.program!,value.items,presentations)};
-            }
-            // Receipts describe failures, not unrequested values or intermediate bindings.
-            return {ok:true,run:run.id,sourceHash:run.sourceHash,batch:run.batch,counts:base.counts,approval:approvalStatus,
-              ...(selection.data.length?{data:{...data}}:{}),...(selection.figures.length?{figures:{...figures}}:{}),...(selection.reports.length?{reports:{...reports}}:{}),...(answer?{answer}:{})};
+            const presentations:Record<string,string>=Object.create(null);
+            const value=record.runtime.read('answer',read.text).value.data as {items:Record<string,unknown>};
+            const active=new Set(selectReport(answerAsset.program!,value.items).refs);
+            for(const [alias,reference]of Object.entries(answerAsset.references??{}))if(active.has(alias)&&(reference.kind==='figure'||reference.kind==='report'))presentations[alias]=(await publishOnce(reference.code!)).embedded;
+            const answer={embedded:renderMarkdownAnswer(answerAsset.program!,value.items,presentations)};
+            return {ok:true,run:run.id,sourceHash:run.sourceHash,batch:run.batch,counts:base.counts,approval:approvalStatus,answer};
           }finally{record.active=false;record.touched=Date.now();if(closed)record.runtime.dispose();}
         }finally{pending.delete(key);}
       },
