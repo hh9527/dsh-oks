@@ -230,7 +230,16 @@ export class TypedCompiler{
   const output:V=unavailableOutput?{type:{kind:'error'},known:false}:{type:record(Object.fromEntries(Object.entries(outputFields).map(([name,v])=>[name,v.type]))),known:false,fields:outputFields};
   if(entries.having&&!groups)this.reportFailure(entries.having,'having requires group_by');
   let sql='SELECT '+columns.map(c=>q(c.name)).join(',')+' FROM ('+inner+')';if(entries.having&&groups){const p=this.callback(entries.having,[output],captures);const valid=this.bool(p,entries.having);sql+=' WHERE '+(valid?this.sql(p,entries.having):'NULL');}
-  if(entries.order_by){const f=entries.order_by;if(f.k!=='lambda'||f.params?.length!==1||f.body?.k!=='array')this.reportFailure(f,'order_by requires (out) => [asc/desc(...)]');else{const env={...captures,[f.params![0]]:output};const order=f.body.a!.map(item=>{
+  if(entries.order_by){const f=entries.order_by;if(f.k!=='lambda'||f.params?.length!==1||f.body?.k!=='array'){
+   if(this.checking){
+    if(f.k==='lambda'){
+     const env:Record<string,V>={...captures,...Object.fromEntries((f.params??[]).map((p,i)=>[p,i===0?output:{type:{kind:'error'} as Ty,known:false}]))};
+     if(f.body?.k==='array')for(const item of f.body.a??[]){if(item.k==='call'&&['asc','desc'].includes(item.name!))for(const arg of item.a??[])this.compile(arg,env);else this.compile(item,env);}
+     else if(f.body)this.compile(f.body,env);
+    }else this.compile(f,captures);
+   }
+   this.reportFailure(f,'order_by requires (out) => [asc/desc(...)]');
+  }else{const env={...captures,[f.params![0]]:output};const order=f.body.a!.map(item=>{
    if(item.k!=='call'||!['asc','desc'].includes(item.name!)||![1,2].includes(item.a!.length)){if(this.checking){if(item.k==='call')for(const arg of item.a??[])this.compile(arg,env);else this.compile(item,env);}this.reportFailure(item,'Expected asc or desc');return 'NULL ASC NULLS LAST';}
    const value=this.compile(item.a![0],env),option=item.a![1]?this.compile(item.a![1],env):undefined;let valid=true,nulls='last';
    if(value.type.kind==='error')valid=false;else if(value.type.kind!=='scalar'){this.reportFailure(item,'Ordering requires a scalar');valid=false;}
