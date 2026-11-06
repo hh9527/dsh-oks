@@ -41,6 +41,7 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
   const tables=ctx.args[0]?.data;if(!Array.isArray(tables)||!tables.length)throw new DraftSyntaxError('union_all requires a nonempty array of tables',ctx.span);
   const inputDiagnostics=ctx.diagnostics?.scope()??new DiagnosticCollector();let unavailable=false;
   const types=tables.map((value,index):Ty=>{
+   if(check&&hasError(value)){unavailable=true;return {kind:'error'};}
    try{return typeOf(value);}catch(error){
     if(!check)throw error;
     if(error instanceof UpstreamTypeUnavailable){unavailable=true;return {kind:'error'};}

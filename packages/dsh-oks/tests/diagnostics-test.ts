@@ -236,6 +236,9 @@ try{
  assert(partialUnion.checkedBindings.some(b=>b.name==='result'&&!b.checked));
  await assert.rejects(runTyped({operator:'table_union',args:[{data:[box({kind:'error'}),42,true]}],statement,span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL execution');}} as any,true),error=>error instanceof DraftSyntaxError&&error.diagnostics.some(d=>d.message==='union_all requires Table values'));
  await assert.rejects(runTyped({operator:'table_union',args:[{data:[UNKNOWN,42]}],statement,span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL execution');}} as any,true),error=>error instanceof DraftSyntaxError&&error.diagnostics.some(d=>d.message==='union_all requires Table values'));
+ const nestedTableError=box({kind:'table',columns:[{name:'n',type:'Int',nullable:false}]},{columns:[{name:'n',type:'Int',nullable:false}],rows:[{n:box({kind:'error'})}],truncated:false});
+ await assert.rejects(runTyped({operator:'table_union',args:[{data:[nestedTableError]}],statement,span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL execution');}} as any,true),UpstreamTypeUnavailable);
+ await assert.rejects(runTyped({operator:'table_union',args:[{data:[nestedTableError,42]}],statement,span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL execution');}} as any,true),error=>error instanceof DraftSyntaxError&&error.diagnostics.some(d=>d.message==='union_all requires Table values'));
  assert.equal(prepares,0);
  const mapped=await checkDesign('data bad = [1,"x"]; data result = map(bad,(n)=>({dependent:n+1,independent:"x"+1}));','fixture.dari',backend);
  assert(mapped.diagnostics.some(d=>d.message.includes('Incompatible types')),JSON.stringify(mapped.diagnostics));
