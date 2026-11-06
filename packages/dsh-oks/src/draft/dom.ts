@@ -208,6 +208,7 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
     const declarationStart=at;
     const savedDefinitions=new Map(definitions),savedDeclarations=new Map(declarations),savedFigures=new Map(figures);
     const savedNodes=nodes.length,savedReferences=references.length,savedTemplates=templates.length,savedScopes=scopes.length,savedSequence=sequence,savedTitle=title;
+    const identifierCheckpoint=identifierDiagnostics.checkpoint();
     let recoverableBinding:string|undefined,recoverableKind:'data'|'figure'|'report'|'answer'|undefined,recoverableEnd:number|undefined;
     try{
     const start=at,kind=name();
@@ -243,6 +244,7 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
         tree.name='article';tree.empty=false;templates.push({name:binding,title:ownTitle,element:tree,span:location(start),...(kind==='answer'?{format:'markdown' as const}:{})});
       }
     }
+    if(identifierDiagnostics.hasErrors(identifierCheckpoint))throw new UnavailableSyntaxDependency();
     declarations.set(binding,kind as 'data'|'figure'|'report'|'answer');
     }catch(error){
       definitions.clear();for(const [key,value] of savedDefinitions)definitions.set(key,value);
@@ -253,12 +255,12 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
         if(error instanceof DraftSyntaxError)syntaxDiagnostics.reportAll(error.diagnostics.length?error.diagnostics:[{file,stage:'syntax',message:error.message,span:error.span}]);
         const failedSpan=location(declarationStart,recoverableEnd+1);unavailableDefinitions.set(recoverableBinding,failedSpan);if(recoverableKind==='data')definitions.set(recoverableBinding,{k:'error',s:failedSpan});declarations.set(recoverableBinding,recoverableKind);at=recoverableEnd+1;topLevelWhitespace();continue;
       }
-      if(error instanceof DraftSyntaxError&&syntaxDiagnostics.hasErrors()){
+      if(error instanceof DraftSyntaxError&&(syntaxDiagnostics.hasErrors()||identifierDiagnostics.hasErrors())){
         syntaxDiagnostics.reportAll(error.diagnostics.length?error.diagnostics:[{file,stage:'syntax',message:error.message,span:error.span}]);
         syntaxDiagnostics.reportAll(identifierDiagnostics.list());
         const findings=syntaxDiagnostics.list();throw new DraftSyntaxError(findings[0].message,findings[0].span,findings);
       }
-      if(error instanceof UnavailableSyntaxDependency&&syntaxDiagnostics.hasErrors()){const findings=syntaxDiagnostics.list();throw new DraftSyntaxError(findings[0].message,findings[0].span,findings);}
+      if(error instanceof UnavailableSyntaxDependency&&(syntaxDiagnostics.hasErrors()||identifierDiagnostics.hasErrors())){syntaxDiagnostics.reportAll(identifierDiagnostics.list());const findings=syntaxDiagnostics.list();throw new DraftSyntaxError(findings[0].message,findings[0].span,findings);}
       throw error;
     }
     topLevelWhitespace();
@@ -267,7 +269,7 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
   const identifierErrors=identifierDiagnostics.list();
   syntaxDiagnostics.reportAll(identifierErrors);
   const findings=syntaxDiagnostics.list();if(findings.length){
-    if(!collector||identifierErrors.length)throw new DraftSyntaxError(findings[0].message,findings[0].span,findings);
+    if(!collector)throw new DraftSyntaxError(findings[0].message,findings[0].span,findings);
     collector.reportAll(findings.map(d=>({...d,file:d.file??file,excerpt:sourceExcerpt(original,d.span)})));
   }
   let queries=0;

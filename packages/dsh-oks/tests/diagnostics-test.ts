@@ -234,6 +234,12 @@ try{
  assert.deepEqual(mixedSyntaxResult.diagnostics.map(d=>d.span.start.offset),mixedPositions,JSON.stringify(mixedSyntaxResult.diagnostics));
  assert.equal(mixedSyntaxResult.diagnostics.filter(d=>d.message.includes('row["周次"]')).length,2,JSON.stringify(mixedSyntaxResult.diagnostics));
  assert.equal(mixedSyntaxResult.diagnostics.filter(d=>d.message==='Expected an expression').length,2,JSON.stringify(mixedSyntaxResult.diagnostics));
+ const unicodeRecovery='data row = {"周次":1}; data bad = row.周次; data dependent = bad + 1; data type_bad = "x"+1; data good = 1;';
+ const unicodeResult=await checkDesign(unicodeRecovery,'fixture.dari',backend);
+ assert.equal(unicodeResult.diagnostics.filter(d=>d.message.includes('row["周次"]')).length,1,JSON.stringify(unicodeResult.diagnostics));
+ assert(unicodeResult.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(unicodeResult.diagnostics));
+ for(const name of ['bad','dependent','type_bad'])assert(unicodeResult.checkedBindings.some(b=>b.name===name&&!b.checked),name);
+ assert(unicodeResult.checkedBindings.some(b=>b.name==='good'&&b.checked));
  const emptySource='data empty = ;\ndata comment_only = /* nothing */ ;\ndata later = 1+*2;';
  const emptyResult=await checkDesign(emptySource,'fixture.dari',backend);
  assert.equal(emptyResult.diagnostics.length,3,JSON.stringify(emptyResult.diagnostics));
