@@ -151,7 +151,7 @@ export class TypedCompiler{
   const spec=n.a![0];if(spec.k!=='object')fail(n,'Expected select specification');const entries=Object.fromEntries(spec.entries!.map(e=>[e.key,e.value]));for(const key of Object.keys(entries))if(!['from','joins','where','fields','group_by','having','order_by','limit'].includes(key))fail(entries[key],'Unknown select option '+key);
   const captures=this.env(),tables:Record<string,unknown>={},scope:Record<string,V>=Object.create(null),joins:string[]=[];let sourceCount=0;let baseBounds:{minRows?:number;maxRows?:number}={};
   const source=(s:N,left=false):string=>{
-   if(s.k!=='object'||s.entries!.length!==1)fail(s,'Expected one source alias');const {key:alias,value:ref}=s.entries![0];if(Object.hasOwn(scope,alias))fail(s,'Duplicate table alias '+alias);const v=this.compile(ref,captures);if(v.type.kind!=='table')fail(ref,'Expected Table, got '+show(v.type));
+   if(s.k!=='object'||s.entries!.length!==1)fail(s,'Expected one source alias');const {key:alias,value:ref}=s.entries![0];if(Object.hasOwn(scope,alias))fail(s,'Duplicate table alias '+alias);const v=this.compile(ref,captures);if(v.type.kind==='error')this.throwIfErrors();if(v.type.kind!=='table')fail(ref,'Expected Table, got '+show(v.type));
    const inputKey='source'+sourceCount,sqlAlias='a'+sourceCount++;tables[inputKey]=this.captures[ref.name!];const columns=v.type.columns;if(sourceCount===1)baseBounds=v.type;let presence='__dari_present';while(columns.some(c=>c.name===presence))presence+='_';
    scope[alias]={type:rowType(columns),known:false,presence:sqlAlias+'.'+q(presence),fields:Object.fromEntries(columns.map(c=>[c.name,{type:scalar(c.type,c.nullable),known:false,sql:sqlAlias+'.'+q(c.name)}]))};
    return '(SELECT *,1 AS '+q(presence)+' FROM '+q('t_'+inputKey)+') '+sqlAlias;
@@ -159,24 +159,34 @@ export class TypedCompiler{
   if(!entries.from)fail(n,'select requires from');const from=source(entries.from);
   if(entries.joins){if(entries.joins.k!=='array')fail(entries.joins,'joins must be an array');for(const j of entries.joins.a!){if(j.k!=='object')fail(j,'Expected join object');const p=Object.fromEntries(j.entries!.map(e=>[e.key,e.value]));for(const key of Object.keys(p))if(!['kind','source','on'].includes(key))fail(p[key],'Unknown join option '+key);if(!p.kind||p.kind.k!=='lit'||!['inner','left'].includes(p.kind.v)||!p.source||!p.on)fail(j,'join requires kind,source,on');const sql=source(p.source);const predicate=this.callback(p.on,[{type:record(Object.fromEntries(Object.entries(scope).map(([k,v])=>[k,v.type]))),known:false,fields:{...scope}}],captures);const valid=this.bool(predicate,p.on);joins.push((p.kind.v==='left'?' LEFT':' INNER')+' JOIN '+sql+' ON '+(valid?this.sql(predicate,p.on):'NULL'));if(p.kind.v==='left'){const alias=p.source.entries![0].key;scope[alias]={...scope[alias],type:optional(scope[alias].type)};}}}
   const row:V={type:record(Object.fromEntries(Object.entries(scope).map(([k,v])=>[k,v.type]))),known:false,fields:scope};
-  const where=entries.where?this.callback(entries.where,[row],captures):undefined;if(where)this.bool(where,entries.where);
+  const where=entries.where?this.callback(entries.where,[row],captures):undefined;const whereValid=where?this.bool(where,entries.where):false;
   let groups:V|undefined;if(entries.group_by){groups=this.callback(entries.group_by,[row],captures);if(groups.type.kind!=='record'&&groups.type.kind!=='error'){this.reportFailure(entries.group_by,'group_by requires a key record');groups={type:{kind:'error'},known:false};}for(const v of Object.values(groups.fields??{}))if(v.type.kind!=='scalar'&&v.type.kind!=='null'&&v.type.kind!=='error')this.reportFailure(entries.group_by,'Group keys must be scalar');}
   const asColumns=(v:V):V=>({...v,column:v.type.kind==='scalar'?true:v.column,...(v.fields?{fields:Object.fromEntries(Object.entries(v.fields).map(([k,v])=>[k,asColumns(v)]))}:{})});
   if(!entries.fields)fail(n,'select requires fields');
   const values=this.callback(entries.fields,groups?[groups,{...asColumns(row),rows:true}]:[row],captures);
-  this.throwIfErrors();
-  if(values.type.kind!=='record'||!values.fields||!Object.keys(values.fields).length)fail(entries.fields,'fields requires a nonempty record');
-  const columns:SqlColumn[]=Object.entries(values.fields).map(([name,v])=>{if(v.type.kind!=='scalar')fail(entries.fields,'Table field '+name+' must have an inferred scalar type, got '+show(v.type));if(v.column)fail(entries.fields,'Column must be aggregated');return {name,type:(v.type as any).name,nullable:(v.type as any).nullable};});
-  let projection=Object.entries(values.fields).map(([name,v])=>this.sql(v,entries.fields)+' AS '+q(name)).join(',');
-  if(new Set(columns.map(c=>c.name.toLowerCase())).size!==columns.length)fail(entries.fields,'Output column names must be distinct ignoring case for SQLite lowering');
-  if(groups&&Object.keys(groups.fields!).length===0&&!/\b(COUNT|SUM|AVG|MIN|MAX)\s*\(/.test(projection))projection+=',COUNT(*) AS "__dari_global_anchor"';
-  let inner='SELECT '+projection+' FROM '+from+joins.join('')+(where?' WHERE '+this.sql(where,entries.where):'');
-  if(groups){const keys=Object.values(groups.fields!);if(keys.length)inner+=' GROUP BY '+keys.map(v=>this.sql(v,entries.group_by)).join(',');}
-  const output:V={type:rowType(columns),known:false,fields:Object.fromEntries(columns.map(c=>[c.name,{type:scalar(c.type,c.nullable),known:false,sql:q(c.name)}]))};
+  if(values.type.kind!=='record'||!values.fields||!Object.keys(values.fields).length){if(values.type.kind!=='error')this.reportFailure(entries.fields,'fields requires a nonempty record');this.throwIfErrors();fail(entries.fields,'fields requires a nonempty record');}
+  const outputFields:Record<string,V>={};const columns:SqlColumn[]=[];
+  for(const [name,v] of Object.entries(values.fields)){
+   if(v.type.kind==='error'){outputFields[name]=v;continue;}
+   if(v.type.kind!=='scalar'||v.column){this.reportFailure(entries.fields,v.column?'Column must be aggregated':'Table field '+name+' must have an inferred scalar type, got '+show(v.type));outputFields[name]={type:{kind:'error'},known:false};continue;}
+   columns.push({name,type:v.type.name,nullable:v.type.nullable});outputFields[name]={type:v.type,known:false,sql:q(name)};
+  }
+  let projection=Object.entries(values.fields).map(([name,v])=>(outputFields[name].type.kind==='error'?'NULL':this.sql(v,entries.fields))+' AS '+q(name)).join(',');
+  const names=Object.keys(values.fields);if(new Set(names.map(name=>name.toLowerCase())).size!==names.length)this.reportFailure(entries.fields,'Output column names must be distinct ignoring case for SQLite lowering');
+  if(groups&&Object.keys(groups.fields??{}).length===0&&!/\b(COUNT|SUM|AVG|MIN|MAX)\s*\(/.test(projection))projection+=',COUNT(*) AS "__dari_global_anchor"';
+  let inner='SELECT '+projection+' FROM '+from+joins.join('')+(where?' WHERE '+(whereValid?this.sql(where,entries.where):'NULL'):'');
+  if(groups){const keys=Object.values(groups.fields??{});if(keys.length)inner+=' GROUP BY '+keys.map(v=>v.type.kind==='scalar'||v.type.kind==='null'?this.sql(v,entries.group_by):'NULL').join(',');}
+  const output:V={type:record(Object.fromEntries(Object.entries(outputFields).map(([name,v])=>[name,v.type]))),known:false,fields:outputFields};
   if(entries.having&&!groups)fail(entries.having,'having requires group_by');
   let sql='SELECT '+columns.map(c=>q(c.name)).join(',')+' FROM ('+inner+')';if(entries.having){const p=this.callback(entries.having,[output],captures);const valid=this.bool(p,entries.having);sql+=' WHERE '+(valid?this.sql(p,entries.having):'NULL');}
-  if(entries.order_by){const f=entries.order_by;if(f.k!=='lambda'||f.params?.length!==1||f.body?.k!=='array')fail(f,'order_by requires (out) => [asc/desc(...)]');const env={...captures,[f.params![0]]:output};const order=f.body.a!.map(item=>{if(item.k!=='call'||!['asc','desc'].includes(item.name!)||![1,2].includes(item.a!.length))fail(item,'Expected asc or desc');const value=this.compile(item.a![0],env);if(value.type.kind==='error')return 'NULL ASC NULLS LAST';if(value.type.kind!=='scalar')fail(item,'Ordering requires a scalar');let nulls='last';if(item.a![1]){const option=this.compile(item.a![1],env);if(option.type.kind==='error')return 'NULL ASC NULLS LAST';if(!option.known||!isRecord(option.value)||Object.keys(option.value).some(k=>k!=='nulls')||!['first','last'].includes(String(option.value.nulls)))fail(item,'Ordering options must be {nulls:"first"|"last"}');nulls=String(option.value.nulls);}return this.sql(value,item)+' '+item.name!.toUpperCase()+' NULLS '+nulls.toUpperCase();});if(!order.length)fail(f,'order_by must not be empty');sql+=' ORDER BY '+order.join(',');}
-  let minRows=groups&&Object.keys(groups.fields!).length===0&&!entries.having?1:!groups&&!entries.where&&!joins.length?(baseBounds.minRows??0):0,maxRows:number|undefined=groups&&Object.keys(groups.fields!).length===0?1:!joins.length?baseBounds.maxRows:undefined;
+  if(entries.order_by){const f=entries.order_by;if(f.k!=='lambda'||f.params?.length!==1||f.body?.k!=='array')fail(f,'order_by requires (out) => [asc/desc(...)]');const env={...captures,[f.params![0]]:output};const order=f.body.a!.map(item=>{
+   if(item.k!=='call'||!['asc','desc'].includes(item.name!)||![1,2].includes(item.a!.length)){this.reportFailure(item,'Expected asc or desc');return 'NULL ASC NULLS LAST';}
+   const value=this.compile(item.a![0],env),option=item.a![1]?this.compile(item.a![1],env):undefined;let valid=true,nulls='last';
+   if(value.type.kind==='error')valid=false;else if(value.type.kind!=='scalar'){this.reportFailure(item,'Ordering requires a scalar');valid=false;}
+   if(option){if(option.type.kind==='error')valid=false;else if(!option.known||!isRecord(option.value)||Object.keys(option.value).some(k=>k!=='nulls')||!['first','last'].includes(String(option.value.nulls))){this.reportFailure(item,'Ordering options must be {nulls:"first"|"last"}');valid=false;}else nulls=String(option.value.nulls);}
+   return valid?this.sql(value,item)+' '+item.name!.toUpperCase()+' NULLS '+nulls.toUpperCase():'NULL ASC NULLS LAST';
+  });if(!order.length)fail(f,'order_by must not be empty');sql+=' ORDER BY '+order.join(',');}
+  let minRows=groups&&Object.keys(groups.fields??{}).length===0&&!entries.having?1:!groups&&!entries.where&&!joins.length?(baseBounds.minRows??0):0,maxRows:number|undefined=groups&&Object.keys(groups.fields??{}).length===0?1:!joins.length?baseBounds.maxRows:undefined;
   if(entries.limit){const v=this.compile(entries.limit,captures);if(v.type.kind==='error')this.throwIfErrors();if(!v.known||!Number.isSafeInteger(v.value)||v.value<0)fail(entries.limit,'limit requires a known nonnegative Int');if(v.value>0&&!entries.order_by&&maxRows!==1)fail(entries.limit,'limit requires order_by');maxRows=Math.min(maxRows??Infinity,v.value);minRows=Math.min(minRows,v.value);sql+=' LIMIT '+v.value;}
   this.throwIfErrors();
   if(n.name==='select_one')sql='SELECT * FROM ('+sql+') LIMIT 2';

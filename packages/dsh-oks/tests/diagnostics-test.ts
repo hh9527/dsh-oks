@@ -47,5 +47,8 @@ try{
  const warningBackend={...backend,checkCall(ctx:any){return [{stage:'type',severity:'warning' as const,message:'advisory',span:ctx.span}];}};
  const warned=await checkDesign('data x = data(1);','fixture.dari',warningBackend);
  assert.equal(warned.ok,true,JSON.stringify(warned));assert.equal(warned.warnings[0]?.message,'advisory');assert(warned.checkedBindings[0].checked);
+ const internalError=new Error('internal failure');
+ await assert.rejects(checkDesign('data x = 1 + 2;','fixture.dari',{...backend,async analyze(){throw internalError;}}),e=>e===internalError);
+ await assert.rejects(checkDesign('data x = 1;','fixture.dari',{...backend,async preflight(){throw internalError;}}),e=>e===internalError);
 }finally{backend.dispose?.();}
 console.log('Diagnostic collector: checkpoints, explicit reports and error type propagation passed');

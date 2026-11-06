@@ -91,7 +91,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
   else if(reports.length===1)answer=reports[0];
   else if(options.requireSelection&&reports.length>1)diagnostics.report({file,stage:'validation',message:`Select answer from: ${reports.join(', ')}`,span:doc.pipeline});
   diagnostics.reportAll((doc.diagnostics??[]).filter(d=>d.severity==='warning'));
-  try { await backend.preflight(doc,signal); } catch (error) { addError(error,doc.pipeline); }
+  try { await backend.preflight(doc,signal); } catch (error) { if(!(error instanceof DraftSyntaxError))throw error;addError(error,doc.pipeline); }
   const analyze=backend.analyze;
   if(!analyze)throw new Error('Backend does not provide an analysis implementation');
   const bindings = new Map<string,unknown>();
@@ -196,7 +196,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         if(result){result.checked=checked;if(shape!==undefined)result.shape=shape;}
       }
     }
-    catch (error) { if(error instanceof UpstreamTypeUnavailable)upstreamUnavailable=true;else addError(error,statement.span); if (statement.kind === 'binding') bindings.set(binding,UNKNOWN); }
+    catch (error) { if(error instanceof UpstreamTypeUnavailable)upstreamUnavailable=true;else if(error instanceof DraftSyntaxError||error instanceof TypeRuleError)addError(error,statement.span);else throw error; if (statement.kind === 'binding') bindings.set(binding,UNKNOWN); }
   }
   const unique = [...new Map(diagnostics.list().map(d=>[canonicalJson([d.file,d.stage,d.severity,d.span,d.message,d.asset,d.expected,d.found,d.related]),d])).values()];
   warnings.push(...unique.filter(d=>d.severity==='warning'));

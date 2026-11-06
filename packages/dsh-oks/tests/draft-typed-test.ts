@@ -69,6 +69,9 @@ const small=(body:string)=>`data a = query({period:"base",limit:10});data b = qu
   fields:(g,rows)=>({valid:count(rows),bad:sum(rows.s.missing_value)})});`),'typed.dari',backend);
  for(const name of ['missing_predicate','missing_group','missing_value'])assert(grouped.diagnostics.some(d=>d.message.includes(name)),JSON.stringify(grouped.diagnostics));
  assert(!grouped.diagnostics.some(d=>/Predicate must return Bool|Group keys must be scalar|sum requires/.test(d.message)));
+ const later=await checkDesign(small('data sample = select({from:{s:a},where:r=>r.s.missing_where,fields:r=>({bad:r.s.missing_field,id:r.s.server_id}),order_by:o=>[asc(o.bad),desc(o.missing_order)],limit:-1});'),'typed.dari',backend);
+ for(const name of ['missing_where','missing_field','missing_order','limit requires a known nonnegative Int'])assert(later.diagnostics.some(d=>d.message.includes(name)),JSON.stringify(later.diagnostics));
+ assert(!later.diagnostics.some(d=>/Ordering requires a scalar|Unknown field bad/.test(d.message)));
  const joined=await checkDesign(small(`data sample = select({from:{s:a},joins:[{kind:"inner",source:{t:b},on:r=>1}],fields:r=>({bad:r.s.missing_field})});`),'typed.dari',backend);
  assert(joined.diagnostics.some(d=>/Predicate must return Bool/.test(d.message)),JSON.stringify(joined.diagnostics));
  assert(joined.diagnostics.some(d=>/missing_field/.test(d.message)),JSON.stringify(joined.diagnostics));
