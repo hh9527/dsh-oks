@@ -241,10 +241,26 @@ try{
  const syntaxQueryBackend={...backend,async analyze(ctx:any){if(ctx.operator==='query')syntaxQueryCalls++;return backend.analyze!(ctx);}};
  const syntaxQuery=await checkDesign('data bad = 1 + * 2; data dependent = query({limit:bad});','fixture.dari',syntaxQueryBackend);
  assert.equal(syntaxQueryCalls,0);assert(syntaxQuery.checkedBindings.some(b=>b.name==='dependent'&&!b.checked));
+ for(const body of ['p [Value(data=bad)]','p [Value(data=bad.field)]','if (bad) [p ["yes"]] else [p ["no"]]']){
+  const result=await checkDesign(`data bad = 1 + * 2; data valid = 1; answer tree! { Answer [${body}] };`,'fixture.dari',backend);
+  assert.equal(result.diagnostics.length,1,JSON.stringify(result.diagnostics));
+  assert.equal(result.diagnostics[0].message,'Expected an expression');
+  assert(result.checkedBindings.some(b=>b.name==='bad'&&!b.checked));
+  assert(result.checkedBindings.some(b=>b.name==='answer'&&!b.checked));
+  assert(result.checkedBindings.some(b=>b.name==='valid'&&b.checked));
+ }
  const uncertain=await checkDesign('data first = 1 + * 2\ndata second = 3 + * 4;','fixture.dari',backend);
  assert.equal(uncertain.diagnostics.length,1,JSON.stringify(uncertain.diagnostics));
  const unclosed=await checkDesign('data first = (1 + * 2; data second = 3 + * 4;','fixture.dari',backend);
  assert.equal(unclosed.diagnostics.length,1,JSON.stringify(unclosed.diagnostics));
+ const bounded='data first = {text:";\\\";",nested:[1,2],bad:1+*2}; /* ; */\ndata second = (3+*4);';
+ const boundedResult=await checkDesign(bounded,'fixture.dari',backend);
+ assert.deepEqual(boundedResult.diagnostics.map(d=>d.span.start.offset),[bounded.indexOf('*2'),bounded.lastIndexOf('*4')],JSON.stringify(boundedResult.diagnostics));
+ for(const tail of ['data second = "unterminated;','data second = 1 /* unterminated;']){
+  const result=await checkDesign('data first = 1 + * 2; '+tail,'fixture.dari',backend);
+  assert.equal(result.diagnostics.length,2,JSON.stringify(result.diagnostics));
+  assert(result.diagnostics[1].message.startsWith('Unterminated'),JSON.stringify(result.diagnostics));
+ }
  for(const [joins,message] of [['42','joins must be an array'],['[42,True]','join must be an object']] as const){
   const result=await checkDesign(`data facts = table([{n:1}],{kind:"example"}); data x = select({from:{s:facts},joins:${joins},fields:r=>({missing:r.unknown.n,bad:"x"+1}),limit:-1});`,'fixture.dari',backend);
   assert.equal(result.diagnostics.filter(d=>d.message===message).length,joins==='42'?1:2,JSON.stringify(result.diagnostics));
