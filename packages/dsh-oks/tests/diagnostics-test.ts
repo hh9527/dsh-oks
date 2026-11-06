@@ -13,6 +13,8 @@ const root=new DiagnosticCollector(),left=root.scope({file:'fixture.dari'}),righ
 left.report({stage:'type',message:'left',span});right.report({stage:'type',message:'right',span});
 assert.deepEqual(left.list().map(d=>d.message),['left']);assert.deepEqual(right.list().map(d=>d.message),['right']);
 assert.deepEqual(root.list().map(d=>[d.file,d.message]),[['fixture.dari','left'],['fixture.dari','right']]);
+const inherited=root.scope({file:'fixture.dari',asset:'x'}).scope();inherited.report({stage:'type',message:'nested',span});
+assert.equal(inherited.list()[0].asset,'x');assert.equal(inherited.list()[0].file,'fixture.dari');
 const shared=new DiagnosticCollector(),failedCompiler=new TypedCompiler({}, {}, true,shared.scope({file:'fixture.dari'})),validCompiler=new TypedCompiler({}, {}, true,shared.scope({file:'fixture.dari'}));
 failedCompiler.compile({k:'ref',s:span,name:'missing'},{});validCompiler.compile({k:'lit',s:span,v:1},{});validCompiler.throwIfErrors();
 assert.deepEqual(shared.list().map(d=>[d.file,d.message]),[['fixture.dari','Unknown binding missing']]);
@@ -88,6 +90,9 @@ try{
  const mixed=await checkDesign('data x = [1,"x"];','fixture.dari',backend);
  assert.equal(mixed.ok,false);assert(mixed.diagnostics.some(d=>/Incompatible types/.test(d.message)),JSON.stringify(mixed));
  assert(mixed.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ for(const source of ['data x = data(1,{kind:"bad"});','data x = time_windows(context(),{unit:"bad",count:1,mode:"current"});']){
+  const result=await checkDesign(source,'fixture.dari',backend);assert.equal(result.diagnostics.length,1,JSON.stringify(result.diagnostics));assert.equal(result.diagnostics[0].asset,'x');
+ }
  const argumentsSource='data a = concat(1,True); data b = round("x",20); data c = map_opt(1,n=>({dependent:n.missing,independent:"x"+1}));';
  const argumentsResult=await checkDesign(argumentsSource,'fixture.dari',backend);
  assert.equal(argumentsResult.diagnostics.filter(d=>d.message==='concat requires String').length,2,JSON.stringify(argumentsResult.diagnostics));

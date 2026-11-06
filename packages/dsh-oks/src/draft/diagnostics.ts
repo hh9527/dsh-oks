@@ -10,7 +10,7 @@ export class DiagnosticCollector {
   private readonly defaults:Partial<SourceDiagnostic>;
   constructor(parent?:DiagnosticCollector,defaults:Partial<SourceDiagnostic>={}){this.parent=parent;this.defaults=defaults;}
 
-  scope(defaults:Partial<SourceDiagnostic>={}):DiagnosticCollector { return new DiagnosticCollector(this,defaults); }
+  scope(defaults:Partial<SourceDiagnostic>={}):DiagnosticCollector { return new DiagnosticCollector(this,{...this.defaults,...defaults}); }
   report(diagnostic:SourceDiagnostic):void { const entry={...this.defaults,...diagnostic};this.entries.push(entry);this.parent?.report(entry); }
   reportAll(diagnostics:readonly SourceDiagnostic[]):void { for(const diagnostic of diagnostics)this.report(diagnostic); }
   checkpoint():number { return this.entries.length; }

@@ -67,10 +67,10 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
   const deferred: {binding:string;operator:string;at:Expr['span']['start'];reason:string}[] = [];
   let upstreamUnavailable=false;
   const sourceFile=new SourceFile(file,source);
-  const addError = (error: unknown, span: Expr['span'],stage='validation') => {
+  const addError = (error: unknown, span: Expr['span'],stage='validation',asset?:string) => {
     if (signal?.aborted) throw error;
     const entries:SourceDiagnostic[]=error instanceof DraftSyntaxError && error.diagnostics.length ? error.diagnostics : [{file,stage,message:error instanceof Error?error.message:String(error),span:error instanceof DraftSyntaxError?error.span:span}];
-    diagnostics.reportAll(entries.map(d=>({...d,file:d.file??file,...(d.stage==='syntax'&&(!d.file||d.file===file)?{excerpt:sourceExcerpt(sourceFile,d.span)}:{})})));
+    diagnostics.reportAll(entries.map(d=>({...d,file:d.file??file,...(asset&&d.asset===undefined?{asset}:{}),...(d.stage==='syntax'&&(!d.file||d.file===file)?{excerpt:sourceExcerpt(sourceFile,d.span)}:{})})));
   };
   let doc: DraftDocument;
   try { doc = parseAnalysisDesign(source,file,diagnostics); }
@@ -168,7 +168,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         return box(type);
       }
       const args = await settle(e.args.map(arg=>({span:arg.span,run:()=>child(arg)})));
-      const ctx: CallContext = {operator:e.operator,figureKind:e.figureKind,args:args.map(data=>({data,sources:[]})),statement,expression:e,diagnostics:diagnostics.scope({file}),span:e.span,run:'check',batch:'check',sourceHash:'check',signal,
+      const ctx: CallContext = {operator:e.operator,figureKind:e.figureKind,args:args.map(data=>({data,sources:[]})),statement,expression:e,diagnostics:diagnostics.scope({file,...(statement.kind==='binding'?{asset:binding}:{})}),span:e.span,run:'check',batch:'check',sourceHash:'check',signal,
         asset:typeof args[0] === 'string'?doc.assets.get(args[0]):undefined};
       if(hasError(args)&&!['typed_value','relational','relational_one'].includes(e.operator))throw new UpstreamTypeUnavailable();
       if(['typed_value','relational','relational_one','table_union','typed_table'].includes(e.operator)){
@@ -237,7 +237,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         if(result){result.checked=checked;if(checked&&shape!==undefined)result.shape=shape;}
       }
     }
-    catch (error) { if(error instanceof UpstreamTypeUnavailable)upstreamUnavailable=true;else if(error instanceof DraftSyntaxError||error instanceof TypeRuleError)addError(error,statement.span);else throw error; if (statement.kind === 'binding') bindings.set(binding,box({kind:'error'})); }
+    catch (error) { if(error instanceof UpstreamTypeUnavailable)upstreamUnavailable=true;else if(error instanceof DraftSyntaxError||error instanceof TypeRuleError)addError(error,statement.span,'validation',statement.kind==='binding'?binding:undefined);else throw error; if (statement.kind === 'binding') bindings.set(binding,box({kind:'error'})); }
   }
   const unique = diagnostics.list();
   signal?.throwIfAborted();
