@@ -43,15 +43,20 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
     return {kind:'record',fields,nullable:false};
    });
    const first=rowTypes[0];
-   if(first.kind==='record'&&rowTypes.every(row=>row.kind==='record'&&Object.keys(row.fields).join('\0')===Object.keys(first.fields).join('\0'))){
+   if(first.kind==='record'){
     const fields={...first.fields};
-    for(const [index,row] of rowTypes.entries())if(index>0&&row.kind==='record')for(const [name,current] of Object.entries(row.fields)){
+    for(const [index,row] of rowTypes.entries())if(index>0){
+     const rowExpr=rowsExpr?.kind==='array'?rowsExpr.values[index]:undefined;
+     if(row.kind!=='record'||Object.keys(row.fields).join('\0')!==Object.keys(first.fields).join('\0'))diagnostics.report({stage:'type',message:'table rows must have the same columns in the same order',span:rowExpr?.span??ctx.span});
+     if(row.kind!=='record')continue;
+     for(const [name,current] of Object.entries(row.fields)){
+     if(!Object.hasOwn(fields,name))continue;
      if(fields[name].kind==='error'||current.kind==='error'){fields[name]={kind:'error'};continue;}
      try{fields[name]=common(fields[name],current);}catch(error){
       if(!(error instanceof TypeRuleError))throw error;
-      const rowExpr=rowsExpr?.kind==='array'?rowsExpr.values[index]:undefined;
       const span=rowExpr?.kind==='object'?rowExpr.entries.find(e=>e.key===name)?.value.span??ctx.span:ctx.span;
       diagnostics.report({stage:'type',message:'table column '+name+': '+error.message,span});fields[name]={kind:'error'};
+     }
      }
     }
     type={kind:'array',element:{...first,fields},length:rows.length,nullable:false};
