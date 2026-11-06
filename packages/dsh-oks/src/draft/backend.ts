@@ -192,8 +192,8 @@ export function createDraftBackend(options: {
         try {
           const first = expr.args[0] ? constant(expr.args[0], constants) : UNKNOWN;
           const second = expr.args[1] ? constant(expr.args[1], constants) : UNKNOWN;
-          if (['render_figure', 'render_report'].includes(expr.operator) && second !== UNKNOWN && !isRecord(second)) throw new Error(`${expr.operator} inputs must be a named object`);
-          if (expr.operator === 'render_figure' && second !== UNKNOWN && isRecord(second) && (!Object.hasOwn(second, 'data') || Object.keys(second).some(key => key !== 'data' && key !== 'nodes'))) throw new Error('render_figure inputs must be {data,nodes?}');
+          if (['render_figure', 'render_report'].includes(expr.operator) && second !== UNKNOWN && !isRecord(second)) fail(`${expr.operator} inputs must be a named object`,expr.span);
+          if (expr.operator === 'render_figure' && second !== UNKNOWN && isRecord(second) && (!Object.hasOwn(second, 'data') || Object.keys(second).some(key => key !== 'data' && key !== 'nodes'))) fail('render_figure inputs must be {data,nodes?}',expr.span);
           if (expr.operator === 'time_windows' && second !== UNKNOWN) timeWindowOptions(second);
           if (expr.operator === 'query' && first !== UNKNOWN) plannedQueries.push({intent:first,span:expr.span});
           if (expr.operator === 'render_figure' && first !== UNKNOWN){try{validateFigure(componentSpec(first,expr.figureKind));}catch(error){fail(error instanceof Error?error.message:String(error),expr.args[0].span);}}
@@ -208,12 +208,12 @@ export function createDraftBackend(options: {
             const keys = expr.args[1].kind === 'object' ? expr.args[1].entries.map(entry => entry.key) : Object.keys(second as Record<string, unknown>);
             const missing = [...refs].filter(ref => !keys.includes(ref));
             const unused = keys.filter(key => !refs.has(key));
-            if (missing.length || unused.length) throw new Error(`Template bindings mismatch: missing [${missing}], unused [${unused}]`);
+            if (missing.length || unused.length) fail(`Template bindings mismatch: missing [${missing}], unused [${unused}]`,expr.span);
           }
         } catch (error) {
           if (signal?.aborted) throw error;
-          if(error instanceof DraftSyntaxError)throw error;
-          fail(error instanceof Error ? error.message : String(error), expr.span);
+          if(error instanceof DataNatureValidationError||error instanceof TimeWindowValidationError)fail(error.message,expr.span);
+          throw error;
         }
       }
     };

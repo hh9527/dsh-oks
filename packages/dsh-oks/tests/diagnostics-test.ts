@@ -174,6 +174,11 @@ try{
  const unexpectedTimeError=new Error('unexpected time failure');
  const unexpectedDataError=new Error('unexpected data failure');
  assert.throws(()=>backend.checkCall!({operator:'data',args:[{data:1},{data:{get kind(){throw unexpectedDataError;}}}],span} as any,()=>true),e=>e===unexpectedDataError);
+ const brokenPreflight=parseAnalysisDesign('data x = data(1,{kind:"given"});','fixture.dari');
+ const brokenStatement=brokenPreflight.nodes[0].statement;
+ if(brokenStatement.value.kind!=='call')throw new Error('Expected data call');
+ brokenStatement.value.args[1]={kind:'literal',value:{get kind(){throw unexpectedDataError;}},span:brokenStatement.value.args[1].span} as any;
+ await assert.rejects(backend.preflight(brokenPreflight,undefined,{validateQueries:false}),e=>e===unexpectedDataError);
  assert.throws(()=>backend.checkCall!({operator:'time_windows',args:[{data:{get utc(){throw unexpectedTimeError;}}},{data:{unit:'day',count:1,mode:'current'}}],span} as any,()=>true),e=>e===unexpectedTimeError);
  const unexpectedRangeError=new RangeError('unexpected input access failure');
  assert.throws(()=>backend.checkCall!({operator:'time_windows',args:[{data:{get utc(){throw unexpectedRangeError;}}},{data:{unit:'day',count:1,mode:'current'}}],span} as any,()=>true),e=>e===unexpectedRangeError);
