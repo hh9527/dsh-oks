@@ -211,15 +211,15 @@ export class TypedCompiler{
   let inner='SELECT '+projection+' FROM '+from+joins.join('')+(where?' WHERE '+(whereValid?this.sql(where,entries.where):'NULL'):'');
   if(groups){const keys=Object.values(groups.fields??{});if(keys.length)inner+=' GROUP BY '+keys.map(v=>v.type.kind==='scalar'||v.type.kind==='null'?this.sql(v,entries.group_by):'NULL').join(',');}
   const output:V={type:record(Object.fromEntries(Object.entries(outputFields).map(([name,v])=>[name,v.type]))),known:false,fields:outputFields};
-  if(entries.having&&!groups)fail(entries.having,'having requires group_by');
-  let sql='SELECT '+columns.map(c=>q(c.name)).join(',')+' FROM ('+inner+')';if(entries.having){const p=this.callback(entries.having,[output],captures);const valid=this.bool(p,entries.having);sql+=' WHERE '+(valid?this.sql(p,entries.having):'NULL');}
-  if(entries.order_by){const f=entries.order_by;if(f.k!=='lambda'||f.params?.length!==1||f.body?.k!=='array')fail(f,'order_by requires (out) => [asc/desc(...)]');const env={...captures,[f.params![0]]:output};const order=f.body.a!.map(item=>{
+  if(entries.having&&!groups)this.reportFailure(entries.having,'having requires group_by');
+  let sql='SELECT '+columns.map(c=>q(c.name)).join(',')+' FROM ('+inner+')';if(entries.having&&groups){const p=this.callback(entries.having,[output],captures);const valid=this.bool(p,entries.having);sql+=' WHERE '+(valid?this.sql(p,entries.having):'NULL');}
+  if(entries.order_by){const f=entries.order_by;if(f.k!=='lambda'||f.params?.length!==1||f.body?.k!=='array')this.reportFailure(f,'order_by requires (out) => [asc/desc(...)]');else{const env={...captures,[f.params![0]]:output};const order=f.body.a!.map(item=>{
    if(item.k!=='call'||!['asc','desc'].includes(item.name!)||![1,2].includes(item.a!.length)){this.reportFailure(item,'Expected asc or desc');return 'NULL ASC NULLS LAST';}
    const value=this.compile(item.a![0],env),option=item.a![1]?this.compile(item.a![1],env):undefined;let valid=true,nulls='last';
    if(value.type.kind==='error')valid=false;else if(value.type.kind!=='scalar'){this.reportFailure(item,'Ordering requires a scalar');valid=false;}
    if(option){if(option.type.kind==='error')valid=false;else if(!option.known||!isRecord(option.value)||Object.keys(option.value).some(k=>k!=='nulls')||!['first','last'].includes(String(option.value.nulls))){this.reportFailure(item,'Ordering options must be {nulls:"first"|"last"}');valid=false;}else nulls=String(option.value.nulls);}
    return valid?this.sql(value,item)+' '+item.name!.toUpperCase()+' NULLS '+nulls.toUpperCase():'NULL ASC NULLS LAST';
-  });if(!order.length)fail(f,'order_by must not be empty');sql+=' ORDER BY '+order.join(',');}
+  });if(!order.length)this.reportFailure(f,'order_by must not be empty');else sql+=' ORDER BY '+order.join(',');}}
   let minRows=groups&&Object.keys(groups.fields??{}).length===0&&!entries.having?1:!groups&&!entries.where&&!joins.length?(baseBounds.minRows??0):0,maxRows:number|undefined=groups&&Object.keys(groups.fields??{}).length===0?1:!joins.length?baseBounds.maxRows:undefined;
   if(entries.limit){const v=this.compile(entries.limit,captures);if(v.type.kind==='error'){this.throwIfErrors();throw new UpstreamTypeUnavailable();}if(!v.known||!Number.isSafeInteger(v.value)||v.value<0)fail(entries.limit,'limit requires a known nonnegative Int');if(v.value>0&&!entries.order_by&&maxRows!==1)fail(entries.limit,'limit requires order_by');maxRows=Math.min(maxRows??Infinity,v.value);minRows=Math.min(minRows,v.value);sql+=' LIMIT '+v.value;}
   this.throwIfErrors();
@@ -228,7 +228,7 @@ export class TypedCompiler{
  }
  presence(v:V,n:N):string{if(v.presence)return v.presence;if(v.type.kind==='record')return this.param(v.known?(v.value===null?null:1):null);return this.sql(v,n);}
  fieldNode(callback:N,name:string):N{const body=callback.k==='lambda'?callback.body:undefined;return body?.k==='object'?body.entries?.find(entry=>entry.key===name)?.value??callback:callback;}
- callback(n:N,args:V[],env:Record<string,V>):V{if(n.k!=='lambda'||n.params?.length!==args.length)fail(n,'Expected a row function with '+args.length+' parameter(s)');return this.compile(n.body!,{...env,...Object.fromEntries(n.params!.map((p,i)=>[p,args[i]]))});}
+ callback(n:N,args:V[],env:Record<string,V>):V{if(n.k!=='lambda'||n.params?.length!==args.length)return this.errorValue(n,'Expected a row function with '+args.length+' parameter(s)');return this.compile(n.body!,{...env,...Object.fromEntries(n.params!.map((p,i)=>[p,args[i]]))});}
  reportFailure(n:N,message:string){if(!this.checking)fail(n,message);this.diagnostics.report({stage:'type',message,span:n.s});}
  errorValue(n:N,message:string):V{this.reportFailure(n,message);return {type:{kind:'error'},known:false};}
  commonType(a:Ty,b:Ty,n:N):Ty{try{return common(a,b);}catch(error){if(!this.checking||!(error instanceof TypeRuleError))throw error;this.reportFailure(n,error.message);return {kind:'error'};}}
