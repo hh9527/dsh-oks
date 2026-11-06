@@ -185,6 +185,10 @@ try{
  const missingSourceLimit=await checkDesign('data a = table([{n:1},{n:2}],{kind:"example"}); data x = select({from:{s:a},joins:[{kind:"inner",on:r=>True}],fields:r=>({n:r.s.n}),limit:5});','fixture.dari',backend);
  assert(missingSourceLimit.diagnostics.some(d=>d.message==='join requires kind,source,on'),JSON.stringify(missingSourceLimit.diagnostics));
  assert(!missingSourceLimit.diagnostics.some(d=>d.message==='limit requires order_by'),JSON.stringify(missingSourceLimit.diagnostics));
+ const missingFrom=await checkDesign('data x = select({fields:r=>({dependent:r.unknown.value,independent:"x"+1}),limit:-1});','fixture.dari',backend);
+ for(const expected of ['select requires from','Arithmetic requires numbers','limit requires a known nonnegative Int'])assert(missingFrom.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(missingFrom.diagnostics));
+ assert(!missingFrom.diagnostics.some(d=>d.message.includes('Unknown field unknown')),JSON.stringify(missingFrom.diagnostics));
+ assert(missingFrom.checkedBindings.some(b=>b.name==='x'&&!b.checked));
  assert(invalidGroup.checkedBindings.some(b=>b.name==='x'&&!b.checked));
  assert.equal(argumentsResult.diagnostics.filter(d=>d.message==='concat requires String').length,2,JSON.stringify(argumentsResult.diagnostics));
  assert.equal(argumentsResult.diagnostics.filter(d=>d.message.startsWith('round requires')).length,2,JSON.stringify(argumentsResult.diagnostics));
