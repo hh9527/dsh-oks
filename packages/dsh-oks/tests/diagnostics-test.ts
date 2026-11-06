@@ -174,6 +174,8 @@ try{
  const invalidJoinKind=await checkDesign('data a = table([{n:1}],{kind:"example"}); data b = table([{n:2}],{kind:"example"}); data x = select({from:{s:a},joins:[{kind:"bad",source:{t:b},on:r=>r.t.missing==1}],fields:r=>({known:r.s.absent,dependent:r.t.any})});','fixture.dari',backend);
  for(const expected of ['join requires kind,source,on','Unknown field missing','Unknown field absent'])assert(invalidJoinKind.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(invalidJoinKind.diagnostics));
  assert(!invalidJoinKind.diagnostics.some(d=>d.message.includes('Unknown field any')),JSON.stringify(invalidJoinKind.diagnostics));
+ const missingJoinPredicate=await checkDesign('data a = table([{n:1}],{kind:"example"}); data b = table([{n:2}],{kind:"example"}); data x = select({from:{s:a},joins:[{kind:"inner",source:{t:b}}],fields:r=>({first:r.s.absent,second:r.t.missing})});','fixture.dari',backend);
+ for(const expected of ['join requires kind,source,on','Unknown field absent','Unknown field missing'])assert(missingJoinPredicate.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(missingJoinPredicate.diagnostics));
  assert(invalidGroup.checkedBindings.some(b=>b.name==='x'&&!b.checked));
  assert.equal(argumentsResult.diagnostics.filter(d=>d.message==='concat requires String').length,2,JSON.stringify(argumentsResult.diagnostics));
  assert.equal(argumentsResult.diagnostics.filter(d=>d.message.startsWith('round requires')).length,2,JSON.stringify(argumentsResult.diagnostics));
