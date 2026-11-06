@@ -72,6 +72,14 @@ export class TypedCompiler{
    const items=n.a!.map(x=>this.compile(x,env));let element:Ty={kind:'never'},invalid=false;
    for(const [i,item] of items.entries()){
     if(item.type.kind==='error'){invalid=true;continue;}
+    if(this.checking&&element.kind==='record'&&item.type.kind==='record'&&Object.keys(element.fields).join('\0')===Object.keys(item.type.fields).join('\0')){
+     const fields:Record<string,Ty>={};
+     for(const [name,current] of Object.entries(item.type.fields))try{fields[name]=common(element.fields[name],current);}catch(error){
+      if(!(error instanceof TypeRuleError))throw error;
+      const node=n.a![i];this.reportFailure(node.k==='object'?node.entries!.find(entry=>entry.key===name)?.value??node:node,error.message);fields[name]={kind:'error'};
+     }
+     element=record(fields,element.nullable||item.type.nullable);continue;
+    }
     try{element=common(element,item.type);}catch(error){
      if(!this.checking||!(error instanceof TypeRuleError))throw error;
      this.reportFailure(n.a![i],error.message);invalid=true;

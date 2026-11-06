@@ -111,6 +111,11 @@ try{
  const mixed=await checkDesign('data x = [1,"x"];','fixture.dari',backend);
  assert.equal(mixed.ok,false);assert(mixed.diagnostics.some(d=>/Incompatible types/.test(d.message)),JSON.stringify(mixed));
  assert(mixed.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ const recordArraySource='data x = [{a:1,b:1},{a:"x",b:True}][0];';
+ const recordArray=await checkDesign(recordArraySource,'fixture.dari',backend);
+ const recordConflicts=recordArray.diagnostics.filter(d=>d.message.startsWith('Incompatible types'));
+ assert.deepEqual(recordConflicts.map(d=>d.span.start.offset),[recordArraySource.indexOf('"x"'),recordArraySource.indexOf('True')],JSON.stringify(recordArray.diagnostics));
+ assert(recordArray.checkedBindings.some(b=>b.name==='x'&&!b.checked));
  for(const source of ['data x = data(1,{kind:"bad"});','data x = time_windows(context(),{unit:"bad",count:1,mode:"current"});']){
   const result=await checkDesign(source,'fixture.dari',backend);assert.equal(result.diagnostics.length,1,JSON.stringify(result.diagnostics));assert.equal(result.diagnostics[0].asset,'x');
  }
