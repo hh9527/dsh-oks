@@ -116,7 +116,7 @@ export class TypedCompiler{
    const name=n.name!,args=n.a!;
    if(name==='map_opt'){
     if(args.length!==2||args[1].k!=='lambda'||args[1].params?.length!==1)fail(n,'map_opt requires (optional, (value) => expression)');
-    const a=this.compile(args[0],env);if(a.type.kind==='error'){if(this.checking)this.compile(args[1].body!,{...env,[args[1].params![0]]:a});return a;}if(!nullable(a.type))fail(n,'map_opt requires Option');
+    const a=this.compile(args[0],env);if(a.type.kind==='error'){if(this.checking)this.compile(args[1].body!,{...env,[args[1].params![0]]:a});return a;}if(!nullable(a.type)){const invalid=this.errorValue(args[0],'map_opt requires Option');if(this.checking)this.compile(args[1].body!,{...env,[args[1].params![0]]:invalid});return invalid;}
     const value:V={...a,type:present(a.type),known:a.known&&a.value!==null};const out=this.compile(args[1].body!,{...env,[args[1].params![0]]:value});
     if(out.type.kind==='record')return {type:optional(out.type),known:a.known&&(a.value===null||out.known),...(a.known?{value:a.value===null?null:out.value}:{})};
     return {type:optional(out.type),known:a.known&&(a.value===null||out.known),...(a.known&&a.value===null?{value:null}:a.known&&out.known?{value:out.value}:{sql:'(CASE WHEN '+this.presence(a,n)+' IS NULL THEN NULL ELSE '+this.sql(out,n)+' END)'})};
@@ -130,6 +130,19 @@ export class TypedCompiler{
     if(invalid)return {type:{kind:'error'},known:false};
     const k=a.every(x=>x.known);return {type,known:k,...(k?{value:a[0].value?a[1].value:a[2].value}:{sql:'(CASE WHEN '+this.sql(a[0],n)+' THEN '+this.sql(a[1],n)+' ELSE '+this.sql(a[2],n)+' END)'})};
    }
+   if(name==='round'){
+    arity(2);let invalid=a.some(x=>x.type.kind==='error');const message='round requires a numeric value and known precision 0..15';
+    if(a[0].type.kind!=='error'&&!numeric(a[0].type)){this.reportFailure(args[0],message);invalid=true;}
+    if(a[1].type.kind!=='error'&&(!a[1].known||!Number.isInteger(a[1].value)||a[1].value<0||a[1].value>15)){this.reportFailure(args[1],message);invalid=true;}
+    if(invalid)return {type:{kind:'error'},known:false};
+    const k=a.every(x=>x.known);return {type:a[0].type,known:k,column:a[0].column,...(k?{value:a[0].value===null?null:Math.sign(a[0].value)*Math.round(Math.abs(a[0].value)*10**a[1].value)/10**a[1].value}:{sql:'DARI_ROUND('+this.sql(a[0],n)+','+this.sql(a[1],n)+')'})};
+   }
+   if(name==='concat'){
+    arity(1,64);let invalid=a.some(x=>x.type.kind==='error');
+    for(const [i,x] of a.entries())if(x.type.kind!=='error'&&(!scalarType(x.type)||x.type.name!=='String')){this.reportFailure(args[i],'concat requires String');invalid=true;}
+    if(invalid)return {type:{kind:'error'},known:false};
+    const k=a.every(x=>x.known);return {type:scalar('String',a.some(x=>nullable(x.type))),known:k,...(k?{value:a.some(x=>x.value===null)?null:a.map(x=>x.value).join('')}:{sql:'('+a.map(x=>this.sql(x,n)).join('||')+')'})};
+   }
    if(a.some(x=>x.type.kind==='error'))return {type:{kind:'error'},known:false};
    if(['count','sum','avg','min','max'].includes(name)){
     arity(1);const x=a[0];if(!x.column&&!x.rows)fail(n,name+' requires a grouped Column or rows');if(x.rows&&name!=='count')fail(n,name+' requires a Column');
@@ -138,7 +151,6 @@ export class TypedCompiler{
     return {type,known:false,sql:name.toUpperCase()+'('+(x.rows?'*':this.sql(x,n))+')'};
    }
    if(name==='is_some'||name==='is_none'){arity(1);const x=a[0];if(!nullable(x.type))fail(n,name+' requires Option');return {type:scalar('Bool'),known:x.known,...(x.known?{value:name==='is_some'?x.value!==null:x.value===null}:{sql:'('+this.presence(x,n)+(name==='is_some'?' IS NOT NULL)':' IS NULL)')}),column:x.column};}
-   if(name==='round'){arity(2);if(!numeric(a[0].type)||!a[1].known||!Number.isInteger(a[1].value)||a[1].value<0||a[1].value>15)fail(n,'round requires a numeric value and known precision 0..15');const k=a.every(x=>x.known);return {type:a[0].type,known:k,column:a[0].column,...(k?{value:a[0].value===null?null:Math.sign(a[0].value)*Math.round(Math.abs(a[0].value)*10**a[1].value)/10**a[1].value}:{sql:'DARI_ROUND('+this.sql(a[0],n)+','+this.sql(a[1],n)+')'})};}
    if(name==='lookup'){
     arity(2);const [input,mapping]=a;
     if(!scalarType(input.type)&&input.type.kind!=='null')fail(n,'lookup input must be a scalar or null');
@@ -159,7 +171,6 @@ export class TypedCompiler{
     const sql='(CASE '+this.sql(input,n)+pairs.map(p=>' WHEN '+this.param(p.value)+' THEN '+this.param(p.label)).join('')+' ELSE NULL END)';
     return {type,known:false,column:input.column,sql};
    }
-   if(name==='concat'){arity(1,64);for(const x of a)if(!scalarType(x.type)||x.type.name!=='String')fail(n,'concat requires String');const k=a.every(x=>x.known);return {type:scalar('String',a.some(x=>nullable(x.type))),known:k,...(k?{value:a.some(x=>x.value===null)?null:a.map(x=>x.value).join('')}:{sql:'('+a.map(x=>this.sql(x,n)).join('||')+')'})};}
    fail(n,'Function is not available in this expression: '+name);
   }
   return fail(n,'Invalid typed expression '+n.k);

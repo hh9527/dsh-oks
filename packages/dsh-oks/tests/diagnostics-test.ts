@@ -75,6 +75,13 @@ try{
  const mixed=await checkDesign('data x = [1,"x"];','fixture.dari',backend);
  assert.equal(mixed.ok,false);assert(mixed.diagnostics.some(d=>/Incompatible types/.test(d.message)),JSON.stringify(mixed));
  assert(mixed.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ const argumentsSource='data a = concat(1,True); data b = round("x",20); data c = map_opt(1,n=>({dependent:n.missing,independent:"x"+1}));';
+ const argumentsResult=await checkDesign(argumentsSource,'fixture.dari',backend);
+ assert.equal(argumentsResult.diagnostics.filter(d=>d.message==='concat requires String').length,2,JSON.stringify(argumentsResult.diagnostics));
+ assert.equal(argumentsResult.diagnostics.filter(d=>d.message.startsWith('round requires')).length,2,JSON.stringify(argumentsResult.diagnostics));
+ assert(argumentsResult.diagnostics.some(d=>d.message==='map_opt requires Option'),JSON.stringify(argumentsResult.diagnostics));
+ assert(argumentsResult.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(argumentsResult.diagnostics));
+ assert(!argumentsResult.diagnostics.some(d=>d.message.includes('missing')),JSON.stringify(argumentsResult.diagnostics));
  const tableSource='data x = table([{first:{x:1},second:[1]}],{kind:"example"});';
  const tableErrors=await checkDesign(tableSource,'fixture.dari',backend);
  for(const name of ['first','second'])assert(tableErrors.diagnostics.some(d=>d.message.includes('table column '+name)),JSON.stringify(tableErrors.diagnostics));
