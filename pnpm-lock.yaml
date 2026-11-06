@@ -4,6 +4,24 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+catalogs:
+  default:
+    '@js-temporal/polyfill':
+      specifier: ^0.5.1
+      version: 0.5.1
+    '@types/node':
+      specifier: ^26.6.4
+      version: 26.6.5
+    echarts:
+      specifier: ^6.1.0
+      version: 6.1.0
+    tsdown:
+      specifier: ^0.23.0
+      version: 0.23.1
+    typescript:
+      specifier: ^7.0.2
+      version: 7.0.2
+
 importers:
 
   .: {}
@@ -11,20 +29,29 @@ importers:
   packages/dsh-oks:
     dependencies:
       '@js-temporal/polyfill':
-        specifier: ^0.5.1
+        specifier: 'catalog:'
         version: 0.5.1
       echarts:
-        specifier: ^6.1.0
+        specifier: 'catalog:'
         version: 6.1.0
     devDependencies:
       '@types/node':
-        specifier: ^26.6.4
+        specifier: 'catalog:'
         version: 26.6.5
       tsdown:
-        specifier: ^0.23.0
+        specifier: 'catalog:'
         version: 0.23.1(typescript@7.0.2)
       typescript:
-        specifier: ^7.0.2
+        specifier: 'catalog:'
+        version: 7.0.2
+
+  packages/dsh-push-to-user:
+    devDependencies:
+      tsdown:
+        specifier: 'catalog:'
+        version: 0.23.1(typescript@7.0.2)
+      typescript:
+        specifier: 'catalog:'
         version: 7.0.2
 
 packages:

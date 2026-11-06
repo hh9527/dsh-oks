@@ -239,9 +239,9 @@ workflow 负责工作顺序和知识导航，dari 负责语言、工具、类型
 
 ### Answer 交付
 
-dari_resolve 把唯一 Answer 作为一条 user 消息推入会话：`source.kind` 为 `tool-generated-markdown`，`label` 为 `dsh-oks`，正文即 Answer Markdown。工具回执只给消息 id、run 和计数，不再复制正文。模型在下一步读到这条消息，回复中不重复它；交付失败时回执退回完整 Answer 并要求转发。
+dari_resolve 把唯一 Answer 作为一条 user 消息推入会话：`source.kind` 为 `push-to-user`，`label` 为 `dsh-oks`，正文即 Answer Markdown。工具回执只给消息 id、run 和计数，不再复制正文。模型在下一步读到这条消息，回复中不重复它；交付失败时回执退回完整 Answer 并要求转发。
 
-对话流里的可见卡片由独立的客户端包 [@local/dsh-markdown-message](../dsh-markdown-message/README.md) 提供：它认领该 source kind 并渲染淡色卡片与来源标签。没有该客户端包时，消息仍是模型可见的上下文，但界面按默认策略隐藏。
+对话流里的可见卡片由独立的客户端包 [@local/dsh-push-to-user](../dsh-push-to-user/README.md) 提供：它认领该 source kind 并渲染淡色卡片与来源标签。没有该客户端包时，消息仍是模型可见的上下文，但界面按默认策略隐藏。
 
 ### 报告归档
 

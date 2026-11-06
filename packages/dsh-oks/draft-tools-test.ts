@@ -41,7 +41,7 @@ try {
  assert.equal(first.data,undefined);assert.equal(first.figures,undefined);assert.equal(first.reports,undefined);
  assert.equal(exec.agent.injected.length,1);
  assert.equal(exec.agent.injected[0].role,'user');
- assert.equal(exec.agent.injected[0].source.kind,'tool-generated-markdown');assert.equal(exec.agent.injected[0].source.label,'dsh-oks');
+ assert.equal(exec.agent.injected[0].source.kind,'push-to-user');assert.equal(exec.agent.injected[0].source.label,'dsh-oks');
  assert.equal(exec.agent.injected[0].content[0].text,first.answer.embedded);
  now+=60000;
  const cached=await call('dari_resolve',{src:absolute});

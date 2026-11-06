@@ -39,7 +39,7 @@ const deliverAnswer = (agent: unknown, text: string,
   if (typeof target?.inject !== 'function') return { ok: false, error: 'agent context injection unavailable', unsupported: true };
   try {
     const messageId = randomUUID();
-    target.inject({ id: messageId, role: 'user', source: { kind: 'tool-generated-markdown', label: 'dsh-oks' }, content: [{ type: 'text', text }] });
+    target.inject({ id: messageId, role: 'user', source: { kind: 'push-to-user', label: 'dsh-oks' }, content: [{ type: 'text', text }] });
     return { ok: true, messageId };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };

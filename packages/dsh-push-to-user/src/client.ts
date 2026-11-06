@@ -1,15 +1,16 @@
 const loader = (window as any).__ModuleLoader__;
 
 loader.load({
-  id: "@local/dsh-markdown-message",
+  id: "@local/dsh-push-to-user",
   factory: (require: (id: string) => any) => {
+    // 只能 require 宿主注入的模块；其他依赖必须在构建期打包。
     const React = require("react");
     const { MarkdownText } = require("@deepseek-ai/dsh-client-ui-primitives");
 
     // Reserved source contract: a host plugin pushes a `user/message` whose source carries
     // this kind; `label` names the producer and is shown verbatim above the content.
-    const SOURCE_KIND = "tool-generated-markdown";
-    const NODE_KIND = "tool-generated-markdown";
+    const SOURCE_KIND = "push-to-user";
+    const NODE_KIND = "push-to-user";
 
     const textOf = (event: any): string => {
       const content = event && event.data && event.data.content;

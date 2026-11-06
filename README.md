@@ -4,15 +4,17 @@
 图表和自包含 HTML 报告通过宿主附件交付，生命周期由宿主管理。
 
 - `packages/dsh-oks/`：知识工具、只读取数、DARI 运行与附件导出。
-- `packages/dsh-markdown-message/`：Web 客户端通用能力，把 host 插件推送的 Markdown 消息渲染成对话卡片。
+- `packages/dsh-push-to-user/`：Web 客户端通用能力，把 host 插件推送的 Markdown 消息渲染成对话卡片。
+- `dist/`：`just build` 生成的发布目录，安装只消费它，不进入版本控制。发布产物自包含：清单不含任何依赖；依赖只有两种来源——构建期打包进产物，或由插件环境注入。
 - `rfc/`：设计与变更记录。
 - `justfile`：构建和安装 OKS profile。
 
-安装逻辑集中在 `justfile` 的 `install-profile` recipe；主 Agent 启用官方文件读取、创建、编辑和搜索工具，KA/VA 保持独立工具清单。
+安装分两步：`just build` 构建两个包到 `dist/`，`just install-profile` 复制发布目录并写入 profile 配置。主 Agent 启用官方文件读取、创建、编辑和搜索工具，KA/VA 保持独立工具清单。
 
-安装需要 just、watchexec、Node.js、pnpm。
+安装需要 just、watchexec、Node.js、pnpm。依赖版本统一在 `pnpm-workspace.yaml` 的 `catalog`，升级时改那里再执行 `just update-deps`，lockfile 会一起更新。
 
 ```sh
+just build
 just install-profile
 (cd ~/ws/oks-demo/dsh-oks-10923 && just run)
 
@@ -27,9 +29,9 @@ just port=10924 target=/srv/oks workspace="$HOME/ws/oks-demo/demo-ws" install-pr
 
 默认端口为 `10923`，安装目录为 `~/ws/oks-demo/dsh-oks-10923/`，
 工作区为 `~/ws/oks-demo/demo-ws/`（需已有 `oks.json`）。`profile` 默认 `web`，可单独覆盖。
-安装命令在临时源码副本中构建插件，将插件及运行依赖放入安装目录的 `packages/`，
+安装命令把 `dist/dsh-oks` 与 `dist/dsh-push-to-user` 复制到安装目录的 `packages/`，
 运行配置和会话数据使用该目录作为 `DSH_HOME`，运行目录只生成一个 `justfile`：`just run-dsh` 直接启动，`just run` 通过 watchexec 监听 `.ctrl` 并调用 `run-dsh`。
-每次安装都会重新构建，运行时链接安装目录中的插件。安装完成后手动启动；
+重新构建需再次执行 `just build`；运行时链接安装目录中的插件。安装完成后手动启动；
 更新正在使用的安装目录前先停止对应进程，安装完成后再启动。
 运行目录的 `just run` 使用安装时保存的端口和工作区，并透传额外参数，例如 `just run --help`；源码仓不提供运行入口。
 从其他目录调用时可用 `just --justfile /path/to/dsh-oks/justfile install-profile`。

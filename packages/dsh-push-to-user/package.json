@@ -1,9 +1,9 @@
 {
-  "name": "@local/dsh-markdown-message",
+  "name": "@local/dsh-push-to-user",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Web capability: render host-pushed tool-generated markdown user messages in the conversation flow",
+  "description": "Web capability: render host-pushed push-to-user markdown messages in the conversation flow",
   "main": "./lib/index.mjs",
   "exports": {
     ".": "./lib/index.mjs",
@@ -29,7 +29,11 @@
     }
   },
   "scripts": {
-    "build": "node --no-warnings build.mjs",
-    "typecheck": "node ../dsh-oks/node_modules/typescript/bin/tsc -p tsconfig.json"
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "tsdown": "catalog:",
+    "typescript": "catalog:"
   }
 }

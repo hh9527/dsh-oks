@@ -1,11 +1,8 @@
+# 依赖与构建产物：发布树只有仓库根一个 dist，Rust 实验产物在根 target
 node_modules/
-.npm-cache/
-.pnpm-store/
-lib/
+/dist/
+/target/
 .tsbuild/
 
 # 冒烟测试用的工作区（指向真实的产物与数据库，落在仓库内以便写 oks-smoke）
 .smoke-ws/
-
-# 本地工具构建缓存
-target/

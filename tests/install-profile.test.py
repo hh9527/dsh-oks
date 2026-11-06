@@ -19,7 +19,19 @@ class InstallTest(unittest.TestCase):
             root = Path(tmp)
             repo = root / "source repo"
             shutil.copytree(REPO, repo, ignore=shutil.ignore_patterns(
-                ".git", "node_modules", "target", "lib", "__pycache__"))
+                ".git", "node_modules", "target", "lib", "dist", "__pycache__"))
+            # install-profile consumes dist/; build a minimal release fixture.
+            for name, files in {
+                "dsh-oks": ["lib/index.mjs", "cordis.patch.yml"],
+                "dsh-push-to-user": ["lib/client.js", "cordis.patch.yml"],
+            }.items():
+                package = repo / "dist" / name
+                for relative in files:
+                    target_file = package / relative
+                    target_file.parent.mkdir(parents=True, exist_ok=True)
+                    target_file.write_text("// fixture\n")
+                (package / "package.json").write_text(json.dumps(
+                    {"name": f"@local/{name}", "type": "module"}))
             tools = root / "bin"
             tools.mkdir()
             stub = '''#!/usr/bin/env python3
@@ -80,9 +92,9 @@ elif args[0]=='plugin':
             manifest = json.loads((target / "profiles/web/package.json").read_text())
             published = target / "packages/dsh-oks"
             self.assertEqual(manifest['dependencies']['@local/dsh-oks'], f"link:{published}")
-            self.assertEqual(manifest['dsh']['profile']['bundles'], ['@deepseek-ai/dsh-web-app', '@local/dsh-markdown-message'])
-            self.assertEqual(manifest['dependencies']['@local/dsh-markdown-message'], f"link:{target / 'packages/dsh-markdown-message'}")
-            self.assertTrue((target / 'packages/dsh-markdown-message/lib/client.js').exists())
+            self.assertEqual(manifest['dsh']['profile']['bundles'], ['@deepseek-ai/dsh-web-app', '@local/dsh-push-to-user'])
+            self.assertEqual(manifest['dependencies']['@local/dsh-push-to-user'], f"link:{target / 'packages/dsh-push-to-user'}")
+            self.assertTrue((target / 'packages/dsh-push-to-user/lib/client.js').exists())
             self.assertNotIn('scripts', json.loads((published / 'package.json').read_text()))
             self.assertFalse((repo / "packages/dsh-oks/lib").exists())
             patch = (target / "profiles/web/cordis.patch.yml").read_text()
@@ -189,11 +201,12 @@ while True: time.sleep(0.05)
                         process.wait(timeout=5)
 
             count = len(log.read_text().splitlines())
-            result = run("install-profile", FAIL_BUILD_INSTALL="1")
+            shutil.rmtree(repo / "dist")
+            result = run("install-profile")
             self.assertNotEqual(result.returncode, 0)
+            self.assertIn("先运行 just build", result.stderr)
             calls = [json.loads(line) for line in log.read_text().splitlines()[count:]]
-            self.assertEqual(len(calls), 1)
-            self.assertEqual(calls[0]['args'], ['install', '--frozen-lockfile', '--ignore-scripts'])
+            self.assertEqual(len(calls), 0)
 
             result = subprocess.run([*command, 'port=65536', 'install-profile'], cwd=root,
                                     env=env, capture_output=True, text=True)

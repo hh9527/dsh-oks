@@ -14,7 +14,7 @@ export default defineConfig([
     format: 'esm',
     platform: 'node',
     target: 'node22',
-    outDir: 'lib',
+    outDir: '../../dist/dsh-oks/lib',
     clean: true,
     dts: false,
     hash: false,

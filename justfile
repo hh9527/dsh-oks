@@ -13,7 +13,21 @@ export OKS_WORKSPACE := absolute_path(workspace)
 default:
     @just --list
 
-# 构建插件并安装完整 Web profile，包含主 Agent 文件工具。
+# 更新依赖并写回 lockfile（版本统一在 pnpm-workspace.yaml 的 catalog）。
+update-deps:
+    pnpm install --ignore-scripts
+
+# 构建所有包到发布目录 dist/（不进入版本控制）。
+build:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v pnpm >/dev/null 2>&1 || { printf 'build: 需要 pnpm\n' >&2; exit 1; }
+    rm -rf dist
+    (cd packages/dsh-oks && pnpm run build) || { printf 'build: dsh-oks 构建失败\n' >&2; exit 1; }
+    (cd packages/dsh-push-to-user && pnpm run build) || { printf 'build: dsh-push-to-user 构建失败\n' >&2; exit 1; }
+    node scripts/pack.mjs
+
+# 安装已构建的发布目录到完整 Web profile，包含主 Agent 文件工具。
 install-profile:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -56,48 +70,16 @@ install-profile:
     fi
     say "用 ${DSH_ARR[*]} 调用 dsh"
 
-    # 在临时源码副本中构建，发布件与运行依赖留在目标目录。
-    command -v pnpm >/dev/null 2>&1 || fail '构建与安装需要 pnpm'
-    BUILD_DIR="$(mktemp -d "${TMPDIR:-$HOME/.cache/tmp}/oks-profile.XXXXXX")"
-    trap 'rm -rf -- "$BUILD_DIR"' EXIT
-    tar -C "$REPO_DIR" --exclude=.git --exclude=node_modules --exclude=target --exclude=lib -cf - . | tar -C "$BUILD_DIR" -xf -
-    (
-      cd "$BUILD_DIR"
-      pnpm install --frozen-lockfile --ignore-scripts || exit "$?"
-      cd packages/dsh-oks
-      pnpm run build
-    ) || fail '插件构建失败'
-    (cd "$BUILD_DIR/packages/dsh-markdown-message" && node --no-warnings build.mjs) || fail '客户端包构建失败'
-    [ -f "$BUILD_DIR/packages/dsh-oks/lib/index.mjs" ] || fail '缺少 index.mjs'
-    [ -f "$BUILD_DIR/packages/dsh-markdown-message/lib/client.js" ] || fail '缺少客户端入口'
-    mkdir -p "$PACKAGE_DIR"
-    BUILD_PACKAGE="$BUILD_DIR/packages/dsh-oks" PACKAGE_DIR="$PACKAGE_DIR" node --input-type=module <<'JS'
-    import {readFileSync,writeFileSync,cpSync} from 'node:fs';
-    import {join} from 'node:path';
-    const source=process.env.BUILD_PACKAGE, target=process.env.PACKAGE_DIR;
-    const manifest=JSON.parse(readFileSync(join(source,'package.json'),'utf8'));
-    for(const name of ['lib','locale','icon.svg','cordis.patch.yml'])
-      cpSync(join(source,name),join(target,name),{recursive:true});
-    delete manifest.scripts;
-    delete manifest.devDependencies;
-    writeFileSync(join(target,'package.json'),JSON.stringify(manifest,null,2)+'\n');
-    JS
-    (cd "$PACKAGE_DIR" && pnpm install --prod --ignore-scripts) || fail '插件运行依赖安装失败'
-
-    # 客户端包：通用 Web 能力，作为 profile bundle 全局加载；内容为手写产物，无需构建。
-    CLIENT_PACKAGE='@local/dsh-markdown-message'
-    CLIENT_DIR="$DSH_HOME/packages/dsh-markdown-message"
-    BUILD_CLIENT="$BUILD_DIR/packages/dsh-markdown-message"
-    [ -f "$BUILD_CLIENT/package.json" ] || fail '缺少客户端包 dsh-markdown-message'
-    mkdir -p "$CLIENT_DIR"
-    BUILD_CLIENT="$BUILD_CLIENT" CLIENT_DIR="$CLIENT_DIR" node --input-type=module <<'JS'
-    import {readFileSync,writeFileSync,cpSync} from 'node:fs';
-    import {join} from 'node:path';
-    const source=process.env.BUILD_CLIENT, target=process.env.CLIENT_DIR;
-    const manifest=JSON.parse(readFileSync(join(source,'package.json'),'utf8'));
-    for(const name of ['lib','cordis.patch.yml'])cpSync(join(source,name),join(target,name),{recursive:true});
-    writeFileSync(join(target,'package.json'),JSON.stringify(manifest,null,2)+'\n');
-    JS
+    # 发布目录由 just build 生成；安装只负责复制与接线。
+    DIST_DIR="$REPO_DIR/dist"
+    [ -f "$DIST_DIR/dsh-oks/package.json" ] || fail "缺少发布目录 $DIST_DIR/dsh-oks，先运行 just build"
+    [ -f "$DIST_DIR/dsh-push-to-user/package.json" ] || fail "缺少发布目录 $DIST_DIR/dsh-push-to-user，先运行 just build"
+    CLIENT_PACKAGE='@local/dsh-push-to-user'
+    CLIENT_DIR="$DSH_HOME/packages/dsh-push-to-user"
+    rm -rf "$PACKAGE_DIR" "$CLIENT_DIR"
+    mkdir -p "$DSH_HOME/packages"
+    cp -R "$DIST_DIR/dsh-oks" "$PACKAGE_DIR"
+    cp -R "$DIST_DIR/dsh-push-to-user" "$CLIENT_DIR"
 
     # ── 2. profile ───────────────────────────────────────────────────────────────
     if [ ! -f "$MANIFEST" ]; then
@@ -378,9 +360,5 @@ install-profile:
     say "启动：just --justfile $DSH_HOME_DIR/justfile run（端口 $OKS_INSTALL_PORT，工作区 $OKS_WORKSPACE）"
 
 # 隔离核验安装和启动，不构建真实插件、不启动服务。
-# 检查客户端能力包的类型（复用 dsh-oks 的 TypeScript，无需额外依赖）。
-check-client:
-    cd packages/dsh-markdown-message && node ../dsh-oks/node_modules/typescript/bin/tsc -p tsconfig.json
-
 test-install:
     python3 tests/install-profile.test.py

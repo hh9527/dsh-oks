@@ -1,4 +1,4 @@
-# dsh-markdown-message
+# dsh-push-to-user
 
 Web 客户端的通用能力包：让 host 插件把一段 Markdown 作为消息推入会话，既进入模型上下文，也作为卡片出现在对话流里。与具体业务插件无关。
 
@@ -10,14 +10,14 @@ host 插件推送一条 user 消息，`source.kind` 使用保留值：
 agent.inject({
   id: messageId,
   role: 'user',
-  source: { kind: 'tool-generated-markdown', label: 'dsh-oks' },
+  source: { kind: 'push-to-user', label: 'dsh-oks' },
   content: [{ type: 'text', text: markdown }],
 });
 ```
 
 | 字段 | 说明 |
 | --- | --- |
-| `source.kind` | 必须是 `tool-generated-markdown`，客户端据此认领该消息 |
+| `source.kind` | 必须是 `push-to-user`，客户端据此认领该消息 |
 | `source.label` | 可选，显示在卡片左上角的来源名；缺省时回退到 `source.kind` |
 | `content` | 文本块，按 Markdown 渲染 |
 
@@ -46,8 +46,12 @@ DSH 默认把非 `source.kind === 'user'` 的用户消息归为上下文，而�
 
 客户端模块只扫描 profile 层的 loader entry，因此这个包必须列进 profile 的 `dsh.profile.bundles`；preset 里挂载的插件不会被扫描到。
 
+## 依赖
+
+客户端只 `require` 宿主模块图注入的包（`react`、`@deepseek-ai/dsh-client-ui-primitives` 等），其余依赖一律在构建期打包。`scripts/pack.mjs` 会拒绝清单外的 `require`。
+
 ## 安装
 
-源码是 `src/*.ts`，`node build.mjs` 用 Node 的类型剥离生成 `lib/*.js`；产物不进入版本控制。类型检查复用 `dsh-oks` 的 TypeScript：仓库根目录执行 `just check-client`。
+源码是 `src/*.ts`，`node build.mjs` 用 Node 的类型剥离生成 `lib/*.js`；产物不进入版本控制。类型检查用包自己的 TypeScript：`pnpm run typecheck`。
 
 仓库根目录的 `just install-profile` 会在临时副本里构建这个包，把 `lib/` 与 patch 复制到安装目录，写入 profile 依赖并加入 bundles。
