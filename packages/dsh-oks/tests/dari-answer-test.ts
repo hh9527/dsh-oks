@@ -34,7 +34,7 @@ report file = tree! { Report [p [Value(data=summary?.n)]] };
 `;
 try{
  writeFileSync(join(root,'answer.dari'),source);
- const checked=await call('dari_check',{src:'answer.dari'});assert.equal(checked.ok,true,JSON.stringify(checked));assert.equal(executions,0);assert.match(checked.text,/- answer: checked/);assert.match(checked.text,/- report.file: checked/);
+ const checked=await call('dari_check',{src:'answer.dari'});assert.equal(checked.ok,true,JSON.stringify(checked));assert.equal(executions,0);assert.match(checked.text,/## unresolved-node-types\n\n## inspect-node-types/);assert(!checked.text.includes('- answer'));assert(!checked.text.includes('- report.file'));
  const result=await call('dari_resolve',{src:'answer.dari'},plain);
  assert.equal(result.ok,true,JSON.stringify(result));assert.equal(files,0);
  const text=result.answer.embedded;

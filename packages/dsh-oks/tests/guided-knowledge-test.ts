@@ -45,7 +45,7 @@ try {
  const text=searchTool.output.render({} as never,search as never).map(b=>b.text??'').join('');
  assert.match(text,/## datasets\/d\/dimensions/);assert.match(text,/- id: Int/);
  const check=registered.find(t=>t.name==='dari_check')!;
- const receipt={ok:true,text:'# ready-status:\n- data.facts: t1-test'};
+ const receipt={ok:true,text:'## unresolved-node-types\n\n## inspect-node-types\n- data.facts: Table({n:Int})'};
  assert.equal(check.output.render({} as never,receipt as never).map(b=>b.text??'').join(''),receipt.text);
 } finally {disposers.reverse().forEach(d=>d());}
 console.log('Public knowledge tools: exact surface, domain boundaries, search/routes/info and full result rendering passed');

@@ -587,10 +587,11 @@ export const presentationFacts = {
             "列顺序",
             "table"
           ],
-          "doc": "columns 为字符串列名数组，决定选列和顺序；表头就是数据键名。中文表头先用 select 重命名数据键，详见 table_headers 主题。",
+          "doc": "columns 为字符串列名数组，决定选列和顺序；labels 将数据列名映射为展示表头，未映射时使用列名。",
           "facts": {
             "required": [],
             "columns": "字符串数组：按显示顺序列出现有数据列名，默认使用数据键名。",
+            "labels": "对象：将数据列名映射为显示表头，未映射的列沿用列名。",
             "example": {
               "spec": {
                 "columns": [
@@ -692,7 +693,7 @@ export const presentationFacts = {
             "columns",
             "label"
           ],
-          "doc": "表格 columns 只接受字符串列名数组；表头取数据键名。用 select 重命名后再选列；{key,label} 会报错。",
+          "doc": "表格 columns 接受字符串列名数组，labels 将列名映射为展示表头。",
           "facts": {
             "example": {
               "input": {
@@ -703,12 +704,13 @@ export const presentationFacts = {
                   }
                 ]
               },
-              "pipeline": "data rows = select({from:{f:facts},fields:(r)=>({\"告警级别\":r.f.level,\"数量\":r.f.count})});",
+              "pipeline": "data rows = select({from:{f:facts},fields:(r)=>({level:r.f.level,count:r.f.count})});",
               "spec": {
                 "columns": [
-                  "告警级别",
-                  "数量"
-                ]
+                  "level",
+                  "count"
+                ],
+                "labels": {"level":"告警级别","count":"数量"}
               }
             }
           }
@@ -740,7 +742,7 @@ export const presentationFacts = {
           ],
           "doc": "可运行 DARI：示例数据、有类型表头转换、柱图、表格与 DARI 报告。",
           "facts": {
-            "dari": "data facts = table([{level:\"major\",count:3}],{kind:\"example\"});\ndata rows = select({from:{f:facts},fields:(r)=>({\"告警级别\":r.f.level,\"数量\":r.f.count})});\ndata winner = select_one({from:{f:facts},fields:(r)=>({level:r.f.level}),order_by:(o)=>[asc(o.level)],limit:1});\ndata chartSpec = {x:\"告警级别\",value:\"数量\"};\ndata tableSpec = {columns:[\"告警级别\",\"数量\"]};\ndata summary = select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({total:sum(rows.f.count)})});\n\nfigure comparison = tree! { ColumnChart(spec = chartSpec, data = rows) };\n\nfigure details = tree! { Table(spec = tableSpec, data = rows) };\n\nreport full = tree! { Report(title = \"呈现示例\") [\n  h1 [ \"示例结果\" ],\n  p [\n    \"数量：\",\n    Value(data = summary?.total),\n  ],\n  p [\n    \"首项：\",\n    Value(data = winner?.level),\n  ],\n  UseFigure(ref = comparison, caption = \"类别比较\"),\n  UseFigure(ref = details, caption = \"明细\"),\n] };\n"
+            "dari": "data facts = table([{level:\"major\",count:3}],{kind:\"example\"});\ndata rows = select({from:{f:facts},fields:(r)=>({level:r.f.level,count:r.f.count})});\ndata winner = select_one({from:{f:facts},fields:(r)=>({level:r.f.level}),order_by:(o)=>[asc(o.level)],limit:1});\ndata chartSpec = {x:\"level\",value:\"count\"};\ndata tableSpec = {columns:[\"level\",\"count\"],labels:{level:\"告警级别\",count:\"数量\"}};\ndata summary = select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({total:sum(rows.f.count)})});\n\nfigure comparison = tree! { ColumnChart(spec = chartSpec, data = rows) };\n\nfigure details = tree! { Table(spec = tableSpec, data = rows) };\n\nreport full = tree! { Report(title = \"呈现示例\") [\n  h1 [ \"示例结果\" ],\n  p [\n    \"数量：\",\n    Value(data = summary?.total),\n  ],\n  p [\n    \"首项：\",\n    Value(data = winner?.level),\n  ],\n  UseFigure(ref = comparison, caption = \"类别比较\"),\n  UseFigure(ref = details, caption = \"明细\"),\n] };\n"
           }
         }
       }
@@ -785,7 +787,7 @@ export const presentationFacts = {
           ],
           "doc": "可运行 DARI：精确绑定标量、数组元素、图表与表格。",
           "facts": {
-            "dari": "data facts = table([{level:\"major\",count:3}],{kind:\"example\"});\ndata rows = select({from:{f:facts},fields:(r)=>({\"告警级别\":r.f.level,\"数量\":r.f.count})});\ndata winner = select_one({from:{f:facts},fields:(r)=>({level:r.f.level}),order_by:(o)=>[asc(o.level)],limit:1});\ndata chartSpec = {x:\"告警级别\",value:\"数量\"};\ndata tableSpec = {columns:[\"告警级别\",\"数量\"]};\ndata summary = select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({total:sum(rows.f.count)})});\n\nfigure comparison = tree! { ColumnChart(spec = chartSpec, data = rows) };\n\nfigure details = tree! { Table(spec = tableSpec, data = rows) };\n\nreport full = tree! { Report(title = \"呈现示例\") [\n  h1 [ \"示例结果\" ],\n  p [\n    \"数量：\",\n    Value(data = summary?.total),\n  ],\n  p [\n    \"首项：\",\n    Value(data = winner?.level),\n  ],\n  UseFigure(ref = comparison, caption = \"类别比较\"),\n  UseFigure(ref = details, caption = \"明细\"),\n] };\n"
+            "dari": "data facts = table([{level:\"major\",count:3}],{kind:\"example\"});\ndata rows = select({from:{f:facts},fields:(r)=>({level:r.f.level,count:r.f.count})});\ndata winner = select_one({from:{f:facts},fields:(r)=>({level:r.f.level}),order_by:(o)=>[asc(o.level)],limit:1});\ndata chartSpec = {x:\"level\",value:\"count\"};\ndata tableSpec = {columns:[\"level\",\"count\"],labels:{level:\"告警级别\",count:\"数量\"}};\ndata summary = select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({total:sum(rows.f.count)})});\n\nfigure comparison = tree! { ColumnChart(spec = chartSpec, data = rows) };\n\nfigure details = tree! { Table(spec = tableSpec, data = rows) };\n\nreport full = tree! { Report(title = \"呈现示例\") [\n  h1 [ \"示例结果\" ],\n  p [\n    \"数量：\",\n    Value(data = summary?.total),\n  ],\n  p [\n    \"首项：\",\n    Value(data = winner?.level),\n  ],\n  UseFigure(ref = comparison, caption = \"类别比较\"),\n  UseFigure(ref = details, caption = \"明细\"),\n] };\n"
           }
         },
         "body": {
@@ -807,7 +809,7 @@ export const presentationFacts = {
     }
   },
   "examples": {
-    "report": "data facts = table([{level:\"major\",count:3}],{kind:\"example\"});\ndata rows = select({from:{f:facts},fields:(r)=>({\"告警级别\":r.f.level,\"数量\":r.f.count})});\ndata winner = select_one({from:{f:facts},fields:(r)=>({level:r.f.level}),order_by:(o)=>[asc(o.level)],limit:1});\ndata chartSpec = {x:\"告警级别\",value:\"数量\"};\ndata tableSpec = {columns:[\"告警级别\",\"数量\"]};\ndata summary = select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({total:sum(rows.f.count)})});\n\nfigure comparison = tree! { ColumnChart(spec = chartSpec, data = rows) };\n\nfigure details = tree! { Table(spec = tableSpec, data = rows) };\n\nreport full = tree! { Report(title = \"呈现示例\") [\n  h1 [ \"示例结果\" ],\n  p [\n    \"数量：\",\n    Value(data = summary?.total),\n  ],\n  p [\n    \"首项：\",\n    Value(data = winner?.level),\n  ],\n  UseFigure(ref = comparison, caption = \"类别比较\"),\n  UseFigure(ref = details, caption = \"明细\"),\n] };\n",
+    "report": "data facts = table([{level:\"major\",count:3}],{kind:\"example\"});\ndata rows = select({from:{f:facts},fields:(r)=>({level:r.f.level,count:r.f.count})});\ndata winner = select_one({from:{f:facts},fields:(r)=>({level:r.f.level}),order_by:(o)=>[asc(o.level)],limit:1});\ndata chartSpec = {x:\"level\",value:\"count\"};\ndata tableSpec = {columns:[\"level\",\"count\"],labels:{level:\"告警级别\",count:\"数量\"}};\ndata summary = select_one({from:{f:facts},group_by:(r)=>({}),fields:(g,rows)=>({total:sum(rows.f.count)})});\n\nfigure comparison = tree! { ColumnChart(spec = chartSpec, data = rows) };\n\nfigure details = tree! { Table(spec = tableSpec, data = rows) };\n\nreport full = tree! { Report(title = \"呈现示例\") [\n  h1 [ \"示例结果\" ],\n  p [\n    \"数量：\",\n    Value(data = summary?.total),\n  ],\n  p [\n    \"首项：\",\n    Value(data = winner?.level),\n  ],\n  UseFigure(ref = comparison, caption = \"类别比较\"),\n  UseFigure(ref = details, caption = \"明细\"),\n] };\n",
     "tableHeaders": {
       "input": {
         "rows": [
@@ -817,7 +819,7 @@ export const presentationFacts = {
           }
         ]
       },
-      "pipeline": "data rows = select({from:{f:facts},fields:(r)=>({\"告警级别\":r.f.level,\"数量\":r.f.count})});",
+      "pipeline": "data rows = select({from:{f:facts},fields:(r)=>({level:r.f.level,count:r.f.count})});",
       "spec": {
         "columns": [
           "告警级别",

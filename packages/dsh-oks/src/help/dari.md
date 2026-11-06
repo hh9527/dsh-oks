@@ -23,19 +23,19 @@ answer tree! { Answer [
 
 示例中的模型名称是占位符，以知识定义替换。扩展组件使用 PascalCase（如 Value、Lit、UseFigure），普通标签使用小写（如 p、strong）。`data` 定义不可变计算，`figure` 定义图表，`report` 定义报告；`answer tree! { Answer [...] }` 是唯一回答出口。figure/report/answer 的节点树必须用 `tree! { ... }` 包围，内部仍用 `tag(...) [...]`；figure 的根节点为图表组件或 Table。`=` 仅声明不可变绑定，不支持重新赋值。True/False/None 是 DARI 字面量，工具参数与返回 JSON 仍用 true/false/null。所有绑定共用命名空间，先定义后引用，每条声明以 `;` 结束；支持 `//` 和 `/* ... */` 注释。
 
-表达式使用字符串、数字、Bool（True/False）、None、对象、数组、函数和绑定引用。对象的中文、空格、括号键使用双引号，访问用 `row["设备分类"]`，不是 `row.设备分类` 或 `row."设备分类"`；可空对象使用 `map_opt(obj,r=>r["设备分类"])`。
+表达式使用字符串、数字、Bool（True/False）、None、对象、数组、函数和绑定引用。分析稿自行定义的绑定、对象键和表列使用 ASCII 名称；中文用于报告正文、图表和表格标签等展示内容。读取外部模型中已有的特殊键时使用双引号及方括号，例如 `row["设备分类"]`；可空对象使用 `map_opt(obj,r=>r["设备分类"])`。
 
 ## 检查与解析
 
 `dari_check({src:"analysis.dari"})` 检查全稿，不执行 SQL、不读取业务行。query 在检查期调用模型的 transform 得到 columns，建立 Table(T)，参与后续类型推导；context/time_windows 等已知计算在检查期执行，context 使用固定示例时刻。运行期取得实际值并校验值域、完整性和资源限制。
 
-检查回执是文本：成功 Succeed，失败 CheckFailed，后接分割线。ready-status 包含全部公开声明：data/figure 的 `t1-...` 指纹表示检查通过的类型形状，`?` 表示未通过，report/answer 通过时为 checked。errors 含原稿行列及诊断，最多 20 条，超过报告省略数，不重复上游连锁错误。不可恢复的语法错误可能无法列声明。
+检查回执是文本：成功 Succeed，失败 CheckFailed，后接分割线。`diagnostics` 在有诊断时首先列出原稿行列及原因，最多 20 条，超过报告省略数，不重复上游连锁错误。`unresolved-node-types` 列出类型未就绪的公开声明；`inspect-node-types` 列出首次出现、从未就绪恢复或类型形状变化的数据和图表，以及显式 inspect 的类型。与同一会话、同一稿件上一次 check 或 resolve 相比未变化的类型省略。不可恢复的语法错误可能无法列声明。
 
 ```js
 dari_check({src:"analysis.dari",inspect:{data:["facts","summary"],figures:["counts"]}})
 ```
 
-inspect 使用源码绑定名，每类最多 32 项，返回数据和图表输入的类型形状，不重述源码定义。没有读过所需列类型时按需 inspect；指纹未变则此前形状仍有效。指纹包含类型、字段、可空性、表列顺序，不含值、源码、数组长度或运行缓存。普通对象字段按名排序。
+`inspect?: {data?: string[], figures?: string[]}` 是可选参数，仅在忘记已报告的类型时使用，例如上下文压缩后。它使用源码绑定名，每类最多 32 项，强制重报数据和图表输入的类型形状，不重述源码定义。类型比较包含类型、字段、可空性、表列顺序，不含值、源码、数组长度或运行缓存。普通对象字段按名排序；类型状态与数据执行缓存独立。稿件状态回收或插件重启后，下一次检查重新报告类型。
 
 ```js
 dari_resolve({src:"analysis.dari"})
@@ -218,7 +218,7 @@ answer tree! { Answer [
 
 {{figureIndex}}
 
-索引已载入；只在选定图表且需要详细映射/开关时读取对应分册。通用完整规格按需读 oks://help/figure-options.md。先在 query/select 中聚合，图表不汇总重复单元。字段映射使用检查列名。Table.columns 是字符串列名数组，中文表头通过 select 输出键命名；只有 NetworkGraph 接受独立 nodes 表。
+索引已载入；只在选定图表且需要详细映射/开关时读取对应分册。通用完整规格按需读 oks://help/figure-options.md。先在 query/select 中聚合，图表不汇总重复单元。字段映射使用检查列名。Table.columns 是字符串列名数组，`labels:{level:"告警级别"}` 为列设置展示表头，未映射的列使用列名；只有 NetworkGraph 接受独立 nodes 表。
 
 BarChart/ColumnChart 单组，不接受 series，颜色按 x 类别使用 style.colors，一个颜色可统一；GroupedBarChart/GroupedColumnChart 必填 series，颜色按序列且与图例一致，单序列仍保留图例；分组柱支持 stack=total|percent。
 

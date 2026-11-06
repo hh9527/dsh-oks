@@ -238,7 +238,7 @@ export function createDraftBackend(options: {
         if(isRecord(second.data)&&Array.isArray(second.data.columns)){
           const columns=second.data.columns.map(c=>isRecord(c)?String(c.name):String(c));
           const spec=raw as Record<string,unknown>;
-          const missing=spec.kind==='table'?(parseTableSpec(spec).columns??[]).filter(c=>!columns.includes(c)):(()=>{const parsed=parseChartSpec(spec);if('error' in parsed)throw new Error(parsed.error);return missingColumns(parsed.spec,columns,1);})();
+          const missing=spec.kind==='table'?(()=>{const table=parseTableSpec(spec);return [...new Set([...(table.columns??[]),...Object.keys(table.labels)])].filter(c=>!columns.includes(c));})():(()=>{const parsed=parseChartSpec(spec);if('error' in parsed)throw new Error(parsed.error);return missingColumns(parsed.spec,columns,1);})();
           if(missing.length)throw new Error(`Missing figure columns: ${missing.join(', ')}`);
           if(isBox(second.data)&&spec.kind!=='table'){
             const t=typeOf(second.data);const value=typeof spec.value==='string'?spec.value:undefined;
@@ -257,7 +257,7 @@ export function createDraftBackend(options: {
         if(spec.kind==='table'){
           const parsed=parseTableSpec(spec);
           const columns=new Set(rows.flatMap(row=>Object.keys(row)));
-          const missing=rows.length?(parsed.columns??[]).filter(c=>!columns.has(c)):[];
+          const missing=rows.length?[...new Set([...(parsed.columns??[]),...Object.keys(parsed.labels)])].filter(c=>!columns.has(c)):[];
           if(missing.length)throw new Error(`Missing figure columns: ${missing.join(', ')}`);
         }else{
           const parsed=parseChartSpec(spec);
@@ -359,7 +359,7 @@ export function createDraftBackend(options: {
       const rows = rowsOf(input.data, 'render_figure.data');
       if (spec.kind === 'table') {
         const parsed = parseTableSpec(spec);
-        const table = tableMarkdown(rows, { ...(parsed.columns ? { columns: parsed.columns } : {}), ...(parsed.title ? { title: parsed.title } : {}) });
+        const table = tableMarkdown(rows, { ...(parsed.columns ? { columns: parsed.columns } : {}), labels:parsed.labels, ...(parsed.title ? { title: parsed.title } : {}) });
         if ('error' in table) throw new Error(table.error);
         return { data: { rows, spec }, evidence: { display: { kind: 'table', content: table.embedded } } };
       }

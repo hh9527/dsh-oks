@@ -15,6 +15,7 @@ export function parseDomDraft(source:string,file:string){
   const figures=new Map<string,Element>();
   const templates:{name:string;title:string;element:Element;span:Span;format?:'markdown'}[]=[];
   const references:Reference[]=[];
+  const identifierDiagnostics:SourceDiagnostic[]=[];
   const childSpans=new WeakMap<Element,Map<number,Span>>();
   let title='Report';
   const location=(start:number,end=at)=>original.span(start,end);
@@ -32,8 +33,10 @@ export function parseDomDraft(source:string,file:string){
   };
   const eat=(text:string)=>{whitespace();if(!source.startsWith(text,at))fail('Expected '+JSON.stringify(text),at,Math.min(source.length,at+1),{expected:text,found:source[at]??'end of input'});at+=text.length;};
   const name=(tag=false)=>{
-    whitespace();const match=(tag?/^[A-Za-z_$][A-Za-z0-9_$:-]*/:/^[A-Za-z_$][A-Za-z0-9_$]*/).exec(source.slice(at));
-    if(!match)return fail('Expected '+(tag?'tag or attribute':'binding')+' name');at+=match[0].length;return match[0];
+    whitespace();const match=(tag?/^[$_\p{XID_Start}][$_\p{XID_Continue}:-]*/u:/^[$_\p{XID_Start}][$_\p{XID_Continue}]*/u).exec(source.slice(at));
+    if(!match)return fail('Expected '+(tag?'tag or attribute':'binding')+' name');const start=at;at+=match[0].length;
+    if(!/^[\x00-\x7f]+$/.test(match[0]))identifierDiagnostics.push({file,stage:'syntax',message:'Identifiers must use ASCII letters, digits, _ or $',span:location(start,at)});
+    return match[0];
   };
   const string=()=>{
     const start=at++;while(at<source.length&&source[at]!=='"'){if(source[at]==='\\')at++;at++;}
@@ -64,14 +67,15 @@ export function parseDomDraft(source:string,file:string){
     return {start,end,text:source.slice(start,end)};
   };
   const compile=(part:{start:number;end:number;text:string},binding:string,internal=false,condition=false,presence?:string)=>{
-    const result=parseTypedExpression(part.text,original.position(part.start),{definitions,expressionName:binding,templateScopes:scopes,templateCondition:condition,templatePresence:presence});
+    const result=parseTypedExpression(part.text,original.position(part.start),{definitions,expressionName:binding,templateScopes:scopes,templateCondition:condition,templatePresence:presence,identifierDiagnostics});
     if(internal)result.internal=true;
     nodes.push(result);return result;
   };
   const attribute=(tag:string,key:string,part:{start:number;end:number;text:string}):Attribute=>{
     const span=location(part.start,part.end);
     if((tag==='UseFigure'||tag==='FigureRef'||tag==='UseReport')&&key==='ref'){
-      const symbol=part.text.trim();if(!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(symbol))fail(tag+'.ref requires a binding',part.start,part.end);
+      const symbol=part.text.trim();if(!/^[$_\p{XID_Start}][$_\p{XID_Continue}]*$/u.test(symbol))fail(tag+'.ref requires a binding',part.start,part.end);
+      if(!/^[\x00-\x7f]+$/.test(symbol))identifierDiagnostics.push({file,stage:'syntax',message:'Identifiers must use ASCII letters, digits, _ or $',span});
       const expected=tag==='UseReport'?'report':'figure';
       if(declarations.get(symbol)!==expected)fail('Undefined or forward '+expected+' binding '+symbol,part.start,part.end);
       return {kind:'text',value:symbol,span};
@@ -93,7 +97,7 @@ export function parseDomDraft(source:string,file:string){
       return {kind:'reference',...ref};
     }
     const temporary='__attribute'+sequence++;
-    parseTypedExpression(part.text,original.position(part.start),{definitions,expressionName:temporary});
+    parseTypedExpression(part.text,original.position(part.start),{definitions,expressionName:temporary,identifierDiagnostics});
     const ast=definitions.get(temporary)!;definitions.delete(temporary);
     if(ast.k!=='lit')fail('Document attributes require static strings or booleans',part.start,part.end);
     let value:unknown=ast.v;
@@ -212,6 +216,7 @@ export function parseDomDraft(source:string,file:string){
     declarations.set(binding,kind as 'data'|'figure'|'report'|'answer');whitespace();
   }
   if(!declarations.size)fail('Expected data, figure or report declaration',0,Math.min(1,source.length));
+  if(identifierDiagnostics.length)throw new DraftSyntaxError(identifierDiagnostics[0].message,identifierDiagnostics[0].span,identifierDiagnostics);
   let queries=0;
   const visit=(e:Expr)=>{if(e.kind==='call'){if(e.operator==='query')queries++;e.args.forEach(visit);}else if(e.kind==='array')e.values.forEach(visit);else if(e.kind==='object')e.entries.forEach(x=>visit(x.value));else if(e.kind==='project')visit(e.input);};
   nodes.forEach(n=>visit(n.statement.value));if(queries>128)fail('Pipeline exceeds 128 queries',0);

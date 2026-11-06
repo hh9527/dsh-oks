@@ -173,6 +173,12 @@ for (const [expression, hint] of [
 }
 const chineseKeys = await check('data row = {"设备分类":"交换机","CPU 平均使用率(%)":42}; data result = {category:row["设备分类"],cpu:row["CPU 平均使用率(%)"]};');
 assert.equal(chineseKeys.ok, true, JSON.stringify(chineseKeys));
+const repeated=await check('data row = {"周次":1};\ndata a = row.周次;\ndata b = row.周次;\nanswer tree! { Answer [p [Value(data=row.周次),Value(data=row.周次)]] };');
+assert.equal(repeated.ok,false);assert.equal(repeated.diagnostics.length,4,JSON.stringify(repeated));
+assert.deepEqual(repeated.diagnostics.map(d=>d.span.start.line),[2,3,4,4]);
+for(const d of repeated.diagnostics)assert.match(d.message,/row\["周次"\]/);
+const unicodeNames=await check('data 变量 = 1;\ndata café = 变量;\nanswer tree! { Answer [段落 ["文字"]] };');
+assert.equal(unicodeNames.ok,false);assert.equal(unicodeNames.diagnostics.length,4,JSON.stringify(unicodeNames));
 console.log('Chinese keys: bracket access accepted and invalid syntax has actionable diagnostics');
 
 const fieldExamples=Object.fromEntries(Array.from({length:12},(_,i)=>['field_'+i,i]));

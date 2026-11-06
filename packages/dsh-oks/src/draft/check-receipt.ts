@@ -33,30 +33,46 @@ export function parseInspect(raw:unknown):Inspect|undefined {
 }
 
 /** Compact public receipt; internal query plans, types and diagnostics remain structured. */
-export function checkReceipt(result:Awaited<ReturnType<typeof checkDesign>>,inspect?:Inspect) {
-  const lines=['# ready-status:'];
+export function checkReceipt(result:Awaited<ReturnType<typeof checkDesign>>,inspect?:Inspect,previous:Map<string,string>=new Map()) {
+  const unresolved:string[]=[];
+  const changed:string[]=[];
   for(const binding of result.checkedBindings){
     const name=binding.kind==='answer'?'answer':`${binding.kind}.${binding.name}`;
-    const status=!binding.checked?'?':binding.shape?shapeFingerprint(binding.shape):'checked';
-    lines.push(`- ${name}: ${status}`);
+    if(!binding.checked)unresolved.push(`- ${name}`);
+    else if(binding.shape && previous.get(name)!==canonicalJson(normalizeShape(binding.shape)))changed.push(`- ${name}: ${oneLine(displayShape(binding.shape))}`);
   }
   const errors:{span?:Span;message:string}[]=result.diagnostics.filter(d=>!/^Upstream\b/.test(d.message)).map(d=>({span:d.span,message:d.message}));
   if(!result.ok&&!errors.length)errors.push({span:undefined,message:'Checking is incomplete; no execution was performed'});
-  const inspected:string[]=[];
+  const inspected=new Map<string,string>();
+  const declarationsUnavailable=result.checkedBindings.length===0&&result.diagnostics.some(d=>d.stage==='syntax');
   for(const [key,kind] of [['data','data'],['figures','figure']] as const)for(const name of new Set(inspect?.[key]??[])){
     const binding=result.checkedBindings.find(b=>b.name===name&&b.kind===kind);
-    if(!binding){errors.push({span:undefined,message:`Unknown ${kind} binding ${JSON.stringify(name)}`});continue;}
-    inspected.push(`- ${kind}.${name}: ${binding.checked&&binding.shape?oneLine(displayShape(binding.shape)):'?'}`);
+    if(!binding){if(!declarationsUnavailable)errors.push({span:undefined,message:`Unknown ${kind} binding ${JSON.stringify(name)}`});continue;}
+    if(binding.checked&&binding.shape)inspected.set(`${kind}.${name}`,`- ${kind}.${name}: ${oneLine(displayShape(binding.shape))}`);
   }
+  const lines:string[]=[];
   if(errors.length){
-    lines.push('','# errors:');
+    lines.push('## diagnostics');
     for(const {span,message} of errors.slice(0,20)){
       const at=span?`L${span.start.line}:${span.start.column}-L${span.end.line}:${span.end.column}: `:'';
       lines.push(`- ${at}${oneLine(message)}`);
     }
     if(errors.length>20)lines.push(`- ${errors.length-20} more errors omitted; fix the listed errors and check again`);
+    lines.push('');
   }
-  if(inspected.length)lines.push('','# inspect:',...inspected);
+  lines.push('## unresolved-node-types',...unresolved,'','## inspect-node-types');
+  for(const line of changed){const key=line.slice(2,line.indexOf(': '));if(!inspected.has(key))lines.push(line);}
+  lines.push(...inspected.values());
   const ok=result.ok&&errors.length===0;
   return {ok,text:receiptHeader(ok?'Succeed':'CheckFailed')+'\n\n'+lines.join('\n')};
+}
+
+/** The next comparison uses the complete result of this check, including unresolved nodes. */
+export function typeBaseline(result:Awaited<ReturnType<typeof checkDesign>>):Map<string,string> {
+  const next=new Map<string,string>();
+  for(const binding of result.checkedBindings)if(binding.checked&&binding.shape){
+    const name=binding.kind==='answer'?'answer':`${binding.kind}.${binding.name}`;
+    next.set(name,canonicalJson(normalizeShape(binding.shape)));
+  }
+  return next;
 }

@@ -87,18 +87,20 @@ const parseLayout = (raw: unknown): { layout: LayoutOverrides } | { error: strin
 
 /** 解析表格规格：`columns` 选列与顺序，`title` 是表注。
  *  展示哪一份数据由入参顶层的 `src` 给——与图共用同一个字段。 */
-export const parseTableSpec = (spec: Record<string, unknown>): { title: string | null; columns: string[] | null } => {
-  const unknown = Object.keys(spec).filter(key => !['kind','title','columns'].includes(key));
+export const parseTableSpec = (spec: Record<string, unknown>): { title: string | null; columns: string[] | null; labels: Record<string,string> } => {
+  const unknown = Object.keys(spec).filter(key => !['kind','title','columns','labels'].includes(key));
   if (unknown.length) throw new Error(`Unknown table spec fields: ${unknown.join(', ')}; see tools/render_figure#kinds/table`);
   if (spec.columns !== undefined && spec.columns !== null && (!Array.isArray(spec.columns)
       || spec.columns.length === 0 || spec.columns.some(name => typeof name !== 'string' || name === '')
       || new Set(spec.columns).size !== spec.columns.length)) {
-    throw new Error('table columns must be a nonempty array of unique column name strings; for display labels rename data keys in select fields (tools/render_figure#topics/table_headers)');
+    throw new Error('table columns must be a nonempty array of unique column name strings');
   }
   if (spec.title !== undefined && spec.title !== null && typeof spec.title !== 'string') throw new Error('table title must be a string');
+  if (spec.labels !== undefined && (!isRecord(spec.labels) || Object.values(spec.labels).some(value=>typeof value!=='string'||!value.trim()))) throw new Error('table labels must map column names to nonempty strings');
   return {
     title: typeof spec.title === 'string' && spec.title.trim() !== '' ? spec.title.trim() : null,
     columns: Array.isArray(spec.columns) ? spec.columns as string[] : null,
+    labels: (spec.labels ?? {}) as Record<string,string>,
   };
 };
 

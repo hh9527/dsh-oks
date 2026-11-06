@@ -1,6 +1,6 @@
 import {selectReport} from '../report/structure.ts';
 import {renderResolveReceipt} from './resolve-receipt.ts';
-import {checkReceipt,parseInspect} from './check-receipt.ts';
+import {checkReceipt,parseInspect,typeBaseline} from './check-receipt.ts';
 import {renderMarkdownAnswer} from '../report/markdown-answer.ts';
 import {chartTitle} from '../chart/spec.ts';
 import type {ChartSpec} from '../chart/spec.ts';
@@ -46,7 +46,7 @@ const deliverAnswer = (agent: unknown, text: string,
   }
 };
 
-type RecordState = { contextTime:number; runtime: DraftRuntime; zone: ContextTimeZone; touched: number; active: boolean };
+type RecordState = { contextTime:number; runtime: DraftRuntime; zone: ContextTimeZone; touched: number; active: boolean; checking:number; types:Map<string,string> };
 
 export function createDraftTools(options: {
   knowledge: Knowledge;
@@ -70,7 +70,7 @@ export function createDraftTools(options: {
   const collect = () => {
     if (closed) throw new Error('Draft tools have been disposed');
     const cutoff = Date.now() - RETENTION_MS;
-    for (const [key, record] of records) if (!record.active && record.touched < cutoff) { record.runtime.dispose(); records.delete(key); }
+    for (const [key, record] of records) if (!record.active && !record.checking && record.touched < cutoff) { record.runtime.dispose(); records.delete(key); }
   };
   const recordFor = (entry: WorkspaceEntry, exec: ToolExec, file: string, create: boolean) => {
     collect();
@@ -78,11 +78,11 @@ export function createDraftTools(options: {
     let record = records.get(key);
     if (!record && create) {
       if (records.size >= MAX_DRAFTS) {
-        const candidate = [...records].filter(([, record]) => !record.active).sort((a, b) => a[1].touched - b[1].touched)[0];
+        const candidate = [...records].filter(([, record]) => !record.active && !record.checking).sort((a, b) => a[1].touched - b[1].touched)[0];
         if (!candidate) throw new Error('All retained draft slots are active; wait for a running draft');
         candidate[1].runtime.dispose(); records.delete(candidate[0]);
       }
-      const state = { contextTime:Date.now(), zone: { kind: 'missing' } as ContextTimeZone, touched: Date.now(), active: false };
+      const state = { contextTime:Date.now(), zone: { kind: 'missing' } as ContextTimeZone, touched: Date.now(), active: false, checking:0, types:new Map<string,string>() };
       const backend = options.backend?.(entry, file, () => state.zone) ?? createDraftBackend({ knowledge: options.knowledge, entry, file, contextZone: () => state.zone,contextNow:()=>state.contextTime });
       record = Object.assign(state, { runtime: new DraftRuntime(backend,{file,parse:parseExecutableDesign}) });
       records.set(key, record);
@@ -161,7 +161,12 @@ export function createDraftTools(options: {
     const knowledge={executorFor:()=>{throw new Error('Business query execution is forbidden during checking');}};
     const record=recordFor(entry,exec,file,true);record.zone=zone;
     const backend=createDraftBackend({knowledge,entry,file,contextZone:()=>zone,contextNow:()=>record.contextTime});
-    return checkDesign(text,file,backend,signal);
+    record.checking++;
+    try {
+      const result=await checkDesign(text,file,backend,signal);
+      const previous=record.types;record.types=typeBaseline(result);record.touched=Date.now();
+      return {result,previous};
+    } finally { record.checking--; }
   };
   const publish = async (record:RecordState,sourceText:string,name:string,exec:ToolExec) => {
     const retained=record.runtime.read(name,sourceText);
@@ -190,7 +195,7 @@ export function createDraftTools(options: {
   const tools: ToolDefinition[] = [
     {
       name:'dari_check',
-      description:'Check the entire DARI source without acquiring business rows. Returns compact text headed Succeed or CheckFailed: ready-status lists every declared binding; t1- fingerprints identify successfully checked type shapes, ? means not successfully checked, and reports/answer use checked. An unchanged fingerprint means previously inspected shape information remains valid. Optionally inspect data/figures by binding name to read inferred shapes only. Errors include original source spans, capped at 20; upstream cascades are hidden. Fingerprints describe shapes, not execution caches.',
+      description:'Check the entire DARI source without acquiring business rows. unresolved-node-types lists bindings whose types are unavailable; inspect-node-types reports new or changed data/figure types since the previous check or resolve for this session and source. Unchanged types are omitted. The optional inspect parameter forces selected types to be reported; use it only when previously reported types have been forgotten, such as after context compaction. Diagnostics include original source spans, capped at 20. Type state is independent of execution caches.',
       parameters:{type:'object',properties:{src:{type:'string'},inspect:{type:'object',properties:{data:{type:'array',maxItems:32,items:{type:'string',minLength:1}},figures:{type:'array',maxItems:32,items:{type:'string',minLength:1}}},additionalProperties:false}},required:['src'],additionalProperties:false},
       output:{schema:OBJECT,render:(_args:unknown,value:unknown)=>[{type:'text',text:(value as {text:string}).text}]},
       async execute(args:{src?:unknown;inspect?:unknown},exec:ToolExec) {
@@ -200,7 +205,8 @@ export function createDraftTools(options: {
         const entry=options.knowledge.ensureWorkspace(exec);
         const read=readDariSource(entry.root,args.src,'dari_check');
         const signal=AbortSignal.any([shutdown.signal,AbortSignal.timeout(120000),...(exec.signal?[exec.signal]:[])]);
-        return checkReceipt(await checkSource(entry,read.file,read.text,exec,signal),inspect);
+        const {result,previous}=await checkSource(entry,read.file,read.text,exec,signal);
+        return checkReceipt(result,inspect,previous);
       },
     },
     {
@@ -220,8 +226,8 @@ export function createDraftTools(options: {
         const signal=AbortSignal.any([shutdown.signal,...(exec.signal?[exec.signal]:[])]);
         try{
           signal.throwIfAborted();
-          const checked=await checkSource(entry,read.file,read.text,exec,AbortSignal.any([signal,AbortSignal.timeout(120000)]));
-          if(!checked.ok)return {...checked,...checkReceipt(checked),execution:'not performed'};
+          const {result:checked,previous}=await checkSource(entry,read.file,read.text,exec,AbortSignal.any([signal,AbortSignal.timeout(120000)]));
+          if(!checked.ok)return {...checked,...checkReceipt(checked,undefined,previous),execution:'not performed'};
           const doc=parseDesign(read.text,read.file);
           const answerAsset=doc.assets.get('@report/answer');
           if(answerAsset?.format!=='markdown')throw new Error('Missing answer tree! { Answer [...] };');

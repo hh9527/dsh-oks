@@ -13,6 +13,8 @@ const CELL_MAX_CHARS = 60;
 export interface TableSpec {
   /** 展示的列与顺序；省略就按数据里出现的列顺序。 */
   columns?: string[];
+  /** 数据列名到展示表头的映射。 */
+  labels?: Record<string,string>;
   /** 表注（进 `![表注](路径)`，也进报表的表号）。 */
   title?: string;
 }
@@ -59,7 +61,7 @@ export function tableMarkdown(
   }
   const available = [...new Set(rows.flatMap((row) => Object.keys(row)))];
   const columns = spec.columns === undefined || spec.columns.length === 0 ? available : spec.columns;
-  const unknown = columns.filter((name) => !available.includes(name));
+  const unknown = [...new Set([...columns, ...Object.keys(spec.labels ?? {})])].filter((name) => !available.includes(name));
   if (unknown.length > 0) {
     return { error: `这些列不在数据里：${unknown.join(', ')}。可用的列：${available.join(', ') || '(没有列)'}` };
   }
@@ -69,7 +71,7 @@ export function tableMarkdown(
   }
   const align = columns.map((name) => (isNumericColumn(rows, name) ? '---:' : '---'));
   const lines = [
-    `| ${columns.map((name) => escapeCell(name)).join(' | ')} |`,
+    `| ${columns.map((name) => escapeCell(spec.labels && Object.hasOwn(spec.labels,name) ? spec.labels[name] : name)).join(' | ')} |`,
     `| ${align.join(' | ')} |`,
   ];
   for (const row of rows) {

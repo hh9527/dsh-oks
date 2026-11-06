@@ -21,7 +21,7 @@ export function renderResolveReceipt(value:unknown):string {
     if(Array.isArray(value.diagnostics))value.diagnostics.forEach(add);
     if(!errors.length)add(value);
     if(!errors.length)errors.push({location:'',message:typeof value.status==='string'?value.status:'Resolution failed'});
-    const lines=[receiptHeader('ResolveFailed'),'','# errors:',...errors.slice(0,20).map(e=>'- '+e.location+e.message)];
+    const lines=[receiptHeader('ResolveFailed'),'','## diagnostics',...errors.slice(0,20).map(e=>'- '+e.location+e.message)];
     const omitted=errors.length-20+(typeof value.omittedFailures==='number'?value.omittedFailures:0)+(typeof value.omittedDiagnostics==='number'?value.omittedDiagnostics:0);
     if(omitted>0)lines.push(`- ${omitted} more errors omitted`);
     return lines.join('\n');
