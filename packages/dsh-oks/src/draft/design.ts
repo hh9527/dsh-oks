@@ -241,6 +241,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
               arrayIncomplete=itemTypes.some(item=>item.kind==='error');
               const fields={...first.fields},knownFields:Record<string,Ty>=Object.fromEntries(Object.entries(first.fields).filter(([,type])=>type.kind!=='error'));let nullable=first.nullable;
               const mergeKnown=(left:Ty,right:Ty,node:Expr):Ty=>{
+                if(left.kind==='error')return right;if(right.kind==='error')return left;
                 if(left.kind==='record'&&right.kind==='record'&&Object.keys(left.fields).join('\0')===Object.keys(right.fields).join('\0'))return {kind:'record',fields:Object.fromEntries(Object.entries(right.fields).map(([name,type])=>[name,mergeKnown(left.fields[name],type,node.kind==='object'?node.entries.find(entry=>entry.key===name)?.value??node:node)])),nullable:left.nullable||right.nullable};
                 try{return common(left,right);}catch(error){if(!(error instanceof TypeRuleError))throw error;diagnostics.report({file,stage:'type',asset:binding,message:error.message,span:node.span});return {kind:'error'};}
               };

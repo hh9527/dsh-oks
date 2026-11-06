@@ -126,6 +126,12 @@ try{
  const rootNestedSource='data x = [{a:{u:1,v:1}},{a:{u:"x",v:True}}];';
  const rootNested=await checkDesign(rootNestedSource,'fixture.dari',backend);
  assert.deepEqual(rootNested.diagnostics.filter(d=>d.message.startsWith('Incompatible types')).map(d=>d.span.start.offset),[rootNestedSource.indexOf('"x"'),rootNestedSource.indexOf('True')],JSON.stringify(rootNested.diagnostics));
+ for(const projection of ['', '[0]']){
+  const nestedUnknownSource='data bad = 1+"x"; data x = [{a:{u:bad}},{a:{u:1}},{a:{u:"x"}}]'+projection+';';
+  const nestedUnknown=await checkDesign(nestedUnknownSource,'fixture.dari',backend);
+  assert.equal(nestedUnknown.diagnostics.find(d=>d.message.startsWith('Incompatible types'))?.span.start.offset,nestedUnknownSource.lastIndexOf('"x"'),JSON.stringify(nestedUnknown.diagnostics));
+  assert(nestedUnknown.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ }
  const partialRecordArraySource='data bad = 1+"x"; data x = [bad,{a:1,b:1},{a:"x",b:True}];';
  const partialRecordArray=await checkDesign(partialRecordArraySource,'fixture.dari',backend);
  assert.deepEqual(partialRecordArray.diagnostics.filter(d=>d.message.startsWith('Incompatible types')).map(d=>d.span.start.offset),[partialRecordArraySource.lastIndexOf('"x"'),partialRecordArraySource.indexOf('True')],JSON.stringify(partialRecordArray.diagnostics));
