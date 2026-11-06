@@ -14,7 +14,7 @@ export type Reference = { source:string; binding:string; path:(string|number)[];
 export type Attribute = { kind:'text'; value:string; span:Span } | ({kind:'reference'} & Reference);
 export type Element = { empty:boolean;name:string; attrs:Map<string,Attribute>; children:(Element|string)[]; span:Span };
 export type DraftAsset = { title?:string;format?:'markdown';program?:ReportProgram;figurePlacement?:'before-caption';name:string;source:string;span:Span;references?:Record<string,{kind:'value'|'figure'|'report'|'condition';span:Span;code?:string}> };
-export type DraftDocument = {declarations?:Map<string,'data'|'figure'|'report'|'answer'>;authoring?:DariAuthoring;title?:string;nodes:PipelineNode[];assets:Map<string,DraftAsset>;pipeline:Span;answers:string[];file:string;diagnostics?:SourceDiagnostic[]};
+export type DraftDocument = {declarations?:Map<string,'data'|'figure'|'report'|'answer'>;unavailableDefinitions?:Set<string>;authoring?:DariAuthoring;title?:string;nodes:PipelineNode[];assets:Map<string,DraftAsset>;pipeline:Span;answers:string[];file:string;diagnostics?:SourceDiagnostic[]};
 
 export function parseDraft(source:string,file='draft.dari'):DraftDocument {
   const document=parseDraftForValidation(source,file);
@@ -40,7 +40,7 @@ export function parseDraftForValidation(source:string,file='draft.dari',collecto
   const only=(attrs:Map<string,Attribute>,allowed:string[])=>{for(const [key,attr]of attrs)if(!allowed.includes(key))fail(`Unknown attribute ${key}`,attr.span.start.offset,attr.span.end.offset);};
   const {childSpans,references,title,figures,templates,nodes}=prepared;
   const assets=new Map<string,DraftAsset>();
-  const names=new Set(nodes.flatMap(n=>n.statement.kind==='binding'?[n.statement.name]:[]));
+  const names=new Set([...prepared.declarations.keys(),...nodes.flatMap(n=>n.statement.kind==='binding'?[n.statement.name]:[])]);
   for(const ref of references)if(!names.has(ref.binding))collect(()=>fail(`Undefined pipeline binding ${ref.binding}`,ref.span.start.offset,ref.span.end.offset));
   const refExpr=(ref:Reference):Expr=>{
     if(ref.optional?.length||(ref.path.length&&nodes.some(n=>n.typed))){
@@ -182,5 +182,5 @@ export function parseDraftForValidation(source:string,file='draft.dari',collecto
   unit=undefined;stage='container';
   if(nodes.length>1024||assets.size>128)fail('DARI exceeds node or asset budget',0);
   const findings=diagnostics.list();
-  return {declarations:prepared.declarations,authoring,title,nodes,assets,pipeline:original.span(0,source.length),answers,file,...(findings.length?{diagnostics:findings}:{})};
+  return {declarations:prepared.declarations,unavailableDefinitions:prepared.unavailableDefinitions,authoring,title,nodes,assets,pipeline:original.span(0,source.length),answers,file,...(findings.length?{diagnostics:findings}:{})};
 }

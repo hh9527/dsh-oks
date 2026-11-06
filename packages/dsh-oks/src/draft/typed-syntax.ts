@@ -77,7 +77,8 @@ export function parseTypedExpression(source:string,base:Position,options:{defini
   if(options.templatePresence)n={k:'template_presence',input:{k:'ref',name:options.templatePresence,s:n.s},s:n.s};
   for(const scope of [...options.templateScopes??[]].reverse())n={k:'template_scope',op:options.templateCondition?'condition':'value',a:[scope.input,{k:'lambda',params:[scope.name],body:n,s:n.s}],s:n.s};
   const dependencies=[...refs(n)];for(const ref of dependencies)if(!defs.has(ref)&&/^[\x00-\x7f]+$/.test(ref))throw new DraftSyntaxError('Undefined or forward data binding '+ref,n.s);
-  if(dependencies.some(ref=>options.unavailableDefinitions?.has(ref)))throw new UnavailableSyntaxDependency();
-  const name=options.expressionName,analysis=lower(n,'analysis'),value=lower(n);
+  const unavailable=dependencies.some(ref=>options.unavailableDefinitions?.has(ref));
+  const name=options.expressionName;let analysis:Expr,value:Expr;
+  try{analysis=lower(n,'analysis');value=lower(n);}catch(error){if(unavailable&&error instanceof DraftSyntaxError)throw new UnavailableSyntaxDependency();throw error;}
   defs.set(name,n);return {typed:true,analysis,statement:{kind:'binding',name,value,span:n.s,motivation:''},bindings:dependencies};
 }

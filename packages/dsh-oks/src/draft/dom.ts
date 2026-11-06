@@ -250,5 +250,5 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
   let queries=0;
   const visit=(e:Expr)=>{if(e.kind==='call'){if(e.operator==='query')queries++;e.args.forEach(visit);}else if(e.kind==='array')e.values.forEach(visit);else if(e.kind==='object')e.entries.forEach(x=>visit(x.value));else if(e.kind==='project')visit(e.input);};
   nodes.forEach(n=>visit(n.statement.value));if(queries>128)fail('Pipeline exceeds 128 queries',0);
-  return {nodes,figures,templates,references,childSpans,title,declarations};
+  return {nodes,figures,templates,references,childSpans,title,declarations,unavailableDefinitions};
 }
