@@ -10,9 +10,10 @@ assert(['ic','ns'].includes(domain)&&artifact&&runner&&(!mode||mode==='diagnosti
 const example=domain==='ic'?'cpu':'ns';
 {
  const child=spawn(runner,[artifact,'--serve','stdio+jsonl://','--request-fuel','10000','--with-memory-limit','256']);
+ child.stdin.on('error',()=>{});
  let stderr='';child.stderr.on('data',d=>stderr+=d);const closed=new Promise(resolve=>child.once('close',resolve));
  const timer=setTimeout(()=>child.kill(),60000),lines=createInterface({input:child.stdout}),reader=lines[Symbol.asyncIterator]();let calls=0;
- const backend=createDraftBackend({entry:{modelHash:domain,settings:{domain,queryMaxRows:500},runner:{async send(method:string,input:unknown){calls++;child.stdin.write(JSON.stringify({method,input})+'\n');const next=await reader.next();assert(!next.done,stderr);return JSON.parse(next.value);}}} as any,file:example+'.dari',contextZone:()=>({kind:'resolved',timeZone:'Asia/Shanghai'}),contextNow:()=>{throw new Error('Analysis read runtime clock');},knowledge:{executorFor(){throw new Error('Analysis acquired business data');}}});
+ const backend=createDraftBackend({entry:{modelHash:domain,settings:{domain,queryMaxRows:500},runner:{async send(method:string,input:unknown){calls++;child.stdin.write(JSON.stringify({method,input})+'\n');const next=await reader.next();if(next.done){const code=await closed;throw new Error(`Model runner exited (${code}): ${stderr.trim()||'no error output'}`);}return JSON.parse(next.value);}}} as any,file:example+'.dari',contextZone:()=>({kind:'resolved',timeZone:'Asia/Shanghai'}),contextNow:()=>{throw new Error('Analysis read runtime clock');},knowledge:{executorFor(){throw new Error('Analysis acquired business data');}}});
  let source=readFileSync(new URL(`../../packages/dsh-oks/examples/${example}-typed-pipeline.dari`,import.meta.url),'utf8');
  if(mode==='diagnostics')source=source.replace('name:r.r.left_ls_server_name,','name:r.r.missing_server_name,').replace('base:r.r.left_lk_server_cpu_usage,','base:r.r.missing_cpu_usage,');
  try{
