@@ -228,6 +228,22 @@ try{
   assert(!result.diagnostics.some(d=>d.message.includes('Unknown field unknown')),JSON.stringify(result.diagnostics));
   assert(result.checkedBindings.some(b=>b.name==='x'&&!b.checked));
  }
+ for(const from of ['42','{}','{a:facts,b:facts}']){
+  const result=await checkDesign(`data facts = table([{n:1}],{kind:"example"}); data x = select({from:${from},fields:r=>({missing:r.unknown.n,bad:"x"+1}),limit:-1});`,'fixture.dari',backend);
+  assert(result.diagnostics.some(d=>d.message==='source must contain exactly one table alias'),JSON.stringify(result.diagnostics));
+  assert(result.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(result.diagnostics));
+  assert(result.diagnostics.some(d=>d.message==='limit requires a known nonnegative Int'),JSON.stringify(result.diagnostics));
+  assert(!result.diagnostics.some(d=>d.message.includes('Unknown field unknown')),JSON.stringify(result.diagnostics));
+  assert(result.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ }
+ const invalidJoinSource=await checkDesign('data facts = table([{n:1}],{kind:"example"}); data x = select({from:{s:facts},joins:[{kind:"left",source:{},on:r=>r.unknown.n==1}],fields:r=>({bad:"x"+1})});','fixture.dari',backend);
+ assert(invalidJoinSource.diagnostics.some(d=>d.message==='source must contain exactly one table alias'),JSON.stringify(invalidJoinSource.diagnostics));
+ assert(invalidJoinSource.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(invalidJoinSource.diagnostics));
+ assert(!invalidJoinSource.diagnostics.some(d=>d.message.includes('Unknown field unknown')),JSON.stringify(invalidJoinSource.diagnostics));
+ const invalidSourceStatement=parseAnalysisDesign('data facts = table([{n:1}],{kind:"example"}); data x = select({from:{},fields:r=>({n:1})});','fixture.dari').nodes.at(-1)!.statement;
+ if(invalidSourceStatement.value.kind!=='call'||invalidSourceStatement.value.args[0].kind!=='literal')throw new Error('Expected relational call');
+ await assert.rejects(runTyped({operator:'relational',args:[{data:invalidSourceStatement.value.args[0].value},{data:{}}],statement:invalidSourceStatement,span:invalidSourceStatement.span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL prepare');}} as any,true),error=>error instanceof DraftSyntaxError&&error.diagnostics.some(d=>d.message==='source must contain exactly one table alias'));
+ assert.equal(prepares,0);
  assert(invalidFieldsAndLimit.diagnostics.some(d=>d.message.includes('Unknown field missing')),JSON.stringify(invalidFieldsAndLimit.diagnostics));
  assert(invalidFieldsAndLimit.diagnostics.some(d=>d.message==='limit requires a known nonnegative Int'),JSON.stringify(invalidFieldsAndLimit.diagnostics));
  assert(invalidFieldsAndLimit.checkedBindings.some(b=>b.name==='x'&&!b.checked));
