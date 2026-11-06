@@ -48,13 +48,14 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
   };
   /** Delimiters inside strings, comments, object literals and lambdas do not end an expression. */
   const expression=(stops:Set<string>)=>{
-    whitespace();const start=at,stack:{symbol:string;offset:number}[]=[];
+    whitespace();const start=at,stack:{symbol:string;offset:number}[]=[];let possibleDeclaration=false;
     while(at<source.length){
       const ch=source[at];
       if(ch==='"'){string();continue;}
       if(source.startsWith('//',at)){while(at<source.length&&source[at]!=='\n')at++;continue;}
       if(source.startsWith('/*',at)){const end=source.indexOf('*/',at+2);if(end<0)fail('Unterminated block comment');at=end+2;continue;}
       if(!stack.length&&stops.has(ch))break;
+      if(!stack.length&&stops.has(';')&&(at===start||!/[\p{XID_Continue}$_]/u.test(source[at-1]))&&/^(?:data|figure|report|answer)(?![\p{XID_Continue}$_])(?:\s|\/)/u.test(source.slice(at)))possibleDeclaration=true;
       if('([{'.includes(ch)){stack.push({symbol:ch,offset:at});if(stack.length>128)fail('Expression nesting exceeds 128');}
       else if(')]}'.includes(ch)){const open=stack.pop();if(open?.symbol!=={')':'(',']':'[','}':'{'}[ch]){
         const expected=open?{'(':')','[':']','{':'}'}[open.symbol]:undefined;
@@ -67,7 +68,7 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
       fail('Unterminated expression; expected '+JSON.stringify(expected),at,at,{expected,found:'end of input',related:[{message:'Opening '+open.symbol+' requires '+expected,span:location(open.offset,open.offset+1)}]});
     }
     const end=at;if(!source.slice(start,end).trim())fail('Expected an expression',start);
-    return {start,end,text:source.slice(start,end)};
+    return {start,end,text:source.slice(start,end),possibleDeclaration};
   };
   const compile=(part:{start:number;end:number;text:string},binding:string,internal=false,condition=false,presence?:string)=>{
     const result=parseTypedExpression(part.text,original.position(part.start),{definitions,unavailableDefinitions,expressionName:binding,templateScopes:scopes,templateCondition:condition,templatePresence:presence,identifierDiagnostics});
@@ -196,7 +197,7 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
     if(declarations.has(binding))fail('Duplicate binding '+binding,bindingStart,at);
     if(kind!=='answer')eat('=');
     if(kind==='data'){
-      const part=expression(new Set([';']));if(source[at]===';'&&!/\b(?:data|figure|report|answer)\s+[$_\p{XID_Start}]/u.test(part.text))recoverableBinding=binding;const node=compile(part,binding);eat(';');node.statement.span=location(start);
+      const part=expression(new Set([';']));if(source[at]===';'&&!part.possibleDeclaration)recoverableBinding=binding;const node=compile(part,binding);eat(';');node.statement.span=location(start);
     }else{
       eat('tree');eat('!');eat('{');
       const tree=element();

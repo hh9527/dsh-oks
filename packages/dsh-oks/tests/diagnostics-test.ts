@@ -251,11 +251,19 @@ try{
  }
  const uncertain=await checkDesign('data first = 1 + * 2\ndata second = 3 + * 4;','fixture.dari',backend);
  assert.equal(uncertain.diagnostics.length,1,JSON.stringify(uncertain.diagnostics));
+ const uncertainComment=await checkDesign('data first = 1 + * 2\ndata /* comment */ second = 3 + * 4;','fixture.dari',backend);
+ assert.equal(uncertainComment.diagnostics.length,1,JSON.stringify(uncertainComment.diagnostics));
  const unclosed=await checkDesign('data first = (1 + * 2; data second = 3 + * 4;','fixture.dari',backend);
  assert.equal(unclosed.diagnostics.length,1,JSON.stringify(unclosed.diagnostics));
  const bounded='data first = {text:";\\\";",nested:[1,2],bad:1+*2}; /* ; */\ndata second = (3+*4);';
  const boundedResult=await checkDesign(bounded,'fixture.dari',backend);
  assert.deepEqual(boundedResult.diagnostics.map(d=>d.span.start.offset),[bounded.indexOf('*2'),bounded.lastIndexOf('*4')],JSON.stringify(boundedResult.diagnostics));
+ const quotedDeclaration='data first = "data fake" + * 2; data second = 3 + * 4;';
+ const commentDeclaration='data first = 1 + /* data fake */ * 2; data second = 3 + * 4;';
+ for(const text of [quotedDeclaration,commentDeclaration]){
+  const result=await checkDesign(text,'fixture.dari',backend);
+  assert.deepEqual(result.diagnostics.map(d=>d.span.start.offset),[text.indexOf('* 2'),text.indexOf('* 4')],JSON.stringify(result.diagnostics));
+ }
  for(const tail of ['data second = "unterminated;','data second = 1 /* unterminated;']){
   const result=await checkDesign('data first = 1 + * 2; '+tail,'fixture.dari',backend);
   assert.equal(result.diagnostics.length,2,JSON.stringify(result.diagnostics));
