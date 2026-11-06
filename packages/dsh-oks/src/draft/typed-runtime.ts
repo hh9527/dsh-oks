@@ -27,10 +27,29 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
    return firstRow?.kind==='object'?firstRow.entries.find(e=>e.key===name)?.value.span??ctx.span:ctx.span;
   };
   if(!check&&!known(value))throw new DraftSyntaxError('table rows must be known given/example values',ctx.span);
-  const type=typeOf(value,ctx.args[0]?.logicalType as Ty|undefined);
+  const diagnostics=ctx.diagnostics?.scope()??new DiagnosticCollector();
+  let type:Ty|undefined;
+  if(check&&Array.isArray(rows)&&rows.length>1){
+   const rowTypes=rows.map(row=>typeOf(row));
+   const first=rowTypes[0];
+   if(first.kind==='record'&&rowTypes.every(row=>row.kind==='record'&&Object.keys(row.fields).join('\0')===Object.keys(first.fields).join('\0'))){
+    const fields={...first.fields};
+    for(const [index,row] of rowTypes.entries())if(index>0&&row.kind==='record')for(const [name,current] of Object.entries(row.fields)){
+     if(fields[name].kind==='error'||current.kind==='error'){fields[name]={kind:'error'};continue;}
+     try{fields[name]=common(fields[name],current);}catch(error){
+      if(!(error instanceof TypeRuleError))throw error;
+      const rowExpr=rowsExpr?.kind==='array'?rowsExpr.values[index]:undefined;
+      const span=rowExpr?.kind==='object'?rowExpr.entries.find(e=>e.key===name)?.value.span??ctx.span:ctx.span;
+      diagnostics.report({stage:'type',message:'table column '+name+': '+error.message,span});fields[name]={kind:'error'};
+     }
+    }
+    type={kind:'array',element:{...first,fields},length:rows.length,nullable:false};
+   }
+  }
+  type??=typeOf(value,ctx.args[0]?.logicalType as Ty|undefined);
   if(check&&(type.kind==='error'||type.kind==='array'&&type.element.kind==='error'))throw new UpstreamTypeUnavailable();
   if(type.kind!=='array'||type.element.kind!=='record'||!Object.keys(type.element.fields).length)throw new DraftSyntaxError('table requires a nonempty array of scalar records',ctx.span);
-  const diagnostics=ctx.diagnostics?.scope()??new DiagnosticCollector(),columns:SqlColumn[]=[];
+  const columns:SqlColumn[]=[];
   for(const [name,t] of Object.entries(type.element.fields)){
    if(check&&t.kind==='error')continue;
    if(t.kind!=='scalar'){const message='table column '+name+' requires an inferred scalar type',span=columnSpan(name);if(!check)throw new DraftSyntaxError(message,span);diagnostics.report({stage:'type',message,span});}
