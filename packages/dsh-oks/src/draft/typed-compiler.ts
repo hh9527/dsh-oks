@@ -116,7 +116,11 @@ export class TypedCompiler{
   if(n.k==='call'){
    const name=n.name!,args=n.a!;
    if(name==='map_opt'){
-    if(args.length!==2||args[1].k!=='lambda'||args[1].params?.length!==1)fail(n,'map_opt requires (optional, (value) => expression)');
+    if(args.length!==2||args[1].k!=='lambda'||args[1].params?.length!==1){
+     if(!this.checking)fail(n,'map_opt requires (optional, (value) => expression)');
+     for(const arg of args)if(arg.k==='lambda')this.compile(arg.body!,{...env,...Object.fromEntries((arg.params??[]).map(p=>[p,{type:{kind:'error'} as Ty,known:false}]))});else this.compile(arg,env);
+     return this.errorValue(n,'map_opt requires (optional, (value) => expression)');
+    }
     const a=this.compile(args[0],env);if(a.type.kind==='error'){if(this.checking)this.compile(args[1].body!,{...env,[args[1].params![0]]:a});return a;}if(!nullable(a.type)){const invalid=this.errorValue(args[0],'map_opt requires Option');if(this.checking)this.compile(args[1].body!,{...env,[args[1].params![0]]:invalid});return invalid;}
     const value:V={...a,type:present(a.type),known:a.known&&a.value!==null};const out=this.compile(args[1].body!,{...env,[args[1].params![0]]:value});
     if(out.type.kind==='record')return {type:optional(out.type),known:a.known&&(a.value===null||out.known),...(a.known?{value:a.value===null?null:out.value}:{})};

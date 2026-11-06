@@ -163,6 +163,10 @@ try{
  const wrongArity=await checkDesign('data x = sum(1+"x",2);','fixture.dari',backend);
  assert(wrongArity.diagnostics.some(d=>d.message==='Invalid argument count for sum'),JSON.stringify(wrongArity.diagnostics));
  assert(wrongArity.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(wrongArity.diagnostics));
+ const badOptionalArity=await checkDesign('data x = map_opt(1+"x",n=>({dependent:n.missing,independent:"x"+1}),2+"x");','fixture.dari',backend);
+ assert(badOptionalArity.diagnostics.some(d=>d.message.startsWith('map_opt requires (optional')),JSON.stringify(badOptionalArity.diagnostics));
+ assert.equal(badOptionalArity.diagnostics.filter(d=>d.message.includes('Arithmetic requires numbers')).length,3,JSON.stringify(badOptionalArity.diagnostics));
+ assert(!badOptionalArity.diagnostics.some(d=>d.message.includes('missing')),JSON.stringify(badOptionalArity.diagnostics));
  const tableSource='data x = table([{first:{x:1},second:[1]}],{kind:"example"});';
  const tableErrors=await checkDesign(tableSource,'fixture.dari',backend);
  for(const name of ['first','second'])assert(tableErrors.diagnostics.some(d=>d.message.includes('table column '+name)),JSON.stringify(tableErrors.diagnostics));
