@@ -9,12 +9,13 @@ export const COMPONENT_KINDS = {
   Gauge: 'gauge', Table: 'table',
 } as const satisfies Record<string, ChartKind | 'table'>;
 export type FigureKind = (typeof COMPONENT_KINDS)[keyof typeof COMPONENT_KINDS];
+export class ComponentSpecValidationError extends Error {}
 export function componentKind(name: string): FigureKind | undefined {
   return Object.hasOwn(COMPONENT_KINDS, name) ? COMPONENT_KINDS[name as keyof typeof COMPONENT_KINDS] : undefined;
 }
 export function componentSpec(raw: unknown, kind?: FigureKind): unknown {
   if (kind === undefined) return raw;
-  if (!isRecord(raw)) throw new Error('Component spec must be an object');
-  if (Object.hasOwn(raw, 'kind')) throw new Error('Component spec must omit kind; the component tag selects the chart type');
+  if (!isRecord(raw)) throw new ComponentSpecValidationError('Component spec must be an object');
+  if (Object.hasOwn(raw, 'kind')) throw new ComponentSpecValidationError('Component spec must omit kind; the component tag selects the chart type');
   return { ...raw, kind };
 }

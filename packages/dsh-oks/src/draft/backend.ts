@@ -3,7 +3,7 @@ import {runTyped,validateTypedRows} from './typed-runtime.ts';
 import {isBox,typeOf,show,unbox,record,scalar,type Ty} from './typed-types.ts';
 import {SqlWorkspace} from './sql.ts';
 import { projectionError } from './projection.ts';
-import { componentSpec } from './components.ts';
+import { componentSpec,ComponentSpecValidationError } from './components.ts';
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { canonicalJson } from '../key.ts';
@@ -18,7 +18,7 @@ import type { ContextTimeZone } from '../time.ts';
 import { tableMarkdown } from '../view/table.ts';
 import { buildOption, CHART_WIDTH } from '../chart/option.ts';
 import { renderEchartsSvg } from '../chart/echarts.ts';
-import { chartTitle, missingColumns, parseChartSpec, parseTableSpec, shapeProblem } from '../chart/spec.ts';
+import { chartTitle, missingColumns, parseChartSpec, parseTableSpec, shapeProblem,TableSpecValidationError } from '../chart/spec.ts';
 import {selectReport} from '../report/structure.ts';
 import { assembleReport } from '../report/assemble.ts';
 import type { ReportBinding } from '../report/assemble.ts';
@@ -39,6 +39,7 @@ const fail = (message: string, span: Span): never => { throw new DraftSyntaxErro
 
 type CachedCheck = { error?:string;result?:unknown; };
 class IntentValidationError extends Error {}
+class FigureValidationError extends Error {}
 /** Per-source validation cache. Only deterministic completed checks are admitted. */
 class Checks {
   private entries = new Map<string, CachedCheck>();
@@ -163,10 +164,10 @@ export function createDraftBackend(options: {
   };
   const sqlWorkspace=new SqlWorkspace();
   const validateFigure = (raw: unknown) => {
-    if (!isRecord(raw)) throw new Error('render_figure spec must be an object');
+    if (!isRecord(raw)) throw new FigureValidationError('render_figure spec must be an object');
     if (raw.kind === 'table') return parseTableSpec(raw);
     const parsed = parseChartSpec(raw);
-    if ('error' in parsed) throw new Error(parsed.error);
+    if ('error' in parsed) throw new FigureValidationError(parsed.error);
     return parsed;
   };
   const preflight = async (document: DraftDocument, signal?: AbortSignal, options?: {validateQueries?:boolean;diagnostics?:DiagnosticCollector}) => {
@@ -196,7 +197,7 @@ export function createDraftBackend(options: {
           if (expr.operator === 'render_figure' && second !== UNKNOWN && isRecord(second) && (!Object.hasOwn(second, 'data') || Object.keys(second).some(key => key !== 'data' && key !== 'nodes'))) fail('render_figure inputs must be {data,nodes?}',expr.span);
           if (expr.operator === 'time_windows' && second !== UNKNOWN) timeWindowOptions(second);
           if (expr.operator === 'query' && first !== UNKNOWN) plannedQueries.push({intent:first,span:expr.span});
-          if (expr.operator === 'render_figure' && first !== UNKNOWN){try{validateFigure(componentSpec(first,expr.figureKind));}catch(error){fail(error instanceof Error?error.message:String(error),expr.args[0].span);}}
+          if (expr.operator === 'render_figure' && first !== UNKNOWN){try{validateFigure(componentSpec(first,expr.figureKind));}catch(error){if(!(error instanceof FigureValidationError)&&!(error instanceof TableSpecValidationError)&&!(error instanceof ComponentSpecValidationError))throw error;fail(error.message,expr.args[0].span);}}
           if (expr.operator === 'data' && expr.args[1]) {
             const nature = constant(expr.args[1], constants);
             if (nature !== UNKNOWN) dataNature(nature);

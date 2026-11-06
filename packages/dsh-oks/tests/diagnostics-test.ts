@@ -179,6 +179,13 @@ try{
  if(brokenStatement.value.kind!=='call')throw new Error('Expected data call');
  brokenStatement.value.args[1]={kind:'literal',value:{get kind(){throw unexpectedDataError;}},span:brokenStatement.value.args[1].span} as any;
  await assert.rejects(backend.preflight(brokenPreflight,undefined,{validateQueries:false}),e=>e===unexpectedDataError);
+ const brokenFigurePreflight=parseAnalysisDesign('data x = data(1,{kind:"given"});','fixture.dari');
+ const brokenFigureStatement=brokenFigurePreflight.nodes[0].statement;
+ if(brokenFigureStatement.value.kind!=='call')throw new Error('Expected call');
+ const figureFailure=new Error('unexpected figure failure'),figureSpan=brokenFigureStatement.value.span;
+ brokenFigureStatement.value.operator='render_figure';brokenFigureStatement.value.figureKind='table';
+ brokenFigureStatement.value.args=[{kind:'literal',value:{get title(){throw figureFailure;}},span:figureSpan},{kind:'literal',value:{data:[]},span:figureSpan}] as any;
+ await assert.rejects(backend.preflight(brokenFigurePreflight,undefined,{validateQueries:false}),e=>e===figureFailure);
  assert.throws(()=>backend.checkCall!({operator:'time_windows',args:[{data:{get utc(){throw unexpectedTimeError;}}},{data:{unit:'day',count:1,mode:'current'}}],span} as any,()=>true),e=>e===unexpectedTimeError);
  const unexpectedRangeError=new RangeError('unexpected input access failure');
  assert.throws(()=>backend.checkCall!({operator:'time_windows',args:[{data:{get utc(){throw unexpectedRangeError;}}},{data:{unit:'day',count:1,mode:'current'}}],span} as any,()=>true),e=>e===unexpectedRangeError);
