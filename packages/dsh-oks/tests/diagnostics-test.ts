@@ -228,6 +228,12 @@ try{
  const invalidFieldsAndLimit=await checkDesign('data facts = table([{n:1}],{kind:"example"}); data x = select({from:{s:facts},fields:r=>r.s.missing,limit:-1});','fixture.dari',backend);
  const syntaxSource='data first = 1 + * 2;\ndata dependent = {derived:first.missing,independent:"x"+1};\ndata second = 3 + * 4;\ndata type_bad = "x" + 1;\ndata valid = 1;';
  const syntaxResult=await checkDesign(syntaxSource,'fixture.dari',backend);
+ const mixedSyntax='data row = {"周次":1};\ndata first = row.周次 + * 2;\ndata second = row.周次 + * 3;';
+ const mixedSyntaxResult=await checkDesign(mixedSyntax,'fixture.dari',backend);
+ const mixedPositions=[mixedSyntax.indexOf('周次',mixedSyntax.indexOf('row.')),mixedSyntax.indexOf('*'),mixedSyntax.lastIndexOf('周次'),mixedSyntax.lastIndexOf('*')];
+ assert.deepEqual(mixedSyntaxResult.diagnostics.map(d=>d.span.start.offset),mixedPositions,JSON.stringify(mixedSyntaxResult.diagnostics));
+ assert.equal(mixedSyntaxResult.diagnostics.filter(d=>d.message.includes('row["周次"]')).length,2,JSON.stringify(mixedSyntaxResult.diagnostics));
+ assert.equal(mixedSyntaxResult.diagnostics.filter(d=>d.message==='Expected an expression').length,2,JSON.stringify(mixedSyntaxResult.diagnostics));
  const emptySource='data empty = ;\ndata comment_only = /* nothing */ ;\ndata later = 1+*2;';
  const emptyResult=await checkDesign(emptySource,'fixture.dari',backend);
  assert.equal(emptyResult.diagnostics.length,3,JSON.stringify(emptyResult.diagnostics));
