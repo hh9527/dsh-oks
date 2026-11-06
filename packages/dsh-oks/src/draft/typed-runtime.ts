@@ -1,10 +1,11 @@
 import {isRecord} from '../host.ts';
 import {TypedCompiler,fail} from './typed-compiler.ts';
-import {UNKNOWN,TYPED,box,isBox,typeOf,unbox,known,common,scalar,rowType,show,hasError,UpstreamTypeUnavailable,type Ty} from './typed-types.ts';
+import {UNKNOWN,TYPED,box,isBox,typeOf,unbox,known,common,scalar,rowType,show,hasError,TypeRuleError,UpstreamTypeUnavailable,type Ty} from './typed-types.ts';
 import type {N} from './typed-syntax.ts';
 import type {SqlWorkspace,SqlColumn} from './sql.ts';
 import type {CallContext,Computed} from './runtime.ts';
 import {DraftSyntaxError} from './pipeline.ts';
+import {DiagnosticCollector} from './diagnostics.ts';
 const mark=(v:any,type:Ty)=>({...v,[TYPED]:type,value:v});
 const q=(s:string)=>'"'+s.replaceAll('"','""')+'"';
 export function validateTypedRows(rows:Record<string,unknown>[],columns:SqlColumn[]){
@@ -16,7 +17,12 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
   if(!check&&!known(value))throw new DraftSyntaxError('table rows must be known given/example values',ctx.span);
   const type=typeOf(value,ctx.args[0]?.logicalType as Ty|undefined);
   if(type.kind!=='array'||type.element.kind!=='record'||!Object.keys(type.element.fields).length)throw new DraftSyntaxError('table requires a nonempty array of scalar records',ctx.span);
-  const columns=Object.entries(type.element.fields).map(([name,t])=>{if(t.kind!=='scalar')throw new DraftSyntaxError('table column '+name+' requires an inferred scalar type',ctx.span);return {name,type:t.name,nullable:t.nullable};});
+  const diagnostics=new DiagnosticCollector(),columns:SqlColumn[]=[];
+  for(const [name,t] of Object.entries(type.element.fields)){
+   if(t.kind!=='scalar'){const message='table column '+name+' requires an inferred scalar type';if(!check)throw new DraftSyntaxError(message,ctx.span);diagnostics.report({stage:'type',message,span:ctx.span});}
+   else columns.push({name,type:t.name,nullable:t.nullable});
+  }
+  const errors=diagnostics.list();if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);
   const logicalType:Ty={kind:'table',columns,minRows:type.length,maxRows:type.length};
   const rows=unbox(value);if(known(value))validateTypedRows(rows,columns);
   return {data:check?mark({columns,rows:UNKNOWN,truncated:UNKNOWN},logicalType):{columns,rows,truncated:false},logicalType};
@@ -30,7 +36,20 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
   const tables=ctx.args[0]?.data;if(!Array.isArray(tables)||!tables.length)throw new DraftSyntaxError('union_all requires a nonempty array of tables',ctx.span);
   const types=tables.map(t=>typeOf(t));for(const t of types)if(t.kind!=='table')throw new DraftSyntaxError('union_all requires Table values',ctx.span);
   const first=(types[0] as Extract<Ty,{kind:'table'}>).columns;
-  const columns=first.map((c,i)=>{let t=scalar(c.type,c.nullable);for(const table of types.slice(1)){const cols=(table as Extract<Ty,{kind:'table'}>).columns;if(cols.length!==first.length||cols[i]?.name!==c.name)throw new DraftSyntaxError('union_all column names/order differ',ctx.span);t=common(t,scalar(cols[i].type,cols[i].nullable));}if(t.kind!=='scalar')throw new Error('Invalid union type');return {name:c.name,type:t.name,nullable:t.nullable};});
+  for(const table of types.slice(1)){const cols=(table as Extract<Ty,{kind:'table'}>).columns;if(cols.length!==first.length||cols.some((c,i)=>c.name!==first[i].name))throw new DraftSyntaxError('union_all column names/order differ',ctx.span);}
+  const diagnostics=new DiagnosticCollector(),columns:SqlColumn[]=[];
+  for(const [i,c] of first.entries()){
+   let t=scalar(c.type,c.nullable),invalid=false;
+   for(const table of types.slice(1)){
+    const col=(table as Extract<Ty,{kind:'table'}>).columns[i];
+    try{t=common(t,scalar(col.type,col.nullable));}catch(error){
+     if(!check||!(error instanceof TypeRuleError))throw error;
+     diagnostics.report({stage:'type',message:'union_all column '+c.name+': '+error.message,span:ctx.span});invalid=true;
+    }
+   }
+   if(!invalid){if(t.kind!=='scalar')throw new Error('Invalid union type');columns.push({name:c.name,type:t.name,nullable:t.nullable});}
+  }
+  const errors=diagnostics.list();if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);
   const type:Ty={kind:'table',columns};if(check)return {data:mark({columns,rows:UNKNOWN,truncated:UNKNOWN},type),logicalType:type};
   const inputs=Object.fromEntries(tables.map((t,i)=>['s'+i,unbox(t)]));
   const sql=tables.map((_,i)=>'SELECT '+columns.map(c=>q(c.name)).join(',')+' FROM '+q('t_s'+i)).join(' UNION ALL ');
