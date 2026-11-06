@@ -240,13 +240,14 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
             if(first?.kind==='record'&&itemTypes.every(item=>item.kind==='error'||item.kind==='record'&&Object.keys(item.fields).join('\0')===Object.keys(first.fields).join('\0'))){
               arrayIncomplete=itemTypes.some(item=>item.kind==='error');
               const fields={...first.fields},knownFields:Record<string,Ty>=Object.fromEntries(Object.entries(first.fields).filter(([,type])=>type.kind!=='error'));let nullable=first.nullable;
+              const mergeKnown=(left:Ty,right:Ty,node:Expr):Ty=>{
+                if(left.kind==='record'&&right.kind==='record'&&Object.keys(left.fields).join('\0')===Object.keys(right.fields).join('\0'))return {kind:'record',fields:Object.fromEntries(Object.entries(right.fields).map(([name,type])=>[name,mergeKnown(left.fields[name],type,node.kind==='object'?node.entries.find(entry=>entry.key===name)?.value??node:node)])),nullable:left.nullable||right.nullable};
+                try{return common(left,right);}catch(error){if(!(error instanceof TypeRuleError))throw error;diagnostics.report({file,stage:'type',asset:binding,message:error.message,span:node.span});return {kind:'error'};}
+              };
               for(const [index,item] of itemTypes.entries())if(index!==firstIndex&&item.kind==='record')for(const [name,current] of Object.entries(item.fields)){
                 if(current.kind==='error'){fields[name]={kind:'error'};continue;}
-                try{knownFields[name]=knownFields[name]?common(knownFields[name],current):current;if(fields[name].kind!=='error')fields[name]=knownFields[name];}catch(error){
-                  if(!(error instanceof TypeRuleError))throw error;
-                  const node=statement.value.values[index],field=node?.kind==='object'?node.entries.find(entry=>entry.key===name)?.value:undefined;
-                  diagnostics.report({file,stage:'type',asset:binding,message:error.message,span:field?.span??node?.span??statement.span});fields[name]={kind:'error'};
-                }
+                const node=statement.value.values[index],field=node?.kind==='object'?node.entries.find(entry=>entry.key===name)?.value:undefined;
+                knownFields[name]=knownFields[name]?mergeKnown(knownFields[name],current,field??node):current;if(fields[name].kind!=='error')fields[name]=knownFields[name];
               }
               for(const item of itemTypes)if(item.kind==='record')nullable||=item.nullable;
               shape={kind:'array',element:{...first,fields,nullable},length:value.length,nullable:false};

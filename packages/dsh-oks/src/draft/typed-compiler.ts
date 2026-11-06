@@ -70,16 +70,18 @@ export class TypedCompiler{
   if(n.k==='object'){const fields=Object.fromEntries(n.entries!.map(e=>[e.key,this.compile(e.value,env)]));const k=Object.values(fields).every(v=>v.known);return {type:record(Object.fromEntries(Object.entries(fields).map(([k,v])=>[k,v.type]))),known:k,fields,...(k?{value:Object.fromEntries(Object.entries(fields).map(([k,v])=>[k,v.value]))}:{})};}
   if(n.k==='array'){
    const items=n.a!.map(x=>this.compile(x,env));let element:Ty={kind:'never'},invalid=false,knownRecordFields:Record<string,Ty>|undefined;
+   const mergeKnown=(left:Ty,right:Ty,node:N):Ty=>{
+    if(left.kind==='record'&&right.kind==='record'&&Object.keys(left.fields).join('\0')===Object.keys(right.fields).join('\0'))return record(Object.fromEntries(Object.entries(right.fields).map(([name,type])=>[name,mergeKnown(left.fields[name],type,node.k==='object'?node.entries!.find(entry=>entry.key===name)?.value??node:node)])),left.nullable||right.nullable);
+    try{return common(left,right);}catch(error){if(!(error instanceof TypeRuleError))throw error;this.reportFailure(node,error.message);return {kind:'error'};}
+   };
    for(const [i,item] of items.entries()){
     if(item.type.kind==='error'){invalid=true;continue;}
     if(this.checking&&element.kind==='record'&&item.type.kind==='record'&&Object.keys(element.fields).join('\0')===Object.keys(item.type.fields).join('\0')){
      const fields:Record<string,Ty>={};
      for(const [name,current] of Object.entries(item.type.fields)){
       if(current.kind==='error'){fields[name]={kind:'error'};continue;}
-      try{const known=knownRecordFields?.[name],merged=known?common(known,current):current;if(knownRecordFields)knownRecordFields[name]=merged;fields[name]=element.fields[name].kind==='error'?{kind:'error'}:merged;}catch(error){
-       if(!(error instanceof TypeRuleError))throw error;
-       const node=n.a![i];this.reportFailure(node.k==='object'?node.entries!.find(entry=>entry.key===name)?.value??node:node,error.message);fields[name]={kind:'error'};
-      }
+      const node=n.a![i],field=node.k==='object'?node.entries!.find(entry=>entry.key===name)?.value??node:node;
+      const known=knownRecordFields?.[name],merged=known?mergeKnown(known,current,field):current;if(knownRecordFields)knownRecordFields[name]=merged;fields[name]=element.fields[name].kind==='error'?{kind:'error'}:merged;
      }
      element=record(fields,element.nullable||item.type.nullable);continue;
     }

@@ -116,10 +116,16 @@ try{
  const recordConflicts=recordArray.diagnostics.filter(d=>d.message.startsWith('Incompatible types'));
  assert.deepEqual(recordConflicts.map(d=>d.span.start.offset),[recordArraySource.indexOf('"x"'),recordArraySource.indexOf('True')],JSON.stringify(recordArray.diagnostics));
  assert(recordArray.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ const nestedRecordArraySource='data x = [{a:{u:1,v:1}},{a:{u:"x",v:True}}][0];';
+ const nestedRecordArray=await checkDesign(nestedRecordArraySource,'fixture.dari',backend);
+ assert.deepEqual(nestedRecordArray.diagnostics.filter(d=>d.message.startsWith('Incompatible types')).map(d=>d.span.start.offset),[nestedRecordArraySource.indexOf('"x"'),nestedRecordArraySource.indexOf('True')],JSON.stringify(nestedRecordArray.diagnostics));
  const rootRecordArraySource='data x = [{a:1,b:1},{a:"x",b:True}];';
  const rootRecordArray=await checkDesign(rootRecordArraySource,'fixture.dari',backend);
  assert.deepEqual(rootRecordArray.diagnostics.filter(d=>d.message.startsWith('Incompatible types')).map(d=>d.span.start.offset),[rootRecordArraySource.indexOf('"x"'),rootRecordArraySource.indexOf('True')],JSON.stringify(rootRecordArray.diagnostics));
  assert(rootRecordArray.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ const rootNestedSource='data x = [{a:{u:1,v:1}},{a:{u:"x",v:True}}];';
+ const rootNested=await checkDesign(rootNestedSource,'fixture.dari',backend);
+ assert.deepEqual(rootNested.diagnostics.filter(d=>d.message.startsWith('Incompatible types')).map(d=>d.span.start.offset),[rootNestedSource.indexOf('"x"'),rootNestedSource.indexOf('True')],JSON.stringify(rootNested.diagnostics));
  const partialRecordArraySource='data bad = 1+"x"; data x = [bad,{a:1,b:1},{a:"x",b:True}];';
  const partialRecordArray=await checkDesign(partialRecordArraySource,'fixture.dari',backend);
  assert.deepEqual(partialRecordArray.diagnostics.filter(d=>d.message.startsWith('Incompatible types')).map(d=>d.span.start.offset),[partialRecordArraySource.lastIndexOf('"x"'),partialRecordArraySource.indexOf('True')],JSON.stringify(partialRecordArray.diagnostics));
