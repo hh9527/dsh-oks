@@ -123,6 +123,11 @@ try{
  assert(invalidOutput.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(invalidOutput.diagnostics));
  assert(!invalidOutput.diagnostics.some(d=>d.message.includes('dependent')),JSON.stringify(invalidOutput.diagnostics));
  assert(invalidOutput.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ const invalidGroup=await checkDesign('data facts = table([{n:1},{n:2}],{kind:"example"}); data x = select({from:{s:facts},group_by:r=>r.s.missing,fields:(k,rows)=>({key:k.dependent,total:count(rows),bad:"x"+1}),limit:5});','fixture.dari',backend);
+ assert(invalidGroup.diagnostics.some(d=>d.message.includes('Unknown field missing')),JSON.stringify(invalidGroup.diagnostics));
+ assert(invalidGroup.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(invalidGroup.diagnostics));
+ assert(!invalidGroup.diagnostics.some(d=>d.message.includes('dependent')||d.message==='limit requires order_by'),JSON.stringify(invalidGroup.diagnostics));
+ assert(invalidGroup.checkedBindings.some(b=>b.name==='x'&&!b.checked));
  assert.equal(argumentsResult.diagnostics.filter(d=>d.message==='concat requires String').length,2,JSON.stringify(argumentsResult.diagnostics));
  assert.equal(argumentsResult.diagnostics.filter(d=>d.message.startsWith('round requires')).length,2,JSON.stringify(argumentsResult.diagnostics));
  assert(argumentsResult.diagnostics.some(d=>d.message==='map_opt requires Option'),JSON.stringify(argumentsResult.diagnostics));

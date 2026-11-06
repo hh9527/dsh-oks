@@ -220,7 +220,7 @@ export class TypedCompiler{
   }
   let projection=Object.entries(valueFields).map(([name,v])=>(outputFields[name].type.kind==='error'?'NULL':this.sql(v,entries.fields))+' AS '+q(name)).join(',');
   const names=Object.keys(valueFields);if(new Set(names.map(name=>name.toLowerCase())).size!==names.length)this.reportFailure(entries.fields,'Output column names must be distinct ignoring case for SQLite lowering');
-  if(groups&&Object.keys(groups.fields??{}).length===0&&!/\b(COUNT|SUM|AVG|MIN|MAX)\s*\(/.test(projection))projection+=',COUNT(*) AS "__dari_global_anchor"';
+  if(groups?.type.kind==='record'&&Object.keys(groups.fields??{}).length===0&&!/\b(COUNT|SUM|AVG|MIN|MAX)\s*\(/.test(projection))projection+=',COUNT(*) AS "__dari_global_anchor"';
   let inner='SELECT '+projection+' FROM '+from+joins.join('')+(where?' WHERE '+(whereValid?this.sql(where,entries.where):'NULL'):'');
   if(groups){const keys=Object.values(groups.fields??{});if(keys.length)inner+=' GROUP BY '+keys.map(v=>v.type.kind==='scalar'||v.type.kind==='null'?this.sql(v,entries.group_by):'NULL').join(',');}
   const output:V=unavailableOutput?{type:{kind:'error'},known:false}:{type:record(Object.fromEntries(Object.entries(outputFields).map(([name,v])=>[name,v.type]))),known:false,fields:outputFields};
@@ -233,10 +233,11 @@ export class TypedCompiler{
    if(option){if(option.type.kind==='error')valid=false;else if(!option.known||!isRecord(option.value)||Object.keys(option.value).some(k=>k!=='nulls')||!['first','last'].includes(String(option.value.nulls))){this.reportFailure(item,'Ordering options must be {nulls:"first"|"last"}');valid=false;}else nulls=String(option.value.nulls);}
    return valid?this.sql(value,item)+' '+item.name!.toUpperCase()+' NULLS '+nulls.toUpperCase():'NULL ASC NULLS LAST';
   });if(!order.length)this.reportFailure(f,'order_by must not be empty');else sql+=' ORDER BY '+order.join(',');}}
-  let minRows=groups&&Object.keys(groups.fields??{}).length===0&&!entries.having?1:!groups&&!entries.where&&!joins.length?(baseBounds.minRows??0):0,maxRows:number|undefined=groups&&Object.keys(groups.fields??{}).length===0?1:!joins.length?baseBounds.maxRows:undefined;
-  if(limit&&limit.type.kind!=='error'&&!invalidLimit){if(limit.value>0&&!entries.order_by&&maxRows!==1&&(!unavailableSource||maxRows!==undefined))this.reportFailure(entries.limit,'limit requires order_by');maxRows=Math.min(maxRows??Infinity,limit.value);minRows=Math.min(minRows,limit.value);sql+=' LIMIT '+limit.value;}
+  const unavailableGroups=groups?.type.kind==='error',globalGroup=groups?.type.kind==='record'&&Object.keys(groups.fields??{}).length===0;
+  let minRows=globalGroup&&!entries.having?1:!groups&&!entries.where&&!joins.length?(baseBounds.minRows??0):0,maxRows:number|undefined=unavailableGroups?undefined:globalGroup?1:!joins.length?baseBounds.maxRows:undefined;
+  if(limit&&limit.type.kind!=='error'&&!invalidLimit){if(limit.value>0&&!entries.order_by&&maxRows!==1&&(!unavailableSource||maxRows!==undefined)&&!unavailableGroups)this.reportFailure(entries.limit,'limit requires order_by');maxRows=Math.min(maxRows??Infinity,limit.value);minRows=Math.min(minRows,limit.value);sql+=' LIMIT '+limit.value;}
   this.throwIfErrors();
-  if(unavailableSource||unavailableOutput||limit?.type.kind==='error')throw new UpstreamTypeUnavailable();
+  if(unavailableSource||unavailableOutput||unavailableGroups||limit?.type.kind==='error')throw new UpstreamTypeUnavailable();
   if(n.name==='select_one')sql='SELECT * FROM ('+sql+') LIMIT 2';
   return {sql,tables,columns,type:n.name==='select_one'?optional(rowType(columns)):{kind:'table',columns,minRows,...(maxRows===undefined?{}:{maxRows})} as Ty,minRows,maxRows,guard:n.name==='select_one'&&(maxRows===undefined||maxRows>1)};
  }
