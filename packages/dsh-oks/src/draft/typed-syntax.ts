@@ -3,7 +3,7 @@ import type {DiagnosticCollector} from './diagnostics.ts';
 export type N={k:string;s:Span;v?:any;a?:N[];entries?:{key:string;value:N}[];name?:string;input?:N;key?:string|number;optional?:boolean;params?:string[];body?:N;op?:string;left?:N;right?:N};
 const calls=new Set(['query','context','time_windows','data','select','select_one','table','map','union_all','is_some','is_none','map_opt','round','case_when','lookup','concat','to_datetime_utc','to_epoch_millis','asc','desc','count','sum','avg','min','max']);
 export class UnavailableSyntaxDependency extends Error {}
-export function parseTypedExpression(source:string,base:Position,options:{definitions?:Map<string,N>;unavailableDefinitions?:Set<string>;expressionName:string;templateScopes?:{name:string;input:N}[];templateCondition?:boolean;templatePresence?:string;identifierDiagnostics?:DiagnosticCollector}):PipelineNode{
+export function parseTypedExpression(source:string,base:Position,options:{definitions?:Map<string,N>;unavailableDefinitions?:ReadonlyMap<string,Span>;expressionName:string;templateScopes?:{name:string;input:N}[];templateCondition?:boolean;templatePresence?:string;identifierDiagnostics?:DiagnosticCollector}):PipelineNode{
  let at=0;const lines=[0];for(let i=0;i<source.length;i++)if(source[i]==='\n')lines.push(i+1);
  const pos=(n:number):Position=>{let l=0;while(l+1<lines.length&&lines[l+1]<=n)l++;return {offset:base.offset+n,line:base.line+l,column:l?n-lines[l]+1:base.column+n};};
  type Tok={text:string;value?:any;start:number;end:number;kind:string;comments:string[]};

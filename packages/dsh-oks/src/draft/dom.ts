@@ -12,7 +12,7 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
   const original=new SourceFile(file,source);
   let at=0,sequence=0,elements=0;
   const definitions=new Map<string,N>();
-  const unavailableDefinitions=new Set<string>();
+  const unavailableDefinitions=new Map<string,Span>();
   const syntaxDiagnostics=new DiagnosticCollector();
   const scopes:{name:string;input:N}[]=[];
   const declarations=new Map<string,'data'|'figure'|'report'|'answer'>();
@@ -190,6 +190,7 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
   const reserved=new Set(['tree','if','else','let','Some','data','figure','report','export','True','False','None','true','false','null','query','context','select','select_one','table','map','union_all','time_windows','is_some','is_none','map_opt','round','case_when','lookup','concat','to_datetime_utc','to_epoch_millis','asc','desc','count','sum','avg','min','max']);
   whitespace();while(at<source.length){
     if(declarations.size>=512)limit('DARI is limited to 512 declarations');
+    const declarationStart=at;
     const savedDefinitions=new Map(definitions),savedDeclarations=new Map(declarations),savedFigures=new Map(figures);
     const savedNodes=nodes.length,savedReferences=references.length,savedTemplates=templates.length,savedScopes=scopes.length,savedSequence=sequence,savedTitle=title;
     let recoverableBinding:string|undefined,recoverableKind:'data'|'figure'|'report'|'answer'|undefined,recoverableEnd:number|undefined;
@@ -235,7 +236,7 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
       nodes.length=savedNodes;references.length=savedReferences;templates.length=savedTemplates;scopes.length=savedScopes;sequence=savedSequence;title=savedTitle;
       if(recoverableBinding&&recoverableKind&&recoverableEnd!==undefined&&(error instanceof UnavailableSyntaxDependency||error instanceof DraftSyntaxError&&!(error instanceof ParserLimitError)&&error.message!=='Expression nesting exceeds 128')){
         if(error instanceof DraftSyntaxError)syntaxDiagnostics.reportAll(error.diagnostics.length?error.diagnostics:[{file,stage:'syntax',message:error.message,span:error.span}]);
-        unavailableDefinitions.add(recoverableBinding);if(recoverableKind==='data')definitions.set(recoverableBinding,{k:'error',s:location(at,at)});declarations.set(recoverableBinding,recoverableKind);at=recoverableEnd+1;whitespace();continue;
+        const failedSpan=location(declarationStart,recoverableEnd+1);unavailableDefinitions.set(recoverableBinding,failedSpan);if(recoverableKind==='data')definitions.set(recoverableBinding,{k:'error',s:failedSpan});declarations.set(recoverableBinding,recoverableKind);at=recoverableEnd+1;whitespace();continue;
       }
       if(error instanceof DraftSyntaxError&&syntaxDiagnostics.hasErrors()){
         syntaxDiagnostics.reportAll(error.diagnostics.length?error.diagnostics:[{file,stage:'syntax',message:error.message,span:error.span}]);

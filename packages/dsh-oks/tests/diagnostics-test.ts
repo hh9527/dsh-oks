@@ -254,6 +254,14 @@ try{
  assert.deepEqual(treeResult.diagnostics.map(d=>d.span.start.offset),[treeRecovery.indexOf('*2'),treeRecovery.indexOf('*2',treeRecovery.indexOf('*2')+1),treeRecovery.indexOf('*4')],JSON.stringify(treeResult.diagnostics));
  for(const name of ['broken','chart','answer','bad'])assert(treeResult.checkedBindings.some(b=>b.name===name&&!b.checked),name);
  assert(treeResult.checkedBindings.some(b=>b.name==='valid'&&b.checked));
+ const rollbackSource='report broken = tree! { Report [p [Value(data=1+2),Value(data=1+*2)]] };\nreport good = tree! { Report [p [Value(data=2+3)]] };';
+ const rollbackCollector=new DiagnosticCollector(),rollbackDoc=parseAnalysisDesign(rollbackSource,'fixture.dari',rollbackCollector);
+ assert.equal(rollbackCollector.list().length,1);
+ assert.deepEqual(rollbackDoc.unavailableDefinitions?.get('broken'),{start:{offset:0,line:1,column:1},end:{offset:rollbackSource.indexOf(';')+1,line:1,column:rollbackSource.indexOf(';')+2}});
+ assert(!rollbackDoc.assets.has('@report/broken'));assert(rollbackDoc.assets.has('@report/good'));
+ const internalNodes=rollbackDoc.nodes.filter(n=>n.internal);
+ assert.equal(internalNodes.length,1);assert(internalNodes[0].statement.span.start.offset>rollbackSource.indexOf('\n'));
+ assert(!rollbackDoc.nodes.some(n=>n.statement.kind==='binding'&&n.statement.name==='broken'));
  const unclosedTree=await checkDesign('report broken = tree! { Report [p [Value(data=1+*2)] ; data next = 3+*4;','fixture.dari',backend);
  assert.equal(unclosedTree.diagnostics.length,1,JSON.stringify(unclosedTree.diagnostics));
  const overBudget='data first = 1+*2; report large = tree! { Report ['+Array(2050).fill('p ["x"]').join(',')+'] }; data later = 3+*4;';

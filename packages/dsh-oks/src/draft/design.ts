@@ -95,7 +95,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
   signal?.throwIfAborted();
   const analyze=backend.analyze;
   if(!analyze)throw new Error('Backend does not provide an analysis implementation');
-  const bindings = new Map<string,unknown>([...doc.unavailableDefinitions??[]].map(name=>[name,box({kind:'error'})]));
+  const bindings = new Map<string,unknown>([...doc.unavailableDefinitions?.keys()??[]].map(name=>[name,box({kind:'error'})]));
   const settle=async<T>(items:readonly {span:Expr['span'];run:()=>Promise<T>}[]):Promise<T[]>=>{
     signal?.throwIfAborted();
     const pending=Promise.allSettled(items.map(item=>item.run()));
