@@ -55,17 +55,17 @@ test('助手装配按当前工作区提供完整词表，空工具面与逐字�
  const ctx={systemPrompt:{section:(s:any)=>sections.push(s)},tools:{restrict:(v:any)=>restrictions.push(v)},
  on(name:string,fn:any){if(name==='system-prompt/assemble')assemble=fn;return()=>{};},effect(fn:any){fn();}};
  const knowledge={ensureWorkspace({agent}:any){seen.push(agent.session.header.cwd);return {settings:{domain:agent.session.header.cwd}};},
- async ensureIndex(entry:any){const root=entry.settings.domain;return{knowledge:{entities:{[root]:{}},datasets:{},relations:{},items:[]},terms:[{key:'k',name:root+'$&',aliases:['{{literal}}'],doc:'说明'}]};}};
+ async ensureIndex(entry:any){const root=entry.settings.domain;return{knowledge:{entities:{[root]:{}},datasets:{},relations:{},items:[]},terms:[{key:'datasets/device',kind:'Dataset',name:root+'$&',aliases:['{{literal}}'],doc:'说明'}]};}};
  installKnowledgeHelper({ctx,knowledge,log(){},config:{vocabularyHelper:true}} as any);assert.deepEqual(restrictions,[]);assert.match(sections[0].text,/词汇助手/);
  const p=caller();p.session.append=(...args:any[])=>policies.push(args);
  const next=async()=>({sections:[{name:'platform',text:'platform'}],tools:[],variables:{}});
  const first=await assemble({},{agent:p},next);await assemble({},{agent:p},next);
  const other=caller('two');other.session.header.cwd='/other';other.session.append=()=>{};const second=await assemble({},{agent:other},next);
- assert.ok(first.sections[1].text.includes('/workspace$&'));assert.ok(first.sections[1].text.includes('{{literal}}'));assert.equal(first.sections[1].interpolate,false);
- assert.ok(second.sections[1].text.includes('/other$&'));assert.equal(first.sections.filter((s:any)=>s.name==='oks:knowledge-assistant').length,1);
+ assert.ok(first.sections[1].text.includes('workspace'));assert.ok(first.sections[1].text.includes('literal'));assert.equal(first.sections[1].interpolate,false);
+ assert.ok(second.sections[1].text.includes('other'));assert.equal(first.sections.filter((s:any)=>s.name==='oks:knowledge-assistant').length,1);
  assert(!first.sections[1].text.includes('# 全局领域摘要'));
  assert(first.sections[1].text.includes('领域词典'));
- assert(!second.sections[1].text.includes('/workspace'));
+ assert(!second.sections[1].text.includes('workspace'));
  assert(!first.sections[1].text.includes('ColumnChart'));
  const again=await assemble({},{agent:p},async()=>first);
  assert.equal(again.sections.filter((s:any)=>s.name==='oks:knowledge-assistant').length,1);

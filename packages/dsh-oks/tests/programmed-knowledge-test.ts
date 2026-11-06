@@ -15,7 +15,7 @@ for (let i=0;i<2;i++) {
   assert.deepEqual(built,{graph,vocabulary});
   const index = derivePublishedKnowledge(built.graph,undefined,built.vocabulary);
   assert.equal(index.terms.length,1);
-  assert.match(renderWholeVocabulary(index),/设备/);
+  assert.match(renderWholeVocabulary(index),/device/);
   const enriched = derivePublishedKnowledge(built.graph,{version:1,items:[{key:'datasets/device',names:['终端'],doc:'补充说明'}]},built.vocabulary);
   assert.equal(enriched.terms[0].doc,'补充说明');
   assert.ok(enriched.terms[0].aliases.includes('终端'));
@@ -42,10 +42,12 @@ assert.throws(()=>derivePublishedKnowledge(graph,undefined,[{...vocabulary[0],ke
 console.log('static JavaScript knowledge: parsed data, new Function scope, reuse, vocabulary, presentation, errors and no runtime fallback passed');
 
 const render = (terms: any[]) => renderWholeVocabulary({terms} as any);
+const words = (text: string): string[] => text.split('\n\n### 解释词表\n')[0].split('\n').slice(1).filter(Boolean).map(line=>line.slice(2));
 const term = (key: string, name: string, kind = 'Field', aliases: string[] = [], doc = '') =>
   ({...vocabulary[0],key,name,kind,aliases,doc});
-assert.equal(render([term('datasets/device','设备','Dataset',['终端','NE'],'设备清单')]),
-  '### datasets\n- 设备,终端,NE;设备清单');
+assert.deepEqual(words(render([term('datasets/device','设备','Dataset',['终端','NE'],'设备清单')])).sort(),
+  ['device','ne'].sort());
+assert.match(render([term('datasets/device','设备','Dataset',['终端','NE'],'设备清单')]), /### 解释词表\n- 设备,终端,NE:设备清单/);
 const dictionary = render([
   term('datasets/a#fields/x','CPU'), term('datasets/a#dimensions/x','CPU'),
   term('datasets/b#fields/x','CPU'),
@@ -57,19 +59,22 @@ const dictionary = render([
   term('dimension_groups/'+'a'.repeat(64),'a'.repeat(64),'DimensionGroup',['ns/dimension/0']),
   term('measure_groups/'+'b'.repeat(64),'b'.repeat(64),'MeasureGroup',['流量']),
 ]);
-assert.equal(dictionary.match(/- CPU$/gm)?.length,2); // 同上下文去重，跨上下文保留。
-assert.match(dictionary,/- 业务别名/);
-assert.match(dictionary,/- 0/);
-assert.match(dictionary,/- major;重要/);
-assert.match(dictionary,/### 分组 流量/);
-assert.doesNotMatch(dictionary,/secret|sample|role_63|ns\/dimension|[ab]{64}|#fields/);
-assert.equal(render([term('types/a:b','a,b;c','Ty',['"quoted"','x\\y','line\nnext'],'first\r\nsecond;detail:literal,comma')]),
-  '### types\n- a b c,"quoted",x y,line next;first second detail literal comma');
+assert.equal(words(dictionary).filter(x=>x==='cpu').length,1);
+assert.doesNotMatch(dictionary,/业务别名|secret|sample|role_63|ns\/dimension|[ab]{64}|#fields/);
+assert.match(dictionary,/- major:重要/);
+assert(!words(dictionary).includes('0'));
+assert(words(dictionary).includes('major'));
+assert.deepEqual(words(render([term('types/a%3Ab','a,b;c','Ty',['"quoted"','x\\y','line\nnext'],'说明')])).sort(),
+  ['quoted','line','next'].sort());
 assert.match(render([term('types/checksum#values/hex','c'.repeat(64),'Value')]), /c{64}/);
-assert.equal(render([]),'');
-console.log('VA dictionary: context deduplication, business aliases, enum values and generated-identity filtering passed');
+assert.equal(render([]),'### 词表\n\n\n### 解释词表\n');
+console.log('VA vocabulary: global deduplication, supported kinds, IDs, aliases and enum values passed');
 
-assert.equal(render([
+assert.equal(words(render([
   term('types/AlarmSeverity','AlarmSeverity','Type'),
   term('types/AlarmSeverity#values/Critical','Critical','Value',['紧急']),
-]),'### types\n- AlarmSeverity\n\n### types/AlarmSeverity\n- Critical,紧急');
+])).includes('severity'),true);
+const split=words(render([term('datasets/CPUUsage_rate','CPUUsage_rate','Dataset')]));
+assert.deepEqual(split.sort(),['cpu','usage','rate'].sort());
+assert.deepEqual(words(render([term('datasets/AB_CPU_cpu','告警','Dataset',['CPU','cpu','告警严重','IP','v2'],'description')])).sort(),['ab','cpu','ip'].sort());
+assert.deepEqual(words(render([term('datasets/IP_by_ID_of_OS','IP by ID of OS','Dataset',['An at in to','ip'])])).sort(),['id','ip','os'].sort());

@@ -1,6 +1,6 @@
 import { collectProgrammedKnowledge, programmedKnowledgeContract } from './programmed-knowledge.ts';
 import { derivePublishedKnowledge } from './published-knowledge.ts';
-import type { SemanticGraph } from './knowledge-graph.ts';
+import { refPath, type SemanticGraph } from './knowledge-graph.ts';
 import { isRecord } from './host.ts';
 import type { LogFn } from './host.ts';
 import type { Settings } from './config.ts';
@@ -54,33 +54,29 @@ export async function buildRetrievalIndex(entry: IndexWorkspace, sha: string, lo
   return index;
 }
 
-/** VA 专用领域词典；检索索引仍保留全部成员地址和原始词条。 */
+/** VA 检索候选由领域标识、名称和别名拆词并去重得到。 */
 export function renderWholeVocabulary(index: RetrievalIndex): string {
-  const plain = (text: string) => text.replace(/[\\,:;\s]+/g, ' ').trim();
-  const hash = /^[a-f0-9]{64}$/i;
-  const groups = new Map<string, Map<string, string>>();
+  const kinds = new Set(['Dimension','Measure','Dataset','Entity','Ty','Type','Value','Field','Relation']);
+  const words = new Set<string>();
+  const shortStopWords = new Set(['an','as','at','be','by','do','if','in','is','it','of','on','or','so','to','up','we']);
+  const explanations = new Set<string>();
+  const inline = (value: string) => value.replace(/\s+/g, ' ').trim();
+  const add = (value: string) => {
+    const parts = value.replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+      .replace(/([A-Z])([A-Z][a-z])/g, '$1 $2').match(/[A-Za-z]+/g) ?? [];
+    for (const part of parts) {
+      const word = part.toLowerCase();
+      if (word.length >= 2 && !shortStopWords.has(word)) words.add(word);
+    }
+  };
   for (const term of index.terms) {
-    const generated = (word: string) => (['DimensionGroup', 'MeasureGroup'].includes(term.kind) && hash.test(word))
-      || (term.kind === 'Role' && /^role_\d+$/.test(word))
-      || (['DimensionGroup', 'MeasureGroup'].includes(term.kind)
-        && (/^ns\/(dimension|sample)\/\d+$/.test(word) || ['search', 'exact', 'epoch_millis'].includes(word)));
-    // Binding 的默认名称是序列化的执行表达式，不是领域词汇。
-    const names = [...(term.kind === 'Binding' ? [] : [term.name]), ...term.aliases]
-      .filter(word => !generated(word)).map(plain).filter(Boolean);
-    const words = [...new Set(names)];
-    if (!words.length) continue;
-    const root = term.key.split('#', 1)[0];
-    const rootId = root.slice(root.indexOf('/') + 1);
-    // 无业务名字的生成分组已被排除；具名分组以名字作为检索上下文，不暴露哈希。
-    const context = hash.test(rootId) ? '分组 ' + words.join(',')
-      : term.key.includes('#') ? root : root.slice(0, root.indexOf('/'));
-    let entries = groups.get(context);
-    if (!entries) groups.set(context, entries = new Map());
-    const doc = plain(term.doc);
-    const line = '- ' + words.join(',') + (doc ? ';' + doc : '');
-    entries.set(line, line);
+    if (!kinds.has(term.kind)) continue;
+    const id = refPath(term.key).at(-1)!;
+    add(id);add(term.name);term.aliases.forEach(add);
+    const doc = inline(term.doc);
+    const names = [...new Set([term.name,...term.aliases].map(inline).filter(Boolean))];
+    if (doc && names.length) explanations.add(`- ${names.join(',')}:${doc}`);
   }
-  return [...groups].sort(([a], [b]) => a.localeCompare(b, 'en'))
-    .map(([context, entries]) => '### ' + context + '\n'
-      + [...entries.values()].sort((a, b) => a.localeCompare(b, 'en')).join('\n')).join('\n\n');
+  const sorted = (items: Set<string>) => [...items].sort((a, b) => a.localeCompare(b, 'en'));
+  return '### 词表\n'+sorted(words).map(word=>'- '+word).join('\n')+'\n\n### 解释词表\n'+sorted(explanations).join('\n');
 }
