@@ -521,6 +521,11 @@ try{
  const warned=await checkDesign('data x = data(1);','fixture.dari',warningBackend);
  assert.equal(warned.ok,true,JSON.stringify(warned));assert.equal(warned.warnings[0]?.message,'advisory');assert(warned.checkedBindings[0].checked);
  const internalError=new Error('internal failure');
+ const internalAfterSyntax={...backend,async analyze(){throw internalError;}};
+ await assert.rejects(checkDesign('data bad = 1+*2; data independent = 1+2;','fixture.dari',internalAfterSyntax),e=>e===internalError);
+ const syntaxCancellation=new AbortController(),syntaxCancelReason=new Error('cancelled after syntax recovery');
+ const cancelAfterSyntax={...backend,async preflight(){syntaxCancellation.abort(syntaxCancelReason);}};
+ await assert.rejects(checkDesign('data bad = 1+*2; data independent = 1;','fixture.dari',cancelAfterSyntax,syntaxCancellation.signal),e=>e===syntaxCancelReason);
  const brokenFigureBackend={...backend,checkCall(){return [];},async analyze(ctx:any){if(ctx.operator==='context')return {data:{columns:[{name:'n',type:'Unknown',nullable:false}],rows:[],truncated:false}};return backend.analyze!(ctx);}};
  await assert.rejects(checkDesign('figure chart = tree! { BarChart(spec={x:"x",value:"n"},data=context()) };','fixture.dari',brokenFigureBackend),/Invalid or unknown table column type/);
  const unknownMapBackend={...backend,async analyze(ctx:any){if(ctx.operator==='context')return {data:UNKNOWN};return backend.analyze!(ctx);}};
