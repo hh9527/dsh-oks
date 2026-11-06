@@ -179,9 +179,10 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
       }
       if(e.operator==='query'){
         const candidates=unknown(args)?await settle(variants.map(v=>({span:e.span,run:()=>settle(e.args.map(a=>({span:a.span,run:()=>evaluate(a,v,[v])})))}))):[args];
-        let schema:Ty|undefined;
+        let schema:Ty|undefined,unavailableCandidate=false;
         const candidateErrors=new DiagnosticCollector();
         for(const values of candidates){
+          if(hasError(values)){unavailableCandidate=true;continue;}
           try{
             if(unknown(values))throw new DraftSyntaxError('query parameters must be known during checking; business values cannot determine a remote query',e.span);
             const [computed]=await settle([{span:e.span,run:()=>analyze({...ctx,args:values.map(data=>({data:unbox(data),sources:[]}))})}]);
@@ -194,6 +195,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
           }
         }
         const failures=candidateErrors.list();if(failures.length)throw new DraftSyntaxError(failures[0].message,failures[0].span,failures);
+        if(unavailableCandidate)throw new UpstreamTypeUnavailable();
         if(!schema||schema.kind!=='table')throw new DraftSyntaxError('query has no analyzable parameter values',e.span);
         queries.push({binding,at:e.span.start,columns:schema.columns,result:{rows:'runtime',columns:'checked',truncated:'runtime'}});
         const data={columns:schema.columns,rows:UNKNOWN,truncated:UNKNOWN};return {...data,[TYPED]:schema,value:data};
@@ -201,6 +203,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
       const findings=backend.checkCall?.(ctx,value=>!unknown(value))??[];
       diagnostics.reportAll(findings);
       if(findings.some(d=>d.severity!=='warning'))return box({kind:'error'});
+      if(e.operator==='data'&&args.length>1&&unknown(args[1]))return UNKNOWN;
       if(e.operator==='render_figure'&&isRecord(args[1])){
         try{figureShape={kind:'figure',data:typeOf(args[1].data),...(args[1].nodes===undefined?{}:{nodes:typeOf(args[1].nodes)})};}catch{}
       }

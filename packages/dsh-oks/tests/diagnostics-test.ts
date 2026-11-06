@@ -238,6 +238,10 @@ try{
   const mapDag=await checkDesign('data bad = [1,"x"]; data result = map(bad,(n)=>({dependent:query({limit:5,n:n}),independent:query({limit:5,kind:"map_independent"})}));','fixture.dari',tracked);
   assert.equal(mapDag.ok,false);assert(mapDag.checkedBindings.some(b=>b.name==='result'&&!b.checked));
   assert.deepEqual(intents,[{limit:5,kind:'independent'},{limit:5,kind:'map_independent'}]);
+  const variantDag=await checkDesign('data result = map([1,2],n=>query({limit:5,value:data(n,{kind:case_when(n==1,"bad","example")})}));','fixture.dari',tracked);
+  assert.equal(variantDag.ok,false);assert(variantDag.checkedBindings.some(b=>b.name==='result'&&!b.checked));
+  assert(!variantDag.diagnostics.some(d=>d.message.includes('query parameters must be known')),JSON.stringify(variantDag.diagnostics));
+  assert.deepEqual(intents,[{limit:5,kind:'independent'},{limit:5,kind:'map_independent'},{limit:5,value:2}]);
  }finally{tracked.dispose?.();}
 }finally{backend.dispose?.();}
 console.log('Diagnostic collector: checkpoints, explicit reports and error type propagation passed');

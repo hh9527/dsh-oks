@@ -236,7 +236,7 @@ export function createDraftBackend(options: {
     const check=(work:()=>void,span=ctx.span)=>{try{work();}catch(error){diagnostics.report({file,stage:ctx.operator==='render_figure'?'figure':ctx.operator==='render_report'?'template':'validation',message:error instanceof Error?error.message:String(error),span});}};
     const first=ctx.args[0]?.data,second=ctx.args[1]?.data;
     if(['render_figure','render_report'].includes(ctx.operator)&&ctx.args[1]&&known(second))check(()=>{if(!isRecord(second))throw new Error(`${ctx.operator} inputs must be a named object`);});
-    if(ctx.operator==='data'&&ctx.args[1]&&known(second))check(()=>{dataNature(second);});
+    if(ctx.operator==='data'&&ctx.args[1]&&known(second))check(()=>{dataNature(unbox(second));});
     if(ctx.operator==='time_windows'&&known(second))try{if(known(first))timeWindows(unbox(first),unbox(second));else timeWindowOptions(unbox(second));}catch(error){if(!(error instanceof TimeWindowValidationError))throw error;diagnostics.report({file,stage:'validation',message:error.message,span:ctx.span});}
     if(ctx.operator==='render_figure'){
       if(isRecord(second))check(()=>{if(!Object.hasOwn(second,'data')||Object.keys(second).some(key=>key!=='data'&&key!=='nodes'))throw new Error('render_figure inputs must be {data,nodes?}');});
