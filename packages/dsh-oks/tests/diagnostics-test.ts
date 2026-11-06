@@ -241,6 +241,13 @@ try{
  const syntaxQueryBackend={...backend,async analyze(ctx:any){if(ctx.operator==='query')syntaxQueryCalls++;return backend.analyze!(ctx);}};
  const syntaxQuery=await checkDesign('data bad = 1 + * 2; data dependent = query({limit:bad});','fixture.dari',syntaxQueryBackend);
  assert.equal(syntaxQueryCalls,0);assert(syntaxQuery.checkedBindings.some(b=>b.name==='dependent'&&!b.checked));
+ const independentLowering=await checkDesign('data bad = 1+*2; data x = {dependent:bad,independent:map(1,n=>n)};','fixture.dari',backend);
+ assert(independentLowering.diagnostics.some(d=>d.message==='map requires an array with a statically known length <= 50'),JSON.stringify(independentLowering.diagnostics));
+ for(const input of ['bad','alias']){
+  const result=await checkDesign(`data bad = 1+*2; data alias = bad; data mapped = map(${input},n=>n);`,'fixture.dari',backend);
+  assert.equal(result.diagnostics.length,1,JSON.stringify(result.diagnostics));
+  assert(result.checkedBindings.some(b=>b.name==='mapped'&&!b.checked));
+ }
  for(const body of ['p [Value(data=bad)]','p [Value(data=bad.field)]','if (bad) [p ["yes"]] else [p ["no"]]']){
   const result=await checkDesign(`data bad = 1 + * 2; data valid = 1; answer tree! { Answer [${body}] };`,'fixture.dari',backend);
   assert.equal(result.diagnostics.length,1,JSON.stringify(result.diagnostics));

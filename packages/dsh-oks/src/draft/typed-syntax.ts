@@ -43,6 +43,7 @@ export function parseTypedExpression(source:string,base:Position,options:{defini
  const defs=options.definitions??new Map<string,N>();
  const cloneSub=(n:N,subs:Map<string,N>):N=>{if(n.k==='ref'&&subs.has(n.name!))return subs.get(n.name!)!;if(n.k==='lambda'){const inner=new Map(subs);n.params!.forEach(p=>inner.delete(p));return {...n,body:cloneSub(n.body!,inner)};}return {...n,...(n.a?{a:n.a.map(x=>cloneSub(x,subs))}:{}),...(n.entries?{entries:n.entries.map(e=>({...e,value:cloneSub(e.value,subs)}))}:{}),...(n.input?{input:cloneSub(n.input,subs)}:{}),...(n.left?{left:cloneSub(n.left,subs)}:{}),...(n.right?{right:cloneSub(n.right,subs)}:{})};};
  const refs=(n:N,locals=new Set<string>(),out=new Set<string>()):Set<string>=>{if(n.k==='ref'&&!locals.has(n.name!))out.add(n.name!);if(n.k==='lambda'){const l=new Set([...locals,...n.params!]);refs(n.body!,l,out);}else{n.a?.forEach(a=>refs(a,locals,out));n.entries?.forEach(e=>refs(e.value,locals,out));if(n.input)refs(n.input,locals,out);if(n.left)refs(n.left,locals,out);if(n.right)refs(n.right,locals,out);}return out;};
+ const dependsOnUnavailable=(n:N,seen=new Set<string>()):boolean=>[...refs(n)].some(name=>{if(options.unavailableDefinitions?.has(name))return true;if(seen.has(name)||!defs.has(name))return false;seen.add(name);return dependsOnUnavailable(defs.get(name)!,seen);});
  const arrayLength=(n:N,seen=new Set<string>()):number|undefined=>{if(n.k==='array')return n.a!.length;if(n.k==='ref'&&defs.has(n.name!)&&!seen.has(n.name!)){seen.add(n.name!);return arrayLength(defs.get(n.name!)!,seen);}if(n.k==='call'&&n.name==='time_windows'){const count=n.a?.[1]?.entries?.find(e=>e.key==='count')?.value;if(count?.k==='lit'&&Number.isInteger(count.v)&&count.v>=1&&count.v<=50)return count.v;}if(n.k==='call'&&n.name==='map')return arrayLength(n.a![0],seen);return undefined;};
  const literal=(value:any,s:Span):Expr=>({kind:'literal',value,span:s});
  const payload=(operator:string,n:N,inputs:{key:string;value:Expr}[]):Expr=>({kind:'call',operator:operator as Operator,args:[literal(JSON.stringify(n),n.s),{kind:'object',entries:inputs,span:n.s}],span:n.s});
@@ -56,7 +57,7 @@ export function parseTypedExpression(source:string,base:Position,options:{defini
   if(n.k==='call'&&n.name==='map'){
    if(n.a!.length!==2||n.a![1].k!=='lambda'||![1,2].includes(n.a![1].params!.length))throw new DraftSyntaxError('map requires an array and (item,index?) => expression',n.s);
    if(phase==='analysis')return {kind:'call',operator:'analysis_map',args:[child(n.a![0]),literal(JSON.stringify(n.a![1].params),n.s),child(n.a![1].body!)],span:n.s};
-   const length=arrayLength(n.a![0]);if(length===undefined||length>50)throw new DraftSyntaxError('map requires an array with a statically known length <= 50',n.s);
+   const length=arrayLength(n.a![0]);if(length===undefined&&dependsOnUnavailable(n.a![0]))throw new UnavailableSyntaxDependency();if(length===undefined||length>50)throw new DraftSyntaxError('map requires an array with a statically known length <= 50',n.s);
    const f=n.a![1];return {kind:'array',values:Array.from({length},(_,i)=>{const sub=new Map<string,N>([[f.params![0],{k:'get',input:n.a![0],key:i,s:n.s}]]);if(f.params![1])sub.set(f.params![1],{k:'lit',v:i,s:n.s});return child(cloneSub(f.body!,sub));}),span:n.s};
   }
   if(n.k==='call'&&n.name==='table'){if(![1,2].includes(n.a!.length))throw new DraftSyntaxError('table requires rows and optional data nature',n.s);return {kind:'call',operator:'typed_table',args:[{kind:'call',operator:'data',args:n.a!.map(child),span:n.s}],span:n.s};}
@@ -77,8 +78,6 @@ export function parseTypedExpression(source:string,base:Position,options:{defini
   if(options.templatePresence)n={k:'template_presence',input:{k:'ref',name:options.templatePresence,s:n.s},s:n.s};
   for(const scope of [...options.templateScopes??[]].reverse())n={k:'template_scope',op:options.templateCondition?'condition':'value',a:[scope.input,{k:'lambda',params:[scope.name],body:n,s:n.s}],s:n.s};
   const dependencies=[...refs(n)];for(const ref of dependencies)if(!defs.has(ref)&&/^[\x00-\x7f]+$/.test(ref))throw new DraftSyntaxError('Undefined or forward data binding '+ref,n.s);
-  const unavailable=dependencies.some(ref=>options.unavailableDefinitions?.has(ref));
-  const name=options.expressionName;let analysis:Expr,value:Expr;
-  try{analysis=lower(n,'analysis');value=lower(n);}catch(error){if(unavailable&&error instanceof DraftSyntaxError)throw new UnavailableSyntaxDependency();throw error;}
+  const name=options.expressionName,analysis=lower(n,'analysis'),value=lower(n);
   defs.set(name,n);return {typed:true,analysis,statement:{kind:'binding',name,value,span:n.s,motivation:''},bindings:dependencies};
 }
