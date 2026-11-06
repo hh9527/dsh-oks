@@ -163,12 +163,19 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
       if(e.operator==='query'){
         const candidates=unknown(args)?await settle(variants.map(v=>({span:e.span,run:()=>settle(e.args.map(a=>({span:a.span,run:()=>evaluate(a,v,[v])})))}))):[args];
         let schema:Ty|undefined;
+        const candidateErrors=new DiagnosticCollector();
         for(const values of candidates){
-          if(unknown(values))throw new DraftSyntaxError('query parameters must be known during checking; business values cannot determine a remote query',e.span);
-          const computed=await analyze({...ctx,args:values.map(data=>({data:unbox(data),sources:[]}))}).catch(error=>{if(signal?.aborted||error instanceof DraftSyntaxError)throw error;throw new DraftSyntaxError(error instanceof Error?error.message:String(error),e.span);});
-          const columns=(computed.data as {columns:unknown}).columns;
-          const t=typeOf({columns,rows:UNKNOWN,truncated:UNKNOWN});schema=schema?common(schema,t):t;
+          try{
+            if(unknown(values))throw new DraftSyntaxError('query parameters must be known during checking; business values cannot determine a remote query',e.span);
+            const computed=await analyze({...ctx,args:values.map(data=>({data:unbox(data),sources:[]}))}).catch(error=>{if(signal?.aborted||error instanceof DraftSyntaxError)throw error;throw new DraftSyntaxError(error instanceof Error?error.message:String(error),e.span);});
+            const columns=(computed.data as {columns:unknown}).columns;
+            const t=typeOf({columns,rows:UNKNOWN,truncated:UNKNOWN});schema=schema?common(schema,t):t;
+          }catch(error){
+            if(signal?.aborted||!(error instanceof DraftSyntaxError)&&!(error instanceof TypeRuleError))throw error;
+            candidateErrors.reportAll(error instanceof DraftSyntaxError&&error.diagnostics.length?error.diagnostics:[{file,stage:error instanceof TypeRuleError?'type':'validation',message:error.message,span:error instanceof DraftSyntaxError?error.span:e.span}]);
+          }
         }
+        const failures=candidateErrors.list();if(failures.length)throw new DraftSyntaxError(failures[0].message,failures[0].span,failures);
         if(!schema||schema.kind!=='table')throw new DraftSyntaxError('query has no analyzable parameter values',e.span);
         queries.push({binding,at:e.span.start,columns:schema.columns,result:{rows:'runtime',columns:'checked',truncated:'runtime'}});
         const data={columns:schema.columns,rows:UNKNOWN,truncated:UNKNOWN};return {...data,[TYPED]:schema,value:data};

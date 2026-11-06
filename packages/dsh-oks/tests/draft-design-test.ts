@@ -58,7 +58,7 @@ console.log('Syntax diagnostics: original line, caret, expected delimiter and op
  let clockReads=0,businessReads=0;const intents:any[]=[];const analyzed:string[]=[];
  let now=Date.parse('2030-06-20T08:09:10.123Z');
  const model={modelHash:'phase-test',settings:{domain:'test',queryMaxRows:100},runner:{async send(_method:string,{intents:items}:any){
-  const intent=items[0];intents.push(intent);if(intent.day===2&&intent.reject)throw new Error('second window rejected');
+  const intent=items[0];intents.push(intent);if(intent.day===2&&intent.reject)throw new Error('second window rejected');if(intent.rejectMultiple&&[1,3].includes(intent.day))throw new Error('window '+intent.day+' rejected');
   return {ok:{accepted:true,queries:[{sql:'SELECT n LIMIT ?',bindings:[intent.limit],limit_slot:0,columns}]}};
  }}} as unknown as WorkspaceEntry;
  const real=createDraftBackend({entry:model,file:'phase.dari',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),contextNow:()=>{clockReads++;return now;},knowledge:{executorFor(){businessReads++;return {manifest:null,executor:{async send(){return {rows:[{n:7}],columns:['n'],truncated:false};}}} as any;}}});
@@ -81,6 +81,9 @@ console.log('Syntax diagnostics: original line, caret, expected delimiter and op
  assert.equal(intents.length,3,'repeated transform checks reuse deterministic cache');
  const rejected=await checkDesign("data parts = map([1,2,3],(day)=>query({limit:5,day:day,reject:True}));",'phase.dari',analysis);
  assert.equal(rejected.ok,false);assert(rejected.diagnostics.some(d=>/second window rejected/.test(d.message)));
+ const rejectedMultiple=await checkDesign('data parts = map([1,2,3],(day)=>query({limit:5,day:day,rejectMultiple:True}));','phase.dari',analysis);
+ assert.equal(rejectedMultiple.ok,false);assert.deepEqual(rejectedMultiple.diagnostics.map(d=>d.message),['window 1 rejected','window 3 rejected']);
+ assert(rejectedMultiple.checkedBindings.some(b=>b.name==='parts'&&!b.checked));assert.equal(businessReads,0);
  const typo=await checkDesign(text.replace('n:r.q.n','n:r.q.missing'),'phase.dari',analysis);
  assert.equal(typo.ok,false);assert(typo.diagnostics.some(d=>/Unknown field missing/.test(d.message)));
  const business=await checkDesign(text+'data next = query({limit:5,n:summary?.n});','phase.dari',analysis);
