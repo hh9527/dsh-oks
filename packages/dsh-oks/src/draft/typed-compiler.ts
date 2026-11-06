@@ -179,7 +179,7 @@ export class TypedCompiler{
  }
  validNumber(value:any,type:Ty,n:N){if(value!==null&&typeof value==='number'&&(!Number.isFinite(value)||type.kind==='scalar'&&type.name==='Int'&&!Number.isSafeInteger(value)))fail(n,'Numeric result is outside the supported range');}
  relational(n:N){
-  const spec=n.a![0];if(spec.k!=='object')fail(n,'Expected select specification');const entries=Object.fromEntries(spec.entries!.map(e=>[e.key,e.value]));for(const key of Object.keys(entries))if(!['from','joins','where','fields','group_by','having','order_by','limit'].includes(key))fail(entries[key],'Unknown select option '+key);
+  const spec=n.a![0];if(spec.k!=='object')fail(n,'Expected select specification');const entries=Object.fromEntries(spec.entries!.map(e=>[e.key,e.value]));for(const key of Object.keys(entries))if(!['from','joins','where','fields','group_by','having','order_by','limit'].includes(key))this.reportFailure(entries[key],'Unknown select option '+key);
   const captures=this.env(),tables:Record<string,unknown>={},scope:Record<string,V>=Object.create(null),joins:string[]=[];let sourceCount=0;let baseBounds:{minRows?:number;maxRows?:number}={};
   const source=(s:N,left=false):string=>{
    if(s.k!=='object'||s.entries!.length!==1)fail(s,'Expected one source alias');const {key:alias,value:ref}=s.entries![0];if(Object.hasOwn(scope,alias))fail(s,'Duplicate table alias '+alias);const v=this.compile(ref,captures);if(v.type.kind==='error'){this.throwIfErrors();throw new UpstreamTypeUnavailable();}if(v.type.kind!=='table')fail(ref,'Expected Table, got '+show(v.type));

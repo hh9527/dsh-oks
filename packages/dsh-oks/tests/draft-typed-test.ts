@@ -93,6 +93,8 @@ const small=(body:string)=>`data a = query({period:"base",limit:10});data b = qu
  const malformedWhere=await checkDesign(small('data sample = select({from:{s:a},where:42,fields:r=>({id:r.s.missing_field})});'),'typed.dari',backend);
  for(const expected of ['Expected a row function','missing_field'])assert(malformedWhere.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(malformedWhere.diagnostics));
  assert(!malformedWhere.diagnostics.some(d=>d.message.includes('Predicate must return Bool')),JSON.stringify(malformedWhere.diagnostics));
+ const unknownOptions=await checkDesign(small('data sample = select({from:{s:a},extra_one:1,extra_two:2,fields:r=>({id:r.s.missing_field})});'),'typed.dari',backend);
+ for(const expected of ['Unknown select option extra_one','Unknown select option extra_two','missing_field'])assert(unknownOptions.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(unknownOptions.diagnostics));
  const joined=await checkDesign(small(`data sample = select({from:{s:a},joins:[{kind:"inner",source:{t:b},on:r=>1}],fields:r=>({bad:r.s.missing_field})});`),'typed.dari',backend);
  assert(joined.diagnostics.some(d=>/Predicate must return Bool/.test(d.message)),JSON.stringify(joined.diagnostics));
  assert(joined.diagnostics.some(d=>/missing_field/.test(d.message)),JSON.stringify(joined.diagnostics));
