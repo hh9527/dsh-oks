@@ -58,6 +58,7 @@ export class TypedCompiler{
    const inner={...input,type:present(input.type),known:input.known&&input.value!==null};
    const checker=input.known&&input.value===null&&!this.checking?new TypedCompiler({}, {}, true):this;
    const out=checker.compile(f.body!,{...env,[f.params![0]]:inner});
+   if(out.type.kind==='error')return out;
    if(n.op==='condition'){
     if(out.type.kind!=='scalar'||out.type.name!=='Bool'||out.type.nullable)fail(f.body!,'if condition requires Bool, got '+show(out.type));
     return {type:scalar('Bool'),known:input.known&&(input.value===null||out.known),...(input.known?{value:input.value===null?false:out.value}:{})};

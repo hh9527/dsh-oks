@@ -5,6 +5,7 @@ import {checkDesign,parseAnalysisDesign} from '../src/draft/design.ts';
 import {createDraftBackend} from '../src/draft/backend.ts';
 import {runTyped} from '../src/draft/typed-runtime.ts';
 import {DraftSyntaxError} from '../src/draft/pipeline.ts';
+import {TypedCompiler} from '../src/draft/typed-compiler.ts';
 
 const span={start:{offset:0,line:1,column:1},end:{offset:1,line:1,column:2}};
 const diagnostics=new DiagnosticCollector();
@@ -23,6 +24,10 @@ assert.deepEqual(ordered.list().map(d=>d.message),['earlier','later']);
 const error:Ty={kind:'error'};
 assert.deepEqual(common(error,{kind:'scalar',name:'Int',nullable:false}),error);
 assert.deepEqual(optional(error),error);
+const compiler=new TypedCompiler({}, {}, true);
+const condition=compiler.compile({k:'template_scope',s:span,op:'condition',a:[{k:'ref',s:span,name:'opt'},{k:'lambda',s:span,params:['x'],body:{k:'ref',s:span,name:'missing'}}]},{opt:{type:{kind:'scalar',name:'Int',nullable:true},known:false}});
+assert.equal(condition.type.kind,'error');
+assert.deepEqual(compiler.diagnostics.list().map(d=>d.message),['Unknown binding missing']);
 const source='data facts = table([{n:1}],{kind:"example"}); data result = select({from:{s:facts},fields:r=>({a:r.s.missing_a,b:r.s.missing_b})});';
 const statement=parseAnalysisDesign(source,'fixture.dari').nodes.at(-1)!.statement;
 assert.equal(statement.value.kind,'call');
