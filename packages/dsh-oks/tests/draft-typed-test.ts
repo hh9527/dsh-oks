@@ -101,6 +101,11 @@ const small=(body:string)=>`data a = query({period:"base",limit:10});data b = qu
  const joinOptions=await checkDesign(small('data sample = select({from:{s:a},joins:[{kind:"inner",source:{t:b},extra_one:1,extra_two:2,on:r=>r.t.missing_join}],fields:r=>({bad:r.s.missing_field})});'),'typed.dari',backend);
  for(const expected of ['Unknown join option extra_one','Unknown join option extra_two','missing_join','missing_field'])assert(joinOptions.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(joinOptions.diagnostics));
  assert(!joinOptions.diagnostics.some(d=>d.message.includes('Predicate must return Bool')),JSON.stringify(joinOptions.diagnostics));
+ const partialSources=await checkDesign(small('data broken = [1,"x"]; data sample = select({from:{s:broken},joins:[{kind:"inner",source:{t:a},on:r=>r.s.n==r.t.cpu}],fields:r=>({dependent:r.s.missing,independent:r.t.missing_field})});'),'typed.dari',backend);
+ assert(partialSources.diagnostics.some(d=>d.message.includes('Incompatible types')),JSON.stringify(partialSources.diagnostics));
+ assert(partialSources.diagnostics.some(d=>d.message.includes('missing_field')),JSON.stringify(partialSources.diagnostics));
+ assert(!partialSources.diagnostics.some(d=>/Unknown field missing on r.s|Predicate must return Bool|Expected Table, got Error/.test(d.message)),JSON.stringify(partialSources.diagnostics));
+ assert(partialSources.checkedBindings.some(b=>b.name==='sample'&&!b.checked));
  const halted=await checkDesign(small('data sample = select({from:{s:a},where:r=>r.s.missing_predicate,fields:42});'),'typed.dari',backend);
  assert(halted.diagnostics.some(d=>/missing_predicate/.test(d.message)),JSON.stringify(halted.diagnostics));
  assert(halted.diagnostics.some(d=>/Expected a row function/.test(d.message)),JSON.stringify(halted.diagnostics));
