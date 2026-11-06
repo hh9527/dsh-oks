@@ -78,13 +78,16 @@ try{
  for(const reverse of [false,true]){
   const concurrent={...backend,async preflight(){},async analyze(ctx:any){
    if(ctx.operator!=='query')throw new Error('Unexpected analysis '+ctx.operator);
-   const name=ctx.args[0].data.bad;await new Promise(resolve=>setTimeout(resolve,(name==='first')===reverse?10:0));throw new Error('rejected '+name);
+   const name=ctx.args[0].data.bad;await new Promise(resolve=>setTimeout(resolve,(name==='first')===reverse?10:0));throw new DraftSyntaxError('rejected '+name,ctx.span);
   }};
   const siblings=await checkDesign('data x = union_all([query({limit:5,bad:"first"}),query({limit:5,bad:"second"})]);','fixture.dari',concurrent);
   assert.deepEqual(siblings.diagnostics.map(d=>d.message),['rejected first','rejected second']);
   assert(siblings.diagnostics[0].span.start.offset<siblings.diagnostics[1].span.start.offset);
  }
  const intents:unknown[]=[];
+ const modelFailure=new Error('model transport failed');
+ const failedModel=createDraftBackend({entry:{settings:{},modelHash:'failed',runner:{async send(){throw modelFailure;}}} as any,file:'fixture.dari',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge:{executorFor(){throw new Error('Unexpected business read');}}});
+ try{await assert.rejects(checkDesign('data x = query({limit:5});','fixture.dari',failedModel),e=>e===modelFailure);}finally{failedModel.dispose?.();}
  const tracked=createDraftBackend({entry:{settings:{},modelHash:'dag',runner:{async send(_method:string,{intents:items}:any){intents.push(...items);return {ok:{accepted:true,queries:[{sql:'SELECT 1 LIMIT ?',bindings:[items[0].limit],limit_slot:0,columns:[{name:'n',type:'Int',nullable:false}]}]}};}}} as any,file:'fixture.dari',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge:{executorFor(){throw new Error('Unexpected business read');}}});
  try{
   const dag=await checkDesign('data bad = [1,"x"]; data blocked = query({limit:5,value:bad}); data independent = query({limit:5,kind:"independent"});','fixture.dari',tracked);

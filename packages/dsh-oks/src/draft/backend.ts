@@ -38,6 +38,7 @@ const jsonPath = (path: (string | number)[]) => '.data' + path.map(key => `[${JS
 const fail = (message: string, span: Span): never => { throw new DraftSyntaxError(message, span); };
 
 type CachedCheck = { error?:string;result?:unknown; };
+class IntentValidationError extends Error {}
 /** Per-source validation cache. Only deterministic completed checks are admitted. */
 class Checks {
   private entries = new Map<string, CachedCheck>();
@@ -127,17 +128,20 @@ export function createDraftBackend(options: {
   type PreparedQuery = { sql: string; bindings: unknown[]; columns: ResultColumn[]; limit_slot: number };
   const lower = async (intent: unknown, signal?: AbortSignal): Promise<PreparedQuery> => {
     const problem = limitProblem(intent);
-    if (problem) throw new Error(problem);
+    if (problem) throw new IntentValidationError(problem);
     const key = digest({ intent, environment: planEnvironment() });
     const cached = checks.get(key);
-    if (cached?.error) throw new Error(cached.error);
+    if (cached?.error) throw new IntentValidationError(cached.error);
     if (cached?.result) return cached.result as PreparedQuery;
     const response = await entry.runner!.send(`${entry.settings.domain}/transform`, { intents: [intent] }, signal);
     if (signal?.aborted) throw new Error('aborted');
     const lowered = response.ok?.queries;
+    if(response.ok?.accepted===false&&Array.isArray(response.ok?.diagnostics)){
+      const error = `Intent rejected: ${JSON.stringify(response.ok.diagnostics)}`;
+      checks.set(key, { error });throw new IntentValidationError(error);
+    }
     if (response.ok?.accepted !== true || !Array.isArray(lowered) || lowered.length !== 1 || !isRecord(lowered[0]) || typeof lowered[0].sql !== 'string' || !Array.isArray(lowered[0].bindings)) {
       const error = `Intent rejected: ${JSON.stringify(response.ok?.diagnostics ?? response.error ?? response)}`;
-      if (response.ok?.accepted === false && Array.isArray(response.ok?.diagnostics)) checks.set(key, { error });
       throw new Error(error);
     }
     const limitSlot = lowered[0].limit_slot;
@@ -218,7 +222,7 @@ export function createDraftBackend(options: {
     }
     // Model-dependent checks need a locally valid document; they never execute business SQL.
     if(options?.validateQueries!==false&&!diagnostics.hasErrors())for(const query of plannedQueries){
-      try{await lower(query.intent,signal);}catch(error){if(signal?.aborted)throw error;diagnostics.report({file,stage:'validation',message:error instanceof Error?error.message:String(error),span:query.span});}
+      try{await lower(query.intent,signal);}catch(error){if(signal?.aborted||!(error instanceof IntentValidationError))throw error;diagnostics.report({file,stage:'validation',message:error.message,span:query.span});}
     }
     const errors=diagnostics.list().filter(d=>d.severity!=='warning');
     if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);
@@ -434,7 +438,9 @@ export function createDraftBackend(options: {
     if(ctx.operator==='context')return contextValue(ANALYSIS_CONTEXT_TIME);
     if(['typed_value','relational','relational_one','table_union','typed_table'].includes(ctx.operator))return runTyped(ctx,sqlWorkspace,true);
     // These implementations only compute parameter values or transform an intent into a schema/plan.
-    if(['data','time_windows','query'].includes(ctx.operator))return parameterValue(ctx);
+    if(['data','time_windows','query'].includes(ctx.operator)){
+      try{return await parameterValue(ctx);}catch(error){if(error instanceof IntentValidationError)throw new DraftSyntaxError(error.message,ctx.span);throw error;}
+    }
     throw new DraftSyntaxError('Operator is not available during analysis: '+ctx.operator,ctx.span);
   };
   return { preflight, checkCall, analyze, beginRun:run=>sqlWorkspace.beginRun(run), finishRun:async run=>sqlWorkspace.finishRun(run), dispose:()=>{void sqlWorkspace.clear();}, environment, execute, assemble, executionContext:()=>({hash:entry.modelHash??null,domain:entry.settings?.domain??null}) };

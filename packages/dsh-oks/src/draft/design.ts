@@ -168,7 +168,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         for(const values of candidates){
           try{
             if(unknown(values))throw new DraftSyntaxError('query parameters must be known during checking; business values cannot determine a remote query',e.span);
-            const computed=await analyze({...ctx,args:values.map(data=>({data:unbox(data),sources:[]}))}).catch(error=>{if(signal?.aborted||error instanceof DraftSyntaxError)throw error;throw new DraftSyntaxError(error instanceof Error?error.message:String(error),e.span);});
+            const computed=await analyze({...ctx,args:values.map(data=>({data:unbox(data),sources:[]}))});
             const columns=(computed.data as {columns:unknown}).columns;
             const t=typeOf({columns,rows:UNKNOWN,truncated:UNKNOWN});schema=schema?common(schema,t):t;
           }catch(error){
