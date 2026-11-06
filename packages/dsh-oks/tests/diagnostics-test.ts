@@ -78,6 +78,11 @@ for(const kind of ['map_opt','template_scope']){
  bad.compile({k:'call',s:span,name:'lookup',a:[{k:'object',s:span,entries:[]},{k:'array',s:span,a:[]}]},{});
  assert.deepEqual(bad.diagnostics.list().map(d=>d.message),['lookup input must be a scalar or null','lookup requires a nonempty mapping array known at check time']);
 }
+const overflowCompiler=new TypedCompiler({}, {}, true);
+const overflowNode={k:'binary',s:span,op:'+',left:{k:'lit',s:span,v:Number.MAX_SAFE_INTEGER},right:{k:'lit',s:span,v:1}} as const;
+assert.equal(overflowCompiler.expr(overflowNode as any,{}).type.kind,'error');
+assert.deepEqual(overflowCompiler.diagnostics.list().map(d=>d.message),['Numeric result is outside the supported range']);
+assert.throws(()=>new TypedCompiler({}, {}, false).expr(overflowNode as any,{}),DraftSyntaxError);
 const cases=new TypedCompiler({}, {}, true);
 cases.compile({k:'call',s:span,name:'case_when',a:[{k:'ref',s:span,name:'missing_condition'},{k:'lit',s:span,v:1},{k:'lit',s:span,v:'bad'}]},{});
 assert.deepEqual(cases.diagnostics.list().map(d=>d.message),['Incompatible types Int and String','Unknown binding missing_condition']);
@@ -169,6 +174,10 @@ try{
  assert.deepEqual(preflightDag.diagnostics.map(d=>d.asset),['bad','independent']);
  assert(preflightDag.checkedBindings.some(b=>b.name==='dependent'&&!b.checked));
  const dynamicValidation=await checkDesign('data bad = data(1,{kind:concat("b","ad")}); data dependent = bad + 1; data independent = "x"+1;','fixture.dari',backend);
+ const overflowResult=await checkDesign('data x = {overflow:9007199254740991+1,other:"x"+1};','fixture.dari',backend);
+ assert(overflowResult.diagnostics.some(d=>d.message==='Numeric result is outside the supported range'),JSON.stringify(overflowResult.diagnostics));
+ assert(overflowResult.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(overflowResult.diagnostics));
+ assert(overflowResult.checkedBindings.some(b=>b.name==='x'&&!b.checked));
  assert.equal(dynamicValidation.diagnostics.filter(d=>d.asset==='bad').length,1,JSON.stringify(dynamicValidation.diagnostics));
  assert(dynamicValidation.diagnostics.some(d=>d.asset==='independent'&&d.message.includes('Arithmetic requires numbers')),JSON.stringify(dynamicValidation.diagnostics));
  assert(!dynamicValidation.diagnostics.some(d=>d.asset==='dependent'),JSON.stringify(dynamicValidation.diagnostics));

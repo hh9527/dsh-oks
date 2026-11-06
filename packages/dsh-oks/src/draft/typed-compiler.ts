@@ -65,7 +65,7 @@ export class TypedCompiler{
    }
    return {type:optional(out.type),known:input.known&&(input.value===null||out.known),...(input.known?{value:input.value===null?null:out.value}:{})};
   }
-  if(n.k==='lit'){const type=typeOf(n.v);this.validNumber(n.v,type,n);return {type,known:true,value:n.v};}
+  if(n.k==='lit'){const type=typeOf(n.v);if(!this.validNumber(n.v,type,n))return {type:{kind:'error'},known:false};return {type,known:true,value:n.v};}
   if(n.k==='ref'){if(!Object.hasOwn(env,n.name!))return this.errorValue(n,'Unknown binding '+n.name);return env[n.name!];}
   if(n.k==='object'){const fields=Object.fromEntries(n.entries!.map(e=>[e.key,this.compile(e.value,env)]));const k=Object.values(fields).every(v=>v.known);return {type:record(Object.fromEntries(Object.entries(fields).map(([k,v])=>[k,v.type]))),known:k,fields,...(k?{value:Object.fromEntries(Object.entries(fields).map(([k,v])=>[k,v.value]))}:{})};}
   if(n.k==='array'){
@@ -116,7 +116,7 @@ export class TypedCompiler{
     if(!numeric(a.type)||!numeric(b.type))return this.errorValue(n,'Arithmetic requires numbers, got '+show(a.type)+' and '+show(b.type));
     if(op==='%'&&([a.type,b.type]as any[]).some(t=>t.name!=='Int'))return this.errorValue(n,'% requires Int');
     const name=op==='/'?'Float':(a.type as any).name==='Float'||(b.type as any).name==='Float'?'Float':'Int';const type=scalar(name,nullable(a.type)||nullable(b.type)||op==='/'||op==='%');
-    if(k){let value;if(a.value===null||b.value===null||['/','%'].includes(op)&&b.value===0)value=null;else value=op==='+'?a.value+b.value:op==='-'?a.value-b.value:op==='*'?a.value*b.value:op==='/'?a.value/b.value:a.value%b.value;this.validNumber(value,type,n);return {type,known:true,value,column};}
+    if(k){let value;if(a.value===null||b.value===null||['/','%'].includes(op)&&b.value===0)value=null;else value=op==='+'?a.value+b.value:op==='-'?a.value-b.value:op==='*'?a.value*b.value:op==='/'?a.value/b.value:a.value%b.value;if(!this.validNumber(value,type,n))return {type:{kind:'error'},known:false};return {type,known:true,value,column};}
     return {type,known:false,column,sql:op==='/'?'(1.0*'+this.sql(a,n)+'/NULLIF('+this.sql(b,n)+',0))':'('+this.sql(a,n)+op+this.sql(b,n)+')'};
    }
    if(['==','!=','<','>','<=','>='].includes(op)){
@@ -196,11 +196,11 @@ export class TypedCompiler{
     return {type,known:false,sql:name.toUpperCase()+'('+(x.rows?'*':this.sql(x,n))+')'};
    }
    if(name==='is_some'||name==='is_none'){const x=a[0];if(!nullable(x.type))return this.errorValue(n,name+' requires Option');return {type:scalar('Bool'),known:x.known,...(x.known?{value:name==='is_some'?x.value!==null:x.value===null}:{sql:'('+this.presence(x,n)+(name==='is_some'?' IS NOT NULL)':' IS NULL)')}),column:x.column};}
-   fail(n,'Function is not available in this expression: '+name);
+   return this.errorValue(n,'Function is not available in this expression: '+name);
   }
   return fail(n,'Invalid typed expression '+n.k);
  }
- validNumber(value:any,type:Ty,n:N){if(value!==null&&typeof value==='number'&&(!Number.isFinite(value)||type.kind==='scalar'&&type.name==='Int'&&!Number.isSafeInteger(value)))fail(n,'Numeric result is outside the supported range');}
+ validNumber(value:any,type:Ty,n:N){if(value!==null&&typeof value==='number'&&(!Number.isFinite(value)||type.kind==='scalar'&&type.name==='Int'&&!Number.isSafeInteger(value))){this.reportFailure(n,'Numeric result is outside the supported range');return false;}return true;}
  relational(n:N){
   const spec=n.a![0];if(spec.k!=='object')fail(n,'Expected select specification');const entries=Object.fromEntries(spec.entries!.map(e=>[e.key,e.value]));for(const key of Object.keys(entries))if(!['from','joins','where','fields','group_by','having','order_by','limit'].includes(key))this.reportFailure(entries[key],'Unknown select option '+key);
   const captures=this.env(),tables:Record<string,unknown>={},scope:Record<string,V>=Object.create(null),joins:string[]=[];let sourceCount=0,unavailableSource=false,openScope=false;let baseBounds:{minRows?:number;maxRows?:number}={};
