@@ -128,6 +128,10 @@ try{
  const partialFieldArray=await checkDesign(partialFieldArraySource,'fixture.dari',backend);
  assert.equal(partialFieldArray.diagnostics.find(d=>d.message.startsWith('Incompatible types'))?.span.start.offset,partialFieldArraySource.lastIndexOf('"x"'),JSON.stringify(partialFieldArray.diagnostics));
  assert(partialFieldArray.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ const projectedFieldArraySource='data bad = 1+"x"; data x = [{a:bad},{a:1},{a:"x"}][0];';
+ const projectedFieldArray=await checkDesign(projectedFieldArraySource,'fixture.dari',backend);
+ assert.equal(projectedFieldArray.diagnostics.find(d=>d.message.startsWith('Incompatible types'))?.span.start.offset,projectedFieldArraySource.lastIndexOf('"x"'),JSON.stringify(projectedFieldArray.diagnostics));
+ assert(projectedFieldArray.checkedBindings.some(b=>b.name==='x'&&!b.checked));
  const nullableArrayBackend={...backend,async analyze(ctx:any){if(ctx.operator==='context')return {data:box({kind:'record',fields:{a:{kind:'scalar',name:'Int',nullable:false}},nullable:true})};return backend.analyze!(ctx);}};
  const nullableRecordArray=await checkDesign('data x = [{a:1},context()];','fixture.dari',nullableArrayBackend);
  assert.equal(nullableRecordArray.types.x,'Array(Option({a:Int}))',JSON.stringify(nullableRecordArray));

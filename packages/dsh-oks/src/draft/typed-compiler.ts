@@ -69,18 +69,21 @@ export class TypedCompiler{
   if(n.k==='ref'){if(!Object.hasOwn(env,n.name!))return this.errorValue(n,'Unknown binding '+n.name);return env[n.name!];}
   if(n.k==='object'){const fields=Object.fromEntries(n.entries!.map(e=>[e.key,this.compile(e.value,env)]));const k=Object.values(fields).every(v=>v.known);return {type:record(Object.fromEntries(Object.entries(fields).map(([k,v])=>[k,v.type]))),known:k,fields,...(k?{value:Object.fromEntries(Object.entries(fields).map(([k,v])=>[k,v.value]))}:{})};}
   if(n.k==='array'){
-   const items=n.a!.map(x=>this.compile(x,env));let element:Ty={kind:'never'},invalid=false;
+   const items=n.a!.map(x=>this.compile(x,env));let element:Ty={kind:'never'},invalid=false,knownRecordFields:Record<string,Ty>|undefined;
    for(const [i,item] of items.entries()){
     if(item.type.kind==='error'){invalid=true;continue;}
     if(this.checking&&element.kind==='record'&&item.type.kind==='record'&&Object.keys(element.fields).join('\0')===Object.keys(item.type.fields).join('\0')){
      const fields:Record<string,Ty>={};
-     for(const [name,current] of Object.entries(item.type.fields))try{fields[name]=common(element.fields[name],current);}catch(error){
-      if(!(error instanceof TypeRuleError))throw error;
-      const node=n.a![i];this.reportFailure(node.k==='object'?node.entries!.find(entry=>entry.key===name)?.value??node:node,error.message);fields[name]={kind:'error'};
+     for(const [name,current] of Object.entries(item.type.fields)){
+      if(current.kind==='error'){fields[name]={kind:'error'};continue;}
+      try{const known=knownRecordFields?.[name],merged=known?common(known,current):current;if(knownRecordFields)knownRecordFields[name]=merged;fields[name]=element.fields[name].kind==='error'?{kind:'error'}:merged;}catch(error){
+       if(!(error instanceof TypeRuleError))throw error;
+       const node=n.a![i];this.reportFailure(node.k==='object'?node.entries!.find(entry=>entry.key===name)?.value??node:node,error.message);fields[name]={kind:'error'};
+      }
      }
      element=record(fields,element.nullable||item.type.nullable);continue;
     }
-    try{element=common(element,item.type);}catch(error){
+    try{element=common(element,item.type);if(this.checking&&element.kind==='record'&&!knownRecordFields)knownRecordFields=Object.fromEntries(Object.entries(element.fields).filter(([,type])=>type.kind!=='error'));}catch(error){
      if(!this.checking||!(error instanceof TypeRuleError))throw error;
      this.reportFailure(n.a![i],error.message);invalid=true;
     }
