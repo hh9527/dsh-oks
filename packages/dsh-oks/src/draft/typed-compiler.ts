@@ -191,7 +191,7 @@ export class TypedCompiler{
   const spec=n.a![0];if(spec.k!=='object')fail(n,'Expected select specification');const entries=Object.fromEntries(spec.entries!.map(e=>[e.key,e.value]));for(const key of Object.keys(entries))if(!['from','joins','where','fields','group_by','having','order_by','limit'].includes(key))this.reportFailure(entries[key],'Unknown select option '+key);
   const captures=this.env(),tables:Record<string,unknown>={},scope:Record<string,V>=Object.create(null),joins:string[]=[];let sourceCount=0,unavailableSource=false,openScope=false;let baseBounds:{minRows?:number;maxRows?:number}={};
   const source=(s:N,left=false):string=>{
-   if(s.k!=='object'||s.entries!.length!==1)fail(s,'Expected one source alias');const {key:alias,value:ref}=s.entries![0];if(Object.hasOwn(scope,alias)){this.reportFailure(s,'Duplicate table alias '+alias);scope[alias]={type:{kind:'error'},known:false};unavailableSource=true;return '(SELECT 1) a'+sourceCount++;}const v=this.compile(ref,captures);
+   if(s.k!=='object'||s.entries!.length!==1)fail(s,'Expected one source alias');const {key:alias,value:ref}=s.entries![0];const v=this.compile(ref,captures);if(Object.hasOwn(scope,alias)){this.reportFailure(s,'Duplicate table alias '+alias);if(v.type.kind!=='table'&&v.type.kind!=='error')this.reportFailure(ref,'Expected Table, got '+show(v.type));scope[alias]={type:{kind:'error'},known:false};unavailableSource=true;return '(SELECT 1) a'+sourceCount++;}
    if(v.type.kind!=='table'){
     if(v.type.kind!=='error')this.reportFailure(ref,'Expected Table, got '+show(v.type));
     if(!this.checking)throw new UpstreamTypeUnavailable();

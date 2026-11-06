@@ -192,6 +192,8 @@ try{
  const duplicateSource=await checkDesign('data a = table([{n:1}],{kind:"example"}); data b = table([{n:2}],{kind:"example"}); data x = select({from:{s:a},joins:[{kind:"inner",source:{s:b},on:r=>r.s.n==1},{kind:"inner",source:{t:b},on:r=>r.t.absent==1}],fields:r=>({dependent:r.s.n,independent:r.t.missing})});','fixture.dari',backend);
  for(const expected of ['Duplicate table alias s','Unknown field absent','Unknown field missing'])assert(duplicateSource.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(duplicateSource.diagnostics));
  assert(!duplicateSource.diagnostics.some(d=>d.message.includes('Unknown field n')),JSON.stringify(duplicateSource.diagnostics));
+ const duplicateInvalidSource=await checkDesign('data a = table([{n:1}],{kind:"example"}); data x = select({from:{s:a},joins:[{kind:"inner",source:{s:42},on:r=>True}],fields:r=>({n:r.s.n,independent:"x"+1})});','fixture.dari',backend);
+ for(const expected of ['Duplicate table alias s','Expected Table, got Int','Arithmetic requires numbers'])assert(duplicateInvalidSource.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(duplicateInvalidSource.diagnostics));
  const missingFields=await checkDesign('data a = table([{n:1}],{kind:"example"}); data x = select({from:{s:a},order_by:o=>[asc(o.missing),asc("x"+1)],having:o=>1+"x"});','fixture.dari',backend);
  for(const expected of ['select requires fields','having requires group_by'])assert(missingFields.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(missingFields.diagnostics));
  assert.equal(missingFields.diagnostics.filter(d=>d.message.includes('Arithmetic requires numbers')).length,2,JSON.stringify(missingFields.diagnostics));
