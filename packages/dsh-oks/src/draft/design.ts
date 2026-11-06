@@ -162,7 +162,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         const type:Ty={kind:'array',element:typeOf(result),length:t.length,nullable:false};
         // Materialize pure parameter expressions when subsequent query arguments need them.
         const pure=(e:Expr):boolean=>e.kind==='call'?['typed_value','data','context','time_windows','analysis_map'].includes(e.operator)&&e.args.every(pure):e.kind==='array'?e.values.every(pure):e.kind==='object'?e.entries.every(x=>pure(x.value)):e.kind==='project'?pure(e.input):true;
-        if(isKnown(input)&&variants.length===1&&pure(e.args[2])){
+        if(!hasError(result)&&isKnown(input)&&variants.length===1&&pure(e.args[2])){
           const values=await settle(cases.map(v=>({span:e.args[2].span,run:()=>evaluate(e.args[2],v,[v])})));
           if(values.every(isKnown))return box(type,values.map(unbox));
         }

@@ -125,6 +125,10 @@ try{
  assert(dynamicValidation.diagnostics.some(d=>d.asset==='independent'&&d.message.includes('Arithmetic requires numbers')),JSON.stringify(dynamicValidation.diagnostics));
  assert(!dynamicValidation.diagnostics.some(d=>d.asset==='dependent'),JSON.stringify(dynamicValidation.diagnostics));
  assert(dynamicValidation.checkedBindings.some(b=>b.name==='dependent'&&!b.checked));
+ let mapValidationCalls=0;
+ const mapValidationBackend={...backend,checkCall(ctx:any,known:(value:unknown)=>boolean){if(ctx.operator==='data')mapValidationCalls++;return backend.checkCall!(ctx,known);}};
+ const invalidMapBody=await checkDesign('data result = map([1,2,3],n=>data(n,{kind:concat("b","ad")}));','fixture.dari',mapValidationBackend);
+ assert.equal(invalidMapBody.ok,false);assert.equal(mapValidationCalls,1);assert(invalidMapBody.checkedBindings.some(b=>b.name==='result'&&!b.checked));
  const invalidTimeContext=await checkDesign('data x = time_windows(1,{unit:"day",count:1,mode:"current"});','fixture.dari',backend);
  assert(invalidTimeContext.diagnostics.some(d=>d.message.includes('time windows requires safe integer context utc.epochMillis')),JSON.stringify(invalidTimeContext.diagnostics));
  const invalidTimeZone=await checkDesign('data x = time_windows({utc:{epochMillis:0},tz:{client:{id:"invalid/timezone"}}},{unit:"day",count:1,mode:"current"});','fixture.dari',backend);
