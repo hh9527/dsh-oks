@@ -68,7 +68,18 @@ export class TypedCompiler{
   if(n.k==='lit'){const type=typeOf(n.v);this.validNumber(n.v,type,n);return {type,known:true,value:n.v};}
   if(n.k==='ref'){if(!Object.hasOwn(env,n.name!))fail(n,'Unknown binding '+n.name);return env[n.name!];}
   if(n.k==='object'){const fields=Object.fromEntries(n.entries!.map(e=>[e.key,this.compile(e.value,env)]));const k=Object.values(fields).every(v=>v.known);return {type:record(Object.fromEntries(Object.entries(fields).map(([k,v])=>[k,v.type]))),known:k,fields,...(k?{value:Object.fromEntries(Object.entries(fields).map(([k,v])=>[k,v.value]))}:{})};}
-  if(n.k==='array'){const items=n.a!.map(x=>this.compile(x,env));const element:Ty=items.length?items.slice(1).reduce((t,v)=>common(t,v.type),items[0].type):{kind:'never'};const k=items.every(v=>v.known);return {type:{kind:'array',element,length:items.length,nullable:false},known:k,items,...(k?{value:items.map(v=>v.value)}:{})};}
+  if(n.k==='array'){
+   const items=n.a!.map(x=>this.compile(x,env));let element:Ty={kind:'never'},invalid=false;
+   for(const [i,item] of items.entries()){
+    if(item.type.kind==='error'){invalid=true;continue;}
+    try{element=common(element,item.type);}catch(error){
+     if(!this.checking||!(error instanceof TypeRuleError))throw error;
+     this.reportFailure(n.a![i],error.message);invalid=true;
+    }
+   }
+   if(invalid)element={kind:'error'};
+   const k=items.every(v=>v.known);return {type:{kind:'array',element,length:items.length,nullable:false},known:k,items,...(k?{value:items.map(v=>v.value)}:{})};
+  }
   if(n.k==='get'){
    const input=this.compile(n.input!,env),t=input.type;
    if(t.kind==='error')return input;
