@@ -186,6 +186,12 @@ try{
  assert.throws(()=>backend.checkCall!({operator:'render_figure',figureKind:'table',args:[{data:{get title(){throw figureFailure;}}},{data:{data:[]}}],span} as any,()=>true),e=>e===figureFailure);
  const figureDataFailure=new Error('unexpected figure data failure');
  assert.throws(()=>backend.checkCall!({operator:'render_figure',figureKind:'table',args:[{data:{}},{data:{data:{get columns(){throw figureDataFailure;}}}}],span} as any,()=>true),e=>e===figureDataFailure);
+ const reportAsset={program:{refs:['first','second']},references:{first:{kind:'condition',span},second:{kind:'condition',span}}};
+ const reportDiagnostics=backend.checkCall!({operator:'render_report',args:[{data:'report'},{data:{first:1,second:'bad'}}],asset:reportAsset,span} as any,()=>true);
+ assert.equal(reportDiagnostics.length,2,JSON.stringify(reportDiagnostics));
+ assert(reportDiagnostics.every(d=>d.message.includes('if condition requires Bool')));
+ const reportFailure=new Error('unexpected report failure');
+ assert.throws(()=>backend.checkCall!({operator:'render_report',args:[{data:'report'},{data:{get first(){throw reportFailure;},second:true}}],asset:reportAsset,span} as any,()=>true),e=>e===reportFailure);
  brokenFigureStatement.value.operator='render_figure';brokenFigureStatement.value.figureKind='table';
  brokenFigureStatement.value.args=[{kind:'literal',value:{get title(){throw figureFailure;}},span:figureSpan},{kind:'literal',value:{data:[]},span:figureSpan}] as any;
  await assert.rejects(backend.preflight(brokenFigurePreflight,undefined,{validateQueries:false}),e=>e===figureFailure);

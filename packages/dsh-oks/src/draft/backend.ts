@@ -40,6 +40,7 @@ const fail = (message: string, span: Span): never => { throw new DraftSyntaxErro
 type CachedCheck = { error?:string;result?:unknown; };
 class IntentValidationError extends Error {}
 class FigureValidationError extends Error {}
+class PresentationValidationError extends Error {}
 /** Per-source validation cache. Only deterministic completed checks are admitted. */
 class Checks {
   private entries = new Map<string, CachedCheck>();
@@ -235,13 +236,13 @@ export function createDraftBackend(options: {
   };
   const checkCall = (ctx:CallContext, known:(value:unknown)=>boolean):SourceDiagnostic[] => {
     const diagnostics=ctx.diagnostics?.scope({file})??new DiagnosticCollector();
-    const check=(work:()=>void,span=ctx.span)=>{try{work();}catch(error){diagnostics.report({file,stage:ctx.operator==='render_figure'?'figure':ctx.operator==='render_report'?'template':'validation',message:error instanceof Error?error.message:String(error),span});}};
+    const check=(work:()=>void,span=ctx.span)=>{try{work();}catch(error){if(!(error instanceof PresentationValidationError))throw error;diagnostics.report({file,stage:ctx.operator==='render_figure'?'figure':ctx.operator==='render_report'?'template':'validation',message:error.message,span});}};
     const first=ctx.args[0]?.data,second=ctx.args[1]?.data;
-    if(['render_figure','render_report'].includes(ctx.operator)&&ctx.args[1]&&known(second))check(()=>{if(!isRecord(second))throw new Error(`${ctx.operator} inputs must be a named object`);});
+    if(['render_figure','render_report'].includes(ctx.operator)&&ctx.args[1]&&known(second))check(()=>{if(!isRecord(second))throw new PresentationValidationError(`${ctx.operator} inputs must be a named object`);});
     if(ctx.operator==='data'&&ctx.args[1]&&known(second))try{dataNature(unbox(second));}catch(error){if(!(error instanceof DataNatureValidationError))throw error;diagnostics.report({file,stage:'validation',message:error.message,span:ctx.span});}
     if(ctx.operator==='time_windows'&&known(second))try{if(known(first))timeWindows(unbox(first),unbox(second));else timeWindowOptions(unbox(second));}catch(error){if(!(error instanceof TimeWindowValidationError))throw error;diagnostics.report({file,stage:'validation',message:error.message,span:ctx.span});}
     if(ctx.operator==='render_figure'){
-      if(isRecord(second))check(()=>{if(!Object.hasOwn(second,'data')||Object.keys(second).some(key=>key!=='data'&&key!=='nodes'))throw new Error('render_figure inputs must be {data,nodes?}');});
+      if(isRecord(second))check(()=>{if(!Object.hasOwn(second,'data')||Object.keys(second).some(key=>key!=='data'&&key!=='nodes'))throw new PresentationValidationError('render_figure inputs must be {data,nodes?}');});
       let raw:unknown,validSpec=false;
       if(known(first))try{raw=componentSpec(first,ctx.figureKind);validateFigure(raw);validSpec=true;}catch(error){if(!(error instanceof FigureValidationError)&&!(error instanceof TableSpecValidationError)&&!(error instanceof ComponentSpecValidationError))throw error;diagnostics.report({file,stage:'figure',message:error.message,span:ctx.span});}
       if(validSpec)try{(()=>{
@@ -287,16 +288,16 @@ export function createDraftBackend(options: {
       check(()=>{
         const missing=[...refs].filter(key=>!Object.hasOwn(second,key));
         const unused=Object.keys(second).filter(key=>!refs.has(key));
-        if(missing.length||unused.length)throw new Error(`Template bindings mismatch: missing [${missing}], unused [${unused}]`);
+        if(missing.length||unused.length)throw new PresentationValidationError(`Template bindings mismatch: missing [${missing}], unused [${unused}]`);
       });
       for(const [name,reference]of Object.entries(ctx.asset.references??{}))if(reference.kind==='condition')check(()=>{
         const t=typeOf(second[name]);
-        if(t.kind!=='scalar'||t.name!=='Bool'||t.nullable)throw new Error('if condition requires Bool, got '+show(t)+'; use ?? False for Option(Bool)');
+        if(t.kind!=='scalar'||t.name!=='Bool'||t.nullable)throw new PresentationValidationError('if condition requires Bool, got '+show(t)+'; use ?? False for Option(Bool)');
       },reference.span);
-      for(const [name,reference]of Object.entries(ctx.asset.references??{}))if(reference.kind==='value'&&isBox(second[name]))check(()=>{const t=typeOf(second[name]);if(t.kind!=='scalar'&&t.kind!=='null')throw new Error('Value.data must select a scalar, got '+show(t));},reference.span);
+      for(const [name,reference]of Object.entries(ctx.asset.references??{}))if(reference.kind==='value'&&isBox(second[name]))check(()=>{const t=typeOf(second[name]);if(t.kind!=='scalar'&&t.kind!=='null')throw new PresentationValidationError('Value.data must select a scalar, got '+show(t));},reference.span);
       for(const [name,reference]of Object.entries(ctx.asset.references??{}))if(reference.kind==='value'&&known(second[name]))check(()=>{
         const value=unbox(second[name]);
-        if(value!==null&&!['string','number','boolean'].includes(typeof value))throw new Error('Value.data must select a scalar; construct a summary in pipeline');
+        if(value!==null&&!['string','number','boolean'].includes(typeof value))throw new PresentationValidationError('Value.data must select a scalar; construct a summary in pipeline');
       },reference.span);
 
     }
