@@ -150,6 +150,9 @@ try{
  assert(invalidOutput.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(invalidOutput.diagnostics));
  assert(!invalidOutput.diagnostics.some(d=>d.message.includes('dependent')),JSON.stringify(invalidOutput.diagnostics));
  assert(invalidOutput.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ const invalidOrder=await checkDesign('data facts = table([{n:1}],{kind:"example"}); data x = select({from:{s:facts},fields:r=>({n:r.s.n}),order_by:o=>[asc("x"+1,{},2+"x")]});','fixture.dari',backend);
+ assert(invalidOrder.diagnostics.some(d=>d.message==='Expected asc or desc'),JSON.stringify(invalidOrder.diagnostics));
+ assert.equal(invalidOrder.diagnostics.filter(d=>d.message.includes('Arithmetic requires numbers')).length,2,JSON.stringify(invalidOrder.diagnostics));
  const invalidCallback=await checkDesign('data facts = table([{n:1}],{kind:"example"}); data x = select({from:{s:facts},fields:(r,extra)=>({missing:r.s.absent,dependent:extra.field,independent:"x"+1})});','fixture.dari',backend);
  assert(invalidCallback.diagnostics.some(d=>d.message==='Expected a row function with 1 parameter(s)'),JSON.stringify(invalidCallback.diagnostics));
  assert(invalidCallback.diagnostics.some(d=>d.message.includes('Unknown field absent')),JSON.stringify(invalidCallback.diagnostics));

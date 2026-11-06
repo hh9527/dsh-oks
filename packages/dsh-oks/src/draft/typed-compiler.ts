@@ -231,7 +231,7 @@ export class TypedCompiler{
   if(entries.having&&!groups)this.reportFailure(entries.having,'having requires group_by');
   let sql='SELECT '+columns.map(c=>q(c.name)).join(',')+' FROM ('+inner+')';if(entries.having&&groups){const p=this.callback(entries.having,[output],captures);const valid=this.bool(p,entries.having);sql+=' WHERE '+(valid?this.sql(p,entries.having):'NULL');}
   if(entries.order_by){const f=entries.order_by;if(f.k!=='lambda'||f.params?.length!==1||f.body?.k!=='array')this.reportFailure(f,'order_by requires (out) => [asc/desc(...)]');else{const env={...captures,[f.params![0]]:output};const order=f.body.a!.map(item=>{
-   if(item.k!=='call'||!['asc','desc'].includes(item.name!)||![1,2].includes(item.a!.length)){this.reportFailure(item,'Expected asc or desc');return 'NULL ASC NULLS LAST';}
+   if(item.k!=='call'||!['asc','desc'].includes(item.name!)||![1,2].includes(item.a!.length)){if(this.checking){if(item.k==='call')for(const arg of item.a??[])this.compile(arg,env);else this.compile(item,env);}this.reportFailure(item,'Expected asc or desc');return 'NULL ASC NULLS LAST';}
    const value=this.compile(item.a![0],env),option=item.a![1]?this.compile(item.a![1],env):undefined;let valid=true,nulls='last';
    if(value.type.kind==='error')valid=false;else if(value.type.kind!=='scalar'){this.reportFailure(item,'Ordering requires a scalar');valid=false;}
    if(option){if(option.type.kind==='error')valid=false;else if(!option.known||!isRecord(option.value)||Object.keys(option.value).some(k=>k!=='nulls')||!['first','last'].includes(String(option.value.nulls))){this.reportFailure(item,'Ordering options must be {nulls:"first"|"last"}');valid=false;}else nulls=String(option.value.nulls);}
