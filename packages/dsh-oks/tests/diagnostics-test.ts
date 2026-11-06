@@ -172,6 +172,8 @@ try{
  const invalidTimeZone=await checkDesign('data x = time_windows({utc:{epochMillis:0},tz:{client:{id:"invalid/timezone"}}},{unit:"day",count:1,mode:"current"});','fixture.dari',backend);
  assert.equal(invalidTimeZone.ok,false);assert(invalidTimeZone.diagnostics.length>0,JSON.stringify(invalidTimeZone));
  const unexpectedTimeError=new Error('unexpected time failure');
+ const unexpectedDataError=new Error('unexpected data failure');
+ assert.throws(()=>backend.checkCall!({operator:'data',args:[{data:1},{data:{get kind(){throw unexpectedDataError;}}}],span} as any,()=>true),e=>e===unexpectedDataError);
  assert.throws(()=>backend.checkCall!({operator:'time_windows',args:[{data:{get utc(){throw unexpectedTimeError;}}},{data:{unit:'day',count:1,mode:'current'}}],span} as any,()=>true),e=>e===unexpectedTimeError);
  const unexpectedRangeError=new RangeError('unexpected input access failure');
  assert.throws(()=>backend.checkCall!({operator:'time_windows',args:[{data:{get utc(){throw unexpectedRangeError;}}},{data:{unit:'day',count:1,mode:'current'}}],span} as any,()=>true),e=>e===unexpectedRangeError);
