@@ -228,6 +228,11 @@ try{
  const invalidFieldsAndLimit=await checkDesign('data facts = table([{n:1}],{kind:"example"}); data x = select({from:{s:facts},fields:r=>r.s.missing,limit:-1});','fixture.dari',backend);
  const syntaxSource='data first = 1 + * 2;\ndata dependent = {derived:first.missing,independent:"x"+1};\ndata second = 3 + * 4;\ndata type_bad = "x" + 1;\ndata valid = 1;';
  const syntaxResult=await checkDesign(syntaxSource,'fixture.dari',backend);
+ const emptySource='data empty = ;\ndata comment_only = /* nothing */ ;\ndata later = 1+*2;';
+ const emptyResult=await checkDesign(emptySource,'fixture.dari',backend);
+ assert.equal(emptyResult.diagnostics.length,3,JSON.stringify(emptyResult.diagnostics));
+ assert(emptyResult.diagnostics.every(d=>d.message==='Expected an expression'),JSON.stringify(emptyResult.diagnostics));
+ for(const name of ['empty','comment_only','later'])assert(emptyResult.checkedBindings.some(b=>b.name===name&&!b.checked),name);
  const syntaxErrors=syntaxResult.diagnostics.filter(d=>d.stage==='syntax');
  assert.equal(syntaxErrors.length,2,JSON.stringify(syntaxResult.diagnostics));
  assert.deepEqual(syntaxErrors.map(d=>d.span.start.offset),[syntaxSource.indexOf('*'),syntaxSource.lastIndexOf('*')]);

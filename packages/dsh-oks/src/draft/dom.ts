@@ -50,7 +50,7 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
     try{return JSON.parse(source.slice(start,at)) as string;}catch{return fail('Invalid JSON string',start,at);}
   };
   /** Delimiters inside strings, comments, object literals and lambdas do not end an expression. */
-  const expression=(stops:Set<string>)=>{
+  const expression=(stops:Set<string>,allowEmpty=false)=>{
     whitespace();const start=at,stack:{symbol:string;offset:number}[]=[];let possibleDeclaration=false;
     while(at<source.length){
       const ch=source[at];
@@ -70,7 +70,7 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
       const open=stack.at(-1)!,expected={'(':')','[':']','{':'}'}[open.symbol]!;
       fail('Unterminated expression; expected '+JSON.stringify(expected),at,at,{expected,found:'end of input',related:[{message:'Opening '+open.symbol+' requires '+expected,span:location(open.offset,open.offset+1)}]});
     }
-    const end=at;if(!source.slice(start,end).trim())fail('Expected an expression',start);
+    const end=at;if(!allowEmpty&&!source.slice(start,end).trim())fail('Expected an expression',start);
     return {start,end,text:source.slice(start,end),possibleDeclaration};
   };
   const compile=(part:{start:number;end:number;text:string},binding:string,internal=false,condition=false,presence?:string)=>{
@@ -202,7 +202,7 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
     if(declarations.has(binding))fail('Duplicate binding '+binding,bindingStart,at);
     if(kind!=='answer')eat('=');
     if(kind==='data'){
-      const part=expression(new Set([';']));if(source[at]===';'&&!part.possibleDeclaration){recoverableBinding=binding;recoverableKind='data';recoverableEnd=at;}const node=compile(part,binding);eat(';');node.statement.span=location(start);
+      const part=expression(new Set([';']),true);if(source[at]===';'&&!part.possibleDeclaration){recoverableBinding=binding;recoverableKind='data';recoverableEnd=at;}const node=compile(part,binding);eat(';');node.statement.span=location(start);
     }else{
       const bodyStart=at;
       try{const part=expression(new Set([';']));if(source[at]===';'&&!part.possibleDeclaration){recoverableBinding=binding;recoverableKind=kind as 'figure'|'report'|'answer';recoverableEnd=at;}}catch(error){if(!(error instanceof DraftSyntaxError))throw error;}finally{at=bodyStart;}
