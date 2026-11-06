@@ -179,7 +179,8 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
       const args = await settle(e.args.map(arg=>({span:arg.span,run:()=>child(arg)})));
       const ctx: CallContext = {operator:e.operator,figureKind:e.figureKind,args:args.map(data=>({data,sources:[]})),statement,expression:e,diagnostics:diagnostics.scope({file,...(statement.kind==='binding'?{asset:binding}:{})}),span:e.span,run:'check',batch:'check',sourceHash:'check',signal,
         asset:typeof args[0] === 'string'?doc.assets.get(args[0]):undefined};
-      if(hasError(args)&&!['typed_value','relational','relational_one','table_union'].includes(e.operator))throw new UpstreamTypeUnavailable();
+      if(e.operator==='data'&&hasError(args[0])&&!hasError(args[1])){const findings=backend.checkCall?.(ctx,value=>!unknown(value))??[];diagnostics.reportAll(findings);return args[0];}
+      if(hasError(args)&&!['typed_value','relational','relational_one','table_union','typed_table'].includes(e.operator))throw new UpstreamTypeUnavailable();
       if(['typed_value','relational','relational_one','table_union','typed_table'].includes(e.operator)){
         const [computed]=await settle([{span:e.span,run:()=>analyze(ctx)}]);
         if(e.operator!=='typed_value'){const t=computed.logicalType as Ty;queries.push({binding,at:e.span.start,type:show(t),...(t.kind==='table'?{columns:t.columns}:{}),...(e.operator==='relational_one'&&(computed.evidence as {guard?:boolean})?.guard?{guard:'at most one row checked at runtime'}:{}),result:{values:'runtime',type:'checked'}});}

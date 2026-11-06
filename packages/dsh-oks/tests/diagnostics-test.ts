@@ -219,6 +219,11 @@ try{
  const failedTable=box({kind:'array',element:{kind:'record',fields:{failed:{kind:'error'}},nullable:false},length:1,nullable:false});
  await assert.rejects(runTyped({operator:'typed_table',args:[{data:failedTable}],statement,span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL execution');}} as any,true),UpstreamTypeUnavailable);
  await assert.rejects(runTyped({operator:'typed_table',args:[{data:box({kind:'array',element:{kind:'error'},length:1,nullable:false})}],statement,span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL execution');}} as any,true),UpstreamTypeUnavailable);
+ const partialTableDesign=await checkDesign('data bad = 1+"x"; data x = table([{failed:bad,invalid:{x:1}}],{kind:"example"});','fixture.dari',backend);
+ assert(partialTableDesign.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(partialTableDesign.diagnostics));
+ assert(partialTableDesign.diagnostics.some(d=>d.message.includes('table column invalid')),JSON.stringify(partialTableDesign.diagnostics));
+ assert(!partialTableDesign.diagnostics.some(d=>d.message.includes('table column failed')),JSON.stringify(partialTableDesign.diagnostics));
+ assert(partialTableDesign.checkedBindings.some(b=>b.name==='x'&&!b.checked));
  assert.equal(tableErrors.diagnostics.find(d=>d.message.includes('table column first'))?.span.start.offset,tableSource.indexOf('{x:1}'));
  assert.equal(tableErrors.diagnostics.find(d=>d.message.includes('table column second'))?.span.start.offset,tableSource.indexOf('[1]'));
  const unionSource='data a = table([{first:1,second:1}],{kind:"example"}); data b = table([{first:"x",second:True}],{kind:"example"}); data x = union_all([a,b]);';
