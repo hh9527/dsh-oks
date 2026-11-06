@@ -116,6 +116,10 @@ try{
  assert.equal(nestedPreflight.diagnostics.length,2,JSON.stringify(nestedPreflight.diagnostics));
  assert(nestedPreflight.diagnostics.every(d=>d.asset==='x'),JSON.stringify(nestedPreflight.diagnostics));
  assert.notEqual(nestedPreflight.diagnostics[0].span.start.offset,nestedPreflight.diagnostics[1].span.start.offset);
+ const preflightDag=await checkDesign('data bad = data(1,{kind:"bad"}); data dependent = data(2,bad); data independent = data(3,{kind:"bad"});','fixture.dari',backend);
+ assert.equal(preflightDag.diagnostics.length,2,JSON.stringify(preflightDag.diagnostics));
+ assert.deepEqual(preflightDag.diagnostics.map(d=>d.asset),['bad','independent']);
+ assert(preflightDag.checkedBindings.some(b=>b.name==='dependent'&&!b.checked));
  const invalidTimeContext=await checkDesign('data x = time_windows(1,{unit:"day",count:1,mode:"current"});','fixture.dari',backend);
  assert(invalidTimeContext.diagnostics.some(d=>d.message.includes('time windows requires safe integer context utc.epochMillis')),JSON.stringify(invalidTimeContext.diagnostics));
  const invalidTimeZone=await checkDesign('data x = time_windows({utc:{epochMillis:0},tz:{client:{id:"invalid/timezone"}}},{unit:"day",count:1,mode:"current"});','fixture.dari',backend);
