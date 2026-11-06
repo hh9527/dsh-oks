@@ -149,7 +149,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         if(t.kind==='array'&&t.element.kind==='never'){addError(new DraftSyntaxError('map requires an inferable element type',e.span),e.span,'type');t={kind:'error'};}
         if(t.kind==='error'||hasError(input)){
           const params=JSON.parse(String((e.args[1] as Extract<Expr,{kind:'literal'}>).value)) as string[];
-          const scope=new Map(locals);scope.set(params[0],box({kind:'error'}));if(params[1])scope.set(params[1],box(scalar('Int')));
+          const scope=new Map(locals);scope.set(params[0],box({kind:'error'}));if(params[1])scope.set(params[1],box({kind:'error'}));
           await evaluate(e.args[2],scope,[scope]);
           throw new UpstreamTypeUnavailable();
         }

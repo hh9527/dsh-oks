@@ -277,6 +277,12 @@ try{
   assert(failedMapInput.diagnostics.some(d=>d.message==='rejected first'),JSON.stringify(failedMapInput.diagnostics));
   assert(failedMapInput.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(failedMapInput.diagnostics));
   assert(!failedMapInput.diagnostics.some(d=>d.message.includes('missing')),JSON.stringify(failedMapInput.diagnostics));
+  const calls:unknown[]=[];
+  const mapBackend={...backend,async preflight(){},async analyze(ctx:any){if(ctx.operator!=='query')return backend.analyze!(ctx);const intent=ctx.args[0].data;calls.push(intent);if(intent.bad)throw new DraftSyntaxError('input rejected',ctx.span);return {data:{columns:[{name:'n',type:'Int',nullable:false}]}};}};
+  const failedMapIndex=await checkDesign('data x = map([query({limit:5,bad:True})],(n,i)=>({dependent:query({limit:5,index:i}),independent:query({limit:5,kind:"independent"})}));','fixture.dari',mapBackend);
+  assert(failedMapIndex.diagnostics.some(d=>d.message==='input rejected'),JSON.stringify(failedMapIndex.diagnostics));
+  assert(!failedMapIndex.diagnostics.some(d=>d.message.includes('query parameters must be known')),JSON.stringify(failedMapIndex.diagnostics));
+  assert.deepEqual(calls,[{limit:5,bad:true},{limit:5,kind:'independent'}]);
  }
  const intents:unknown[]=[];
  const modelFailure=new Error('model transport failed');
