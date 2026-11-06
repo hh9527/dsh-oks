@@ -214,6 +214,11 @@ try{
  const tableSource='data x = table([{first:{x:1},second:[1]}],{kind:"example"});';
  const tableErrors=await checkDesign(tableSource,'fixture.dari',backend);
  for(const name of ['first','second'])assert(tableErrors.diagnostics.some(d=>d.message.includes('table column '+name)),JSON.stringify(tableErrors.diagnostics));
+ const partialTable=box({kind:'array',element:{kind:'record',fields:{failed:{kind:'error'},invalid:{kind:'record',fields:{},nullable:false}},nullable:false},length:1,nullable:false});
+ await assert.rejects(runTyped({operator:'typed_table',args:[{data:partialTable}],statement,span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL execution');}} as any,true),error=>error instanceof DraftSyntaxError&&error.diagnostics.some(d=>d.message.includes('table column invalid'))&&!error.diagnostics.some(d=>d.message.includes('table column failed')));
+ const failedTable=box({kind:'array',element:{kind:'record',fields:{failed:{kind:'error'}},nullable:false},length:1,nullable:false});
+ await assert.rejects(runTyped({operator:'typed_table',args:[{data:failedTable}],statement,span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL execution');}} as any,true),UpstreamTypeUnavailable);
+ await assert.rejects(runTyped({operator:'typed_table',args:[{data:box({kind:'array',element:{kind:'error'},length:1,nullable:false})}],statement,span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL execution');}} as any,true),UpstreamTypeUnavailable);
  assert.equal(tableErrors.diagnostics.find(d=>d.message.includes('table column first'))?.span.start.offset,tableSource.indexOf('{x:1}'));
  assert.equal(tableErrors.diagnostics.find(d=>d.message.includes('table column second'))?.span.start.offset,tableSource.indexOf('[1]'));
  const unionSource='data a = table([{first:1,second:1}],{kind:"example"}); data b = table([{first:"x",second:True}],{kind:"example"}); data x = union_all([a,b]);';

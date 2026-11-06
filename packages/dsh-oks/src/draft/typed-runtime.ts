@@ -19,13 +19,16 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
   const firstRow=rowsExpr?.kind==='array'?rowsExpr.values[0]:undefined;
   if(!check&&!known(value))throw new DraftSyntaxError('table rows must be known given/example values',ctx.span);
   const type=typeOf(value,ctx.args[0]?.logicalType as Ty|undefined);
+  if(check&&(type.kind==='error'||type.kind==='array'&&type.element.kind==='error'))throw new UpstreamTypeUnavailable();
   if(type.kind!=='array'||type.element.kind!=='record'||!Object.keys(type.element.fields).length)throw new DraftSyntaxError('table requires a nonempty array of scalar records',ctx.span);
   const diagnostics=ctx.diagnostics?.scope()??new DiagnosticCollector(),columns:SqlColumn[]=[];
   for(const [name,t] of Object.entries(type.element.fields)){
+   if(check&&t.kind==='error')continue;
    if(t.kind!=='scalar'){const message='table column '+name+' requires an inferred scalar type',span=firstRow?.kind==='object'?firstRow.entries.find(e=>e.key===name)?.value.span??ctx.span:ctx.span;if(!check)throw new DraftSyntaxError(message,span);diagnostics.report({stage:'type',message,span});}
    else columns.push({name,type:t.name,nullable:t.nullable});
   }
   const errors=diagnostics.list();if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);
+  if(check&&hasError(value))throw new UpstreamTypeUnavailable();
   const logicalType:Ty={kind:'table',columns,minRows:type.length,maxRows:type.length};
   const rows=unbox(value);if(known(value))validateTypedRows(rows,columns);
   return {data:check?mark({columns,rows:UNKNOWN,truncated:UNKNOWN},logicalType):{columns,rows,truncated:false},logicalType};
