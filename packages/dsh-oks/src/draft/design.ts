@@ -200,7 +200,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
       }
       const findings=backend.checkCall?.(ctx,value=>!unknown(value))??[];
       diagnostics.reportAll(findings);
-      if(findings.some(d=>d.severity!=='warning'))return UNKNOWN;
+      if(findings.some(d=>d.severity!=='warning'))return box({kind:'error'});
       if(e.operator==='render_figure'&&isRecord(args[1])){
         try{figureShape={kind:'figure',data:typeOf(args[1].data),...(args[1].nodes===undefined?{}:{nodes:typeOf(args[1].nodes)})};}catch{}
       }

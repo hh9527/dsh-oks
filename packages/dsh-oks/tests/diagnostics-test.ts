@@ -120,6 +120,11 @@ try{
  assert.equal(preflightDag.diagnostics.length,2,JSON.stringify(preflightDag.diagnostics));
  assert.deepEqual(preflightDag.diagnostics.map(d=>d.asset),['bad','independent']);
  assert(preflightDag.checkedBindings.some(b=>b.name==='dependent'&&!b.checked));
+ const dynamicValidation=await checkDesign('data bad = data(1,{kind:concat("b","ad")}); data dependent = bad + 1; data independent = "x"+1;','fixture.dari',backend);
+ assert.equal(dynamicValidation.diagnostics.filter(d=>d.asset==='bad').length,1,JSON.stringify(dynamicValidation.diagnostics));
+ assert(dynamicValidation.diagnostics.some(d=>d.asset==='independent'&&d.message.includes('Arithmetic requires numbers')),JSON.stringify(dynamicValidation.diagnostics));
+ assert(!dynamicValidation.diagnostics.some(d=>d.asset==='dependent'),JSON.stringify(dynamicValidation.diagnostics));
+ assert(dynamicValidation.checkedBindings.some(b=>b.name==='dependent'&&!b.checked));
  const invalidTimeContext=await checkDesign('data x = time_windows(1,{unit:"day",count:1,mode:"current"});','fixture.dari',backend);
  assert(invalidTimeContext.diagnostics.some(d=>d.message.includes('time windows requires safe integer context utc.epochMillis')),JSON.stringify(invalidTimeContext.diagnostics));
  const invalidTimeZone=await checkDesign('data x = time_windows({utc:{epochMillis:0},tz:{client:{id:"invalid/timezone"}}},{unit:"day",count:1,mode:"current"});','fixture.dari',backend);
