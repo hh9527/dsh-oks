@@ -56,17 +56,20 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
     if(!/^[\x00-\x7f]+$/.test(match[0]))identifierDiagnostics.report({file,stage:'syntax',message:'Identifiers must use ASCII letters, digits, _ or $',span:location(start,at)});
     return match[0];
   };
-  const string=()=>{
+  const stringToken=()=>{
     const start=at++;while(at<source.length&&source[at]!=='"'){if(source[at]==='\\')at++;at++;}
     if(at>=source.length)fail('Unterminated JSON string',start);at++;
-    try{return JSON.parse(source.slice(start,at)) as string;}catch{return fail('Invalid JSON string',start,at);}
+    return {start,text:source.slice(start,at)};
+  };
+  const string=()=>{
+    const token=stringToken();try{return JSON.parse(token.text) as string;}catch{return fail('Invalid JSON string',token.start,at);}
   };
   /** Delimiters inside strings, comments, object literals and lambdas do not end an expression. */
   const expression=(stops:Set<string>,allowEmpty=false)=>{
     whitespace();const start=at,stack:{symbol:string;offset:number}[]=[];let possibleDeclaration=false;
     while(at<source.length){
       const ch=source[at];
-      if(ch==='"'){string();continue;}
+      if(ch==='"'){stringToken();continue;}
       if(source.startsWith('//',at)){while(at<source.length&&source[at]!=='\n')at++;continue;}
       if(source.startsWith('/*',at)){const end=source.indexOf('*/',at+2);if(end<0)fail('Unterminated block comment');at=end+2;continue;}
       if(!stack.length&&stops.has(ch))break;

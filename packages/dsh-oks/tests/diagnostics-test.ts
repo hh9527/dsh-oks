@@ -314,6 +314,12 @@ try{
   const result=await checkDesign(text,'fixture.dari',backend);
   assert.deepEqual(result.diagnostics.map(d=>d.span.start.offset),[text.indexOf('* 2'),text.indexOf('* 4')],JSON.stringify(result.diagnostics));
  }
+ for(const text of ['data bad = "\\q"; data later = 1+*2;','report bad = tree! { Report [p ["\\q"]] }; data later = 1+*2;']){
+  const result=await checkDesign(text,'fixture.dari',backend);
+  assert.deepEqual(result.diagnostics.map(d=>d.message),['Invalid JSON string','Expected an expression'],JSON.stringify(result.diagnostics));
+  assert.equal(result.diagnostics[0].span.start.offset,text.indexOf('"\\q"'));
+  assert.equal(result.diagnostics[1].span.start.offset,text.lastIndexOf('*'));
+ }
  for(const tail of ['data second = "unterminated;','data second = 1 /* unterminated;']){
   const result=await checkDesign('data first = 1 + * 2; '+tail,'fixture.dari',backend);
   assert.equal(result.diagnostics.length,2,JSON.stringify(result.diagnostics));
