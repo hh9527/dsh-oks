@@ -179,6 +179,9 @@ try{
  const missingJoinSource=await checkDesign('data a = table([{n:1}],{kind:"example"}); data x = select({from:{s:a},joins:[{kind:"inner",on:r=>r.s.absent==r.t.value}],fields:r=>({known:r.s.missing,unknown:r.t.any,independent:"x"+1})});','fixture.dari',backend);
  for(const expected of ['join requires kind,source,on','Unknown field absent','Unknown field missing','Arithmetic requires numbers'])assert(missingJoinSource.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(missingJoinSource.diagnostics));
  assert(!missingJoinSource.diagnostics.some(d=>d.message.includes('Unknown field t')),JSON.stringify(missingJoinSource.diagnostics));
+ const missingSourcePredicate=await checkDesign('data a = table([{n:1}],{kind:"example"}); data x = select({from:{s:a},joins:[{kind:"inner",on:r=>123}],fields:r=>({n:r.s.n})});','fixture.dari',backend);
+ assert(missingSourcePredicate.diagnostics.some(d=>d.message==='join requires kind,source,on'),JSON.stringify(missingSourcePredicate.diagnostics));
+ assert(missingSourcePredicate.diagnostics.some(d=>d.message.startsWith('Predicate must return Bool')),JSON.stringify(missingSourcePredicate.diagnostics));
  assert(invalidGroup.checkedBindings.some(b=>b.name==='x'&&!b.checked));
  assert.equal(argumentsResult.diagnostics.filter(d=>d.message==='concat requires String').length,2,JSON.stringify(argumentsResult.diagnostics));
  assert.equal(argumentsResult.diagnostics.filter(d=>d.message.startsWith('round requires')).length,2,JSON.stringify(argumentsResult.diagnostics));
