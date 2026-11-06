@@ -226,6 +226,15 @@ try{
  const argumentsSource='data a = concat(1,True); data b = round("x",20); data c = map_opt(1,n=>({dependent:n.missing,independent:"x"+1}));';
  const argumentsResult=await checkDesign(argumentsSource,'fixture.dari',backend);
  const invalidFieldsAndLimit=await checkDesign('data facts = table([{n:1}],{kind:"example"}); data x = select({from:{s:facts},fields:r=>r.s.missing,limit:-1});','fixture.dari',backend);
+ const syntaxSource='data first = 1 + * 2;\ndata dependent = first + 1;\ndata second = 3 + * 4;';
+ const syntaxResult=await checkDesign(syntaxSource,'fixture.dari',backend);
+ assert.equal(syntaxResult.diagnostics.length,2,JSON.stringify(syntaxResult.diagnostics));
+ assert.deepEqual(syntaxResult.diagnostics.map(d=>d.span.start.offset),[syntaxSource.indexOf('*'),syntaxSource.lastIndexOf('*')]);
+ assert(syntaxResult.diagnostics.every(d=>d.message==='Expected an expression'),JSON.stringify(syntaxResult.diagnostics));
+ const uncertain=await checkDesign('data first = 1 + * 2\ndata second = 3 + * 4;','fixture.dari',backend);
+ assert.equal(uncertain.diagnostics.length,1,JSON.stringify(uncertain.diagnostics));
+ const unclosed=await checkDesign('data first = (1 + * 2; data second = 3 + * 4;','fixture.dari',backend);
+ assert.equal(unclosed.diagnostics.length,1,JSON.stringify(unclosed.diagnostics));
  for(const [joins,message] of [['42','joins must be an array'],['[42,True]','join must be an object']] as const){
   const result=await checkDesign(`data facts = table([{n:1}],{kind:"example"}); data x = select({from:{s:facts},joins:${joins},fields:r=>({missing:r.unknown.n,bad:"x"+1}),limit:-1});`,'fixture.dari',backend);
   assert.equal(result.diagnostics.filter(d=>d.message===message).length,joins==='42'?1:2,JSON.stringify(result.diagnostics));
