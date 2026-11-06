@@ -28,9 +28,20 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
   };
   if(!check&&!known(value))throw new DraftSyntaxError('table rows must be known given/example values',ctx.span);
   const diagnostics=ctx.diagnostics?.scope()??new DiagnosticCollector();
-  let type:Ty|undefined;
+  let type:Ty|undefined,rowUnavailable=false;
   if(check&&Array.isArray(rows)&&rows.length>1){
-   const rowTypes=rows.map(row=>typeOf(row));
+   const rowTypes=rows.map((row,index):Ty=>{
+    if(!isRecord(row)||isBox(row))return typeOf(row);
+    const fields:Record<string,Ty>={};
+    for(const [name,cell] of Object.entries(row))try{fields[name]=typeOf(cell);}catch(error){
+     if(error instanceof UpstreamTypeUnavailable){rowUnavailable=true;fields[name]={kind:'error'};continue;}
+     if(!(error instanceof TypeRuleError))throw error;
+     const rowExpr=rowsExpr?.kind==='array'?rowsExpr.values[index]:undefined;
+     const span=rowExpr?.kind==='object'?rowExpr.entries.find(e=>e.key===name)?.value.span??ctx.span:ctx.span;
+     diagnostics.report({stage:'type',message:'table column '+name+': '+error.message,span});fields[name]={kind:'error'};
+    }
+    return {kind:'record',fields,nullable:false};
+   });
    const first=rowTypes[0];
    if(first.kind==='record'&&rowTypes.every(row=>row.kind==='record'&&Object.keys(row.fields).join('\0')===Object.keys(first.fields).join('\0'))){
     const fields={...first.fields};
@@ -56,7 +67,7 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
    else columns.push({name,type:t.name,nullable:t.nullable});
   }
   const errors=diagnostics.list();if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);
-  if(check&&hasError(value))throw new UpstreamTypeUnavailable();
+  if(check&&(rowUnavailable||hasError(value)))throw new UpstreamTypeUnavailable();
   const logicalType:Ty={kind:'table',columns,minRows:type.length,maxRows:type.length};
   const materializedRows=unbox(value);if(known(value))validateTypedRows(materializedRows,columns);
   return {data:check?mark({columns,rows:UNKNOWN,truncated:UNKNOWN},logicalType):{columns,rows:materializedRows,truncated:false},logicalType};

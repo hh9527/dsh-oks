@@ -233,6 +233,10 @@ try{
  const mixedTable=await checkDesign(mixedTableSource,'fixture.dari',backend);
  assert.equal(mixedTable.diagnostics.find(d=>d.message.includes('table column a:'))?.span.start.offset,mixedTableSource.indexOf('"x"'),JSON.stringify(mixedTable.diagnostics));
  assert.equal(mixedTable.diagnostics.find(d=>d.message.includes('table column b:'))?.span.start.offset,mixedTableSource.indexOf('True'),JSON.stringify(mixedTable.diagnostics));
+ const nestedMixedTable='data x = table([{a:[1,"x"],b:1},{a:[1,2],b:True}],{kind:"example"});';
+ const nestedMixedResult=await checkDesign(nestedMixedTable,'fixture.dari',backend);
+ assert(nestedMixedResult.diagnostics.some(d=>d.message.includes('table column a:')),JSON.stringify(nestedMixedResult.diagnostics));
+ assert(nestedMixedResult.diagnostics.some(d=>d.message.includes('table column b:')),JSON.stringify(nestedMixedResult.diagnostics));
  const unionSource='data a = table([{first:1,second:1}],{kind:"example"}); data b = table([{first:"x",second:True}],{kind:"example"}); data x = union_all([a,b]);';
  const unionErrors=await checkDesign(unionSource,'fixture.dari',backend);
  for(const name of ['first','second'])assert(unionErrors.diagnostics.some(d=>d.message.includes('union_all column '+name)),JSON.stringify(unionErrors.diagnostics));
