@@ -75,6 +75,13 @@ try{
  const internalError=new Error('internal failure');
  await assert.rejects(checkDesign('data x = 1 + 2;','fixture.dari',{...backend,async analyze(){throw internalError;}}),e=>e===internalError);
  await assert.rejects(checkDesign('data x = 1;','fixture.dari',{...backend,async preflight(){throw internalError;}}),e=>e===internalError);
+ const cancellation=new AbortController(),cancelReason=new Error('cancelled during analysis');
+ const cancelledBackend={...backend,async preflight(){},async analyze(){cancellation.abort(cancelReason);return {data:{columns:[{name:'n',type:'Int',nullable:false}]}};}};
+ await assert.rejects(checkDesign('data x = query({limit:5});','fixture.dari',cancelledBackend,cancellation.signal),e=>e===cancelReason);
+ await assert.rejects(checkDesign('','fixture.dari',backend,cancellation.signal),e=>e===cancelReason);
+ const slowCancellation=new AbortController(),slowReason=new Error('cancelled while waiting');
+ const slowBackend={...backend,async preflight(){},async analyze(){setTimeout(()=>slowCancellation.abort(slowReason),5);return await new Promise<never>(()=>{});}};
+ await assert.rejects(Promise.race([checkDesign('data x = query({limit:5});','fixture.dari',slowBackend,slowCancellation.signal),new Promise((_,reject)=>setTimeout(()=>reject(new Error('cancellation did not finish')),500))]),e=>e===slowReason);
  for(const reverse of [false,true]){
   const concurrent={...backend,async preflight(){},async analyze(ctx:any){
    if(ctx.operator!=='query')throw new Error('Unexpected analysis '+ctx.operator);

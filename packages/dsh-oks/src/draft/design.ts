@@ -56,6 +56,7 @@ export type CheckedBinding = {
 
 /** Evaluate only design values. Never acquire rows or execute postprocessing on invented rows. */
 export async function checkDesign(source: string, file: string, backend: DraftBackend, signal?: AbortSignal, options:{answer?:string;requireSelection?:boolean}={}) {
+  signal?.throwIfAborted();
   const diagnostics = new DiagnosticCollector();
   const warnings: SourceDiagnostic[] = [];
   let reports:string[]=[]; let answer:string|undefined;
@@ -91,11 +92,19 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
   else if(options.requireSelection&&reports.length>1)diagnostics.report({file,stage:'validation',message:`Select answer from: ${reports.join(', ')}`,span:doc.pipeline});
   diagnostics.reportAll((doc.diagnostics??[]).filter(d=>d.severity==='warning'));
   try { await backend.preflight(doc,signal,{validateQueries:false}); } catch (error) { if(!(error instanceof DraftSyntaxError))throw error;addError(error,doc.pipeline); }
+  signal?.throwIfAborted();
   const analyze=backend.analyze;
   if(!analyze)throw new Error('Backend does not provide an analysis implementation');
   const bindings = new Map<string,unknown>();
   const settle=async<T>(items:readonly {span:Expr['span'];run:()=>Promise<T>}[]):Promise<T[]>=>{
-    const results=await Promise.allSettled(items.map(item=>item.run()));
+    signal?.throwIfAborted();
+    const pending=Promise.allSettled(items.map(item=>item.run()));
+    signal?.throwIfAborted();
+    let onAbort:(()=>void)|undefined;
+    const cancelled=signal?new Promise<never>((_,reject)=>{onAbort=()=>reject(signal.reason);signal.addEventListener('abort',onAbort,{once:true});}):undefined;
+    let results:PromiseSettledResult<T>[];
+    try{results=await (cancelled?Promise.race([pending,cancelled]):pending);}finally{if(onAbort)signal!.removeEventListener('abort',onAbort);}
+    signal?.throwIfAborted();
     const collected=new DiagnosticCollector();let unavailable:UpstreamTypeUnavailable|undefined;
     for(const [index,result] of results.entries())if(result.status==='rejected'){
       const error=result.reason;
@@ -157,7 +166,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         asset:typeof args[0] === 'string'?doc.assets.get(args[0]):undefined};
       if(hasError(args)&&!['typed_value','relational','relational_one'].includes(e.operator))throw new UpstreamTypeUnavailable();
       if(['typed_value','relational','relational_one','table_union','typed_table'].includes(e.operator)){
-        const computed=await analyze(ctx);
+        const [computed]=await settle([{span:e.span,run:()=>analyze(ctx)}]);
         if(e.operator!=='typed_value'){const t=computed.logicalType as Ty;queries.push({binding,at:e.span.start,type:show(t),...(t.kind==='table'?{columns:t.columns}:{}),...(e.operator==='relational_one'&&(computed.evidence as {guard?:boolean})?.guard?{guard:'at most one row checked at runtime'}:{}),result:{values:'runtime',type:'checked'}});}
         return computed.data;
       }
@@ -168,7 +177,8 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         for(const values of candidates){
           try{
             if(unknown(values))throw new DraftSyntaxError('query parameters must be known during checking; business values cannot determine a remote query',e.span);
-            const computed=await analyze({...ctx,args:values.map(data=>({data:unbox(data),sources:[]}))});
+            const [computed]=await settle([{span:e.span,run:()=>analyze({...ctx,args:values.map(data=>({data:unbox(data),sources:[]}))})}]);
+            signal?.throwIfAborted();
             const columns=(computed.data as {columns:unknown}).columns;
             const t=typeOf({columns,rows:UNKNOWN,truncated:UNKNOWN});schema=schema?common(schema,t):t;
           }catch(error){
@@ -192,7 +202,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         return UNKNOWN;
       }
       if (!['data','context','time_windows','query'].includes(e.operator)) throw new Error('Operator is not available during checking');
-      const computed = await analyze({...ctx,args:ctx.args.map(a=>({...a,data:unknown(a.data)?a.data:unbox(a.data)}))}).catch(error=>{
+      const [computed] = await settle([{span:e.span,run:()=>analyze({...ctx,args:ctx.args.map(a=>({...a,data:unknown(a.data)?a.data:unbox(a.data)}))})}]).catch(error=>{
         if(signal?.aborted || error instanceof DraftSyntaxError) throw error;
         throw new DraftSyntaxError(error instanceof Error?error.message:String(error),e.span);
       });
@@ -224,6 +234,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
     catch (error) { if(error instanceof UpstreamTypeUnavailable)upstreamUnavailable=true;else if(error instanceof DraftSyntaxError||error instanceof TypeRuleError)addError(error,statement.span);else throw error; if (statement.kind === 'binding') bindings.set(binding,box({kind:'error'})); }
   }
   const unique = diagnostics.list();
+  signal?.throwIfAborted();
   warnings.push(...unique.filter(d=>d.severity==='warning'));
   const errors=unique.filter(d=>d.severity!=='warning');
   const unresolved = upstreamUnavailable||deferred.some(d=>d.operator==='query');
