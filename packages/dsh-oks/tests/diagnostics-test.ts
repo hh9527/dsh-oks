@@ -289,6 +289,10 @@ try{
  assert.equal(budgetResult.diagnostics.length,2,JSON.stringify(budgetResult.diagnostics));
  assert(budgetResult.diagnostics.some(d=>d.message==='Report exceeds 2048 template elements'));
  assert(!budgetResult.diagnostics.some(d=>d.span.start.offset===overBudget.lastIndexOf('*4')));
+ const declarationBudget='data first = 1+*2; '+Array.from({length:512},(_,i)=>`data item${i} = 1;`).join(' ');
+ const declarationBudgetResult=await checkDesign(declarationBudget,'fixture.dari',backend);
+ assert(declarationBudgetResult.diagnostics.some(d=>d.message==='Expected an expression'),JSON.stringify(declarationBudgetResult.diagnostics));
+ assert(declarationBudgetResult.diagnostics.some(d=>d.message==='DARI is limited to 512 declarations'),JSON.stringify(declarationBudgetResult.diagnostics));
  const uncertain=await checkDesign('data first = 1 + * 2\ndata second = 3 + * 4;','fixture.dari',backend);
  assert.equal(uncertain.diagnostics.length,1,JSON.stringify(uncertain.diagnostics));
  const uncertainComment=await checkDesign('data first = 1 + * 2\ndata /* comment */ second = 3 + * 4;','fixture.dari',backend);
@@ -308,6 +312,10 @@ try{
   const result=await checkDesign('data first = 1 + * 2; '+tail,'fixture.dari',backend);
   assert.equal(result.diagnostics.length,2,JSON.stringify(result.diagnostics));
   assert(result.diagnostics[1].message.startsWith('Unterminated'),JSON.stringify(result.diagnostics));
+ }
+ for(const text of ['data first = 1+*2; /* unterminated','data first = 1+*2; data valid = 1; /* unterminated']){
+  const result=await checkDesign(text,'fixture.dari',backend);
+  assert.deepEqual(result.diagnostics.map(d=>d.message),['Expected an expression','Unterminated block comment'],JSON.stringify(result.diagnostics));
  }
  for(const [joins,message] of [['42','joins must be an array'],['[42,True]','join must be an object']] as const){
   const result=await checkDesign(`data facts = table([{n:1}],{kind:"example"}); data x = select({from:{s:facts},joins:${joins},fields:r=>({missing:r.unknown.n,bad:"x"+1}),limit:-1});`,'fixture.dari',backend);

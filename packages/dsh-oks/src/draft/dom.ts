@@ -27,7 +27,11 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
   const fail=(message:string,start=at,end=Math.min(source.length,start+1),details:Partial<SourceDiagnostic>={}):never=>{
     const span=location(start,end);throw new DraftSyntaxError(message,span,[{...details,file,stage:'syntax',message,span}]);
   };
-  const limit=(message:string,start=at):never=>{const span=location(start,Math.min(source.length,start+1));throw new ParserLimitError(message,span,[{file,stage:'syntax',message,span}]);};
+  const limit=(message:string,start=at):never=>{
+    const span=location(start,Math.min(source.length,start+1)),findings=new DiagnosticCollector();
+    findings.reportAll(syntaxDiagnostics.list());findings.reportAll(identifierDiagnostics.list());findings.report({file,stage:'syntax',message,span});
+    throw new ParserLimitError(message,span,findings.list());
+  };
   if(Buffer.byteLength(source)>256*1024)limit('Report exceeds 256 KiB',0);
   const whitespace=()=>{
     while(at<source.length){
@@ -35,6 +39,14 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
       if(source.startsWith('//',at)){while(at<source.length&&source[at]!=='\n')at++;continue;}
       if(source.startsWith('/*',at)){const end=source.indexOf('*/',at+2);if(end<0)fail('Unterminated block comment');at=end+2;continue;}
       break;
+    }
+  };
+  const topLevelWhitespace=()=>{
+    try{whitespace();}catch(error){
+      if(!(error instanceof DraftSyntaxError)||!syntaxDiagnostics.hasErrors()&&!identifierDiagnostics.hasErrors())throw error;
+      syntaxDiagnostics.reportAll(error.diagnostics.length?error.diagnostics:[{file,stage:'syntax',message:error.message,span:error.span}]);
+      syntaxDiagnostics.reportAll(identifierDiagnostics.list());
+      const findings=syntaxDiagnostics.list();throw new DraftSyntaxError(findings[0].message,findings[0].span,findings);
     }
   };
   const eat=(text:string)=>{whitespace();if(!source.startsWith(text,at))fail('Expected '+JSON.stringify(text),at,Math.min(source.length,at+1),{expected:text,found:source[at]??'end of input'});at+=text.length;};
@@ -188,7 +200,7 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
     childSpans.set(result,spans);return result;
   };
   const reserved=new Set(['tree','if','else','let','Some','data','figure','report','export','True','False','None','true','false','null','query','context','select','select_one','table','map','union_all','time_windows','is_some','is_none','map_opt','round','case_when','lookup','concat','to_datetime_utc','to_epoch_millis','asc','desc','count','sum','avg','min','max']);
-  whitespace();while(at<source.length){
+  topLevelWhitespace();while(at<source.length){
     if(declarations.size>=512)limit('DARI is limited to 512 declarations');
     const declarationStart=at;
     const savedDefinitions=new Map(definitions),savedDeclarations=new Map(declarations),savedFigures=new Map(figures);
@@ -236,7 +248,7 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
       nodes.length=savedNodes;references.length=savedReferences;templates.length=savedTemplates;scopes.length=savedScopes;sequence=savedSequence;title=savedTitle;
       if(recoverableBinding&&recoverableKind&&recoverableEnd!==undefined&&(error instanceof UnavailableSyntaxDependency||error instanceof DraftSyntaxError&&!(error instanceof ParserLimitError)&&error.message!=='Expression nesting exceeds 128')){
         if(error instanceof DraftSyntaxError)syntaxDiagnostics.reportAll(error.diagnostics.length?error.diagnostics:[{file,stage:'syntax',message:error.message,span:error.span}]);
-        const failedSpan=location(declarationStart,recoverableEnd+1);unavailableDefinitions.set(recoverableBinding,failedSpan);if(recoverableKind==='data')definitions.set(recoverableBinding,{k:'error',s:failedSpan});declarations.set(recoverableBinding,recoverableKind);at=recoverableEnd+1;whitespace();continue;
+        const failedSpan=location(declarationStart,recoverableEnd+1);unavailableDefinitions.set(recoverableBinding,failedSpan);if(recoverableKind==='data')definitions.set(recoverableBinding,{k:'error',s:failedSpan});declarations.set(recoverableBinding,recoverableKind);at=recoverableEnd+1;topLevelWhitespace();continue;
       }
       if(error instanceof DraftSyntaxError&&syntaxDiagnostics.hasErrors()){
         syntaxDiagnostics.reportAll(error.diagnostics.length?error.diagnostics:[{file,stage:'syntax',message:error.message,span:error.span}]);
@@ -246,7 +258,7 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
       if(error instanceof UnavailableSyntaxDependency&&syntaxDiagnostics.hasErrors()){const findings=syntaxDiagnostics.list();throw new DraftSyntaxError(findings[0].message,findings[0].span,findings);}
       throw error;
     }
-    whitespace();
+    topLevelWhitespace();
   }
   if(!declarations.size)fail('Expected data, figure or report declaration',0,Math.min(1,source.length));
   const identifierErrors=identifierDiagnostics.list();
