@@ -52,7 +52,10 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
      else if(Object.keys(row.fields).join('\0')!==Object.keys(first.fields).join('\0'))diagnostics.report({stage:'type',message:'table rows must have the same columns in the same order',span:rowExpr?.span??ctx.span});
      if(row.kind!=='record')continue;
      for(const [name,current] of Object.entries(row.fields)){
-     if(!Object.hasOwn(fields,name))continue;
+     if(!Object.hasOwn(fields,name)){
+      if(current.kind!=='scalar'&&current.kind!=='null'&&current.kind!=='error')diagnostics.report({stage:'type',message:'table column '+name+' requires an inferred scalar type',span:rowExpr?.kind==='object'?rowExpr.entries.find(e=>e.key===name)?.value.span??ctx.span:ctx.span});
+      continue;
+     }
      if(fields[name].kind==='error'||current.kind==='error'){fields[name]={kind:'error'};continue;}
      try{fields[name]=common(fields[name],current);}catch(error){
       if(!(error instanceof TypeRuleError))throw error;

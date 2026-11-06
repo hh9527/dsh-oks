@@ -249,6 +249,10 @@ try{
  const mismatchedRows='data x = table([{a:[1,"x"],b:1},{a:[1,2],b:True,c:2}],{kind:"example"});';
  const mismatchedResult=await checkDesign(mismatchedRows,'fixture.dari',backend);
  for(const expected of ['table column a:','table column b:','table rows must have the same columns'])assert(mismatchedResult.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(mismatchedResult.diagnostics));
+ const extraInvalidColumn='data x = table([{a:1},{a:2,extra:{nested:1}}],{kind:"example"});';
+ const extraInvalidResult=await checkDesign(extraInvalidColumn,'fixture.dari',backend);
+ assert(extraInvalidResult.diagnostics.some(d=>d.message.includes('table rows must have the same columns')),JSON.stringify(extraInvalidResult.diagnostics));
+ assert.equal(extraInvalidResult.diagnostics.find(d=>d.message.includes('table column extra'))?.span.start.offset,extraInvalidColumn.indexOf('{nested:1}'),JSON.stringify(extraInvalidResult.diagnostics));
  const invalidFirstRow='data x = table([1,{a:[1,"x"],b:1},{a:[1,2],b:True}],{kind:"example"});';
  const invalidFirstResult=await checkDesign(invalidFirstRow,'fixture.dari',backend);
  for(const expected of ['table rows must be records','table column a:','table column b:'])assert(invalidFirstResult.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(invalidFirstResult.diagnostics));
