@@ -219,11 +219,16 @@ try{
  const failedTable=box({kind:'array',element:{kind:'record',fields:{failed:{kind:'error'}},nullable:false},length:1,nullable:false});
  await assert.rejects(runTyped({operator:'typed_table',args:[{data:failedTable}],statement,span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL execution');}} as any,true),UpstreamTypeUnavailable);
  await assert.rejects(runTyped({operator:'typed_table',args:[{data:box({kind:'array',element:{kind:'error'},length:1,nullable:false})}],statement,span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL execution');}} as any,true),UpstreamTypeUnavailable);
+ for(const unknownRow of [UNKNOWN,box({kind:'error'})])await assert.rejects(runTyped({operator:'typed_table',args:[{data:[unknownRow,{invalid:{x:1}}]}],statement,span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL execution');}} as any,true),error=>error instanceof DraftSyntaxError&&error.diagnostics.some(d=>d.message.includes('table column invalid'))&&!error.diagnostics.some(d=>d.message.includes('table rows must be records')));
  const partialTableDesign=await checkDesign('data bad = 1+"x"; data x = table([{failed:bad,invalid:{x:1}}],{kind:"example"});','fixture.dari',backend);
  assert(partialTableDesign.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(partialTableDesign.diagnostics));
  assert(partialTableDesign.diagnostics.some(d=>d.message.includes('table column invalid')),JSON.stringify(partialTableDesign.diagnostics));
  assert(!partialTableDesign.diagnostics.some(d=>d.message.includes('table column failed')),JSON.stringify(partialTableDesign.diagnostics));
  assert(partialTableDesign.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ const failedRowDesign=await checkDesign('data bad = 1+"x"; data x = table([bad,{invalid:{x:1}}],{kind:"example"});','fixture.dari',backend);
+ assert(failedRowDesign.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(failedRowDesign.diagnostics));
+ assert(failedRowDesign.diagnostics.some(d=>d.message.includes('table column invalid')),JSON.stringify(failedRowDesign.diagnostics));
+ assert(!failedRowDesign.diagnostics.some(d=>d.message.includes('table rows must be records')),JSON.stringify(failedRowDesign.diagnostics));
  assert.equal(tableErrors.diagnostics.find(d=>d.message.includes('table column first'))?.span.start.offset,tableSource.indexOf('{x:1}'));
  assert.equal(tableErrors.diagnostics.find(d=>d.message.includes('table column second'))?.span.start.offset,tableSource.indexOf('[1]'));
  const laterTableSource='data x = table([{bad:None},{bad:{nested:1}}],{kind:"example"});';

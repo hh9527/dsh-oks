@@ -31,7 +31,7 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
   let type:Ty|undefined,rowUnavailable=false;
   if(check&&Array.isArray(rows)&&rows.length>1){
    const rowTypes=rows.map((row,index):Ty=>{
-    if(!isRecord(row)||isBox(row))return typeOf(row);
+    if(!isRecord(row)||isBox(row))try{const type=typeOf(row);if(type.kind==='error')rowUnavailable=true;return type;}catch(error){if(!(error instanceof UpstreamTypeUnavailable))throw error;rowUnavailable=true;return {kind:'error'};}
     const fields:Record<string,Ty>={};
     for(const [name,cell] of Object.entries(row))try{fields[name]=typeOf(cell);}catch(error){
      if(error instanceof UpstreamTypeUnavailable){rowUnavailable=true;fields[name]={kind:'error'};continue;}
@@ -47,6 +47,7 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
     const fields={...first.fields};
     for(const [index,row] of rowTypes.entries())if(index!==firstIndex){
      const rowExpr=rowsExpr?.kind==='array'?rowsExpr.values[index]:undefined;
+     if(row.kind==='error')continue;
      if(row.kind!=='record')diagnostics.report({stage:'type',message:'table rows must be records',span:rowExpr?.span??ctx.span});
      else if(Object.keys(row.fields).join('\0')!==Object.keys(first.fields).join('\0'))diagnostics.report({stage:'type',message:'table rows must have the same columns in the same order',span:rowExpr?.span??ctx.span});
      if(row.kind!=='record')continue;
@@ -63,6 +64,7 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
     type={kind:'array',element:{...first,fields},length:rows.length,nullable:false};
    }
   }
+  if(!type&&rowUnavailable){const errors=diagnostics.list();if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);throw new UpstreamTypeUnavailable();}
   type??=typeOf(value,ctx.args[0]?.logicalType as Ty|undefined);
   if(check&&(type.kind==='error'||type.kind==='array'&&type.element.kind==='error'))throw new UpstreamTypeUnavailable();
   if(type.kind!=='array'||type.element.kind!=='record'||!Object.keys(type.element.fields).length)throw new DraftSyntaxError('table requires a nonempty array of scalar records',ctx.span);
