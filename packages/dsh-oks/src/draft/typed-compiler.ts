@@ -65,7 +65,7 @@ export class TypedCompiler{
    return {type:optional(out.type),known:input.known&&(input.value===null||out.known),...(input.known?{value:input.value===null?null:out.value}:{})};
   }
   if(n.k==='lit'){const type=typeOf(n.v);this.validNumber(n.v,type,n);return {type,known:true,value:n.v};}
-  if(n.k==='ref'){if(!Object.hasOwn(env,n.name!))fail(n,'Unknown binding '+n.name);return env[n.name!];}
+  if(n.k==='ref'){if(!Object.hasOwn(env,n.name!))return this.errorValue(n,'Unknown binding '+n.name);return env[n.name!];}
   if(n.k==='object'){const fields=Object.fromEntries(n.entries!.map(e=>[e.key,this.compile(e.value,env)]));const k=Object.values(fields).every(v=>v.known);return {type:record(Object.fromEntries(Object.entries(fields).map(([k,v])=>[k,v.type]))),known:k,fields,...(k?{value:Object.fromEntries(Object.entries(fields).map(([k,v])=>[k,v.value]))}:{})};}
   if(n.k==='array'){
    const items=n.a!.map(x=>this.compile(x,env));let element:Ty={kind:'never'},invalid=false;
@@ -82,31 +82,31 @@ export class TypedCompiler{
   if(n.k==='get'){
    const input=this.compile(n.input!,env),t=input.type;
    if(t.kind==='error')return input;
-   if(t.kind==='table')fail(n,'A Table has columns, not object fields; use a select row parameter');
-   if(t.kind==='array'){if(typeof n.key!=='number')fail(n,'Array projection requires a numeric index');if(t.length!==undefined&&n.key>=t.length)fail(n,'Array index out of bounds');if(!input.items){if(this.checking)return this.bind(t.element,undefined);fail(n,'Use a statically known array');}return input.items[n.key];}
-   if(t.kind!=='record')fail(n,'Cannot project '+String(n.key)+' from '+show(t));
-   if(t.nullable&&!n.optional)fail(n,'Use ?. to project from '+show(t));
-   if(!Object.hasOwn(t.fields,n.key!)){const keys=Object.keys(t.fields),path=accessPath(n.input!);fail(n,'Unknown field '+String(n.key)+(path?' on '+path:'')+'; available fields (examples, up to 8 of '+keys.length+'): '+(keys.slice(0,8).map(k=>JSON.stringify(k)).join(', ')||'(none)'));}
+   if(t.kind==='table')return this.errorValue(n,'A Table has columns, not object fields; use a select row parameter');
+   if(t.kind==='array'){if(typeof n.key!=='number')return this.errorValue(n,'Array projection requires a numeric index');if(t.length!==undefined&&n.key>=t.length)return this.errorValue(n,'Array index out of bounds');if(!input.items){if(this.checking)return this.bind(t.element,undefined);return this.errorValue(n,'Use a statically known array');}return input.items[n.key];}
+   if(t.kind!=='record')return this.errorValue(n,'Cannot project '+String(n.key)+' from '+show(t));
+   if(t.nullable&&!n.optional)return this.errorValue(n,'Use ?. to project from '+show(t));
+   if(!Object.hasOwn(t.fields,n.key!)){const keys=Object.keys(t.fields),path=accessPath(n.input!);return this.errorValue(n,'Unknown field '+String(n.key)+(path?' on '+path:'')+'; available fields (examples, up to 8 of '+keys.length+'): '+(keys.slice(0,8).map(k=>JSON.stringify(k)).join(', ')||'(none)'));}
    let v=input.fields?.[n.key!]??this.bind(t.fields[n.key!],input.known&&input.value!==null?input.value[n.key!]:undefined);
    if(n.optional&&t.nullable)v={...v,type:optional(v.type),known:input.known?true:v.known,...(input.known&&input.value===null?{value:null}:{})};
    return v;
   }
-  if(n.k==='unary'){const a=this.compile(n.input!,env);if(a.type.kind==='error')return a;if(n.op==='!'){if(!scalarType(a.type)||a.type.name!=='Bool'||a.type.nullable)fail(n,'! requires Bool');return {type:scalar('Bool'),known:a.known,...(a.known?{value:!a.value}:{sql:'(NOT '+this.sql(a,n)+')'}),column:a.column};}if(!numeric(a.type))fail(n,'Unary - requires a number');return {...a,...(a.known?{value:a.value===null?null:-a.value}:{sql:'(-'+this.sql(a,n)+')'})};}
+  if(n.k==='unary'){const a=this.compile(n.input!,env);if(a.type.kind==='error')return a;if(n.op==='!'){if(!scalarType(a.type)||a.type.name!=='Bool'||a.type.nullable)return this.errorValue(n,'! requires Bool');return {type:scalar('Bool'),known:a.known,...(a.known?{value:!a.value}:{sql:'(NOT '+this.sql(a,n)+')'}),column:a.column};}if(!numeric(a.type))return this.errorValue(n,'Unary - requires a number');return {...a,...(a.known?{value:a.value===null?null:-a.value}:{sql:'(-'+this.sql(a,n)+')'})};}
   if(n.k==='binary'){
    const a=this.compile(n.left!,env),b=this.compile(n.right!,env),op=n.op!,k=a.known&&b.known,column=a.column||b.column;
    if(a.type.kind==='error'||b.type.kind==='error')return {type:{kind:'error'},known:false};
-   if(op==='??'){if(!nullable(a.type))fail(n,'?? requires an optional value');const type=common(present(a.type),b.type);return {type,known:k,column,...(k?{value:a.value??b.value}:{sql:'COALESCE('+this.sql(a,n)+','+this.sql(b,n)+')'})};}
-   if(['&&','||'].includes(op)){for(const x of [a,b])if(!scalarType(x.type)||x.type.name!=='Bool'||x.type.nullable)fail(n,'Boolean operators require Bool, handle Option(Bool) explicitly');return {type:scalar('Bool'),known:k,column,...(k?{value:op==='&&'?a.value&&b.value:a.value||b.value}:{sql:'('+this.sql(a,n)+(op==='&&'?' AND ':' OR ')+this.sql(b,n)+')'})};}
+   if(op==='??'){if(!nullable(a.type))return this.errorValue(n,'?? requires an optional value');const type=this.commonType(present(a.type),b.type,n);if(type.kind==='error')return {type,known:false};return {type,known:k,column,...(k?{value:a.value??b.value}:{sql:'COALESCE('+this.sql(a,n)+','+this.sql(b,n)+')'})};}
+   if(['&&','||'].includes(op)){for(const x of [a,b])if(!scalarType(x.type)||x.type.name!=='Bool'||x.type.nullable)return this.errorValue(n,'Boolean operators require Bool, handle Option(Bool) explicitly');return {type:scalar('Bool'),known:k,column,...(k?{value:op==='&&'?a.value&&b.value:a.value||b.value}:{sql:'('+this.sql(a,n)+(op==='&&'?' AND ':' OR ')+this.sql(b,n)+')'})};}
    if(['+','-','*','/','%'].includes(op)){
-    if(!numeric(a.type)||!numeric(b.type))fail(n,'Arithmetic requires numbers, got '+show(a.type)+' and '+show(b.type));
-    if(op==='%'&&([a.type,b.type]as any[]).some(t=>t.name!=='Int'))fail(n,'% requires Int');
+    if(!numeric(a.type)||!numeric(b.type))return this.errorValue(n,'Arithmetic requires numbers, got '+show(a.type)+' and '+show(b.type));
+    if(op==='%'&&([a.type,b.type]as any[]).some(t=>t.name!=='Int'))return this.errorValue(n,'% requires Int');
     const name=op==='/'?'Float':(a.type as any).name==='Float'||(b.type as any).name==='Float'?'Float':'Int';const type=scalar(name,nullable(a.type)||nullable(b.type)||op==='/'||op==='%');
     if(k){let value;if(a.value===null||b.value===null||['/','%'].includes(op)&&b.value===0)value=null;else value=op==='+'?a.value+b.value:op==='-'?a.value-b.value:op==='*'?a.value*b.value:op==='/'?a.value/b.value:a.value%b.value;this.validNumber(value,type,n);return {type,known:true,value,column};}
     return {type,known:false,column,sql:op==='/'?'(1.0*'+this.sql(a,n)+'/NULLIF('+this.sql(b,n)+',0))':'('+this.sql(a,n)+op+this.sql(b,n)+')'};
    }
    if(['==','!=','<','>','<=','>='].includes(op)){
-    if(a.type.kind==='null'||b.type.kind==='null'){if(!['==','!='].includes(op))fail(n,'Use == None or != None');const v=a.type.kind==='null'?b:a;return {type:scalar('Bool'),known:k,column,...(k?{value:op==='=='?v.value===null:v.value!==null}:{sql:'('+this.sql(v,n)+(op==='=='?' IS NULL)':' IS NOT NULL)')})};}
-    common(a.type,b.type);if(!scalarType(a.type)||!scalarType(b.type))fail(n,'Comparison requires scalar operands');const type=scalar('Bool',a.type.nullable||b.type.nullable);
+    if(a.type.kind==='null'||b.type.kind==='null'){if(!['==','!='].includes(op))return this.errorValue(n,'Use == None or != None');const v=a.type.kind==='null'?b:a;return {type:scalar('Bool'),known:k,column,...(k?{value:op==='=='?v.value===null:v.value!==null}:{sql:'('+this.sql(v,n)+(op==='=='?' IS NULL)':' IS NOT NULL)')})};}
+    if(this.commonType(a.type,b.type,n).kind==='error')return {type:{kind:'error'},known:false};if(!scalarType(a.type)||!scalarType(b.type))return this.errorValue(n,'Comparison requires scalar operands');const type=scalar('Bool',a.type.nullable||b.type.nullable);
     const value=k?(a.value===null||b.value===null?null:op==='=='?a.value===b.value:op==='!='?a.value!==b.value:op==='<'?a.value<b.value:op==='>'?a.value>b.value:op==='<='?a.value<=b.value:a.value>=b.value):undefined;
     return {type,known:k,column,...(k?{value}:{sql:'('+this.sql(a,n)+(op==='=='?'=':op==='!='?'<>':op)+this.sql(b,n)+')'})};
    }
@@ -217,5 +217,7 @@ export class TypedCompiler{
  fieldNode(callback:N,name:string):N{const body=callback.k==='lambda'?callback.body:undefined;return body?.k==='object'?body.entries?.find(entry=>entry.key===name)?.value??callback:callback;}
  callback(n:N,args:V[],env:Record<string,V>):V{if(n.k!=='lambda'||n.params?.length!==args.length)fail(n,'Expected a row function with '+args.length+' parameter(s)');return this.compile(n.body!,{...env,...Object.fromEntries(n.params!.map((p,i)=>[p,args[i]]))});}
  reportFailure(n:N,message:string){if(!this.checking)fail(n,message);this.diagnostics.report({stage:'type',message,span:n.s});}
+ errorValue(n:N,message:string):V{this.reportFailure(n,message);return {type:{kind:'error'},known:false};}
+ commonType(a:Ty,b:Ty,n:N):Ty{try{return common(a,b);}catch(error){if(!this.checking||!(error instanceof TypeRuleError))throw error;this.reportFailure(n,error.message);return {kind:'error'};}}
  bool(v:V,n:N):boolean{if(v.type.kind==='error'&&this.checking)return false;if(v.type.kind!=='scalar'||v.type.name!=='Bool'||v.type.nullable||v.column){this.reportFailure(n,'Predicate must return Bool; use ?? False for Option(Bool)');return false;}return true;}
 }
