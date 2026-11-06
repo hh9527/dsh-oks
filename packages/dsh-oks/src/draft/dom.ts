@@ -183,6 +183,9 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
   const reserved=new Set(['tree','if','else','let','Some','data','figure','report','export','True','False','None','true','false','null','query','context','select','select_one','table','map','union_all','time_windows','is_some','is_none','map_opt','round','case_when','lookup','concat','to_datetime_utc','to_epoch_millis','asc','desc','count','sum','avg','min','max']);
   whitespace();while(at<source.length){
     if(declarations.size>=512)fail('DARI is limited to 512 declarations');
+    const savedDefinitions=new Map(definitions),savedDeclarations=new Map(declarations),savedFigures=new Map(figures);
+    const savedNodes=nodes.length,savedReferences=references.length,savedTemplates=templates.length,savedScopes=scopes.length,savedSequence=sequence,savedTitle=title;
+    try{
     const start=at,kind=name();
     if(!['data','figure','report','answer'].includes(kind))fail('Expected data, figure or report declaration',start,at);
     whitespace();const bindingStart=at,binding=kind==='answer'?'answer':name();
@@ -214,7 +217,15 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
         tree.name='article';tree.empty=false;templates.push({name:binding,title:ownTitle,element:tree,span:location(start),...(kind==='answer'?{format:'markdown' as const}:{})});
       }
     }
-    declarations.set(binding,kind as 'data'|'figure'|'report'|'answer');whitespace();
+    declarations.set(binding,kind as 'data'|'figure'|'report'|'answer');
+    }catch(error){
+      definitions.clear();for(const [key,value] of savedDefinitions)definitions.set(key,value);
+      declarations.clear();for(const [key,value] of savedDeclarations)declarations.set(key,value);
+      figures.clear();for(const [key,value] of savedFigures)figures.set(key,value);
+      nodes.length=savedNodes;references.length=savedReferences;templates.length=savedTemplates;scopes.length=savedScopes;sequence=savedSequence;title=savedTitle;
+      throw error;
+    }
+    whitespace();
   }
   if(!declarations.size)fail('Expected data, figure or report declaration',0,Math.min(1,source.length));
   const identifierErrors=identifierDiagnostics.list();
