@@ -44,7 +44,7 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
    });
    const firstIndex=rowTypes.findIndex(row=>row.kind==='record'),first=rowTypes[firstIndex];
    if(first?.kind==='record'){
-    const fields={...first.fields};
+    const fields={...first.fields},knownFields:Record<string,Ty>=Object.fromEntries(Object.entries(first.fields).filter(([,type])=>type.kind!=='error'));
     for(const [index,row] of rowTypes.entries())if(index!==firstIndex){
      const rowExpr=rowsExpr?.kind==='array'?rowsExpr.values[index]:undefined;
      if(row.kind==='error')continue;
@@ -59,9 +59,12 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
      if(fields[name].kind==='error'||current.kind==='error'){
       if(fields[name].kind==='error'&&current.kind!=='scalar'&&current.kind!=='null'&&current.kind!=='error')diagnostics.report({stage:'type',message:'table column '+name+' requires an inferred scalar type',span:rowExpr?.kind==='object'?rowExpr.entries.find(e=>e.key===name)?.value.span??ctx.span:ctx.span});
       if(current.kind==='error'&&fields[name].kind!=='scalar'&&fields[name].kind!=='null'&&fields[name].kind!=='error')diagnostics.report({stage:'type',message:'table column '+name+' requires an inferred scalar type',span:columnSpan(name)});
+      if(current.kind!=='error'&&(current.kind==='scalar'||current.kind==='null')){
+       try{knownFields[name]=knownFields[name]?common(knownFields[name],current):current;}catch(error){if(!(error instanceof TypeRuleError))throw error;diagnostics.report({stage:'type',message:'table column '+name+': '+error.message,span:rowExpr?.kind==='object'?rowExpr.entries.find(e=>e.key===name)?.value.span??ctx.span:ctx.span});}
+      }
       fields[name]={kind:'error'};continue;
      }
-     try{fields[name]=common(fields[name],current);}catch(error){
+     try{fields[name]=common(fields[name],current);knownFields[name]=fields[name];}catch(error){
       if(!(error instanceof TypeRuleError))throw error;
       const span=rowExpr?.kind==='object'?rowExpr.entries.find(e=>e.key===name)?.value.span??ctx.span:ctx.span;
       diagnostics.report({stage:'type',message:'table column '+name+': '+error.message,span});fields[name]={kind:'error'};
