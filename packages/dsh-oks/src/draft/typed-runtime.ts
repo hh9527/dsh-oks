@@ -62,6 +62,9 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
      }
     }
     type={kind:'array',element:{...first,fields},length:rows.length,nullable:false};
+   }else{
+    for(const [index,row] of rowTypes.entries())if(row.kind!=='error')diagnostics.report({stage:'type',message:'table rows must be records',span:rowsExpr?.kind==='array'?rowsExpr.values[index]?.span??ctx.span:ctx.span});
+    const errors=diagnostics.list();if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);
    }
   }
   if(!type&&rowUnavailable){const errors=diagnostics.list();if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);throw new UpstreamTypeUnavailable();}

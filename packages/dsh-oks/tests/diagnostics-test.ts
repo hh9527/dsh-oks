@@ -229,6 +229,10 @@ try{
  assert(failedRowDesign.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(failedRowDesign.diagnostics));
  assert(failedRowDesign.diagnostics.some(d=>d.message.includes('table column invalid')),JSON.stringify(failedRowDesign.diagnostics));
  assert(!failedRowDesign.diagnostics.some(d=>d.message.includes('table rows must be records')),JSON.stringify(failedRowDesign.diagnostics));
+ const nonrecordRows='data bad = 1+"x"; data x = table([bad,42,True],{kind:"example"});';
+ const nonrecordResult=await checkDesign(nonrecordRows,'fixture.dari',backend);
+ assert(nonrecordResult.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(nonrecordResult.diagnostics));
+ assert.deepEqual(nonrecordResult.diagnostics.filter(d=>d.message==='table rows must be records').map(d=>d.span.start.offset),[nonrecordRows.indexOf('42'),nonrecordRows.indexOf('True')]);
  assert.equal(tableErrors.diagnostics.find(d=>d.message.includes('table column first'))?.span.start.offset,tableSource.indexOf('{x:1}'));
  assert.equal(tableErrors.diagnostics.find(d=>d.message.includes('table column second'))?.span.start.offset,tableSource.indexOf('[1]'));
  const laterTableSource='data x = table([{bad:None},{bad:{nested:1}}],{kind:"example"});';
