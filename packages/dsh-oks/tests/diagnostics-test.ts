@@ -112,6 +112,8 @@ try{
  for(const source of ['data x = data(1,{kind:"bad"});','data x = time_windows(context(),{unit:"bad",count:1,mode:"current"});']){
   const result=await checkDesign(source,'fixture.dari',backend);assert.equal(result.diagnostics.length,1,JSON.stringify(result.diagnostics));assert.equal(result.diagnostics[0].asset,'x');
  }
+ const invalidTimeContext=await checkDesign('data x = time_windows(1,{unit:"day",count:1,mode:"current"});','fixture.dari',backend);
+ assert(invalidTimeContext.diagnostics.some(d=>d.message.includes('time windows requires safe integer context utc.epochMillis')),JSON.stringify(invalidTimeContext.diagnostics));
  const argumentsSource='data a = concat(1,True); data b = round("x",20); data c = map_opt(1,n=>({dependent:n.missing,independent:"x"+1}));';
  const argumentsResult=await checkDesign(argumentsSource,'fixture.dari',backend);
  const invalidFieldsAndLimit=await checkDesign('data facts = table([{n:1}],{kind:"example"}); data x = select({from:{s:facts},fields:r=>r.s.missing,limit:-1});','fixture.dari',backend);

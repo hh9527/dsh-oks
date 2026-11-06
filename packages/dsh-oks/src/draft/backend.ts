@@ -233,7 +233,7 @@ export function createDraftBackend(options: {
     const first=ctx.args[0]?.data,second=ctx.args[1]?.data;
     if(['render_figure','render_report'].includes(ctx.operator)&&ctx.args[1]&&known(second))check(()=>{if(!isRecord(second))throw new Error(`${ctx.operator} inputs must be a named object`);});
     if(ctx.operator==='data'&&ctx.args[1]&&known(second))check(()=>{dataNature(second);});
-    if(ctx.operator==='time_windows'&&known(second))check(()=>{timeWindowOptions(second);});
+    if(ctx.operator==='time_windows'&&known(second))check(()=>{if(known(first))timeWindows(unbox(first),unbox(second));else timeWindowOptions(unbox(second));});
     if(ctx.operator==='render_figure'){
       if(isRecord(second))check(()=>{if(!Object.hasOwn(second,'data')||Object.keys(second).some(key=>key!=='data'&&key!=='nodes'))throw new Error('render_figure inputs must be {data,nodes?}');});
       if(known(first))check(()=>{
