@@ -56,7 +56,11 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
       if(current.kind!=='scalar'&&current.kind!=='null'&&current.kind!=='error')diagnostics.report({stage:'type',message:'table column '+name+' requires an inferred scalar type',span:rowExpr?.kind==='object'?rowExpr.entries.find(e=>e.key===name)?.value.span??ctx.span:ctx.span});
       continue;
      }
-     if(fields[name].kind==='error'||current.kind==='error'){fields[name]={kind:'error'};continue;}
+     if(fields[name].kind==='error'||current.kind==='error'){
+      if(fields[name].kind==='error'&&current.kind!=='scalar'&&current.kind!=='null'&&current.kind!=='error')diagnostics.report({stage:'type',message:'table column '+name+' requires an inferred scalar type',span:rowExpr?.kind==='object'?rowExpr.entries.find(e=>e.key===name)?.value.span??ctx.span:ctx.span});
+      if(current.kind==='error'&&fields[name].kind!=='scalar'&&fields[name].kind!=='null'&&fields[name].kind!=='error')diagnostics.report({stage:'type',message:'table column '+name+' requires an inferred scalar type',span:columnSpan(name)});
+      fields[name]={kind:'error'};continue;
+     }
      try{fields[name]=common(fields[name],current);}catch(error){
       if(!(error instanceof TypeRuleError))throw error;
       const span=rowExpr?.kind==='object'?rowExpr.entries.find(e=>e.key===name)?.value.span??ctx.span:ctx.span;

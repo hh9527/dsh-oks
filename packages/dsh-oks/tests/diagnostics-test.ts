@@ -229,6 +229,13 @@ try{
  assert(failedRowDesign.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(failedRowDesign.diagnostics));
  assert(failedRowDesign.diagnostics.some(d=>d.message.includes('table column invalid')),JSON.stringify(failedRowDesign.diagnostics));
  assert(!failedRowDesign.diagnostics.some(d=>d.message.includes('table rows must be records')),JSON.stringify(failedRowDesign.diagnostics));
+ const failedColumnSource='data bad = 1+"x"; data x = table([{a:bad},{a:{nested:1}}],{kind:"example"});';
+ const failedColumn=await checkDesign(failedColumnSource,'fixture.dari',backend);
+ assert(failedColumn.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(failedColumn.diagnostics));
+ assert.equal(failedColumn.diagnostics.find(d=>d.message.includes('table column a requires'))?.span.start.offset,failedColumnSource.indexOf('{nested:1}'),JSON.stringify(failedColumn.diagnostics));
+ const reversedFailedColumn='data bad = 1+"x"; data x = table([{a:{nested:1}},{a:bad}],{kind:"example"});';
+ const reversedFailedResult=await checkDesign(reversedFailedColumn,'fixture.dari',backend);
+ assert.equal(reversedFailedResult.diagnostics.find(d=>d.message.includes('table column a requires'))?.span.start.offset,reversedFailedColumn.indexOf('{nested:1}'),JSON.stringify(reversedFailedResult.diagnostics));
  const nonrecordRows='data bad = 1+"x"; data x = table([bad,42,True],{kind:"example"});';
  const nonrecordResult=await checkDesign(nonrecordRows,'fixture.dari',backend);
  assert(nonrecordResult.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(nonrecordResult.diagnostics));
