@@ -229,7 +229,7 @@ export class TypedCompiler{
   if(groups){const keys=Object.values(groups.fields??{});if(keys.length)inner+=' GROUP BY '+keys.map(v=>v.type.kind==='scalar'||v.type.kind==='null'?this.sql(v,entries.group_by):'NULL').join(',');}
   const output:V=unavailableOutput?{type:{kind:'error'},known:false}:{type:record(Object.fromEntries(Object.entries(outputFields).map(([name,v])=>[name,v.type]))),known:false,fields:outputFields};
   if(entries.having&&!groups)this.reportFailure(entries.having,'having requires group_by');
-  let sql='SELECT '+columns.map(c=>q(c.name)).join(',')+' FROM ('+inner+')';if(entries.having&&groups){const p=this.callback(entries.having,[output],captures);const valid=this.bool(p,entries.having);sql+=' WHERE '+(valid?this.sql(p,entries.having):'NULL');}
+  let sql='SELECT '+columns.map(c=>q(c.name)).join(',')+' FROM ('+inner+')';if(entries.having&&(groups||this.checking)){const p=this.callback(entries.having,[output],captures);const valid=this.bool(p,entries.having);if(groups)sql+=' WHERE '+(valid?this.sql(p,entries.having):'NULL');}
   if(entries.order_by){const f=entries.order_by;if(f.k!=='lambda'||f.params?.length!==1||f.body?.k!=='array'){
    if(this.checking){
     if(f.k==='lambda'){

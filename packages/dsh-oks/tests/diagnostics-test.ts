@@ -158,6 +158,10 @@ try{
  assert(invalidOrderCallback.diagnostics.some(d=>d.message.includes('Unknown field absent')),JSON.stringify(invalidOrderCallback.diagnostics));
  assert(invalidOrderCallback.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(invalidOrderCallback.diagnostics));
  assert(!invalidOrderCallback.diagnostics.some(d=>d.message.includes('extra.field')),JSON.stringify(invalidOrderCallback.diagnostics));
+ const invalidHaving=await checkDesign('data facts = table([{n:1}],{kind:"example"}); data x = select({from:{s:facts},fields:r=>({n:r.s.n}),having:o=>o.missing==("x"+1)});','fixture.dari',backend);
+ assert(invalidHaving.diagnostics.some(d=>d.message==='having requires group_by'),JSON.stringify(invalidHaving.diagnostics));
+ assert(invalidHaving.diagnostics.some(d=>d.message.includes('Unknown field missing')),JSON.stringify(invalidHaving.diagnostics));
+ assert(invalidHaving.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(invalidHaving.diagnostics));
  const invalidCallback=await checkDesign('data facts = table([{n:1}],{kind:"example"}); data x = select({from:{s:facts},fields:(r,extra)=>({missing:r.s.absent,dependent:extra.field,independent:"x"+1})});','fixture.dari',backend);
  assert(invalidCallback.diagnostics.some(d=>d.message==='Expected a row function with 1 parameter(s)'),JSON.stringify(invalidCallback.diagnostics));
  assert(invalidCallback.diagnostics.some(d=>d.message.includes('Unknown field absent')),JSON.stringify(invalidCallback.diagnostics));
