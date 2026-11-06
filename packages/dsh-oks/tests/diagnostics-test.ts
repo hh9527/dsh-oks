@@ -189,6 +189,9 @@ try{
  for(const expected of ['select requires from','Arithmetic requires numbers','limit requires a known nonnegative Int'])assert(missingFrom.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(missingFrom.diagnostics));
  assert(!missingFrom.diagnostics.some(d=>d.message.includes('Unknown field unknown')),JSON.stringify(missingFrom.diagnostics));
  assert(missingFrom.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ const duplicateSource=await checkDesign('data a = table([{n:1}],{kind:"example"}); data b = table([{n:2}],{kind:"example"}); data x = select({from:{s:a},joins:[{kind:"inner",source:{s:b},on:r=>r.s.n==1},{kind:"inner",source:{t:b},on:r=>r.t.absent==1}],fields:r=>({dependent:r.s.n,independent:r.t.missing})});','fixture.dari',backend);
+ for(const expected of ['Duplicate table alias s','Unknown field absent','Unknown field missing'])assert(duplicateSource.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(duplicateSource.diagnostics));
+ assert(!duplicateSource.diagnostics.some(d=>d.message.includes('Unknown field n')),JSON.stringify(duplicateSource.diagnostics));
  const missingFields=await checkDesign('data a = table([{n:1}],{kind:"example"}); data x = select({from:{s:a},order_by:o=>[asc(o.missing),asc("x"+1)],having:o=>1+"x"});','fixture.dari',backend);
  for(const expected of ['select requires fields','having requires group_by'])assert(missingFields.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(missingFields.diagnostics));
  assert.equal(missingFields.diagnostics.filter(d=>d.message.includes('Arithmetic requires numbers')).length,2,JSON.stringify(missingFields.diagnostics));
