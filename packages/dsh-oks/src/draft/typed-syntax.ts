@@ -64,7 +64,7 @@ export function parseTypedExpression(source:string,base:Position,options:{defini
    if(n.a!.length!==1||n.a![0].k!=='object')throw new DraftSyntaxError('select requires an object specification',n.s);
    const spec=n.a![0];const inputs:{key:string;value:Expr}[]=[];let seq=0;
    const source=(obj:N):N=>{if(obj.k!=='object'||obj.entries!.length!==1)throw new DraftSyntaxError('source must contain exactly one table alias',obj.s);const e=obj.entries![0],key='__source'+seq++;inputs.push({key,value:child(e.value)});return {...obj,entries:[{key:e.key,value:{k:'ref',name:key,s:e.value.s}}]};};
-   const entries=spec.entries!.map(e=>{if(e.key==='from')return {...e,value:source(e.value)};if(e.key==='joins'){if(e.value.k!=='array')throw new DraftSyntaxError('joins must be an array',e.value.s);return {...e,value:{...e.value,a:e.value.a!.map(j=>{if(j.k!=='object')throw new DraftSyntaxError('join must be an object',j.s);return {...j,entries:j.entries!.map(x=>x.key==='source'?{...x,value:source(x.value)}:x)};})}};}return e;});
+   const entries=spec.entries!.map(e=>{if(e.key==='from')return {...e,value:source(e.value)};if(e.key==='joins'&&e.value.k==='array')return {...e,value:{...e.value,a:e.value.a!.map(j=>j.k==='object'?{...j,entries:j.entries!.map(x=>x.key==='source'?{...x,value:source(x.value)}:x)}:j)}};return e;});
    const plan={...n,a:[{...spec,entries}]};
    for(const name of refs(plan))if(!name.startsWith('__source'))inputs.push({key:name,value:{kind:'ref',name,span:n.s}});
    return payload(n.name==='select'?'relational':'relational_one',plan,inputs);

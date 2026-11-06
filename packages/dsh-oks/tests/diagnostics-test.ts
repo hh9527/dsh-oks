@@ -220,6 +220,14 @@ try{
  const argumentsSource='data a = concat(1,True); data b = round("x",20); data c = map_opt(1,n=>({dependent:n.missing,independent:"x"+1}));';
  const argumentsResult=await checkDesign(argumentsSource,'fixture.dari',backend);
  const invalidFieldsAndLimit=await checkDesign('data facts = table([{n:1}],{kind:"example"}); data x = select({from:{s:facts},fields:r=>r.s.missing,limit:-1});','fixture.dari',backend);
+ for(const [joins,message] of [['42','joins must be an array'],['[42,True]','join must be an object']] as const){
+  const result=await checkDesign(`data facts = table([{n:1}],{kind:"example"}); data x = select({from:{s:facts},joins:${joins},fields:r=>({missing:r.unknown.n,bad:"x"+1}),limit:-1});`,'fixture.dari',backend);
+  assert.equal(result.diagnostics.filter(d=>d.message===message).length,joins==='42'?1:2,JSON.stringify(result.diagnostics));
+  assert(result.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(result.diagnostics));
+  assert(result.diagnostics.some(d=>d.message==='limit requires a known nonnegative Int'),JSON.stringify(result.diagnostics));
+  assert(!result.diagnostics.some(d=>d.message.includes('Unknown field unknown')),JSON.stringify(result.diagnostics));
+  assert(result.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ }
  assert(invalidFieldsAndLimit.diagnostics.some(d=>d.message.includes('Unknown field missing')),JSON.stringify(invalidFieldsAndLimit.diagnostics));
  assert(invalidFieldsAndLimit.diagnostics.some(d=>d.message==='limit requires a known nonnegative Int'),JSON.stringify(invalidFieldsAndLimit.diagnostics));
  assert(invalidFieldsAndLimit.checkedBindings.some(b=>b.name==='x'&&!b.checked));
