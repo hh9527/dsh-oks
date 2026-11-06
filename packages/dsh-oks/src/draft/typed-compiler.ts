@@ -178,7 +178,10 @@ export class TypedCompiler{
   if(entries.joins){if(entries.joins.k!=='array')fail(entries.joins,'joins must be an array');for(const j of entries.joins.a!){if(j.k!=='object')fail(j,'Expected join object');const p=Object.fromEntries(j.entries!.map(e=>[e.key,e.value]));for(const key of Object.keys(p))if(!['kind','source','on'].includes(key))fail(p[key],'Unknown join option '+key);if(!p.kind||p.kind.k!=='lit'||!['inner','left'].includes(p.kind.v)||!p.source||!p.on)fail(j,'join requires kind,source,on');const sql=source(p.source);const predicate=this.callback(p.on,[{type:record(Object.fromEntries(Object.entries(scope).map(([k,v])=>[k,v.type]))),known:false,fields:{...scope}}],captures);const valid=this.bool(predicate,p.on);joins.push((p.kind.v==='left'?' LEFT':' INNER')+' JOIN '+sql+' ON '+(valid?this.sql(predicate,p.on):'NULL'));if(p.kind.v==='left'){const alias=p.source.entries![0].key;scope[alias]={...scope[alias],type:optional(scope[alias].type)};}}}
   const row:V={type:record(Object.fromEntries(Object.entries(scope).map(([k,v])=>[k,v.type]))),known:false,fields:scope};
   const where=entries.where?this.callback(entries.where,[row],captures):undefined;const whereValid=where?this.bool(where,entries.where):false;
-  let groups:V|undefined;if(entries.group_by){groups=this.callback(entries.group_by,[row],captures);if(groups.type.kind!=='record'&&groups.type.kind!=='error'){this.reportFailure(entries.group_by,'group_by requires a key record');groups={type:{kind:'error'},known:false};}for(const v of Object.values(groups.fields??{}))if(v.type.kind!=='scalar'&&v.type.kind!=='null'&&v.type.kind!=='error')this.reportFailure(entries.group_by,'Group keys must be scalar');}
+  let groups:V|undefined;if(entries.group_by){groups=this.callback(entries.group_by,[row],captures);if(groups.type.kind!=='record'&&groups.type.kind!=='error'){this.reportFailure(entries.group_by,'group_by requires a key record');groups={type:{kind:'error'},known:false};}for(const [name,v] of Object.entries(groups.fields??{}))if(v.type.kind!=='scalar'&&v.type.kind!=='null'&&v.type.kind!=='error'){
+   this.reportFailure(this.fieldNode(entries.group_by,name),'Group key '+name+' must be scalar');
+   const errorType:Ty={kind:'error'};groups.fields![name]={type:errorType,known:false};if(groups.type.kind==='record')groups.type={...groups.type,fields:{...groups.type.fields,[name]:errorType}};
+  }}
   const asColumns=(v:V):V=>({...v,column:v.type.kind==='scalar'?true:v.column,...(v.fields?{fields:Object.fromEntries(Object.entries(v.fields).map(([k,v])=>[k,asColumns(v)]))}:{})});
   if(!entries.fields)fail(n,'select requires fields');
   const values=this.callback(entries.fields,groups?[groups,{...asColumns(row),rows:true}]:[row],captures);
@@ -186,7 +189,7 @@ export class TypedCompiler{
   const outputFields:Record<string,V>={};const columns:SqlColumn[]=[];
   for(const [name,v] of Object.entries(values.fields)){
    if(v.type.kind==='error'){outputFields[name]=v;continue;}
-   if(v.type.kind!=='scalar'||v.column){this.reportFailure(entries.fields,v.column?'Column must be aggregated':'Table field '+name+' must have an inferred scalar type, got '+show(v.type));outputFields[name]={type:{kind:'error'},known:false};continue;}
+   if(v.type.kind!=='scalar'||v.column){this.reportFailure(this.fieldNode(entries.fields,name),v.column?'Column must be aggregated: '+name:'Table field '+name+' must have an inferred scalar type, got '+show(v.type));outputFields[name]={type:{kind:'error'},known:false};continue;}
    columns.push({name,type:v.type.name,nullable:v.type.nullable});outputFields[name]={type:v.type,known:false,sql:q(name)};
   }
   let projection=Object.entries(values.fields).map(([name,v])=>(outputFields[name].type.kind==='error'?'NULL':this.sql(v,entries.fields))+' AS '+q(name)).join(',');
@@ -211,6 +214,7 @@ export class TypedCompiler{
   return {sql,tables,columns,type:n.name==='select_one'?optional(rowType(columns)):{kind:'table',columns,minRows,...(maxRows===undefined?{}:{maxRows})} as Ty,minRows,maxRows,guard:n.name==='select_one'&&(maxRows===undefined||maxRows>1)};
  }
  presence(v:V,n:N):string{if(v.presence)return v.presence;if(v.type.kind==='record')return this.param(v.known?(v.value===null?null:1):null);return this.sql(v,n);}
+ fieldNode(callback:N,name:string):N{const body=callback.k==='lambda'?callback.body:undefined;return body?.k==='object'?body.entries?.find(entry=>entry.key===name)?.value??callback:callback;}
  callback(n:N,args:V[],env:Record<string,V>):V{if(n.k!=='lambda'||n.params?.length!==args.length)fail(n,'Expected a row function with '+args.length+' parameter(s)');return this.compile(n.body!,{...env,...Object.fromEntries(n.params!.map((p,i)=>[p,args[i]]))});}
  reportFailure(n:N,message:string){if(!this.checking)fail(n,message);this.diagnostics.report({stage:'type',message,span:n.s});}
  bool(v:V,n:N):boolean{if(v.type.kind==='error'&&this.checking)return false;if(v.type.kind!=='scalar'||v.type.name!=='Bool'||v.type.nullable||v.column){this.reportFailure(n,'Predicate must return Bool; use ?? False for Option(Bool)');return false;}return true;}

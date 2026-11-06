@@ -76,6 +76,15 @@ const small=(body:string)=>`data a = query({period:"base",limit:10});data b = qu
   fields:(g,rows)=>({valid:count(rows),bad:sum(rows.s.missing_value)})});`),'typed.dari',backend);
  for(const name of ['missing_predicate','missing_group','missing_value'])assert(grouped.diagnostics.some(d=>d.message.includes(name)),JSON.stringify(grouped.diagnostics));
  assert(!grouped.diagnostics.some(d=>/Predicate must return Bool|Group keys must be scalar|sum requires/.test(d.message)));
+ const multiGroupSource=small('data sample = select({from:{s:a},group_by:r=>({first:r.s,second:r.s}),fields:(g,rows)=>({one:rows.s.cpu,two:rows.s.cpu})});');
+ const multiGroup=await checkDesign(multiGroupSource,'typed.dari',backend);
+ for(const [message,source] of [['Group key first','first:r.s'],['Group key second','second:r.s'],['aggregated: one','one:rows.s.cpu'],['aggregated: two','two:rows.s.cpu']]){
+  const diagnostic=multiGroup.diagnostics.find(d=>d.message.includes(message));assert(diagnostic,JSON.stringify(multiGroup.diagnostics));
+  assert.equal(diagnostic.span.start.offset,multiGroupSource.indexOf(source)+source.indexOf(':')+1);
+ }
+ const groupCascade=await checkDesign(small('data sample = select({from:{s:a},group_by:r=>({bad:r.s}),fields:(g,rows)=>({x:g.bad.missing,n:count(rows)})});'),'typed.dari',backend);
+ assert(groupCascade.diagnostics.some(d=>d.message.includes('Group key bad')),JSON.stringify(groupCascade.diagnostics));
+ assert(!groupCascade.diagnostics.some(d=>d.message.includes('missing')),JSON.stringify(groupCascade.diagnostics));
  const later=await checkDesign(small('data sample = select({from:{s:a},where:r=>r.s.missing_where,fields:r=>({bad:r.s.missing_field,id:r.s.server_id}),order_by:o=>[asc(o.bad),desc(o.missing_order)],limit:-1});'),'typed.dari',backend);
  for(const name of ['missing_where','missing_field','missing_order','limit requires a known nonnegative Int'])assert(later.diagnostics.some(d=>d.message.includes(name)),JSON.stringify(later.diagnostics));
  assert(!later.diagnostics.some(d=>/Ordering requires a scalar|Unknown field bad/.test(d.message)));
