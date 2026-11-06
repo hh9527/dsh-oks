@@ -231,15 +231,16 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
       if(statement.kind==='binding'){
         bindings.set(binding,value);
         let shape:CheckedBinding['shape'];
-        let opaqueInternal=false;
+        let opaqueInternal=false,arrayIncomplete=false;
         const result=checkedBindings.find(n=>n.name===binding);
         const presentation=statement.value.kind==='call'&&statement.value.operator==='render_report';
         try{
           if(!figureShape&&statement.value.kind==='array'&&Array.isArray(value)&&value.length>1){
-            const itemTypes=value.map(item=>typeOf(item)),first=itemTypes[0];
-            if(first.kind==='record'&&itemTypes.every(item=>item.kind==='record'&&Object.keys(item.fields).join('\0')===Object.keys(first.fields).join('\0'))){
+            const itemTypes=value.map(item=>{try{return typeOf(item);}catch(error){if(!(error instanceof UpstreamTypeUnavailable))throw error;return {kind:'error'} as Ty;}}),firstIndex=itemTypes.findIndex(item=>item.kind==='record'),first=itemTypes[firstIndex];
+            if(first?.kind==='record'&&itemTypes.every(item=>item.kind==='error'||item.kind==='record'&&Object.keys(item.fields).join('\0')===Object.keys(first.fields).join('\0'))){
+              arrayIncomplete=itemTypes.some(item=>item.kind==='error');
               const fields={...first.fields};let nullable=first.nullable;
-              for(const [index,item] of itemTypes.entries())if(index>0&&item.kind==='record')for(const [name,current] of Object.entries(item.fields))try{fields[name]=common(fields[name],current);}catch(error){
+              for(const [index,item] of itemTypes.entries())if(index!==firstIndex&&item.kind==='record')for(const [name,current] of Object.entries(item.fields))try{fields[name]=common(fields[name],current);}catch(error){
                 if(!(error instanceof TypeRuleError))throw error;
                 const node=statement.value.values[index],field=node?.kind==='object'?node.entries.find(entry=>entry.key===name)?.value:undefined;
                 diagnostics.report({file,stage:'type',asset:binding,message:error.message,span:field?.span??node?.span??statement.span});fields[name]={kind:'error'};
@@ -255,7 +256,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
           else throw error;
         }
         const localError=diagnostics.list().some(d=>d.severity!=='warning'&&(d.asset===binding || (d.span.start.offset>=statement.span.start.offset&&d.span.start.offset<statement.span.end.offset)));
-        const invalidValue=hasError(value);if(invalidValue)upstreamUnavailable=true;
+        const invalidValue=arrayIncomplete||hasError(value);if(invalidValue)upstreamUnavailable=true;
         const checked=!invalidValue&&!diagnostics.hasErrors(before)&&!localError&&dependencies.every(name=>resolved.has(name))&&(shape!==undefined||presentation||opaqueInternal);
         if(checked)resolved.add(binding);
         else bindings.set(binding,box({kind:'error'}));
