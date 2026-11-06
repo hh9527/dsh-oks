@@ -181,6 +181,7 @@ try{
  assert.equal(warned.ok,true,JSON.stringify(warned));assert.equal(warned.warnings[0]?.message,'advisory');assert(warned.checkedBindings[0].checked);
  const internalError=new Error('internal failure');
  await assert.rejects(checkDesign('data x = 1 + 2;','fixture.dari',{...backend,async analyze(){throw internalError;}}),e=>e===internalError);
+ for(const source of ['data x = data(1);','data x = context();','data x = time_windows(context(),{unit:"day",count:1,mode:"current"});'])await assert.rejects(checkDesign(source,'fixture.dari',{...backend,async analyze(){throw internalError;}}),e=>e===internalError);
  await assert.rejects(checkDesign('data x = 1;','fixture.dari',{...backend,async preflight(){throw internalError;}}),e=>e===internalError);
  const cancellation=new AbortController(),cancelReason=new Error('cancelled during analysis');
  const cancelledBackend={...backend,async preflight(){},async analyze(){cancellation.abort(cancelReason);return {data:{columns:[{name:'n',type:'Int',nullable:false}]}};}};

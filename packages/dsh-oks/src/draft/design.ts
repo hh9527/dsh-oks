@@ -209,10 +209,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         return UNKNOWN;
       }
       if (!['data','context','time_windows','query'].includes(e.operator)) throw new Error('Operator is not available during checking');
-      const [computed] = await settle([{span:e.span,run:()=>analyze({...ctx,args:ctx.args.map(a=>({...a,data:unknown(a.data)?a.data:unbox(a.data)}))})}]).catch(error=>{
-        if(signal?.aborted || error instanceof DraftSyntaxError) throw error;
-        throw new DraftSyntaxError(error instanceof Error?error.message:String(error),e.span);
-      });
+      const [computed] = await settle([{span:e.span,run:()=>analyze({...ctx,args:ctx.args.map(a=>({...a,data:unknown(a.data)?a.data:unbox(a.data)}))})}]);
       if(computed.logicalType&&isKnown(computed.data))return box(computed.logicalType as Ty,computed.data);
       return computed.data;
     };
