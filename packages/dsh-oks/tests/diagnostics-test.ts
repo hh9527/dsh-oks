@@ -21,6 +21,8 @@ const ordered=new DiagnosticCollector();
 ordered.report({stage:'type',message:'later',span:{start:{offset:9,line:2,column:1},end:{offset:10,line:2,column:2}}});
 ordered.report({stage:'type',message:'earlier',span});
 assert.deepEqual(ordered.list().map(d=>d.message),['earlier','later']);
+const sameLocation=(reverse:boolean)=>{const c=new DiagnosticCollector();const entries=[{stage:'type',message:'same',span,asset:'a'},{stage:'type',message:'same',span,asset:'b'},{stage:'type',severity:'error' as const,message:'same',span,asset:'a'}];c.reportAll(reverse?entries.reverse():entries);return c.list();};
+assert.deepEqual(sameLocation(false),sameLocation(true));assert.equal(sameLocation(false).length,2);
 const error:Ty={kind:'error'};
 assert.deepEqual(common(error,{kind:'scalar',name:'Int',nullable:false}),error);
 assert.deepEqual(optional(error),error);

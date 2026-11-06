@@ -1,5 +1,4 @@
 import {isRecord} from '../host.ts';
-import {canonicalJson} from '../key.ts';
 import {UNKNOWN,TYPED,known as isKnown,unbox,isBox,typeOf,box,show,common,scalar,TypeRuleError,UpstreamTypeUnavailable,type Ty} from './typed-types.ts';
 import { projectionError } from './projection.ts';
 import { SourceFile, sourceExcerpt } from './source.ts';
@@ -200,7 +199,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
     }
     catch (error) { if(error instanceof UpstreamTypeUnavailable)upstreamUnavailable=true;else if(error instanceof DraftSyntaxError||error instanceof TypeRuleError)addError(error,statement.span);else throw error; if (statement.kind === 'binding') bindings.set(binding,UNKNOWN); }
   }
-  const unique = [...new Map(diagnostics.list().map(d=>[canonicalJson([d.file,d.stage,d.severity,d.span,d.message,d.asset,d.expected,d.found,d.related]),d])).values()];
+  const unique = diagnostics.list();
   warnings.push(...unique.filter(d=>d.severity==='warning'));
   const errors=unique.filter(d=>d.severity!=='warning');
   const unresolved = upstreamUnavailable||deferred.some(d=>d.operator==='query');

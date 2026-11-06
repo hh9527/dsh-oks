@@ -38,10 +38,9 @@ export class TypedCompiler{
  throwIfErrors(){const findings=this.diagnostics.list(),errors=findings.filter(d=>d.severity!=='warning');if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,findings);}
  rethrowWithDiagnostics(error:unknown):never{
   if(!this.checking||!(error instanceof DraftSyntaxError)||!this.diagnostics.hasErrors())throw error;
-  const current=this.diagnostics.list();
   const incoming=error.diagnostics.length?error.diagnostics:[{stage:'type',message:error.message,span:error.span}];
-  for(const diagnostic of incoming)if(!current.some(d=>d.stage===diagnostic.stage&&d.message===diagnostic.message&&d.span.start.offset===diagnostic.span.start.offset&&d.span.end.offset===diagnostic.span.end.offset))this.diagnostics.report(diagnostic);
-  const combined=this.diagnostics.list();throw new DraftSyntaxError(combined[0].message,combined[0].span,combined);
+  this.diagnostics.reportAll(incoming);
+  const combined=this.diagnostics.list(),first=combined.find(d=>d.severity!=='warning')!;throw new DraftSyntaxError(first.message,first.span,combined);
  }
  expr(n:N,env:Record<string,V>):V{
   if(n.k==='template_presence'){
