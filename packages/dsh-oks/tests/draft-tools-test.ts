@@ -5,7 +5,7 @@ import {join} from 'node:path';
 import {createDraftTools} from '../src/draft/tools.ts';
 import {testAttachments} from './test-attachments.ts';
 const root=mkdtempSync(join(tmpdir(),'dari-tools-'));
-let executions=0;
+let executions=0,publications=0;
 let release:(()=>void)|undefined;
 const columns=[{name:'n',type:'Int',nullable:false}];
 const entry={root,modelHash:'test',settings:{workspaceRoot:root,domain:'test',queryMaxRows:200},runner:{async send(){return {ok:{accepted:true,queries:[{sql:'select n',bindings:[5],limit_slot:0,columns}]}};}}};
@@ -20,7 +20,8 @@ const agentFor=(id:string)=>{const agent:any={session:sessionFor(id),injected:[]
 const exec={agent:agentFor('one')} as any;
 const other={agent:agentFor('two')} as any;
 const timeContext={zones:new Map([[exec.agent.session,{kind:'resolved',timeZone:'UTC'}],[other.agent.session,{kind:'resolved',timeZone:'UTC'}]])};
-const drafts=createDraftTools({knowledge:knowledge as any,timeContext:timeContext as any,attachments:()=>testAttachments(root)});
+const attachmentStore=testAttachments(root);
+const drafts=createDraftTools({knowledge:knowledge as any,timeContext:timeContext as any,attachments:()=>({...attachmentStore,async saveFile(input){publications++;return attachmentStore.saveFile(input);}})});
 const call=async(name:string,args:object,caller=exec)=>drafts.tools.find(t=>t.name===name)!.execute(args as never,caller) as Promise<any>;
 const source=`data ctx = context();
 data facts = query({limit:5});
@@ -64,6 +65,11 @@ try {
  writeFileSync(absolute,source+'\ndata unused = no_such_function();');
  checked=await call('dari_check',{src});assert.equal(checked.ok,false);
  assert.equal((await call('dari_resolve',{src})).ok,false);assert.equal(executions,before);
+ const beforePublications=publications,beforeMessages=exec.agent.injected.length,beforeDeliveries=exec.agent.session.delivered.length;
+ writeFileSync(absolute,source+'\ndata unused = select({from:{f:facts},fields:r=>({a:r.f.missing_a,b:r.f.missing_b})});');
+ const invalid=await call('dari_resolve',{src});assert.equal(invalid.ok,false);assert.equal(invalid.execution,'not performed');
+ for(const field of ['missing_a','missing_b'])assert(invalid.diagnostics.some((d:any)=>d.message.includes(field)),JSON.stringify(invalid));
+ assert.equal(executions,before);assert.equal(publications,beforePublications);assert.equal(exec.agent.injected.length,beforeMessages);assert.equal(exec.agent.session.delivered.length,beforeDeliveries);
  writeFileSync(absolute,source);
  for(const selection of [{answer:true},{data:['missing']},{reports:['facts']},{figures:['chart']}])await assert.rejects(call('dari_resolve',{src,...selection}),/Expected only src/);
  // Renewal during an active acquisition must not alter the running batch.
