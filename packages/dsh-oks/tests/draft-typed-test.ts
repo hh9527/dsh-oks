@@ -54,6 +54,12 @@ const small=(body:string)=>`data a = query({period:"base",limit:10});data b = qu
  for(const expected of ['missing_first','missing_second','Arithmetic requires numbers','missing_nested'])assert(result.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(result.diagnostics));
  assert.equal(result.diagnostics.filter(d=>d.message.includes('Arithmetic requires numbers')).length,1,JSON.stringify(result.diagnostics));
  assert(result.checkedBindings.some(b=>b.name==='broken'&&!b.checked));assert(result.checkedBindings.some(b=>b.name==='blocked'&&!b.checked));
+ const partial=await checkDesign(small(`data broken = select({from:{s:a},fields:r=>({bad:r.s.missing_root})});
+ data downstream = select({from:{s:a},fields:r=>({dependent:broken.missing,independent:r.s.missing_independent})});`),'typed.dari',backend);
+ assert(partial.diagnostics.some(d=>d.message.includes('missing_root')),JSON.stringify(partial.diagnostics));
+ assert(partial.diagnostics.some(d=>d.message.includes('missing_independent')),JSON.stringify(partial.diagnostics));
+ assert(!partial.diagnostics.some(d=>/missing on broken|Expected Table, got Error|Upstream type/.test(d.message)),JSON.stringify(partial.diagnostics));
+ assert(partial.checkedBindings.some(b=>b.name==='downstream'&&!b.checked));assert.equal(reads,before);
  const siblings=await checkDesign(small(`data sample = select({from:{s:a},fields:r=>({
   first:case_when(True,r.s.missing_left,r.s.missing_right),
   second:r.s.missing_a+r.s.missing_b

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {DiagnosticCollector} from '../src/draft/diagnostics.ts';
-import {common,optional,type Ty} from '../src/draft/typed-types.ts';
+import {box,common,optional,UpstreamTypeUnavailable,type Ty} from '../src/draft/typed-types.ts';
 import {checkDesign,parseAnalysisDesign} from '../src/draft/design.ts';
 import {createDraftBackend} from '../src/draft/backend.ts';
 import {runTyped} from '../src/draft/typed-runtime.ts';
@@ -45,6 +45,11 @@ let prepares=0;
 await assert.rejects(runTyped({operator:'relational',args:[{data:ast.value},{data:{__source0:{columns:[{name:'n',type:'Int',nullable:false}],rows:[],truncated:false}}}],statement,span:statement.span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL prepare');}} as any,true),error=>{
  assert(error instanceof DraftSyntaxError);assert.equal(error.diagnostics.length,2);return true;
 });
+assert.equal(prepares,0);
+const blockedSource='data facts = table([{n:1}],{kind:"example"}); data bad = 1; data x = select({from:{s:facts},fields:r=>({v:bad + 1})});';
+const blockedStatement=parseAnalysisDesign(blockedSource,'fixture.dari').nodes.at(-1)!.statement;
+if(blockedStatement.value.kind!=='call'||blockedStatement.value.args[0].kind!=='literal')throw new Error('Expected relational AST');
+await assert.rejects(runTyped({operator:'relational',args:[{data:blockedStatement.value.args[0].value},{data:{__source0:{columns:[{name:'n',type:'Int',nullable:false}],rows:[],truncated:false},bad:box({kind:'error'})}}],statement:blockedStatement,span:blockedStatement.span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL prepare');}} as any,true),UpstreamTypeUnavailable);
 assert.equal(prepares,0);
 const backend=createDraftBackend({entry:{settings:{},modelHash:'fixture'} as any,file:'fixture.dari',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge:{executorFor(){throw new Error('Unexpected business read');}}});
 try{

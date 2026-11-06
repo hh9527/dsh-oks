@@ -18,6 +18,8 @@ export const box=(type:Ty,value:unknown=UNKNOWN):Box=>{
  return {[TYPED]:type,value};
 };
 export const isBox=(v:unknown):v is Box=>isRecord(v)&&TYPED in v;
+export function hasTypeError(t:Ty):boolean{return t.kind==='error'||t.kind==='array'&&hasTypeError(t.element)||t.kind==='record'&&Object.values(t.fields).some(hasTypeError);}
+export function hasError(v:unknown):boolean{if(isBox(v))return hasTypeError(v[TYPED]);if(Array.isArray(v))return v.some(hasError);return isRecord(v)&&Object.values(v).some(hasError);}
 export function known(v:unknown):boolean{if(v===UNKNOWN)return false;if(isBox(v))return known(v.value);if(Array.isArray(v))return v.every(known);return !isRecord(v)||Object.values(v).every(known);}
 export function unbox(v:unknown):any{if(isBox(v))return unbox(v.value);if(Array.isArray(v))return v.map(unbox);if(isRecord(v))return Object.fromEntries(Object.entries(v).map(([k,v])=>[k,unbox(v)]));return v;}
 export function common(a:Ty,b:Ty):Ty{

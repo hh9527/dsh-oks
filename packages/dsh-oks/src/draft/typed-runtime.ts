@@ -1,6 +1,6 @@
 import {isRecord} from '../host.ts';
 import {TypedCompiler,fail} from './typed-compiler.ts';
-import {UNKNOWN,TYPED,box,isBox,typeOf,unbox,known,common,scalar,rowType,show,type Ty} from './typed-types.ts';
+import {UNKNOWN,TYPED,box,isBox,typeOf,unbox,known,common,scalar,rowType,show,hasError,UpstreamTypeUnavailable,type Ty} from './typed-types.ts';
 import type {N} from './typed-syntax.ts';
 import type {SqlWorkspace,SqlColumn} from './sql.ts';
 import type {CallContext,Computed} from './runtime.ts';
@@ -41,11 +41,12 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
  const hint=ctx.args[1]?.logicalType as Ty|undefined;
  const compiler=new TypedCompiler(input,hint?.kind==='record'?hint.fields:{},check);
  if(ctx.operator==='typed_value'){
-  const v=compiler.compile(ast);if(check){compiler.throwIfErrors();return {data:box(v.type,v.known?v.value:UNKNOWN),logicalType:v.type};}
+  const v=compiler.compile(ast);if(check){compiler.throwIfErrors();if(hasError(input))throw new UpstreamTypeUnavailable();return {data:box(v.type,v.known?v.value:UNKNOWN),logicalType:v.type};}
   if(!v.known)fail(ast,'Scalar expression requires a materialized value');compiler.validNumber(v.value,v.type,ast);return {data:v.value,logicalType:v.type};
  }
  const plan=(()=>{try{return compiler.relational(ast);}catch(error){return compiler.rethrowWithDiagnostics(error);}})();
  if(check){
+  if(hasError(input))throw new UpstreamTypeUnavailable();
   // Types come from our AST rules; prepare is a separate lowering consistency check.
   await workspace.execute(ctx.run,plan.sql,Object.fromEntries(Object.entries(plan.tables).map(([k,v])=>[k,unbox(v)])),true,ctx.signal,compiler.bindings);
   return {data:ctx.operator==='relational_one'?box(plan.type):mark({columns:plan.columns,rows:UNKNOWN,truncated:UNKNOWN},plan.type),logicalType:plan.type,evidence:{guard:plan.guard}};

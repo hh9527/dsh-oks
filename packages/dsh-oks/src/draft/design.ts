@@ -1,5 +1,5 @@
 import {isRecord} from '../host.ts';
-import {UNKNOWN,TYPED,known as isKnown,unbox,isBox,typeOf,box,show,common,scalar,TypeRuleError,UpstreamTypeUnavailable,type Ty} from './typed-types.ts';
+import {UNKNOWN,TYPED,known as isKnown,unbox,isBox,typeOf,box,show,common,scalar,hasError,TypeRuleError,UpstreamTypeUnavailable,type Ty} from './typed-types.ts';
 import { projectionError } from './projection.ts';
 import { SourceFile, sourceExcerpt } from './source.ts';
 import { parseDraftForValidation, type DraftDocument } from './document.ts';
@@ -111,7 +111,6 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
   for (const {statement,internal,bindings:dependencies} of doc.nodes) {
     let figureShape:Extract<CheckedBinding['shape'],{kind:'figure'}>|undefined;
     const binding = statement.kind === 'binding' ? statement.name : 'output';
-    if(dependencies.some(name=>!resolved.has(name))){if(statement.kind==='binding')bindings.set(binding,UNKNOWN);continue;}
     type Environment=Map<string,unknown>;
     const evaluate = async (e: Expr,locals:Environment=new Map(),variants:Environment[]=[new Map()]): Promise<unknown> => {
       const child=(e:Expr)=>evaluate(e,locals,variants);
@@ -122,13 +121,14 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
       if (e.kind === 'object') {const values=await settle(e.entries.map(({value})=>({span:value.span,run:()=>child(value)})));return Object.fromEntries(e.entries.map(({key},i)=>[key,values[i]]));}
       if (e.kind === 'project') {
         let value = await child(e.input);
-        if(isBox(value)){const t=typeOf(value);const field=t.kind==='record'&&!t.nullable&&typeof e.key==='string'&&Object.hasOwn(t.fields,e.key)?t.fields[e.key]:t.kind==='array'&&typeof e.key==='number'&&e.key>=0&&(t.length===undefined||e.key<t.length)?t.element:undefined;if(!field)throw new DraftSyntaxError('Invalid projection from '+show(t),e.span);return box(field,isKnown(value)?unbox(value)[e.key]:UNKNOWN);}
+        if(isBox(value)){const t=typeOf(value);if(t.kind==='error')return value;const field=t.kind==='record'&&!t.nullable&&typeof e.key==='string'&&Object.hasOwn(t.fields,e.key)?t.fields[e.key]:t.kind==='array'&&typeof e.key==='number'&&e.key>=0&&(t.length===undefined||e.key<t.length)?t.element:undefined;if(!field)throw new DraftSyntaxError('Invalid projection from '+show(t),e.span);return box(field,isKnown(value)?unbox(value)[e.key]:UNKNOWN);}
         if (value === UNKNOWN) return UNKNOWN;
         if (value === null || typeof value !== 'object' || (Array.isArray(value)?typeof e.key!=='number':typeof e.key!=='string') || !Object.hasOwn(value,e.key)) throw new DraftSyntaxError(projectionError(value,e),e.span);
         return (value as Record<string|number,unknown>)[e.key];
       }
       if(e.operator==='analysis_map'){
         const input=await child(e.args[0]),t=typeOf(input);
+        if(hasError(input))throw new UpstreamTypeUnavailable();
         if(t.kind!=='array')throw new DraftSyntaxError('map requires Array, got '+show(t),e.span);
         if(t.element.kind==='never')throw new DraftSyntaxError('map requires an inferable element type',e.span);
         const params=JSON.parse(String((e.args[1] as Extract<Expr,{kind:'literal'}>).value)) as string[];
@@ -155,6 +155,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
       const args = await settle(e.args.map(arg=>({span:arg.span,run:()=>child(arg)})));
       const ctx: CallContext = {operator:e.operator,figureKind:e.figureKind,args:args.map(data=>({data,sources:[]})),statement,span:e.span,run:'check',batch:'check',sourceHash:'check',signal,
         asset:typeof args[0] === 'string'?doc.assets.get(args[0]):undefined};
+      if(hasError(args)&&!['typed_value','relational','relational_one'].includes(e.operator))throw new UpstreamTypeUnavailable();
       if(['typed_value','relational','relational_one','table_union','typed_table'].includes(e.operator)){
         const computed=await analyze(ctx);
         if(e.operator!=='typed_value'){const t=computed.logicalType as Ty;queries.push({binding,at:e.span.start,type:show(t),...(t.kind==='table'?{columns:t.columns}:{}),...(e.operator==='relational_one'&&(computed.evidence as {guard?:boolean})?.guard?{guard:'at most one row checked at runtime'}:{}),result:{values:'runtime',type:'checked'}});}
@@ -204,21 +205,22 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
       if(statement.kind==='binding'){
         bindings.set(binding,value);
         let shape:CheckedBinding['shape'];
+        let opaqueInternal=false;
         const result=checkedBindings.find(n=>n.name===binding);
         const presentation=statement.value.kind==='call'&&statement.value.operator==='render_report';
         try{shape=figureShape??typeOf(value);if(!internal&&shape.kind!=='figure')types[binding]=show(shape);}catch(error){
-          if(error instanceof TypeRuleError){if(!internal)addError(new DraftSyntaxError(error.message,statement.span),statement.span,'type');}
+          if(error instanceof TypeRuleError){if(internal)opaqueInternal=true;else addError(new DraftSyntaxError(error.message,statement.span),statement.span,'type');}
           else if(error instanceof UpstreamTypeUnavailable){if(!presentation)upstreamUnavailable=true;}
           else throw error;
         }
         const localError=diagnostics.list().some(d=>d.severity!=='warning'&&(d.asset===binding || (d.span.start.offset>=statement.span.start.offset&&d.span.start.offset<statement.span.end.offset)));
-        const checked=!diagnostics.hasErrors(before)&&!localError&&dependencies.every(name=>resolved.has(name))&&(shape!==undefined||presentation);
+        const checked=!diagnostics.hasErrors(before)&&!localError&&dependencies.every(name=>resolved.has(name))&&(shape!==undefined||presentation||opaqueInternal);
         if(checked)resolved.add(binding);
-        else bindings.set(binding,UNKNOWN);
+        else bindings.set(binding,box({kind:'error'}));
         if(result){result.checked=checked;if(shape!==undefined)result.shape=shape;}
       }
     }
-    catch (error) { if(error instanceof UpstreamTypeUnavailable)upstreamUnavailable=true;else if(error instanceof DraftSyntaxError||error instanceof TypeRuleError)addError(error,statement.span);else throw error; if (statement.kind === 'binding') bindings.set(binding,UNKNOWN); }
+    catch (error) { if(error instanceof UpstreamTypeUnavailable)upstreamUnavailable=true;else if(error instanceof DraftSyntaxError||error instanceof TypeRuleError)addError(error,statement.span);else throw error; if (statement.kind === 'binding') bindings.set(binding,box({kind:'error'})); }
   }
   const unique = diagnostics.list();
   warnings.push(...unique.filter(d=>d.severity==='warning'));

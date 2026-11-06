@@ -1,6 +1,6 @@
 import {DraftSyntaxError} from './pipeline.ts';
 import type {N} from './typed-syntax.ts';
-import {typeOf,common,scalar,record,optional,present,known,unbox,show,rowType,TypeRuleError,type Ty} from './typed-types.ts';
+import {typeOf,common,scalar,record,optional,present,known,unbox,show,rowType,TypeRuleError,UpstreamTypeUnavailable,type Ty} from './typed-types.ts';
 import type {SqlColumn} from './sql.ts';
 import {isRecord} from '../host.ts';
 import {DiagnosticCollector} from './diagnostics.ts';
@@ -161,7 +161,7 @@ export class TypedCompiler{
   const spec=n.a![0];if(spec.k!=='object')fail(n,'Expected select specification');const entries=Object.fromEntries(spec.entries!.map(e=>[e.key,e.value]));for(const key of Object.keys(entries))if(!['from','joins','where','fields','group_by','having','order_by','limit'].includes(key))fail(entries[key],'Unknown select option '+key);
   const captures=this.env(),tables:Record<string,unknown>={},scope:Record<string,V>=Object.create(null),joins:string[]=[];let sourceCount=0;let baseBounds:{minRows?:number;maxRows?:number}={};
   const source=(s:N,left=false):string=>{
-   if(s.k!=='object'||s.entries!.length!==1)fail(s,'Expected one source alias');const {key:alias,value:ref}=s.entries![0];if(Object.hasOwn(scope,alias))fail(s,'Duplicate table alias '+alias);const v=this.compile(ref,captures);if(v.type.kind==='error')this.throwIfErrors();if(v.type.kind!=='table')fail(ref,'Expected Table, got '+show(v.type));
+   if(s.k!=='object'||s.entries!.length!==1)fail(s,'Expected one source alias');const {key:alias,value:ref}=s.entries![0];if(Object.hasOwn(scope,alias))fail(s,'Duplicate table alias '+alias);const v=this.compile(ref,captures);if(v.type.kind==='error'){this.throwIfErrors();throw new UpstreamTypeUnavailable();}if(v.type.kind!=='table')fail(ref,'Expected Table, got '+show(v.type));
    const inputKey='source'+sourceCount,sqlAlias='a'+sourceCount++;tables[inputKey]=this.captures[ref.name!];const columns=v.type.columns;if(sourceCount===1)baseBounds=v.type;let presence='__dari_present';while(columns.some(c=>c.name===presence))presence+='_';
    scope[alias]={type:rowType(columns),known:false,presence:sqlAlias+'.'+q(presence),fields:Object.fromEntries(columns.map(c=>[c.name,{type:scalar(c.type,c.nullable),known:false,sql:sqlAlias+'.'+q(c.name)}]))};
    return '(SELECT *,1 AS '+q(presence)+' FROM '+q('t_'+inputKey)+') '+sqlAlias;
@@ -174,7 +174,7 @@ export class TypedCompiler{
   const asColumns=(v:V):V=>({...v,column:v.type.kind==='scalar'?true:v.column,...(v.fields?{fields:Object.fromEntries(Object.entries(v.fields).map(([k,v])=>[k,asColumns(v)]))}:{})});
   if(!entries.fields)fail(n,'select requires fields');
   const values=this.callback(entries.fields,groups?[groups,{...asColumns(row),rows:true}]:[row],captures);
-  if(values.type.kind!=='record'||!values.fields||!Object.keys(values.fields).length){if(values.type.kind!=='error')this.reportFailure(entries.fields,'fields requires a nonempty record');this.throwIfErrors();fail(entries.fields,'fields requires a nonempty record');}
+  if(values.type.kind!=='record'||!values.fields||!Object.keys(values.fields).length){if(values.type.kind!=='error')this.reportFailure(entries.fields,'fields requires a nonempty record');this.throwIfErrors();if(values.type.kind==='error')throw new UpstreamTypeUnavailable();fail(entries.fields,'fields requires a nonempty record');}
   const outputFields:Record<string,V>={};const columns:SqlColumn[]=[];
   for(const [name,v] of Object.entries(values.fields)){
    if(v.type.kind==='error'){outputFields[name]=v;continue;}
@@ -197,7 +197,7 @@ export class TypedCompiler{
    return valid?this.sql(value,item)+' '+item.name!.toUpperCase()+' NULLS '+nulls.toUpperCase():'NULL ASC NULLS LAST';
   });if(!order.length)fail(f,'order_by must not be empty');sql+=' ORDER BY '+order.join(',');}
   let minRows=groups&&Object.keys(groups.fields??{}).length===0&&!entries.having?1:!groups&&!entries.where&&!joins.length?(baseBounds.minRows??0):0,maxRows:number|undefined=groups&&Object.keys(groups.fields??{}).length===0?1:!joins.length?baseBounds.maxRows:undefined;
-  if(entries.limit){const v=this.compile(entries.limit,captures);if(v.type.kind==='error')this.throwIfErrors();if(!v.known||!Number.isSafeInteger(v.value)||v.value<0)fail(entries.limit,'limit requires a known nonnegative Int');if(v.value>0&&!entries.order_by&&maxRows!==1)fail(entries.limit,'limit requires order_by');maxRows=Math.min(maxRows??Infinity,v.value);minRows=Math.min(minRows,v.value);sql+=' LIMIT '+v.value;}
+  if(entries.limit){const v=this.compile(entries.limit,captures);if(v.type.kind==='error'){this.throwIfErrors();throw new UpstreamTypeUnavailable();}if(!v.known||!Number.isSafeInteger(v.value)||v.value<0)fail(entries.limit,'limit requires a known nonnegative Int');if(v.value>0&&!entries.order_by&&maxRows!==1)fail(entries.limit,'limit requires order_by');maxRows=Math.min(maxRows??Infinity,v.value);minRows=Math.min(minRows,v.value);sql+=' LIMIT '+v.value;}
   this.throwIfErrors();
   if(n.name==='select_one')sql='SELECT * FROM ('+sql+') LIMIT 2';
   return {sql,tables,columns,type:n.name==='select_one'?optional(rowType(columns)):{kind:'table',columns,minRows,...(maxRows===undefined?{}:{maxRows})} as Ty,minRows,maxRows,guard:n.name==='select_one'&&(maxRows===undefined||maxRows>1)};
