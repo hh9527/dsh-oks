@@ -44,7 +44,7 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
   const v=compiler.compile(ast);if(check){compiler.throwIfErrors();return {data:box(v.type,v.known?v.value:UNKNOWN),logicalType:v.type};}
   if(!v.known)fail(ast,'Scalar expression requires a materialized value');compiler.validNumber(v.value,v.type,ast);return {data:v.value,logicalType:v.type};
  }
- const plan=compiler.relational(ast);
+ const plan=(()=>{try{return compiler.relational(ast);}catch(error){return compiler.rethrowWithDiagnostics(error);}})();
  if(check){
   // Types come from our AST rules; prepare is a separate lowering consistency check.
   await workspace.execute(ctx.run,plan.sql,Object.fromEntries(Object.entries(plan.tables).map(([k,v])=>[k,unbox(v)])),true,ctx.signal,compiler.bindings);

@@ -35,7 +35,14 @@ export class TypedCompiler{
    return {type:{kind:'error'},known:false};
   }
  }
- throwIfErrors(){const errors=this.diagnostics.list();if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);}
+ throwIfErrors(){const findings=this.diagnostics.list(),errors=findings.filter(d=>d.severity!=='warning');if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,findings);}
+ rethrowWithDiagnostics(error:unknown):never{
+  if(!this.checking||!(error instanceof DraftSyntaxError)||!this.diagnostics.hasErrors())throw error;
+  const current=this.diagnostics.list();
+  const incoming=error.diagnostics.length?error.diagnostics:[{stage:'type',message:error.message,span:error.span}];
+  for(const diagnostic of incoming)if(!current.some(d=>d.stage===diagnostic.stage&&d.message===diagnostic.message&&d.span.start.offset===diagnostic.span.start.offset&&d.span.end.offset===diagnostic.span.end.offset))this.diagnostics.report(diagnostic);
+  const combined=this.diagnostics.list();throw new DraftSyntaxError(combined[0].message,combined[0].span,combined);
+ }
  expr(n:N,env:Record<string,V>):V{
   if(n.k==='template_presence'){
    const input=this.compile(n.input!,env);
@@ -149,10 +156,10 @@ export class TypedCompiler{
    return '(SELECT *,1 AS '+q(presence)+' FROM '+q('t_'+inputKey)+') '+sqlAlias;
   };
   if(!entries.from)fail(n,'select requires from');const from=source(entries.from);
-  if(entries.joins){if(entries.joins.k!=='array')fail(entries.joins,'joins must be an array');for(const j of entries.joins.a!){if(j.k!=='object')fail(j,'Expected join object');const p=Object.fromEntries(j.entries!.map(e=>[e.key,e.value]));for(const key of Object.keys(p))if(!['kind','source','on'].includes(key))fail(p[key],'Unknown join option '+key);if(!p.kind||p.kind.k!=='lit'||!['inner','left'].includes(p.kind.v)||!p.source||!p.on)fail(j,'join requires kind,source,on');const sql=source(p.source);const predicate=this.callback(p.on,[{type:record(Object.fromEntries(Object.entries(scope).map(([k,v])=>[k,v.type]))),known:false,fields:{...scope}}],captures);this.bool(predicate,p.on);joins.push((p.kind.v==='left'?' LEFT':' INNER')+' JOIN '+sql+' ON '+this.sql(predicate,p.on));if(p.kind.v==='left'){const alias=p.source.entries![0].key;scope[alias]={...scope[alias],type:optional(scope[alias].type)};}}}
+  if(entries.joins){if(entries.joins.k!=='array')fail(entries.joins,'joins must be an array');for(const j of entries.joins.a!){if(j.k!=='object')fail(j,'Expected join object');const p=Object.fromEntries(j.entries!.map(e=>[e.key,e.value]));for(const key of Object.keys(p))if(!['kind','source','on'].includes(key))fail(p[key],'Unknown join option '+key);if(!p.kind||p.kind.k!=='lit'||!['inner','left'].includes(p.kind.v)||!p.source||!p.on)fail(j,'join requires kind,source,on');const sql=source(p.source);const predicate=this.callback(p.on,[{type:record(Object.fromEntries(Object.entries(scope).map(([k,v])=>[k,v.type]))),known:false,fields:{...scope}}],captures);const valid=this.bool(predicate,p.on);joins.push((p.kind.v==='left'?' LEFT':' INNER')+' JOIN '+sql+' ON '+(valid?this.sql(predicate,p.on):'NULL'));if(p.kind.v==='left'){const alias=p.source.entries![0].key;scope[alias]={...scope[alias],type:optional(scope[alias].type)};}}}
   const row:V={type:record(Object.fromEntries(Object.entries(scope).map(([k,v])=>[k,v.type]))),known:false,fields:scope};
   const where=entries.where?this.callback(entries.where,[row],captures):undefined;if(where)this.bool(where,entries.where);
-  let groups:V|undefined;if(entries.group_by){groups=this.callback(entries.group_by,[row],captures);if(groups.type.kind==='error'||Object.values(groups.fields??{}).some(v=>v.type.kind==='error'))this.throwIfErrors();if(groups.type.kind!=='record')fail(entries.group_by,'group_by requires a key record');for(const v of Object.values(groups.fields!))if(v.type.kind!=='scalar'&&v.type.kind!=='null')fail(entries.group_by,'Group keys must be scalar');}
+  let groups:V|undefined;if(entries.group_by){groups=this.callback(entries.group_by,[row],captures);if(groups.type.kind!=='record'&&groups.type.kind!=='error'){this.reportFailure(entries.group_by,'group_by requires a key record');groups={type:{kind:'error'},known:false};}for(const v of Object.values(groups.fields??{}))if(v.type.kind!=='scalar'&&v.type.kind!=='null'&&v.type.kind!=='error')this.reportFailure(entries.group_by,'Group keys must be scalar');}
   const asColumns=(v:V):V=>({...v,column:v.type.kind==='scalar'?true:v.column,...(v.fields?{fields:Object.fromEntries(Object.entries(v.fields).map(([k,v])=>[k,asColumns(v)]))}:{})});
   if(!entries.fields)fail(n,'select requires fields');
   const values=this.callback(entries.fields,groups?[groups,{...asColumns(row),rows:true}]:[row],captures);
@@ -166,7 +173,7 @@ export class TypedCompiler{
   if(groups){const keys=Object.values(groups.fields!);if(keys.length)inner+=' GROUP BY '+keys.map(v=>this.sql(v,entries.group_by)).join(',');}
   const output:V={type:rowType(columns),known:false,fields:Object.fromEntries(columns.map(c=>[c.name,{type:scalar(c.type,c.nullable),known:false,sql:q(c.name)}]))};
   if(entries.having&&!groups)fail(entries.having,'having requires group_by');
-  let sql='SELECT '+columns.map(c=>q(c.name)).join(',')+' FROM ('+inner+')';if(entries.having){const p=this.callback(entries.having,[output],captures);this.bool(p,entries.having);sql+=' WHERE '+this.sql(p,entries.having);}
+  let sql='SELECT '+columns.map(c=>q(c.name)).join(',')+' FROM ('+inner+')';if(entries.having){const p=this.callback(entries.having,[output],captures);const valid=this.bool(p,entries.having);sql+=' WHERE '+(valid?this.sql(p,entries.having):'NULL');}
   if(entries.order_by){const f=entries.order_by;if(f.k!=='lambda'||f.params?.length!==1||f.body?.k!=='array')fail(f,'order_by requires (out) => [asc/desc(...)]');const env={...captures,[f.params![0]]:output};const order=f.body.a!.map(item=>{if(item.k!=='call'||!['asc','desc'].includes(item.name!)||![1,2].includes(item.a!.length))fail(item,'Expected asc or desc');const value=this.compile(item.a![0],env);if(value.type.kind==='error')return 'NULL ASC NULLS LAST';if(value.type.kind!=='scalar')fail(item,'Ordering requires a scalar');let nulls='last';if(item.a![1]){const option=this.compile(item.a![1],env);if(option.type.kind==='error')return 'NULL ASC NULLS LAST';if(!option.known||!isRecord(option.value)||Object.keys(option.value).some(k=>k!=='nulls')||!['first','last'].includes(String(option.value.nulls)))fail(item,'Ordering options must be {nulls:"first"|"last"}');nulls=String(option.value.nulls);}return this.sql(value,item)+' '+item.name!.toUpperCase()+' NULLS '+nulls.toUpperCase();});if(!order.length)fail(f,'order_by must not be empty');sql+=' ORDER BY '+order.join(',');}
   let minRows=groups&&Object.keys(groups.fields!).length===0&&!entries.having?1:!groups&&!entries.where&&!joins.length?(baseBounds.minRows??0):0,maxRows:number|undefined=groups&&Object.keys(groups.fields!).length===0?1:!joins.length?baseBounds.maxRows:undefined;
   if(entries.limit){const v=this.compile(entries.limit,captures);if(v.type.kind==='error')this.throwIfErrors();if(!v.known||!Number.isSafeInteger(v.value)||v.value<0)fail(entries.limit,'limit requires a known nonnegative Int');if(v.value>0&&!entries.order_by&&maxRows!==1)fail(entries.limit,'limit requires order_by');maxRows=Math.min(maxRows??Infinity,v.value);minRows=Math.min(minRows,v.value);sql+=' LIMIT '+v.value;}
@@ -176,5 +183,6 @@ export class TypedCompiler{
  }
  presence(v:V,n:N):string{if(v.presence)return v.presence;if(v.type.kind==='record')return this.param(v.known?(v.value===null?null:1):null);return this.sql(v,n);}
  callback(n:N,args:V[],env:Record<string,V>):V{if(n.k!=='lambda'||n.params?.length!==args.length)fail(n,'Expected a row function with '+args.length+' parameter(s)');return this.compile(n.body!,{...env,...Object.fromEntries(n.params!.map((p,i)=>[p,args[i]]))});}
- bool(v:V,n:N){if(v.type.kind==='error'&&this.checking)return;if(v.type.kind!=='scalar'||v.type.name!=='Bool'||v.type.nullable||v.column)fail(n,'Predicate must return Bool; use ?? False for Option(Bool)');}
+ reportFailure(n:N,message:string){if(!this.checking)fail(n,message);this.diagnostics.report({stage:'type',message,span:n.s});}
+ bool(v:V,n:N):boolean{if(v.type.kind==='error'&&this.checking)return false;if(v.type.kind!=='scalar'||v.type.name!=='Bool'||v.type.nullable||v.column){this.reportFailure(n,'Predicate must return Bool; use ?? False for Option(Bool)');return false;}return true;}
 }

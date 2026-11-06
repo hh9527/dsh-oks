@@ -24,7 +24,7 @@ export type PipelineNode = {
   statement: Statement;
   bindings: string[];
 };
-export type SourceDiagnostic = {file?:string;stage:string;message:string;span:Span;asset?:string;expected?:string;found?:string;excerpt?:{line:number;column:number;text:string;marker:string};related?:{message:string;span:Span}[]};
+export type SourceDiagnostic = {file?:string;stage:string;severity?:'error'|'warning';message:string;span:Span;asset?:string;expected?:string;found?:string;excerpt?:{line:number;column:number;text:string;marker:string};related?:{message:string;span:Span}[]};
 export class DraftSyntaxError extends Error {
   readonly span: Span;
   readonly diagnostics: SourceDiagnostic[];

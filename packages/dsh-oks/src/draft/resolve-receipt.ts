@@ -11,7 +11,7 @@ export function renderResolveReceipt(value:unknown):string {
     const add=(raw:unknown)=>{
       if(!isRecord(raw)||raw.status==='blocked')return;
       const message=typeof raw.message==='string'?raw.message:typeof raw.error==='string'?raw.error:'';
-      if(!message||/^Upstream\b/.test(message))return;
+      if(!message)return;
       const at=isRecord(raw.span)&&isRecord(raw.span.start)?raw.span.start:isRecord(raw.at)?raw.at:undefined;
       const location=at&&typeof at.line==='number'&&typeof at.column==='number'?`L${at.line}:${at.column}: `:'';
       const item={location,message:message.replace(/[\r\n\u2028\u2029]+/g,' ')};

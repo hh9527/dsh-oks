@@ -3,6 +3,9 @@ import type {SqlColumn} from './sql.ts';
 export const UNKNOWN=Symbol('runtime data');
 export const TYPED=Symbol('typed check value');
 export class TypeRuleError extends Error {}
+export class UpstreamTypeUnavailable extends Error {
+ constructor(){super('Upstream type is unavailable');}
+}
 export type Ty={kind:'error'}|{kind:'never'}|{kind:'scalar';name:string;nullable:boolean}|{kind:'record';fields:Record<string,Ty>;nullable:boolean}|{kind:'array';element:Ty;length?:number;nullable:false}|{kind:'table';columns:SqlColumn[];minRows?:number;maxRows?:number}|{kind:'null'};
 export type Box={ [TYPED]:Ty;value:unknown };
 export const scalar=(name:string,nullable=false):Ty=>({kind:'scalar',name,nullable});
@@ -32,7 +35,7 @@ export function common(a:Ty,b:Ty):Ty{
  throw new TypeRuleError('Incompatible types '+show(a)+' and '+show(b));
 }
 export function typeOf(v:unknown,hint?:Ty):Ty{
- if(hint)return hint;if(isBox(v))return v[TYPED];if(v===UNKNOWN)throw new Error('Upstream type is unavailable');
+ if(hint)return hint;if(isBox(v))return v[TYPED];if(v===UNKNOWN)throw new UpstreamTypeUnavailable();
  if(v===null)return {kind:'null'};if(typeof v==='string')return scalar('String');if(typeof v==='number')return scalar(Number.isInteger(v)?'Int':'Float');if(typeof v==='boolean')return scalar('Bool');
  if(Array.isArray(v)){let element:Ty|undefined;for(const x of v)element=element?common(element,typeOf(x)):typeOf(x);if(!element)element={kind:'never'};return {kind:'array',element,length:v.length,nullable:false};}
  if(isRecord(v)){if(Array.isArray(v.columns)&&'rows' in v){const names=new Set<string>();for(const c of v.columns){if(!isRecord(c)||typeof c.name!=='string'||typeof c.type!=='string'||c.type==='Unknown'||typeof c.nullable!=='boolean'||names.has(c.name))throw new Error('Invalid or unknown table column type');names.add(c.name);}return {kind:'table',columns:v.columns as SqlColumn[]};}return record(Object.fromEntries(Object.entries(v).map(([k,x])=>[k,typeOf(x)])));}

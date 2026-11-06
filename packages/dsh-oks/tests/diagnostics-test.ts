@@ -1,18 +1,25 @@
 import assert from 'node:assert/strict';
 import {DiagnosticCollector} from '../src/draft/diagnostics.ts';
 import {common,optional,type Ty} from '../src/draft/typed-types.ts';
-import {parseAnalysisDesign} from '../src/draft/design.ts';
+import {checkDesign,parseAnalysisDesign} from '../src/draft/design.ts';
+import {createDraftBackend} from '../src/draft/backend.ts';
 import {runTyped} from '../src/draft/typed-runtime.ts';
 import {DraftSyntaxError} from '../src/draft/pipeline.ts';
 
 const span={start:{offset:0,line:1,column:1},end:{offset:1,line:1,column:2}};
 const diagnostics=new DiagnosticCollector();
 const checkpoint=diagnostics.checkpoint();
+diagnostics.report({stage:'type',severity:'warning',message:'warning',span});
+assert(!diagnostics.hasErrors(checkpoint));
 diagnostics.report({stage:'type',message:'first',span});
 diagnostics.reportAll([{stage:'type',message:'second',span}]);
 assert(diagnostics.hasErrors(checkpoint));
-assert.equal(diagnostics.list().length,2);
-diagnostics.list().pop();assert.equal(diagnostics.list().length,2);
+assert.equal(diagnostics.list().length,3);
+diagnostics.list().pop();assert.equal(diagnostics.list().length,3);
+const ordered=new DiagnosticCollector();
+ordered.report({stage:'type',message:'later',span:{start:{offset:9,line:2,column:1},end:{offset:10,line:2,column:2}}});
+ordered.report({stage:'type',message:'earlier',span});
+assert.deepEqual(ordered.list().map(d=>d.message),['earlier','later']);
 const error:Ty={kind:'error'};
 assert.deepEqual(common(error,{kind:'scalar',name:'Int',nullable:false}),error);
 assert.deepEqual(optional(error),error);
@@ -27,4 +34,13 @@ await assert.rejects(runTyped({operator:'relational',args:[{data:ast.value},{dat
  assert(error instanceof DraftSyntaxError);assert.equal(error.diagnostics.length,2);return true;
 });
 assert.equal(prepares,0);
+const backend=createDraftBackend({entry:{settings:{},modelHash:'fixture'} as any,file:'fixture.dari',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge:{executorFor(){throw new Error('Unexpected business read');}}});
+try{
+ const mixed=await checkDesign('data x = [1,"x"];','fixture.dari',backend);
+ assert.equal(mixed.ok,false);assert(mixed.diagnostics.some(d=>/Incompatible types/.test(d.message)),JSON.stringify(mixed));
+ assert(mixed.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ const warningBackend={...backend,checkCall(ctx:any){return [{stage:'type',severity:'warning' as const,message:'advisory',span:ctx.span}];}};
+ const warned=await checkDesign('data x = data(1);','fixture.dari',warningBackend);
+ assert.equal(warned.ok,true,JSON.stringify(warned));assert.equal(warned.warnings[0]?.message,'advisory');assert(warned.checkedBindings[0].checked);
+}finally{backend.dispose?.();}
 console.log('Diagnostic collector: checkpoints, explicit reports and error type propagation passed');

@@ -6,6 +6,7 @@ import { componentKind } from './components.ts';
 /** Located DARI data, figure and report compiler. */
 import { SourceFile } from './source.ts';
 import { DraftSyntaxError } from './pipeline.ts';
+import { DiagnosticCollector } from './diagnostics.ts';
 import type { Expr, PipelineNode, Span, SourceDiagnostic } from './pipeline.ts';
 import { compileReport,element as reportElement,serializeReport,validateAuthorText,PUBLIC_AUTHOR_ATTRIBUTES,type ReportNode,type ReportProgram } from '../report/structure.ts';
 
@@ -25,9 +26,9 @@ export function parseDraft(source:string,file='draft.dari'):DraftDocument {
 export function parseDraftForValidation(source:string,file='draft.dari'):DraftDocument {
 
   const prepared=parseDomDraft(source,file);
-  const diagnostics:SourceDiagnostic[]=[];
+  const diagnostics=new DiagnosticCollector();
   let stage='container',unit:string|undefined;
-  const collect=(run:()=>void)=>{try{run();}catch(error){if(!(error instanceof DraftSyntaxError))throw error;diagnostics.push(...(error.diagnostics.length?error.diagnostics:[{file,stage,message:error.message,span:error.span}]).map(d=>({...d,stage:d.stage==='container'?stage:d.stage,...(unit?{asset:unit}:{})})));}};
+  const collect=(run:()=>void)=>{try{run();}catch(error){if(!(error instanceof DraftSyntaxError))throw error;diagnostics.reportAll((error.diagnostics.length?error.diagnostics:[{file,stage,message:error.message,span:error.span}]).map(d=>({...d,stage:d.stage==='container'?stage:d.stage,...(unit?{asset:unit}:{})})));}};
   const original=new SourceFile(file,source);
   const span=(start:number,end=start):Span=>original.span(start,end);
   const fail=(message:string,start=0,end=Math.min(source.length,start+1)):never=>{const location=span(start,end);throw new DraftSyntaxError(message,location,[{file,stage,message,span:location}]);};
@@ -180,5 +181,6 @@ export function parseDraftForValidation(source:string,file='draft.dari'):DraftDo
   }
   unit=undefined;stage='container';
   if(nodes.length>1024||assets.size>128)fail('DARI exceeds node or asset budget',0);
-  return {declarations:prepared.declarations,authoring,title,nodes,assets,pipeline:original.span(0,source.length),answers,file,...(diagnostics.length?{diagnostics}:{})};
+  const findings=diagnostics.list();
+  return {declarations:prepared.declarations,authoring,title,nodes,assets,pipeline:original.span(0,source.length),answers,file,...(findings.length?{diagnostics:findings}:{})};
 }

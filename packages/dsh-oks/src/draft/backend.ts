@@ -24,6 +24,7 @@ import { assembleReport } from '../report/assemble.ts';
 import type { ReportBinding } from '../report/assemble.ts';
 import { restoreAssets } from '../report/page.ts';
 import { DraftSyntaxError } from './pipeline.ts';
+import { DiagnosticCollector } from './diagnostics.ts';
 import type { Expr, Operator, Span, SourceDiagnostic } from './pipeline.ts';
 import type { DraftDocument } from './document.ts';
 import type { CallContext, Computed, DraftBackend, DraftValue, QueryPlan } from './runtime.ts';
@@ -164,7 +165,7 @@ export function createDraftBackend(options: {
     return parsed;
   };
   const preflight = async (document: DraftDocument, signal?: AbortSignal) => {
-    const diagnostics:SourceDiagnostic[]=[...document.diagnostics??[]];
+    const diagnostics=new DiagnosticCollector();diagnostics.reportAll(document.diagnostics??[]);
     const plannedQueries:{intent:unknown;span:Span}[]=[];
     const constants = new Map<string, unknown>();
     const visit = async (expr: Expr): Promise<void> => {
@@ -212,19 +213,19 @@ export function createDraftBackend(options: {
         if(signal?.aborted)throw error;
         if(!(error instanceof DraftSyntaxError))throw error;
         const figure=statement.kind==='binding'&&statement.value.kind==='call'&&statement.value.operator==='render_figure';
-        diagnostics.push(...(error.diagnostics.length?error.diagnostics:[{file,stage:figure?'figure':'validation',message:error.message,span:error.span}]).map(d=>({...d,...(statement.kind==='binding'?{asset:statement.name}:{})})));
+        diagnostics.reportAll((error.diagnostics.length?error.diagnostics:[{file,stage:figure?'figure':'validation',message:error.message,span:error.span}]).map(d=>({...d,...(statement.kind==='binding'?{asset:statement.name}:{})})));
       }
     }
     // Model-dependent checks need a locally valid document; they never execute business SQL.
-    if(!diagnostics.length)for(const query of plannedQueries){
-      try{await lower(query.intent,signal);}catch(error){if(signal?.aborted)throw error;diagnostics.push({file,stage:'validation',message:error instanceof Error?error.message:String(error),span:query.span});}
+    if(!diagnostics.hasErrors())for(const query of plannedQueries){
+      try{await lower(query.intent,signal);}catch(error){if(signal?.aborted)throw error;diagnostics.report({file,stage:'validation',message:error instanceof Error?error.message:String(error),span:query.span});}
     }
-    diagnostics.sort((a,b)=>a.span.start.offset-b.span.start.offset);
-    if(diagnostics.length)throw new DraftSyntaxError(diagnostics[0].message,diagnostics[0].span,diagnostics);
+    const errors=diagnostics.list().filter(d=>d.severity!=='warning');
+    if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);
   };
   const checkCall = (ctx:CallContext, known:(value:unknown)=>boolean):SourceDiagnostic[] => {
-    const diagnostics:SourceDiagnostic[]=[];
-    const check=(work:()=>void,span=ctx.span)=>{try{work();}catch(error){diagnostics.push({file,stage:ctx.operator==='render_figure'?'figure':ctx.operator==='render_report'?'template':'validation',message:error instanceof Error?error.message:String(error),span});}};
+    const diagnostics=new DiagnosticCollector();
+    const check=(work:()=>void,span=ctx.span)=>{try{work();}catch(error){diagnostics.report({file,stage:ctx.operator==='render_figure'?'figure':ctx.operator==='render_report'?'template':'validation',message:error instanceof Error?error.message:String(error),span});}};
     const first=ctx.args[0]?.data,second=ctx.args[1]?.data;
     if(['render_figure','render_report'].includes(ctx.operator)&&ctx.args[1]&&known(second))check(()=>{if(!isRecord(second))throw new Error(`${ctx.operator} inputs must be a named object`);});
     if(ctx.operator==='data'&&ctx.args[1]&&known(second))check(()=>{dataNature(second);});
@@ -289,7 +290,7 @@ export function createDraftBackend(options: {
       },reference.span);
 
     }
-    return diagnostics;
+    return diagnostics.list();
   };
   const contextValue = (now:number):Computed => {
       const { zone } = resolveZone(undefined, options.contextZone());

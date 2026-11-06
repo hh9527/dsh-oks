@@ -181,7 +181,8 @@ export class DraftRuntime {
       run.answers=document.answers;
       if (options.signal?.aborted) throw new Error('aborted');
       await this.backend.preflight(document, options.signal);
-      if(document.diagnostics?.length){const first=document.diagnostics[0];throw new DraftSyntaxError(first.message,first.span,document.diagnostics);}
+      const errors=document.diagnostics?.filter(d=>d.severity!=='warning')??[];
+      if(errors.length){const first=errors[0];throw new DraftSyntaxError(first.message,first.span,errors);}
       if (options.signal?.aborted) throw new Error('aborted');
       if (options.refresh) {
         this.resetAcquisitions();

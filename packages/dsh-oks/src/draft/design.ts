@@ -1,5 +1,6 @@
 import {isRecord} from '../host.ts';
-import {UNKNOWN,TYPED,known as isKnown,unbox,isBox,typeOf,box,show,common,scalar,type Ty} from './typed-types.ts';
+import {canonicalJson} from '../key.ts';
+import {UNKNOWN,TYPED,known as isKnown,unbox,isBox,typeOf,box,show,common,scalar,TypeRuleError,UpstreamTypeUnavailable,type Ty} from './typed-types.ts';
 import { projectionError } from './projection.ts';
 import { SourceFile, sourceExcerpt } from './source.ts';
 import { parseDraftForValidation, type DraftDocument } from './document.ts';
@@ -64,6 +65,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
   const checkedBindings:CheckedBinding[]=[];
   const resolved=new Set<string>();
   const deferred: {binding:string;operator:string;at:Expr['span']['start'];reason:string}[] = [];
+  let upstreamUnavailable=false;
   const sourceFile=new SourceFile(file,source);
   const addError = (error: unknown, span: Expr['span'],stage='validation') => {
     if (signal?.aborted) throw error;
@@ -88,6 +90,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
   }else if(hasAnswer)answer='answer';
   else if(reports.length===1)answer=reports[0];
   else if(options.requireSelection&&reports.length>1)diagnostics.report({file,stage:'validation',message:`Select answer from: ${reports.join(', ')}`,span:doc.pipeline});
+  diagnostics.reportAll((doc.diagnostics??[]).filter(d=>d.severity==='warning'));
   try { await backend.preflight(doc,signal); } catch (error) { addError(error,doc.pipeline); }
   const analyze=backend.analyze;
   if(!analyze)throw new Error('Backend does not provide an analysis implementation');
@@ -156,8 +159,9 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         queries.push({binding,at:e.span.start,columns:schema.columns,result:{rows:'runtime',columns:'checked',truncated:'runtime'}});
         const data={columns:schema.columns,rows:UNKNOWN,truncated:UNKNOWN};return {...data,[TYPED]:schema,value:data};
       }
-      const errors=backend.checkCall?.(ctx,value=>!unknown(value))??[];
-      if(errors.length){diagnostics.reportAll(errors);return UNKNOWN;}
+      const findings=backend.checkCall?.(ctx,value=>!unknown(value))??[];
+      diagnostics.reportAll(findings);
+      if(findings.some(d=>d.severity!=='warning'))return UNKNOWN;
       if(e.operator==='render_figure'&&isRecord(args[1])){
         try{figureShape={kind:'figure',data:typeOf(args[1].data),...(args[1].nodes===undefined?{}:{nodes:typeOf(args[1].nodes)})};}catch{}
       }
@@ -181,17 +185,23 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         let shape:CheckedBinding['shape'];
         const result=checkedBindings.find(n=>n.name===binding);
         const presentation=statement.value.kind==='call'&&statement.value.operator==='render_report';
-        try{shape=figureShape??typeOf(value);if(!internal&&shape.kind!=='figure')types[binding]=show(shape);}catch{}
-        const localError=diagnostics.list().some(d=>d.asset===binding || (d.span.start.offset>=statement.span.start.offset&&d.span.start.offset<statement.span.end.offset));
+        try{shape=figureShape??typeOf(value);if(!internal&&shape.kind!=='figure')types[binding]=show(shape);}catch(error){
+          if(error instanceof TypeRuleError){if(!internal)addError(new DraftSyntaxError(error.message,statement.span),statement.span,'type');}
+          else if(error instanceof UpstreamTypeUnavailable){if(!presentation)upstreamUnavailable=true;}
+          else throw error;
+        }
+        const localError=diagnostics.list().some(d=>d.severity!=='warning'&&(d.asset===binding || (d.span.start.offset>=statement.span.start.offset&&d.span.start.offset<statement.span.end.offset)));
         const checked=!diagnostics.hasErrors(before)&&!localError&&dependencies.every(name=>resolved.has(name))&&(shape!==undefined||presentation);
         if(checked)resolved.add(binding);
         if(result){result.checked=checked;if(shape!==undefined)result.shape=shape;}
       }
     }
-    catch (error) { addError(error,statement.span); if (statement.kind === 'binding') bindings.set(binding,UNKNOWN); }
+    catch (error) { if(error instanceof UpstreamTypeUnavailable)upstreamUnavailable=true;else addError(error,statement.span); if (statement.kind === 'binding') bindings.set(binding,UNKNOWN); }
   }
-  const unique = [...new Map(diagnostics.list().map(d=>[`${d.span.start.offset}:${d.message}`,d])).values()];
-  const unresolved = deferred.some(d=>d.operator==='query');
-  return {ok:unique.length===0 && !unresolved,status:unique.length?'invalid':unresolved?'incomplete':'checked',queries,types,checkedBindings,deferred,diagnostics:unique.filter(d=>d.message!=='Upstream type is unavailable'),warnings,reports,...(answer===undefined?{}:{answer}),
+  const unique = [...new Map(diagnostics.list().map(d=>[canonicalJson([d.file,d.stage,d.severity,d.span,d.message,d.asset,d.expected,d.found,d.related]),d])).values()];
+  warnings.push(...unique.filter(d=>d.severity==='warning'));
+  const errors=unique.filter(d=>d.severity!=='warning');
+  const unresolved = upstreamUnavailable||deferred.some(d=>d.operator==='query');
+  return {ok:errors.length===0 && !unresolved,status:errors.length?'invalid':unresolved?'incomplete':'checked',queries,types,checkedBindings,deferred,diagnostics:errors,warnings,reports,...(answer===undefined?{}:{answer}),
     execution:'not performed',runtimeChecks:['Remote result schema and cell types, table completeness and resource budgets','select_one cardinality guards that could not be statically proven','Actual figure column values and rendering','Runtime provenance chains and rendered report assembly']};
 }

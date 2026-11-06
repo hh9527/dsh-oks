@@ -41,7 +41,7 @@ export function checkReceipt(result:Awaited<ReturnType<typeof checkDesign>>,insp
     if(!binding.checked)unresolved.push(`- ${name}`);
     else if(binding.shape && previous.get(name)!==canonicalJson(normalizeShape(binding.shape)))changed.push(`- ${name}: ${oneLine(displayShape(binding.shape))}`);
   }
-  const errors:{span?:Span;message:string}[]=result.diagnostics.filter(d=>!/^Upstream\b/.test(d.message)).map(d=>({span:d.span,message:d.message}));
+  const errors:{span?:Span;message:string}[]=result.diagnostics.map(d=>({span:d.span,message:d.message}));
   if(!result.ok&&!errors.length)errors.push({span:undefined,message:'Checking is incomplete; no execution was performed'});
   const inspected=new Map<string,string>();
   const declarationsUnavailable=result.checkedBindings.length===0&&result.diagnostics.some(d=>d.stage==='syntax');
