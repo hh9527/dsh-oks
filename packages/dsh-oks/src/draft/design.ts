@@ -144,7 +144,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
           input=box({kind:'error'});
         }
         let t:Ty;
-        try{t=typeOf(input);}catch(error){if(!(error instanceof TypeRuleError))throw error;addError(new DraftSyntaxError(error.message,e.args[0].span),e.args[0].span,'type');t={kind:'error'};}
+        try{t=typeOf(input);}catch(error){if(error instanceof TypeRuleError)addError(new DraftSyntaxError(error.message,e.args[0].span),e.args[0].span,'type');else if(!(error instanceof UpstreamTypeUnavailable))throw error;t={kind:'error'};}
         if(t.kind!=='error'&&!hasError(input)&&t.kind!=='array'){addError(new DraftSyntaxError('map requires Array, got '+show(t),e.span),e.span,'type');t={kind:'error'};}
         if(t.kind==='array'&&t.element.kind==='never'){addError(new DraftSyntaxError('map requires an inferable element type',e.span),e.span,'type');t={kind:'error'};}
         if(t.kind==='error'||hasError(input)){

@@ -255,6 +255,11 @@ try{
  const warned=await checkDesign('data x = data(1);','fixture.dari',warningBackend);
  assert.equal(warned.ok,true,JSON.stringify(warned));assert.equal(warned.warnings[0]?.message,'advisory');assert(warned.checkedBindings[0].checked);
  const internalError=new Error('internal failure');
+ const unknownMapBackend={...backend,async analyze(ctx:any){if(ctx.operator==='context')return {data:UNKNOWN};return backend.analyze!(ctx);}};
+ const unknownMap=await checkDesign('data x = map([context()],n=>({dependent:n.missing,independent:"x"+1}));','fixture.dari',unknownMapBackend);
+ assert(unknownMap.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(unknownMap.diagnostics));
+ assert(!unknownMap.diagnostics.some(d=>d.message.includes('missing')),JSON.stringify(unknownMap.diagnostics));
+ assert(unknownMap.checkedBindings.some(b=>b.name==='x'&&!b.checked));
  await assert.rejects(checkDesign('data x = 1 + 2;','fixture.dari',{...backend,async analyze(){throw internalError;}}),e=>e===internalError);
  for(const source of ['data x = data(1);','data x = context();','data x = time_windows(context(),{unit:"day",count:1,mode:"current"});'])await assert.rejects(checkDesign(source,'fixture.dari',{...backend,async analyze(){throw internalError;}}),e=>e===internalError);
  await assert.rejects(checkDesign('data x = 1;','fixture.dari',{...backend,async preflight(){throw internalError;}}),e=>e===internalError);
