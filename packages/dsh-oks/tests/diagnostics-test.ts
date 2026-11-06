@@ -249,6 +249,18 @@ try{
   assert(result.checkedBindings.some(b=>b.name==='answer'&&!b.checked));
   assert(result.checkedBindings.some(b=>b.name==='valid'&&b.checked));
  }
+ const treeRecovery='report broken = tree! { Report [p [Value(data=1+2),Value(data=1+*2)]] };\nfigure chart = tree! { BarChart(spec=1+*2,data=1) };\nanswer tree! { Answer [UseFigure(ref=chart)] };\ndata valid = 1;\ndata bad = 3+*4;';
+ const treeResult=await checkDesign(treeRecovery,'fixture.dari',backend);
+ assert.deepEqual(treeResult.diagnostics.map(d=>d.span.start.offset),[treeRecovery.indexOf('*2'),treeRecovery.indexOf('*2',treeRecovery.indexOf('*2')+1),treeRecovery.indexOf('*4')],JSON.stringify(treeResult.diagnostics));
+ for(const name of ['broken','chart','answer','bad'])assert(treeResult.checkedBindings.some(b=>b.name===name&&!b.checked),name);
+ assert(treeResult.checkedBindings.some(b=>b.name==='valid'&&b.checked));
+ const unclosedTree=await checkDesign('report broken = tree! { Report [p [Value(data=1+*2)] ; data next = 3+*4;','fixture.dari',backend);
+ assert.equal(unclosedTree.diagnostics.length,1,JSON.stringify(unclosedTree.diagnostics));
+ const overBudget='data first = 1+*2; report large = tree! { Report ['+Array(2050).fill('p ["x"]').join(',')+'] }; data later = 3+*4;';
+ const budgetResult=await checkDesign(overBudget,'fixture.dari',backend);
+ assert.equal(budgetResult.diagnostics.length,2,JSON.stringify(budgetResult.diagnostics));
+ assert(budgetResult.diagnostics.some(d=>d.message==='Report exceeds 2048 template elements'));
+ assert(!budgetResult.diagnostics.some(d=>d.span.start.offset===overBudget.lastIndexOf('*4')));
  const uncertain=await checkDesign('data first = 1 + * 2\ndata second = 3 + * 4;','fixture.dari',backend);
  assert.equal(uncertain.diagnostics.length,1,JSON.stringify(uncertain.diagnostics));
  const uncertainComment=await checkDesign('data first = 1 + * 2\ndata /* comment */ second = 3 + * 4;','fixture.dari',backend);

@@ -5,6 +5,8 @@ import {componentKind} from './components.ts';
 import {DiagnosticCollector} from './diagnostics.ts';
 import type {Element,Attribute,Reference} from './document.ts';
 
+class ParserLimitError extends DraftSyntaxError {}
+
 /** DOM-like source parser. It constructs the same located IR as the data compiler. */
 export function parseDomDraft(source:string,file:string,collector?:DiagnosticCollector){
   const original=new SourceFile(file,source);
@@ -25,7 +27,8 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
   const fail=(message:string,start=at,end=Math.min(source.length,start+1),details:Partial<SourceDiagnostic>={}):never=>{
     const span=location(start,end);throw new DraftSyntaxError(message,span,[{...details,file,stage:'syntax',message,span}]);
   };
-  if(Buffer.byteLength(source)>256*1024)fail('Report exceeds 256 KiB',0);
+  const limit=(message:string,start=at):never=>{const span=location(start,Math.min(source.length,start+1));throw new ParserLimitError(message,span,[{file,stage:'syntax',message,span}]);};
+  if(Buffer.byteLength(source)>256*1024)limit('Report exceeds 256 KiB',0);
   const whitespace=()=>{
     while(at<source.length){
       if(/\s/.test(source[at])){at++;continue;}
@@ -56,7 +59,7 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
       if(source.startsWith('/*',at)){const end=source.indexOf('*/',at+2);if(end<0)fail('Unterminated block comment');at=end+2;continue;}
       if(!stack.length&&stops.has(ch))break;
       if(!stack.length&&stops.has(';')&&(at===start||!/[\p{XID_Continue}$_]/u.test(source[at-1]))&&/^(?:data|figure|report|answer)(?![\p{XID_Continue}$_])(?:\s|\/)/u.test(source.slice(at)))possibleDeclaration=true;
-      if('([{'.includes(ch)){stack.push({symbol:ch,offset:at});if(stack.length>128)fail('Expression nesting exceeds 128');}
+      if('([{'.includes(ch)){stack.push({symbol:ch,offset:at});if(stack.length>128)limit('Expression nesting exceeds 128');}
       else if(')]}'.includes(ch)){const open=stack.pop();if(open?.symbol!=={')':'(',']':'[','}':'{'}[ch]){
         const expected=open?{'(':')','[':']','{':'}'}[open.symbol]:undefined;
         fail('Unmatched '+ch+(expected?'; expected '+JSON.stringify(expected):'; no opening delimiter'),at,at+1,{...(expected?{expected}:{}),found:ch,...(open?{related:[{message:'Opening '+open.symbol+' requires '+expected,span:location(open.offset,open.offset+1)}]}:{})});
@@ -82,6 +85,7 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
       if(!/^[\x00-\x7f]+$/.test(symbol))identifierDiagnostics.report({file,stage:'syntax',message:'Identifiers must use ASCII letters, digits, _ or $',span});
       const expected=tag==='UseReport'?'report':'figure';
       if(declarations.get(symbol)!==expected)fail('Undefined or forward '+expected+' binding '+symbol,part.start,part.end);
+      if(unavailableDefinitions.has(symbol))throw new UnavailableSyntaxDependency();
       return {kind:'text',value:symbol,span};
     }
     if(componentKind(tag)!==undefined||['Value','if'].includes(tag)){
@@ -113,7 +117,7 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
   };
   const element=(depth=0):Element=>{
     whitespace();const start=at;
-    if(depth>128)fail('Template nesting exceeds 128');if(++elements>2048)fail('Report exceeds 2048 template elements');
+    if(depth>128)limit('Template nesting exceeds 128');if(++elements>2048)limit('Report exceeds 2048 template elements');
     const tag=name(true),attrs=new Map<string,Attribute>();
     if(tag==='value'||tag==='lit')fail(`Component names use PascalCase; use ${tag==='value'?'Value(data = expression)':'Lit ["text"]'}`,start,at);
     if(tag==='if'){
@@ -185,10 +189,10 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
   };
   const reserved=new Set(['tree','if','else','let','Some','data','figure','report','export','True','False','None','true','false','null','query','context','select','select_one','table','map','union_all','time_windows','is_some','is_none','map_opt','round','case_when','lookup','concat','to_datetime_utc','to_epoch_millis','asc','desc','count','sum','avg','min','max']);
   whitespace();while(at<source.length){
-    if(declarations.size>=512)fail('DARI is limited to 512 declarations');
+    if(declarations.size>=512)limit('DARI is limited to 512 declarations');
     const savedDefinitions=new Map(definitions),savedDeclarations=new Map(declarations),savedFigures=new Map(figures);
     const savedNodes=nodes.length,savedReferences=references.length,savedTemplates=templates.length,savedScopes=scopes.length,savedSequence=sequence,savedTitle=title;
-    let recoverableBinding:string|undefined;
+    let recoverableBinding:string|undefined,recoverableKind:'data'|'figure'|'report'|'answer'|undefined,recoverableEnd:number|undefined;
     try{
     const start=at,kind=name();
     if(!['data','figure','report','answer'].includes(kind))fail('Expected data, figure or report declaration',start,at);
@@ -197,8 +201,10 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
     if(declarations.has(binding))fail('Duplicate binding '+binding,bindingStart,at);
     if(kind!=='answer')eat('=');
     if(kind==='data'){
-      const part=expression(new Set([';']));if(source[at]===';'&&!part.possibleDeclaration)recoverableBinding=binding;const node=compile(part,binding);eat(';');node.statement.span=location(start);
+      const part=expression(new Set([';']));if(source[at]===';'&&!part.possibleDeclaration){recoverableBinding=binding;recoverableKind='data';recoverableEnd=at;}const node=compile(part,binding);eat(';');node.statement.span=location(start);
     }else{
+      const bodyStart=at;
+      try{const part=expression(new Set([';']));if(source[at]===';'&&!part.possibleDeclaration){recoverableBinding=binding;recoverableKind=kind as 'figure'|'report'|'answer';recoverableEnd=at;}}catch(error){if(!(error instanceof DraftSyntaxError))throw error;}finally{at=bodyStart;}
       eat('tree');eat('!');eat('{');
       const tree=element();
       eat('}');
@@ -227,9 +233,9 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
       declarations.clear();for(const [key,value] of savedDeclarations)declarations.set(key,value);
       figures.clear();for(const [key,value] of savedFigures)figures.set(key,value);
       nodes.length=savedNodes;references.length=savedReferences;templates.length=savedTemplates;scopes.length=savedScopes;sequence=savedSequence;title=savedTitle;
-      if(recoverableBinding&&(error instanceof UnavailableSyntaxDependency||error instanceof DraftSyntaxError&&error.message!=='Expression nesting exceeds 128')){
+      if(recoverableBinding&&recoverableKind&&recoverableEnd!==undefined&&(error instanceof UnavailableSyntaxDependency||error instanceof DraftSyntaxError&&!(error instanceof ParserLimitError)&&error.message!=='Expression nesting exceeds 128')){
         if(error instanceof DraftSyntaxError)syntaxDiagnostics.reportAll(error.diagnostics.length?error.diagnostics:[{file,stage:'syntax',message:error.message,span:error.span}]);
-        unavailableDefinitions.add(recoverableBinding);definitions.set(recoverableBinding,{k:'error',s:location(at,at)});declarations.set(recoverableBinding,'data');at++;whitespace();continue;
+        unavailableDefinitions.add(recoverableBinding);if(recoverableKind==='data')definitions.set(recoverableBinding,{k:'error',s:location(at,at)});declarations.set(recoverableBinding,recoverableKind);at=recoverableEnd+1;whitespace();continue;
       }
       if(error instanceof DraftSyntaxError&&syntaxDiagnostics.hasErrors()){
         syntaxDiagnostics.reportAll(error.diagnostics.length?error.diagnostics:[{file,stage:'syntax',message:error.message,span:error.span}]);
@@ -250,6 +256,6 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
   }
   let queries=0;
   const visit=(e:Expr)=>{if(e.kind==='call'){if(e.operator==='query')queries++;e.args.forEach(visit);}else if(e.kind==='array')e.values.forEach(visit);else if(e.kind==='object')e.entries.forEach(x=>visit(x.value));else if(e.kind==='project')visit(e.input);};
-  nodes.forEach(n=>visit(n.statement.value));if(queries>128)fail('Pipeline exceeds 128 queries',0);
+  nodes.forEach(n=>visit(n.statement.value));if(queries>128)limit('Pipeline exceeds 128 queries',0);
   return {nodes,figures,templates,references,childSpans,title,declarations,unavailableDefinitions};
 }
