@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {DiagnosticCollector} from '../src/draft/diagnostics.ts';
-import {box,common,optional,UpstreamTypeUnavailable,type Ty} from '../src/draft/typed-types.ts';
+import {UNKNOWN,box,common,optional,UpstreamTypeUnavailable,type Ty} from '../src/draft/typed-types.ts';
 import {checkDesign,parseAnalysisDesign} from '../src/draft/design.ts';
 import {createDraftBackend} from '../src/draft/backend.ts';
 import {runTyped} from '../src/draft/typed-runtime.ts';
@@ -113,6 +113,18 @@ try{
  for(const name of ['first','second'])assert(unionErrors.diagnostics.some(d=>d.message.includes('union_all column '+name)),JSON.stringify(unionErrors.diagnostics));
  assert(unionErrors.diagnostics.every(d=>d.span.start.offset===unionSource.lastIndexOf('b]')));
  assert(unionErrors.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ const unionInputSource='data broken = [1,"x"]; data result = union_all([broken,42,True]);';
+ const unionInputs=await checkDesign(unionInputSource,'fixture.dari',backend);
+ const invalidTables=unionInputs.diagnostics.filter(d=>d.message==='union_all requires Table values');
+ assert.equal(invalidTables.length,2,JSON.stringify(unionInputs.diagnostics));
+ assert.deepEqual(invalidTables.map(d=>d.span.start.offset),[unionInputSource.indexOf('42'),unionInputSource.indexOf('True')]);
+ assert(unionInputs.diagnostics.some(d=>d.message.includes('Incompatible types')));assert(unionInputs.checkedBindings.some(b=>b.name==='result'&&!b.checked));
+ const invalidUnion=await checkDesign('data result = union_all([[1,"x"],42]);','fixture.dari',backend);
+ assert(invalidUnion.diagnostics.some(d=>d.message.includes('Incompatible types')),JSON.stringify(invalidUnion.diagnostics));
+ assert(invalidUnion.diagnostics.some(d=>d.message==='union_all requires Table values'),JSON.stringify(invalidUnion.diagnostics));
+ await assert.rejects(runTyped({operator:'table_union',args:[{data:[box({kind:'error'}),42,true]}],statement,span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL execution');}} as any,true),error=>error instanceof DraftSyntaxError&&error.diagnostics.some(d=>d.message==='union_all requires Table values'));
+ await assert.rejects(runTyped({operator:'table_union',args:[{data:[UNKNOWN,42]}],statement,span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL execution');}} as any,true),error=>error instanceof DraftSyntaxError&&error.diagnostics.some(d=>d.message==='union_all requires Table values'));
+ assert.equal(prepares,0);
  const mapped=await checkDesign('data bad = [1,"x"]; data result = map(bad,(n)=>({dependent:n+1,independent:"x"+1}));','fixture.dari',backend);
  assert(mapped.diagnostics.some(d=>d.message.includes('Incompatible types')),JSON.stringify(mapped.diagnostics));
  assert.equal(mapped.diagnostics.filter(d=>d.message.includes('Arithmetic requires numbers')).length,1,JSON.stringify(mapped.diagnostics));

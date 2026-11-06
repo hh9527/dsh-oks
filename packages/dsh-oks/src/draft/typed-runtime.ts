@@ -34,11 +34,29 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
   const value=ctx.args[0]?.data;
   const tablesExpr=ctx.expression?.kind==='call'?ctx.expression.args[0]:undefined;
   if(check&&isBox(value)){
+   if(hasError(value))throw new UpstreamTypeUnavailable();
    const t=typeOf(value);if(t.kind!=='array'||t.element.kind!=='table'||t.length===0)throw new DraftSyntaxError('union_all requires a nonempty array of tables',ctx.span);
    const type:Ty={kind:'table',columns:t.element.columns};return {data:mark({columns:type.columns,rows:UNKNOWN,truncated:UNKNOWN},type),logicalType:type};
   }
   const tables=ctx.args[0]?.data;if(!Array.isArray(tables)||!tables.length)throw new DraftSyntaxError('union_all requires a nonempty array of tables',ctx.span);
-  const types=tables.map(t=>typeOf(t));for(const t of types)if(t.kind!=='table')throw new DraftSyntaxError('union_all requires Table values',ctx.span);
+  const inputDiagnostics=ctx.diagnostics?.scope()??new DiagnosticCollector();let unavailable=false;
+  const types=tables.map((value,index):Ty=>{
+   try{return typeOf(value);}catch(error){
+    if(!check)throw error;
+    if(error instanceof UpstreamTypeUnavailable){unavailable=true;return {kind:'error'};}
+    if(!(error instanceof TypeRuleError))throw error;
+    inputDiagnostics.report({stage:'type',message:error.message,span:tablesExpr?.kind==='array'?tablesExpr.values[index]?.span??ctx.span:ctx.span});return {kind:'error'};
+   }
+  });
+  for(const [index,t] of types.entries()){
+   if(t.kind==='error'){unavailable=true;continue;}
+   if(t.kind!=='table'){
+    const span=tablesExpr?.kind==='array'?tablesExpr.values[index]?.span??ctx.span:ctx.span,message='union_all requires Table values';
+    if(!check)throw new DraftSyntaxError(message,span);inputDiagnostics.report({stage:'type',message,span});
+   }
+  }
+  const inputErrors=inputDiagnostics.list();if(inputErrors.length)throw new DraftSyntaxError(inputErrors[0].message,inputErrors[0].span,inputErrors);
+  if(unavailable)throw new UpstreamTypeUnavailable();
   const first=(types[0] as Extract<Ty,{kind:'table'}>).columns;
   for(const table of types.slice(1)){const cols=(table as Extract<Ty,{kind:'table'}>).columns;if(cols.length!==first.length||cols.some((c,i)=>c.name!==first[i].name))throw new DraftSyntaxError('union_all column names/order differ',ctx.span);}
   const diagnostics=ctx.diagnostics?.scope()??new DiagnosticCollector(),columns:SqlColumn[]=[];
