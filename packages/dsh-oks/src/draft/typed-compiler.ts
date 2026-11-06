@@ -247,7 +247,7 @@ export class TypedCompiler{
    return valid?this.sql(value,item)+' '+item.name!.toUpperCase()+' NULLS '+nulls.toUpperCase():'NULL ASC NULLS LAST';
   });if(!order.length)this.reportFailure(f,'order_by must not be empty');else sql+=' ORDER BY '+order.join(',');}}
   const unavailableGroups=groups?.type.kind==='error',globalGroup=groups?.type.kind==='record'&&Object.keys(groups.fields??{}).length===0;
-  let minRows=globalGroup&&!entries.having?1:!groups&&!entries.where&&!joins.length?(baseBounds.minRows??0):0,maxRows:number|undefined=unavailableGroups?undefined:globalGroup?1:!joins.length?baseBounds.maxRows:undefined;
+  let minRows=globalGroup&&!entries.having?1:!unavailableSource&&!groups&&!entries.where&&!joins.length?(baseBounds.minRows??0):0,maxRows:number|undefined=unavailableGroups?undefined:globalGroup?1:!unavailableSource&&!joins.length?baseBounds.maxRows:undefined;
   if(limit&&limit.type.kind!=='error'&&!invalidLimit){if(limit.value>0&&!entries.order_by&&maxRows!==1&&(!unavailableSource||maxRows!==undefined)&&!unavailableGroups)this.reportFailure(entries.limit,'limit requires order_by');maxRows=Math.min(maxRows??Infinity,limit.value);minRows=Math.min(minRows,limit.value);sql+=' LIMIT '+limit.value;}
   this.throwIfErrors();
   if(unavailableSource||unavailableOutput||unavailableGroups||limit?.type.kind==='error')throw new UpstreamTypeUnavailable();
