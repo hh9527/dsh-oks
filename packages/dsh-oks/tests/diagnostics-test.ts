@@ -183,6 +183,7 @@ try{
  const brokenFigureStatement=brokenFigurePreflight.nodes[0].statement;
  if(brokenFigureStatement.value.kind!=='call')throw new Error('Expected call');
  const figureFailure=new Error('unexpected figure failure'),figureSpan=brokenFigureStatement.value.span;
+ assert.throws(()=>backend.checkCall!({operator:'render_figure',figureKind:'table',args:[{data:{get title(){throw figureFailure;}}},{data:{data:[]}}],span} as any,()=>true),e=>e===figureFailure);
  brokenFigureStatement.value.operator='render_figure';brokenFigureStatement.value.figureKind='table';
  brokenFigureStatement.value.args=[{kind:'literal',value:{get title(){throw figureFailure;}},span:figureSpan},{kind:'literal',value:{data:[]},span:figureSpan}] as any;
  await assert.rejects(backend.preflight(brokenFigurePreflight,undefined,{validateQueries:false}),e=>e===figureFailure);

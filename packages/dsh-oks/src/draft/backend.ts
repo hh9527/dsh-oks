@@ -242,9 +242,9 @@ export function createDraftBackend(options: {
     if(ctx.operator==='time_windows'&&known(second))try{if(known(first))timeWindows(unbox(first),unbox(second));else timeWindowOptions(unbox(second));}catch(error){if(!(error instanceof TimeWindowValidationError))throw error;diagnostics.report({file,stage:'validation',message:error.message,span:ctx.span});}
     if(ctx.operator==='render_figure'){
       if(isRecord(second))check(()=>{if(!Object.hasOwn(second,'data')||Object.keys(second).some(key=>key!=='data'&&key!=='nodes'))throw new Error('render_figure inputs must be {data,nodes?}');});
-      if(known(first))check(()=>{
-        const raw=componentSpec(first,ctx.figureKind);
-        validateFigure(raw);
+      let raw:unknown,validSpec=false;
+      if(known(first))try{raw=componentSpec(first,ctx.figureKind);validateFigure(raw);validSpec=true;}catch(error){if(!(error instanceof FigureValidationError)&&!(error instanceof TableSpecValidationError)&&!(error instanceof ComponentSpecValidationError))throw error;diagnostics.report({file,stage:'figure',message:error.message,span:ctx.span});}
+      if(validSpec)check(()=>{
         if(!isRecord(second))return;
         if(isRecord(second.data)&&Array.isArray(second.data.columns)){
           const columns=second.data.columns.map(c=>isRecord(c)?String(c.name):String(c));
