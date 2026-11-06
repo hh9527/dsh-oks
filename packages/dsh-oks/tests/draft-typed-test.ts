@@ -41,6 +41,30 @@ try{
 console.log('Typed Pipeline: query schemas, typed joins/projections/Option, aggregation, select_one, report, cache and zero-data diagnostics passed');
 
 const small=(body:string)=>`data a = query({period:"base",limit:10});data b = query({period:"current",limit:10});${body}`;
+{
+ const before=reads;
+ const text=small(`data broken = select({from:{s:a},fields:r=>({
+  first:r.s.missing_first,
+  second:r.s.missing_second,
+  invalid:r.s.server_id + 1,
+  nested:r.s.missing_nested + 1
+ })}); data blocked = select({from:{s:broken},fields:r=>({id:r.s.first})});`);
+ const result=await checkDesign(text,'typed.dari',backend);
+ assert.equal(result.ok,false);assert.equal(reads,before);
+ for(const expected of ['missing_first','missing_second','Arithmetic requires numbers','missing_nested'])assert(result.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(result.diagnostics));
+ assert.equal(result.diagnostics.filter(d=>d.message.includes('Arithmetic requires numbers')).length,1,JSON.stringify(result.diagnostics));
+ assert(result.checkedBindings.some(b=>b.name==='broken'&&!b.checked));assert(result.checkedBindings.some(b=>b.name==='blocked'&&!b.checked));
+ const siblings=await checkDesign(small(`data sample = select({from:{s:a},fields:r=>({
+  first:case_when(True,r.s.missing_left,r.s.missing_right),
+  second:r.s.missing_a+r.s.missing_b
+ })});`),'typed.dari',backend);
+ for(const name of ['missing_left','missing_right','missing_a','missing_b'])assert(siblings.diagnostics.some(d=>d.message.includes(name)),JSON.stringify(siblings.diagnostics));
+ assert(!siblings.diagnostics.some(d=>/Arithmetic requires numbers|case_when requires/.test(d.message)));
+ const ordering=await checkDesign(small('data sample = select({from:{s:a},fields:r=>({id:r.s.server_id}),order_by:o=>[asc(o.missing_one),desc(o.missing_two)]});'),'typed.dari',backend);
+ for(const name of ['missing_one','missing_two'])assert(ordering.diagnostics.some(d=>d.message.includes(name)),JSON.stringify(ordering.diagnostics));
+ assert(!ordering.diagnostics.some(d=>/Ordering requires a scalar/.test(d.message)));
+ assert.equal(reads,before);
+}
 async function checkedRun(body:string){const text=small(body);const checked=await checkDesign(text,'typed.dari',backend);assert.equal(checked.ok,true,JSON.stringify(checked));const rt=new DraftRuntime(backend,{parse:parseExecutableDesign});const run=await rt.run(text);return {rt,run,text};}
 {
  const {rt,run,text}=await checkedRun(`data part = select({from:{x:b},where:(r)=>r.x.server_id == "a",fields:(r)=>({server_id:r.x.server_id,cpu:r.x.cpu})});

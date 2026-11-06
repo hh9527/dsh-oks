@@ -41,7 +41,7 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
  const hint=ctx.args[1]?.logicalType as Ty|undefined;
  const compiler=new TypedCompiler(input,hint?.kind==='record'?hint.fields:{},check);
  if(ctx.operator==='typed_value'){
-  const v=compiler.compile(ast);if(check)return {data:box(v.type,v.known?v.value:UNKNOWN),logicalType:v.type};
+  const v=compiler.compile(ast);if(check){compiler.throwIfErrors();return {data:box(v.type,v.known?v.value:UNKNOWN),logicalType:v.type};}
   if(!v.known)fail(ast,'Scalar expression requires a materialized value');compiler.validNumber(v.value,v.type,ast);return {data:v.value,logicalType:v.type};
  }
  const plan=compiler.relational(ast);

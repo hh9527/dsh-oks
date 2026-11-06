@@ -4,6 +4,7 @@ import { projectionError } from './projection.ts';
 import { SourceFile, sourceExcerpt } from './source.ts';
 import { parseDraftForValidation, type DraftDocument } from './document.ts';
 import { DraftSyntaxError, type Expr, type SourceDiagnostic } from './pipeline.ts';
+import { DiagnosticCollector } from './diagnostics.ts';
 import type { DraftBackend, CallContext } from './runtime.ts';
 
 /** Source language has one query operator. Plan/execution separation is internal IR. */
@@ -55,7 +56,7 @@ export type CheckedBinding = {
 
 /** Evaluate only design values. Never acquire rows or execute postprocessing on invented rows. */
 export async function checkDesign(source: string, file: string, backend: DraftBackend, signal?: AbortSignal, options:{answer?:string;requireSelection?:boolean}={}) {
-  const diagnostics: SourceDiagnostic[] = [];
+  const diagnostics = new DiagnosticCollector();
   const warnings: SourceDiagnostic[] = [];
   let reports:string[]=[]; let answer:string|undefined;
   const queries: {binding:string;at:Expr['span']['start'];columns?:unknown;type?:string;guard?:string;result:object}[] = [];
@@ -67,11 +68,11 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
   const addError = (error: unknown, span: Expr['span'],stage='validation') => {
     if (signal?.aborted) throw error;
     const entries:SourceDiagnostic[]=error instanceof DraftSyntaxError && error.diagnostics.length ? error.diagnostics : [{file,stage,message:error instanceof Error?error.message:String(error),span:error instanceof DraftSyntaxError?error.span:span}];
-    diagnostics.push(...entries.map(d=>({...d,file:d.file??file,...(d.stage==='syntax'&&(!d.file||d.file===file)?{excerpt:sourceExcerpt(sourceFile,d.span)}:{})})));
+    diagnostics.reportAll(entries.map(d=>({...d,file:d.file??file,...(d.stage==='syntax'&&(!d.file||d.file===file)?{excerpt:sourceExcerpt(sourceFile,d.span)}:{})})));
   };
   let doc: DraftDocument;
   try { doc = parseAnalysisDesign(source,file); }
-  catch (error) { if (!(error instanceof DraftSyntaxError)) throw error; addError(error,error.span,'syntax'); return {ok:false,status:'invalid' as const,queries,types,checkedBindings,deferred,diagnostics,warnings,reports,...(answer===undefined?{}:{answer}),execution:'not performed' as const}; }
+  catch (error) { if (!(error instanceof DraftSyntaxError)) throw error; addError(error,error.span,'syntax'); return {ok:false,status:'invalid' as const,queries,types,checkedBindings,deferred,diagnostics:diagnostics.list(),warnings,reports,...(answer===undefined?{}:{answer}),execution:'not performed' as const}; }
   if(doc.declarations)for(const [name,kind] of doc.declarations)checkedBindings.push({name,kind,checked:false});
   else for(const {statement,internal} of doc.nodes)if(!internal&&statement.kind==='binding'){
     const e=statement.value;
@@ -83,10 +84,10 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
   if(options.answer!==undefined){
     const matches=reports.filter(n=>n===options.answer||n===`reports.${options.answer}`);
     if(matches.length===1)answer=matches[0];
-    else diagnostics.push({file,stage:'validation',message:`${matches.length?'Ambiguous':'Unknown'} report ${JSON.stringify(options.answer)}. Available reports: ${reports.join(', ')||'(none)'}`,span:doc.pipeline});
+    else diagnostics.report({file,stage:'validation',message:`${matches.length?'Ambiguous':'Unknown'} report ${JSON.stringify(options.answer)}. Available reports: ${reports.join(', ')||'(none)'}`,span:doc.pipeline});
   }else if(hasAnswer)answer='answer';
   else if(reports.length===1)answer=reports[0];
-  else if(options.requireSelection&&reports.length>1)diagnostics.push({file,stage:'validation',message:`Select answer from: ${reports.join(', ')}`,span:doc.pipeline});
+  else if(options.requireSelection&&reports.length>1)diagnostics.report({file,stage:'validation',message:`Select answer from: ${reports.join(', ')}`,span:doc.pipeline});
   try { await backend.preflight(doc,signal); } catch (error) { addError(error,doc.pipeline); }
   const analyze=backend.analyze;
   if(!analyze)throw new Error('Backend does not provide an analysis implementation');
@@ -156,7 +157,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         const data={columns:schema.columns,rows:UNKNOWN,truncated:UNKNOWN};return {...data,[TYPED]:schema,value:data};
       }
       const errors=backend.checkCall?.(ctx,value=>!unknown(value))??[];
-      if(errors.length){diagnostics.push(...errors);return UNKNOWN;}
+      if(errors.length){diagnostics.reportAll(errors);return UNKNOWN;}
       if(e.operator==='render_figure'&&isRecord(args[1])){
         try{figureShape={kind:'figure',data:typeOf(args[1].data),...(args[1].nodes===undefined?{}:{nodes:typeOf(args[1].nodes)})};}catch{}
       }
@@ -173,7 +174,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
       return computed.data;
     };
     try {
-      const before=diagnostics.length;
+      const before=diagnostics.checkpoint();
       const value=await evaluate(statement.value);
       if(statement.kind==='binding'){
         bindings.set(binding,value);
@@ -181,15 +182,15 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         const result=checkedBindings.find(n=>n.name===binding);
         const presentation=statement.value.kind==='call'&&statement.value.operator==='render_report';
         try{shape=figureShape??typeOf(value);if(!internal&&shape.kind!=='figure')types[binding]=show(shape);}catch{}
-        const localError=diagnostics.some(d=>d.asset===binding || (d.span.start.offset>=statement.span.start.offset&&d.span.start.offset<statement.span.end.offset));
-        const checked=diagnostics.length===before&&!localError&&dependencies.every(name=>resolved.has(name))&&(shape!==undefined||presentation);
+        const localError=diagnostics.list().some(d=>d.asset===binding || (d.span.start.offset>=statement.span.start.offset&&d.span.start.offset<statement.span.end.offset));
+        const checked=!diagnostics.hasErrors(before)&&!localError&&dependencies.every(name=>resolved.has(name))&&(shape!==undefined||presentation);
         if(checked)resolved.add(binding);
         if(result){result.checked=checked;if(shape!==undefined)result.shape=shape;}
       }
     }
     catch (error) { addError(error,statement.span); if (statement.kind === 'binding') bindings.set(binding,UNKNOWN); }
   }
-  const unique = [...new Map(diagnostics.map(d=>[`${d.span.start.offset}:${d.message}`,d])).values()];
+  const unique = [...new Map(diagnostics.list().map(d=>[`${d.span.start.offset}:${d.message}`,d])).values()];
   const unresolved = deferred.some(d=>d.operator==='query');
   return {ok:unique.length===0 && !unresolved,status:unique.length?'invalid':unresolved?'incomplete':'checked',queries,types,checkedBindings,deferred,diagnostics:unique.filter(d=>d.message!=='Upstream type is unavailable'),warnings,reports,...(answer===undefined?{}:{answer}),
     execution:'not performed',runtimeChecks:['Remote result schema and cell types, table completeness and resource budgets','select_one cardinality guards that could not be statically proven','Actual figure column values and rendering','Runtime provenance chains and rendered report assembly']};

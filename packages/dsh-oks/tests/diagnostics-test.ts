@@ -1,0 +1,30 @@
+import assert from 'node:assert/strict';
+import {DiagnosticCollector} from '../src/draft/diagnostics.ts';
+import {common,optional,type Ty} from '../src/draft/typed-types.ts';
+import {parseAnalysisDesign} from '../src/draft/design.ts';
+import {runTyped} from '../src/draft/typed-runtime.ts';
+import {DraftSyntaxError} from '../src/draft/pipeline.ts';
+
+const span={start:{offset:0,line:1,column:1},end:{offset:1,line:1,column:2}};
+const diagnostics=new DiagnosticCollector();
+const checkpoint=diagnostics.checkpoint();
+diagnostics.report({stage:'type',message:'first',span});
+diagnostics.reportAll([{stage:'type',message:'second',span}]);
+assert(diagnostics.hasErrors(checkpoint));
+assert.equal(diagnostics.list().length,2);
+diagnostics.list().pop();assert.equal(diagnostics.list().length,2);
+const error:Ty={kind:'error'};
+assert.deepEqual(common(error,{kind:'scalar',name:'Int',nullable:false}),error);
+assert.deepEqual(optional(error),error);
+const source='data facts = table([{n:1}],{kind:"example"}); data result = select({from:{s:facts},fields:r=>({a:r.s.missing_a,b:r.s.missing_b})});';
+const statement=parseAnalysisDesign(source,'fixture.dari').nodes.at(-1)!.statement;
+assert.equal(statement.value.kind,'call');
+if(statement.value.kind!=='call')throw new Error('Expected relational call');
+const ast=statement.value.args[0];assert.equal(ast.kind,'literal');
+if(ast.kind!=='literal')throw new Error('Expected AST literal');
+let prepares=0;
+await assert.rejects(runTyped({operator:'relational',args:[{data:ast.value},{data:{__source0:{columns:[{name:'n',type:'Int',nullable:false}],rows:[],truncated:false}}}],statement,span:statement.span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL prepare');}} as any,true),error=>{
+ assert(error instanceof DraftSyntaxError);assert.equal(error.diagnostics.length,2);return true;
+});
+assert.equal(prepares,0);
+console.log('Diagnostic collector: checkpoints, explicit reports and error type propagation passed');

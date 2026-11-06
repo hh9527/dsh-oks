@@ -1,8 +1,9 @@
 import {DraftSyntaxError} from './pipeline.ts';
 import type {N} from './typed-syntax.ts';
-import {typeOf,common,scalar,record,optional,present,known,unbox,show,rowType,type Ty} from './typed-types.ts';
+import {typeOf,common,scalar,record,optional,present,known,unbox,show,rowType,TypeRuleError,type Ty} from './typed-types.ts';
 import type {SqlColumn} from './sql.ts';
 import {isRecord} from '../host.ts';
+import {DiagnosticCollector} from './diagnostics.ts';
 export type V={type:Ty;known:boolean;value?:any;sql?:string;fields?:Record<string,V>;items?:V[];column?:boolean;rows?:boolean;presence?:string};
 const q=(s:string)=>'"'+s.replaceAll('"','""')+'"';
 const accessPath=(n:N):string|undefined=>{if(n.k==='ref')return n.name;if(n.k!=='get'||!n.input)return undefined;const base=accessPath(n.input);if(!base)return undefined;return base+(typeof n.key==='string'&&/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(n.key)?(n.optional?'?.':'.')+n.key:'['+JSON.stringify(n.key)+']');};
@@ -12,6 +13,7 @@ const numeric=(t:Ty)=>scalarType(t)&&['Int','Float'].includes(t.name);
 export function fail(n:N,m:string):never{throw new DraftSyntaxError(m,n.s);}
 export class TypedCompiler{
  readonly bindings:unknown[]=[];
+ readonly diagnostics=new DiagnosticCollector();
  readonly captures:Record<string,unknown>;readonly hints:Record<string,Ty>;readonly checking:boolean;
  constructor(captures:Record<string,unknown>,hints:Record<string,Ty>={},checking=false){this.captures=captures;this.hints=hints;this.checking=checking;}
  param(v:unknown):string{this.bindings.push(v);return '?'+this.bindings.length;}
@@ -21,19 +23,29 @@ export class TypedCompiler{
   if(type.kind==='array'){return {type,known:k,value:raw,...(k?{items:raw.map((x:unknown)=>this.bind(type.element,x))}:{})};}
   return {type,known:k,value:raw};
  }
- sql(v:V,n:N):string{if(v.sql!==undefined)return v.sql;if(!v.known&&this.checking&&v.type.kind==='scalar')return this.param(null);if(!v.known)fail(n,'Value is runtime-only without a SQL binding');if(v.type.kind!=='scalar'&&v.type.kind!=='null')fail(n,'Expected scalar, got '+show(v.type));return this.param(v.value);}
+ sql(v:V,n:N):string{if(v.type.kind==='error'&&this.checking)return 'NULL';if(v.sql!==undefined)return v.sql;if(!v.known&&this.checking&&v.type.kind==='scalar')return this.param(null);if(!v.known)fail(n,'Value is runtime-only without a SQL binding');if(v.type.kind!=='scalar'&&v.type.kind!=='null')fail(n,'Expected scalar, got '+show(v.type));return this.param(v.value);}
  env():Record<string,V>{return Object.fromEntries(Object.entries(this.captures).map(([k,v])=>[k,this.bind(typeOf(v,this.hints[k]),v)]));}
  compile(n:N,env=this.env()):V{
-  try{return this.expr(n,env);}catch(e){if(e instanceof DraftSyntaxError)throw e;return fail(n,e instanceof Error?e.message:String(e));}
+  try{return this.expr(n,env);}catch(e){
+   if(!(e instanceof DraftSyntaxError)&&!(e instanceof TypeRuleError))throw e;
+   const error=e instanceof DraftSyntaxError?e:new DraftSyntaxError(e.message,n.s);
+   if(!this.checking)throw error;
+   const entries=error.diagnostics.length?error.diagnostics:[{stage:'type',message:error.message,span:error.span}];
+   for(const diagnostic of entries)this.diagnostics.report(diagnostic);
+   return {type:{kind:'error'},known:false};
+  }
  }
+ throwIfErrors(){const errors=this.diagnostics.list();if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);}
  expr(n:N,env:Record<string,V>):V{
   if(n.k==='template_presence'){
    const input=this.compile(n.input!,env);
+   if(input.type.kind==='error')return input;
    if(!nullable(input.type)||input.type.kind==='null')fail(n,'if let Some requires Option with a known inner type');
    return {type:scalar('Bool'),known:input.known,...(input.known?{value:input.value!==null}:{})};
   }
   if(n.k==='template_scope'){
    const input=this.compile(n.a![0],env),f=n.a![1];
+   if(input.type.kind==='error')return input;
    if(!nullable(input.type)||input.type.kind==='null')fail(n,'if let Some requires an Option with a known inner type');
    // Check the body with a present binding even when the runtime value is absent.
    const inner={...input,type:present(input.type),known:input.known&&input.value!==null};
@@ -51,6 +63,7 @@ export class TypedCompiler{
   if(n.k==='array'){const items=n.a!.map(x=>this.compile(x,env));const element:Ty=items.length?items.slice(1).reduce((t,v)=>common(t,v.type),items[0].type):{kind:'never'};const k=items.every(v=>v.known);return {type:{kind:'array',element,length:items.length,nullable:false},known:k,items,...(k?{value:items.map(v=>v.value)}:{})};}
   if(n.k==='get'){
    const input=this.compile(n.input!,env),t=input.type;
+   if(t.kind==='error')return input;
    if(t.kind==='table')fail(n,'A Table has columns, not object fields; use a select row parameter');
    if(t.kind==='array'){if(typeof n.key!=='number')fail(n,'Array projection requires a numeric index');if(t.length!==undefined&&n.key>=t.length)fail(n,'Array index out of bounds');if(!input.items){if(this.checking)return this.bind(t.element,undefined);fail(n,'Use a statically known array');}return input.items[n.key];}
    if(t.kind!=='record')fail(n,'Cannot project '+String(n.key)+' from '+show(t));
@@ -60,9 +73,10 @@ export class TypedCompiler{
    if(n.optional&&t.nullable)v={...v,type:optional(v.type),known:input.known?true:v.known,...(input.known&&input.value===null?{value:null}:{})};
    return v;
   }
-  if(n.k==='unary'){const a=this.compile(n.input!,env);if(n.op==='!'){if(!scalarType(a.type)||a.type.name!=='Bool'||a.type.nullable)fail(n,'! requires Bool');return {type:scalar('Bool'),known:a.known,...(a.known?{value:!a.value}:{sql:'(NOT '+this.sql(a,n)+')'}),column:a.column};}if(!numeric(a.type))fail(n,'Unary - requires a number');return {...a,...(a.known?{value:a.value===null?null:-a.value}:{sql:'(-'+this.sql(a,n)+')'})};}
+  if(n.k==='unary'){const a=this.compile(n.input!,env);if(a.type.kind==='error')return a;if(n.op==='!'){if(!scalarType(a.type)||a.type.name!=='Bool'||a.type.nullable)fail(n,'! requires Bool');return {type:scalar('Bool'),known:a.known,...(a.known?{value:!a.value}:{sql:'(NOT '+this.sql(a,n)+')'}),column:a.column};}if(!numeric(a.type))fail(n,'Unary - requires a number');return {...a,...(a.known?{value:a.value===null?null:-a.value}:{sql:'(-'+this.sql(a,n)+')'})};}
   if(n.k==='binary'){
    const a=this.compile(n.left!,env),b=this.compile(n.right!,env),op=n.op!,k=a.known&&b.known,column=a.column||b.column;
+   if(a.type.kind==='error'||b.type.kind==='error')return {type:{kind:'error'},known:false};
    if(op==='??'){if(!nullable(a.type))fail(n,'?? requires an optional value');const type=common(present(a.type),b.type);return {type,known:k,column,...(k?{value:a.value??b.value}:{sql:'COALESCE('+this.sql(a,n)+','+this.sql(b,n)+')'})};}
    if(['&&','||'].includes(op)){for(const x of [a,b])if(!scalarType(x.type)||x.type.name!=='Bool'||x.type.nullable)fail(n,'Boolean operators require Bool, handle Option(Bool) explicitly');return {type:scalar('Bool'),known:k,column,...(k?{value:op==='&&'?a.value&&b.value:a.value||b.value}:{sql:'('+this.sql(a,n)+(op==='&&'?' AND ':' OR ')+this.sql(b,n)+')'})};}
    if(['+','-','*','/','%'].includes(op)){
@@ -84,12 +98,12 @@ export class TypedCompiler{
    const name=n.name!,args=n.a!;
    if(name==='map_opt'){
     if(args.length!==2||args[1].k!=='lambda'||args[1].params?.length!==1)fail(n,'map_opt requires (optional, (value) => expression)');
-    const a=this.compile(args[0],env);if(!nullable(a.type))fail(n,'map_opt requires Option');
+    const a=this.compile(args[0],env);if(a.type.kind==='error')return a;if(!nullable(a.type))fail(n,'map_opt requires Option');
     const value:V={...a,type:present(a.type),known:a.known&&a.value!==null};const out=this.compile(args[1].body!,{...env,[args[1].params![0]]:value});
     if(out.type.kind==='record')return {type:optional(out.type),known:a.known&&(a.value===null||out.known),...(a.known?{value:a.value===null?null:out.value}:{})};
     return {type:optional(out.type),known:a.known&&(a.value===null||out.known),...(a.known&&a.value===null?{value:null}:a.known&&out.known?{value:out.value}:{sql:'(CASE WHEN '+this.presence(a,n)+' IS NULL THEN NULL ELSE '+this.sql(out,n)+' END)'})};
    }
-   const a=args.map(x=>this.compile(x,env));const arity=(lo:number,hi=lo)=>{if(a.length<lo||a.length>hi)fail(n,'Invalid argument count for '+name);};
+   const a=args.map(x=>this.compile(x,env));if(a.some(x=>x.type.kind==='error'))return {type:{kind:'error'},known:false};const arity=(lo:number,hi=lo)=>{if(a.length<lo||a.length>hi)fail(n,'Invalid argument count for '+name);};
    if(['count','sum','avg','min','max'].includes(name)){
     arity(1);const x=a[0];if(!x.column&&!x.rows)fail(n,name+' requires a grouped Column or rows');if(x.rows&&name!=='count')fail(n,name+' requires a Column');
     if(['sum','avg'].includes(name)&&!numeric(x.type))fail(n,name+' requires a numeric Column');
@@ -138,10 +152,11 @@ export class TypedCompiler{
   if(entries.joins){if(entries.joins.k!=='array')fail(entries.joins,'joins must be an array');for(const j of entries.joins.a!){if(j.k!=='object')fail(j,'Expected join object');const p=Object.fromEntries(j.entries!.map(e=>[e.key,e.value]));for(const key of Object.keys(p))if(!['kind','source','on'].includes(key))fail(p[key],'Unknown join option '+key);if(!p.kind||p.kind.k!=='lit'||!['inner','left'].includes(p.kind.v)||!p.source||!p.on)fail(j,'join requires kind,source,on');const sql=source(p.source);const predicate=this.callback(p.on,[{type:record(Object.fromEntries(Object.entries(scope).map(([k,v])=>[k,v.type]))),known:false,fields:{...scope}}],captures);this.bool(predicate,p.on);joins.push((p.kind.v==='left'?' LEFT':' INNER')+' JOIN '+sql+' ON '+this.sql(predicate,p.on));if(p.kind.v==='left'){const alias=p.source.entries![0].key;scope[alias]={...scope[alias],type:optional(scope[alias].type)};}}}
   const row:V={type:record(Object.fromEntries(Object.entries(scope).map(([k,v])=>[k,v.type]))),known:false,fields:scope};
   const where=entries.where?this.callback(entries.where,[row],captures):undefined;if(where)this.bool(where,entries.where);
-  let groups:V|undefined;if(entries.group_by){groups=this.callback(entries.group_by,[row],captures);if(groups.type.kind!=='record')fail(entries.group_by,'group_by requires a key record');for(const v of Object.values(groups.fields!))if(v.type.kind!=='scalar'&&v.type.kind!=='null')fail(entries.group_by,'Group keys must be scalar');}
+  let groups:V|undefined;if(entries.group_by){groups=this.callback(entries.group_by,[row],captures);if(groups.type.kind==='error'||Object.values(groups.fields??{}).some(v=>v.type.kind==='error'))this.throwIfErrors();if(groups.type.kind!=='record')fail(entries.group_by,'group_by requires a key record');for(const v of Object.values(groups.fields!))if(v.type.kind!=='scalar'&&v.type.kind!=='null')fail(entries.group_by,'Group keys must be scalar');}
   const asColumns=(v:V):V=>({...v,column:v.type.kind==='scalar'?true:v.column,...(v.fields?{fields:Object.fromEntries(Object.entries(v.fields).map(([k,v])=>[k,asColumns(v)]))}:{})});
   if(!entries.fields)fail(n,'select requires fields');
   const values=this.callback(entries.fields,groups?[groups,{...asColumns(row),rows:true}]:[row],captures);
+  this.throwIfErrors();
   if(values.type.kind!=='record'||!values.fields||!Object.keys(values.fields).length)fail(entries.fields,'fields requires a nonempty record');
   const columns:SqlColumn[]=Object.entries(values.fields).map(([name,v])=>{if(v.type.kind!=='scalar')fail(entries.fields,'Table field '+name+' must have an inferred scalar type, got '+show(v.type));if(v.column)fail(entries.fields,'Column must be aggregated');return {name,type:(v.type as any).name,nullable:(v.type as any).nullable};});
   let projection=Object.entries(values.fields).map(([name,v])=>this.sql(v,entries.fields)+' AS '+q(name)).join(',');
@@ -152,13 +167,14 @@ export class TypedCompiler{
   const output:V={type:rowType(columns),known:false,fields:Object.fromEntries(columns.map(c=>[c.name,{type:scalar(c.type,c.nullable),known:false,sql:q(c.name)}]))};
   if(entries.having&&!groups)fail(entries.having,'having requires group_by');
   let sql='SELECT '+columns.map(c=>q(c.name)).join(',')+' FROM ('+inner+')';if(entries.having){const p=this.callback(entries.having,[output],captures);this.bool(p,entries.having);sql+=' WHERE '+this.sql(p,entries.having);}
-  if(entries.order_by){const f=entries.order_by;if(f.k!=='lambda'||f.params?.length!==1||f.body?.k!=='array')fail(f,'order_by requires (out) => [asc/desc(...)]');const env={...captures,[f.params![0]]:output};const order=f.body.a!.map(item=>{if(item.k!=='call'||!['asc','desc'].includes(item.name!)||![1,2].includes(item.a!.length))fail(item,'Expected asc or desc');const value=this.compile(item.a![0],env);if(value.type.kind!=='scalar')fail(item,'Ordering requires a scalar');let nulls='last';if(item.a![1]){const option=this.compile(item.a![1],env);if(!option.known||!isRecord(option.value)||Object.keys(option.value).some(k=>k!=='nulls')||!['first','last'].includes(String(option.value.nulls)))fail(item,'Ordering options must be {nulls:"first"|"last"}');nulls=String(option.value.nulls);}return this.sql(value,item)+' '+item.name!.toUpperCase()+' NULLS '+nulls.toUpperCase();});if(!order.length)fail(f,'order_by must not be empty');sql+=' ORDER BY '+order.join(',');}
+  if(entries.order_by){const f=entries.order_by;if(f.k!=='lambda'||f.params?.length!==1||f.body?.k!=='array')fail(f,'order_by requires (out) => [asc/desc(...)]');const env={...captures,[f.params![0]]:output};const order=f.body.a!.map(item=>{if(item.k!=='call'||!['asc','desc'].includes(item.name!)||![1,2].includes(item.a!.length))fail(item,'Expected asc or desc');const value=this.compile(item.a![0],env);if(value.type.kind==='error')return 'NULL ASC NULLS LAST';if(value.type.kind!=='scalar')fail(item,'Ordering requires a scalar');let nulls='last';if(item.a![1]){const option=this.compile(item.a![1],env);if(option.type.kind==='error')return 'NULL ASC NULLS LAST';if(!option.known||!isRecord(option.value)||Object.keys(option.value).some(k=>k!=='nulls')||!['first','last'].includes(String(option.value.nulls)))fail(item,'Ordering options must be {nulls:"first"|"last"}');nulls=String(option.value.nulls);}return this.sql(value,item)+' '+item.name!.toUpperCase()+' NULLS '+nulls.toUpperCase();});if(!order.length)fail(f,'order_by must not be empty');sql+=' ORDER BY '+order.join(',');}
   let minRows=groups&&Object.keys(groups.fields!).length===0&&!entries.having?1:!groups&&!entries.where&&!joins.length?(baseBounds.minRows??0):0,maxRows:number|undefined=groups&&Object.keys(groups.fields!).length===0?1:!joins.length?baseBounds.maxRows:undefined;
-  if(entries.limit){const v=this.compile(entries.limit,captures);if(!v.known||!Number.isSafeInteger(v.value)||v.value<0)fail(entries.limit,'limit requires a known nonnegative Int');if(v.value>0&&!entries.order_by&&maxRows!==1)fail(entries.limit,'limit requires order_by');maxRows=Math.min(maxRows??Infinity,v.value);minRows=Math.min(minRows,v.value);sql+=' LIMIT '+v.value;}
+  if(entries.limit){const v=this.compile(entries.limit,captures);if(v.type.kind==='error')this.throwIfErrors();if(!v.known||!Number.isSafeInteger(v.value)||v.value<0)fail(entries.limit,'limit requires a known nonnegative Int');if(v.value>0&&!entries.order_by&&maxRows!==1)fail(entries.limit,'limit requires order_by');maxRows=Math.min(maxRows??Infinity,v.value);minRows=Math.min(minRows,v.value);sql+=' LIMIT '+v.value;}
+  this.throwIfErrors();
   if(n.name==='select_one')sql='SELECT * FROM ('+sql+') LIMIT 2';
   return {sql,tables,columns,type:n.name==='select_one'?optional(rowType(columns)):{kind:'table',columns,minRows,...(maxRows===undefined?{}:{maxRows})} as Ty,minRows,maxRows,guard:n.name==='select_one'&&(maxRows===undefined||maxRows>1)};
  }
  presence(v:V,n:N):string{if(v.presence)return v.presence;if(v.type.kind==='record')return this.param(v.known?(v.value===null?null:1):null);return this.sql(v,n);}
  callback(n:N,args:V[],env:Record<string,V>):V{if(n.k!=='lambda'||n.params?.length!==args.length)fail(n,'Expected a row function with '+args.length+' parameter(s)');return this.compile(n.body!,{...env,...Object.fromEntries(n.params!.map((p,i)=>[p,args[i]]))});}
- bool(v:V,n:N){if(v.type.kind!=='scalar'||v.type.name!=='Bool'||v.type.nullable||v.column)fail(n,'Predicate must return Bool; use ?? False for Option(Bool)');}
+ bool(v:V,n:N){if(v.type.kind==='error'&&this.checking)return;if(v.type.kind!=='scalar'||v.type.name!=='Bool'||v.type.nullable||v.column)fail(n,'Predicate must return Bool; use ?? False for Option(Bool)');}
 }
