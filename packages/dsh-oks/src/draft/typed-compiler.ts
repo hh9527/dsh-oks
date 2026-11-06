@@ -226,7 +226,7 @@ export class TypedCompiler{
    return valid?this.sql(value,item)+' '+item.name!.toUpperCase()+' NULLS '+nulls.toUpperCase():'NULL ASC NULLS LAST';
   });if(!order.length)this.reportFailure(f,'order_by must not be empty');else sql+=' ORDER BY '+order.join(',');}}
   let minRows=groups&&Object.keys(groups.fields??{}).length===0&&!entries.having?1:!groups&&!entries.where&&!joins.length?(baseBounds.minRows??0):0,maxRows:number|undefined=groups&&Object.keys(groups.fields??{}).length===0?1:!joins.length?baseBounds.maxRows:undefined;
-  if(entries.limit){const v=this.compile(entries.limit,captures);if(v.type.kind==='error'){this.throwIfErrors();throw new UpstreamTypeUnavailable();}if(!v.known||!Number.isSafeInteger(v.value)||v.value<0)fail(entries.limit,'limit requires a known nonnegative Int');if(v.value>0&&!entries.order_by&&maxRows!==1)fail(entries.limit,'limit requires order_by');maxRows=Math.min(maxRows??Infinity,v.value);minRows=Math.min(minRows,v.value);sql+=' LIMIT '+v.value;}
+  if(entries.limit){const v=this.compile(entries.limit,captures);if(v.type.kind==='error'){this.throwIfErrors();throw new UpstreamTypeUnavailable();}if(!v.known||!Number.isSafeInteger(v.value)||v.value<0)fail(entries.limit,'limit requires a known nonnegative Int');if(v.value>0&&!entries.order_by&&maxRows!==1&&(!unavailableSource||maxRows!==undefined))fail(entries.limit,'limit requires order_by');maxRows=Math.min(maxRows??Infinity,v.value);minRows=Math.min(minRows,v.value);sql+=' LIMIT '+v.value;}
   this.throwIfErrors();
   if(unavailableSource)throw new UpstreamTypeUnavailable();
   if(n.name==='select_one')sql='SELECT * FROM ('+sql+') LIMIT 2';

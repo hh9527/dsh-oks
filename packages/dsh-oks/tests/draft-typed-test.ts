@@ -106,6 +106,11 @@ const small=(body:string)=>`data a = query({period:"base",limit:10});data b = qu
  assert(partialSources.diagnostics.some(d=>d.message.includes('missing_field')),JSON.stringify(partialSources.diagnostics));
  assert(!partialSources.diagnostics.some(d=>/Unknown field missing on r.s|Predicate must return Bool|Expected Table, got Error/.test(d.message)),JSON.stringify(partialSources.diagnostics));
  assert(partialSources.checkedBindings.some(b=>b.name==='sample'&&!b.checked));
+ const unknownBounds=await checkDesign(small('data broken = [1,"x"]; data sample = select({from:{s:broken},fields:r=>({v:1}),limit:1});'),'typed.dari',backend);
+ assert(unknownBounds.diagnostics.some(d=>d.message.includes('Incompatible types')),JSON.stringify(unknownBounds.diagnostics));
+ assert(!unknownBounds.diagnostics.some(d=>d.message.includes('limit requires order_by')),JSON.stringify(unknownBounds.diagnostics));
+ const invalidLimit=await checkDesign(small('data broken = [1,"x"]; data sample = select({from:{s:broken},fields:r=>({v:1}),limit:-1});'),'typed.dari',backend);
+ assert(invalidLimit.diagnostics.some(d=>d.message.includes('limit requires a known nonnegative Int')),JSON.stringify(invalidLimit.diagnostics));
  const halted=await checkDesign(small('data sample = select({from:{s:a},where:r=>r.s.missing_predicate,fields:42});'),'typed.dari',backend);
  assert(halted.diagnostics.some(d=>/missing_predicate/.test(d.message)),JSON.stringify(halted.diagnostics));
  assert(halted.diagnostics.some(d=>/Expected a row function/.test(d.message)),JSON.stringify(halted.diagnostics));
