@@ -69,6 +69,13 @@ try{
  const mixed=await checkDesign('data x = [1,"x"];','fixture.dari',backend);
  assert.equal(mixed.ok,false);assert(mixed.diagnostics.some(d=>/Incompatible types/.test(d.message)),JSON.stringify(mixed));
  assert(mixed.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ const mapped=await checkDesign('data bad = [1,"x"]; data result = map(bad,(n)=>({dependent:n+1,independent:"x"+1}));','fixture.dari',backend);
+ assert(mapped.diagnostics.some(d=>d.message.includes('Incompatible types')),JSON.stringify(mapped.diagnostics));
+ assert.equal(mapped.diagnostics.filter(d=>d.message.includes('Arithmetic requires numbers')).length,1,JSON.stringify(mapped.diagnostics));
+ assert(mapped.checkedBindings.some(b=>b.name==='result'&&!b.checked));
+ const inlineMap=await checkDesign('data result = map([1,"x"],(n)=>({dependent:n+1,independent:"x"+1}));','fixture.dari',backend);
+ assert(inlineMap.diagnostics.some(d=>d.message.includes('Incompatible types')),JSON.stringify(inlineMap.diagnostics));
+ assert.equal(inlineMap.diagnostics.filter(d=>d.message.includes('Arithmetic requires numbers')).length,1,JSON.stringify(inlineMap.diagnostics));
  const warningBackend={...backend,checkCall(ctx:any){return [{stage:'type',severity:'warning' as const,message:'advisory',span:ctx.span}];}};
  const warned=await checkDesign('data x = data(1);','fixture.dari',warningBackend);
  assert.equal(warned.ok,true,JSON.stringify(warned));assert.equal(warned.warnings[0]?.message,'advisory');assert(warned.checkedBindings[0].checked);
@@ -102,6 +109,9 @@ try{
   assert(dag.checkedBindings.some(b=>b.name==='blocked'&&!b.checked));assert(dag.checkedBindings.some(b=>b.name==='independent'&&b.checked));
   assert.equal(dag.types.blocked,undefined);assert.equal(dag.checkedBindings.find(b=>b.name==='blocked')?.shape,undefined);
   assert.deepEqual(intents,[{limit:5,kind:'independent'}]);
+  const mapDag=await checkDesign('data bad = [1,"x"]; data result = map(bad,(n)=>({dependent:query({limit:5,n:n}),independent:query({limit:5,kind:"map_independent"})}));','fixture.dari',tracked);
+  assert.equal(mapDag.ok,false);assert(mapDag.checkedBindings.some(b=>b.name==='result'&&!b.checked));
+  assert.deepEqual(intents,[{limit:5,kind:'independent'},{limit:5,kind:'map_independent'}]);
  }finally{tracked.dispose?.();}
 }finally{backend.dispose?.();}
 console.log('Diagnostic collector: checkpoints, explicit reports and error type propagation passed');
