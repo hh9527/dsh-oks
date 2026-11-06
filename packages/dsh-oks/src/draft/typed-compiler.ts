@@ -200,6 +200,8 @@ export class TypedCompiler{
   if(!entries.from)fail(n,'select requires from');const from=source(entries.from);
   if(entries.joins){if(entries.joins.k!=='array')fail(entries.joins,'joins must be an array');for(const j of entries.joins.a!){if(j.k!=='object')fail(j,'Expected join object');const p=Object.fromEntries(j.entries!.map(e=>[e.key,e.value]));for(const key of Object.keys(p))if(!['kind','source','on'].includes(key))this.reportFailure(p[key],'Unknown join option '+key);if(!p.kind||p.kind.k!=='lit'||!['inner','left'].includes(p.kind.v)||!p.source||!p.on)fail(j,'join requires kind,source,on');const sql=source(p.source);const predicate=this.callback(p.on,[{type:record(Object.fromEntries(Object.entries(scope).map(([k,v])=>[k,v.type]))),known:false,fields:{...scope}}],captures);const valid=this.bool(predicate,p.on);joins.push((p.kind.v==='left'?' LEFT':' INNER')+' JOIN '+sql+' ON '+(valid?this.sql(predicate,p.on):'NULL'));if(p.kind.v==='left'){const alias=p.source.entries![0].key;scope[alias]={...scope[alias],type:optional(scope[alias].type)};}}}
   const row:V={type:record(Object.fromEntries(Object.entries(scope).map(([k,v])=>[k,v.type]))),known:false,fields:scope};
+  const limit=entries.limit?this.compile(entries.limit,captures):undefined;let invalidLimit=false;
+  if(limit&&limit.type.kind!=='error'&&(!limit.known||!Number.isSafeInteger(limit.value)||limit.value<0)){this.reportFailure(entries.limit,'limit requires a known nonnegative Int');invalidLimit=true;}
   const where=entries.where?this.callback(entries.where,[row],captures):undefined;const whereValid=where?this.bool(where,entries.where):false;
   let groups:V|undefined;if(entries.group_by){groups=this.callback(entries.group_by,[row],captures);if(groups.type.kind!=='record'&&groups.type.kind!=='error'){this.reportFailure(entries.group_by,'group_by requires a key record');groups={type:{kind:'error'},known:false};}for(const [name,v] of Object.entries(groups.fields??{}))if(v.type.kind!=='scalar'&&v.type.kind!=='null'&&v.type.kind!=='error'){
    this.reportFailure(this.fieldNode(entries.group_by,name),'Group key '+name+' must be scalar');
@@ -231,9 +233,9 @@ export class TypedCompiler{
    return valid?this.sql(value,item)+' '+item.name!.toUpperCase()+' NULLS '+nulls.toUpperCase():'NULL ASC NULLS LAST';
   });if(!order.length)this.reportFailure(f,'order_by must not be empty');else sql+=' ORDER BY '+order.join(',');}}
   let minRows=groups&&Object.keys(groups.fields??{}).length===0&&!entries.having?1:!groups&&!entries.where&&!joins.length?(baseBounds.minRows??0):0,maxRows:number|undefined=groups&&Object.keys(groups.fields??{}).length===0?1:!joins.length?baseBounds.maxRows:undefined;
-  if(entries.limit){const v=this.compile(entries.limit,captures);if(v.type.kind==='error'){this.throwIfErrors();throw new UpstreamTypeUnavailable();}if(!v.known||!Number.isSafeInteger(v.value)||v.value<0)fail(entries.limit,'limit requires a known nonnegative Int');if(v.value>0&&!entries.order_by&&maxRows!==1&&(!unavailableSource||maxRows!==undefined))fail(entries.limit,'limit requires order_by');maxRows=Math.min(maxRows??Infinity,v.value);minRows=Math.min(minRows,v.value);sql+=' LIMIT '+v.value;}
+  if(limit&&limit.type.kind!=='error'&&!invalidLimit){if(limit.value>0&&!entries.order_by&&maxRows!==1&&(!unavailableSource||maxRows!==undefined))this.reportFailure(entries.limit,'limit requires order_by');maxRows=Math.min(maxRows??Infinity,limit.value);minRows=Math.min(minRows,limit.value);sql+=' LIMIT '+limit.value;}
   this.throwIfErrors();
-  if(unavailableSource)throw new UpstreamTypeUnavailable();
+  if(unavailableSource||limit?.type.kind==='error')throw new UpstreamTypeUnavailable();
   if(n.name==='select_one')sql='SELECT * FROM ('+sql+') LIMIT 2';
   return {sql,tables,columns,type:n.name==='select_one'?optional(rowType(columns)):{kind:'table',columns,minRows,...(maxRows===undefined?{}:{maxRows})} as Ty,minRows,maxRows,guard:n.name==='select_one'&&(maxRows===undefined||maxRows>1)};
  }
