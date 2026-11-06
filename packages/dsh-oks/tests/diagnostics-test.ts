@@ -189,6 +189,10 @@ try{
  for(const expected of ['select requires from','Arithmetic requires numbers','limit requires a known nonnegative Int'])assert(missingFrom.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(missingFrom.diagnostics));
  assert(!missingFrom.diagnostics.some(d=>d.message.includes('Unknown field unknown')),JSON.stringify(missingFrom.diagnostics));
  assert(missingFrom.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ const missingFields=await checkDesign('data a = table([{n:1}],{kind:"example"}); data x = select({from:{s:a},order_by:o=>[asc(o.missing),asc("x"+1)],having:o=>1+"x"});','fixture.dari',backend);
+ for(const expected of ['select requires fields','having requires group_by'])assert(missingFields.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(missingFields.diagnostics));
+ assert.equal(missingFields.diagnostics.filter(d=>d.message.includes('Arithmetic requires numbers')).length,2,JSON.stringify(missingFields.diagnostics));
+ assert(!missingFields.diagnostics.some(d=>d.message.includes('Unknown field missing')),JSON.stringify(missingFields.diagnostics));
  assert(invalidGroup.checkedBindings.some(b=>b.name==='x'&&!b.checked));
  assert.equal(argumentsResult.diagnostics.filter(d=>d.message==='concat requires String').length,2,JSON.stringify(argumentsResult.diagnostics));
  assert.equal(argumentsResult.diagnostics.filter(d=>d.message.startsWith('round requires')).length,2,JSON.stringify(argumentsResult.diagnostics));

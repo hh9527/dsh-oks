@@ -214,8 +214,8 @@ export class TypedCompiler{
    const errorType:Ty={kind:'error'};groups.fields![name]={type:errorType,known:false};if(groups.type.kind==='record')groups.type={...groups.type,fields:{...groups.type.fields,[name]:errorType}};
   }}
   const asColumns=(v:V):V=>({...v,column:v.type.kind==='scalar'?true:v.column,...(v.fields?{fields:Object.fromEntries(Object.entries(v.fields).map(([k,v])=>[k,asColumns(v)]))}:{})});
-  if(!entries.fields)fail(n,'select requires fields');
-  let values=this.callback(entries.fields,groups?[groups,{...asColumns(row),rows:true}]:[row],captures);let unavailableOutput=false;
+  if(!entries.fields)this.reportFailure(n,'select requires fields');
+  let values:V=entries.fields?this.callback(entries.fields,groups?[groups,{...asColumns(row),rows:true}]:[row],captures):{type:{kind:'error'},known:false};let unavailableOutput=false;
   if(values.type.kind!=='record'||!values.fields||!Object.keys(values.fields).length){if(values.type.kind!=='error')this.reportFailure(entries.fields,'fields requires a nonempty record');unavailableOutput=true;values={type:record({}),known:false,fields:{}};}
   const valueFields=values.fields!;
   const outputFields:Record<string,V>={};const columns:SqlColumn[]=[];
