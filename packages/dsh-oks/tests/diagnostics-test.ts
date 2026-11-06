@@ -30,6 +30,19 @@ const compiler=new TypedCompiler({}, {}, true);
 const condition=compiler.compile({k:'template_scope',s:span,op:'condition',a:[{k:'ref',s:span,name:'opt'},{k:'lambda',s:span,params:['x'],body:{k:'ref',s:span,name:'missing'}}]},{opt:{type:{kind:'scalar',name:'Int',nullable:true},known:false}});
 assert.equal(condition.type.kind,'error');
 assert.deepEqual(compiler.diagnostics.list().map(d=>d.message),['Unknown binding missing']);
+for(const kind of ['map_opt','template_scope']){
+ const c=new TypedCompiler({}, {}, true);
+ const input={k:'ref',s:span,name:'missing_input'},body={k:'object',s:span,entries:[{key:'dependent',value:{k:'get',s:span,input:{k:'ref',s:span,name:'x'},key:'field'}},{key:'independent',value:{k:'ref',s:span,name:'missing_body'}}]};
+ const lambda={k:'lambda',s:span,params:['x'],body};
+ const value=c.compile(kind==='map_opt'?{k:'call',s:span,name:kind,a:[input,lambda]}:{k:kind,s:span,a:[input,lambda]},{});
+ assert.equal(value.type.kind,'error');assert.deepEqual(c.diagnostics.list().map(d=>d.message),['Unknown binding missing_body','Unknown binding missing_input']);
+}
+const cases=new TypedCompiler({}, {}, true);
+cases.compile({k:'call',s:span,name:'case_when',a:[{k:'ref',s:span,name:'missing_condition'},{k:'lit',s:span,v:1},{k:'lit',s:span,v:'bad'}]},{});
+assert.deepEqual(cases.diagnostics.list().map(d=>d.message),['Incompatible types Int and String','Unknown binding missing_condition']);
+const badCondition=new TypedCompiler({}, {}, true);
+badCondition.compile({k:'call',s:span,name:'case_when',a:[{k:'lit',s:span,v:1},{k:'ref',s:span,name:'missing_branch'},{k:'lit',s:span,v:2}]},{});
+assert.deepEqual(badCondition.diagnostics.list().map(d=>d.message),['case_when requires Bool','Unknown binding missing_branch']);
 const arrayCompiler=new TypedCompiler({}, {}, true);
 const array=arrayCompiler.compile({k:'array',s:span,a:[{k:'ref',s:span,name:'missing'},{k:'lit',s:span,v:1},{k:'lit',s:span,v:'bad'},{k:'lit',s:span,v:true}]},{});
 assert.equal(array.type.kind,'array');if(array.type.kind==='array')assert.equal(array.type.element.kind,'error');

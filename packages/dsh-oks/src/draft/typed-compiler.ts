@@ -51,7 +51,7 @@ export class TypedCompiler{
   }
   if(n.k==='template_scope'){
    const input=this.compile(n.a![0],env),f=n.a![1];
-   if(input.type.kind==='error')return input;
+   if(input.type.kind==='error'){if(this.checking)this.compile(f.body!,{...env,[f.params![0]]:input});return input;}
    if(!nullable(input.type)||input.type.kind==='null')fail(n,'if let Some requires an Option with a known inner type');
    // Check the body with a present binding even when the runtime value is absent.
    const inner={...input,type:present(input.type),known:input.known&&input.value!==null};
@@ -116,12 +116,21 @@ export class TypedCompiler{
    const name=n.name!,args=n.a!;
    if(name==='map_opt'){
     if(args.length!==2||args[1].k!=='lambda'||args[1].params?.length!==1)fail(n,'map_opt requires (optional, (value) => expression)');
-    const a=this.compile(args[0],env);if(a.type.kind==='error')return a;if(!nullable(a.type))fail(n,'map_opt requires Option');
+    const a=this.compile(args[0],env);if(a.type.kind==='error'){if(this.checking)this.compile(args[1].body!,{...env,[args[1].params![0]]:a});return a;}if(!nullable(a.type))fail(n,'map_opt requires Option');
     const value:V={...a,type:present(a.type),known:a.known&&a.value!==null};const out=this.compile(args[1].body!,{...env,[args[1].params![0]]:value});
     if(out.type.kind==='record')return {type:optional(out.type),known:a.known&&(a.value===null||out.known),...(a.known?{value:a.value===null?null:out.value}:{})};
     return {type:optional(out.type),known:a.known&&(a.value===null||out.known),...(a.known&&a.value===null?{value:null}:a.known&&out.known?{value:out.value}:{sql:'(CASE WHEN '+this.presence(a,n)+' IS NULL THEN NULL ELSE '+this.sql(out,n)+' END)'})};
    }
-   const a=args.map(x=>this.compile(x,env));if(a.some(x=>x.type.kind==='error'))return {type:{kind:'error'},known:false};const arity=(lo:number,hi=lo)=>{if(a.length<lo||a.length>hi)fail(n,'Invalid argument count for '+name);};
+   const a=args.map(x=>this.compile(x,env));const arity=(lo:number,hi=lo)=>{if(a.length<lo||a.length>hi)fail(n,'Invalid argument count for '+name);};
+   if(name==='case_when'){
+    arity(3);let invalid=a.some(x=>x.type.kind==='error');
+    if(a[0].type.kind!=='error'&&(a[0].type.kind!=='scalar'||a[0].type.name!=='Bool'||a[0].type.nullable)){this.reportFailure(args[0],'case_when requires Bool');invalid=true;}
+    let type:Ty={kind:'error'};
+    if(a[1].type.kind!=='error'&&a[2].type.kind!=='error')try{type=common(a[1].type,a[2].type);}catch(error){if(!this.checking||!(error instanceof TypeRuleError))throw error;this.reportFailure(n,error.message);invalid=true;}
+    if(invalid)return {type:{kind:'error'},known:false};
+    const k=a.every(x=>x.known);return {type,known:k,...(k?{value:a[0].value?a[1].value:a[2].value}:{sql:'(CASE WHEN '+this.sql(a[0],n)+' THEN '+this.sql(a[1],n)+' ELSE '+this.sql(a[2],n)+' END)'})};
+   }
+   if(a.some(x=>x.type.kind==='error'))return {type:{kind:'error'},known:false};
    if(['count','sum','avg','min','max'].includes(name)){
     arity(1);const x=a[0];if(!x.column&&!x.rows)fail(n,name+' requires a grouped Column or rows');if(x.rows&&name!=='count')fail(n,name+' requires a Column');
     if(['sum','avg'].includes(name)&&!numeric(x.type))fail(n,name+' requires a numeric Column');
@@ -150,7 +159,6 @@ export class TypedCompiler{
     const sql='(CASE '+this.sql(input,n)+pairs.map(p=>' WHEN '+this.param(p.value)+' THEN '+this.param(p.label)).join('')+' ELSE NULL END)';
     return {type,known:false,column:input.column,sql};
    }
-   if(name==='case_when'){arity(3);if(a[0].type.kind!=='scalar'||a[0].type.name!=='Bool'||a[0].type.nullable)fail(n,'case_when requires Bool');const type=common(a[1].type,a[2].type),k=a.every(x=>x.known);return {type,known:k,...(k?{value:a[0].value?a[1].value:a[2].value}:{sql:'(CASE WHEN '+this.sql(a[0],n)+' THEN '+this.sql(a[1],n)+' ELSE '+this.sql(a[2],n)+' END)'})};}
    if(name==='concat'){arity(1,64);for(const x of a)if(!scalarType(x.type)||x.type.name!=='String')fail(n,'concat requires String');const k=a.every(x=>x.known);return {type:scalar('String',a.some(x=>nullable(x.type))),known:k,...(k?{value:a.some(x=>x.value===null)?null:a.map(x=>x.value).join('')}:{sql:'('+a.map(x=>this.sql(x,n)).join('||')+')'})};}
    fail(n,'Function is not available in this expression: '+name);
   }
