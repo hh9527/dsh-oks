@@ -82,6 +82,9 @@ try{
  assert(argumentsResult.diagnostics.some(d=>d.message==='map_opt requires Option'),JSON.stringify(argumentsResult.diagnostics));
  assert(argumentsResult.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(argumentsResult.diagnostics));
  assert(!argumentsResult.diagnostics.some(d=>d.message.includes('missing')),JSON.stringify(argumentsResult.diagnostics));
+ const wrongArity=await checkDesign('data x = sum(1+"x",2);','fixture.dari',backend);
+ assert(wrongArity.diagnostics.some(d=>d.message==='Invalid argument count for sum'),JSON.stringify(wrongArity.diagnostics));
+ assert(wrongArity.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(wrongArity.diagnostics));
  const tableSource='data x = table([{first:{x:1},second:[1]}],{kind:"example"});';
  const tableErrors=await checkDesign(tableSource,'fixture.dari',backend);
  for(const name of ['first','second'])assert(tableErrors.diagnostics.some(d=>d.message.includes('table column '+name)),JSON.stringify(tableErrors.diagnostics));

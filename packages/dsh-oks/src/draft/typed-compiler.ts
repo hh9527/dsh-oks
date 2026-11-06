@@ -10,6 +10,7 @@ const accessPath=(n:N):string|undefined=>{if(n.k==='ref')return n.name;if(n.k!==
 const nullable=(t:Ty)=>t.kind==='null'||'nullable' in t&&t.nullable;
 const scalarType=(t:Ty):t is Extract<Ty,{kind:'scalar'}>=>t.kind==='scalar';
 const numeric=(t:Ty)=>scalarType(t)&&['Int','Float'].includes(t.name);
+const argumentBounds:Record<string,[number,number]>={case_when:[3,3],round:[2,2],concat:[1,64],count:[1,1],sum:[1,1],avg:[1,1],min:[1,1],max:[1,1],is_some:[1,1],is_none:[1,1],lookup:[2,2]};
 export function fail(n:N,m:string):never{throw new DraftSyntaxError(m,n.s);}
 export class TypedCompiler{
  readonly bindings:unknown[]=[];
@@ -121,9 +122,10 @@ export class TypedCompiler{
     if(out.type.kind==='record')return {type:optional(out.type),known:a.known&&(a.value===null||out.known),...(a.known?{value:a.value===null?null:out.value}:{})};
     return {type:optional(out.type),known:a.known&&(a.value===null||out.known),...(a.known&&a.value===null?{value:null}:a.known&&out.known?{value:out.value}:{sql:'(CASE WHEN '+this.presence(a,n)+' IS NULL THEN NULL ELSE '+this.sql(out,n)+' END)'})};
    }
-   const a=args.map(x=>this.compile(x,env));const arity=(lo:number,hi=lo)=>{if(a.length<lo||a.length>hi)fail(n,'Invalid argument count for '+name);};
+   const a=args.map(x=>this.compile(x,env));
+   const expected=argumentBounds[name];if(expected&&(a.length<expected[0]||a.length>expected[1]))return this.errorValue(n,'Invalid argument count for '+name);
    if(name==='case_when'){
-    arity(3);let invalid=a.some(x=>x.type.kind==='error');
+    let invalid=a.some(x=>x.type.kind==='error');
     if(a[0].type.kind!=='error'&&(a[0].type.kind!=='scalar'||a[0].type.name!=='Bool'||a[0].type.nullable)){this.reportFailure(args[0],'case_when requires Bool');invalid=true;}
     let type:Ty={kind:'error'};
     if(a[1].type.kind!=='error'&&a[2].type.kind!=='error')try{type=common(a[1].type,a[2].type);}catch(error){if(!this.checking||!(error instanceof TypeRuleError))throw error;this.reportFailure(n,error.message);invalid=true;}
@@ -131,28 +133,28 @@ export class TypedCompiler{
     const k=a.every(x=>x.known);return {type,known:k,...(k?{value:a[0].value?a[1].value:a[2].value}:{sql:'(CASE WHEN '+this.sql(a[0],n)+' THEN '+this.sql(a[1],n)+' ELSE '+this.sql(a[2],n)+' END)'})};
    }
    if(name==='round'){
-    arity(2);let invalid=a.some(x=>x.type.kind==='error');const message='round requires a numeric value and known precision 0..15';
+    let invalid=a.some(x=>x.type.kind==='error');const message='round requires a numeric value and known precision 0..15';
     if(a[0].type.kind!=='error'&&!numeric(a[0].type)){this.reportFailure(args[0],message);invalid=true;}
     if(a[1].type.kind!=='error'&&(!a[1].known||!Number.isInteger(a[1].value)||a[1].value<0||a[1].value>15)){this.reportFailure(args[1],message);invalid=true;}
     if(invalid)return {type:{kind:'error'},known:false};
     const k=a.every(x=>x.known);return {type:a[0].type,known:k,column:a[0].column,...(k?{value:a[0].value===null?null:Math.sign(a[0].value)*Math.round(Math.abs(a[0].value)*10**a[1].value)/10**a[1].value}:{sql:'DARI_ROUND('+this.sql(a[0],n)+','+this.sql(a[1],n)+')'})};
    }
    if(name==='concat'){
-    arity(1,64);let invalid=a.some(x=>x.type.kind==='error');
+    let invalid=a.some(x=>x.type.kind==='error');
     for(const [i,x] of a.entries())if(x.type.kind!=='error'&&(!scalarType(x.type)||x.type.name!=='String')){this.reportFailure(args[i],'concat requires String');invalid=true;}
     if(invalid)return {type:{kind:'error'},known:false};
     const k=a.every(x=>x.known);return {type:scalar('String',a.some(x=>nullable(x.type))),known:k,...(k?{value:a.some(x=>x.value===null)?null:a.map(x=>x.value).join('')}:{sql:'('+a.map(x=>this.sql(x,n)).join('||')+')'})};
    }
    if(a.some(x=>x.type.kind==='error'))return {type:{kind:'error'},known:false};
    if(['count','sum','avg','min','max'].includes(name)){
-    arity(1);const x=a[0];if(!x.column&&!x.rows)fail(n,name+' requires a grouped Column or rows');if(x.rows&&name!=='count')fail(n,name+' requires a Column');
+    const x=a[0];if(!x.column&&!x.rows)fail(n,name+' requires a grouped Column or rows');if(x.rows&&name!=='count')fail(n,name+' requires a Column');
     if(['sum','avg'].includes(name)&&!numeric(x.type))fail(n,name+' requires a numeric Column');
     const type=name==='count'?scalar('Int'):name==='avg'?scalar('Float',true):optional(x.type);
     return {type,known:false,sql:name.toUpperCase()+'('+(x.rows?'*':this.sql(x,n))+')'};
    }
-   if(name==='is_some'||name==='is_none'){arity(1);const x=a[0];if(!nullable(x.type))fail(n,name+' requires Option');return {type:scalar('Bool'),known:x.known,...(x.known?{value:name==='is_some'?x.value!==null:x.value===null}:{sql:'('+this.presence(x,n)+(name==='is_some'?' IS NOT NULL)':' IS NULL)')}),column:x.column};}
+   if(name==='is_some'||name==='is_none'){const x=a[0];if(!nullable(x.type))fail(n,name+' requires Option');return {type:scalar('Bool'),known:x.known,...(x.known?{value:name==='is_some'?x.value!==null:x.value===null}:{sql:'('+this.presence(x,n)+(name==='is_some'?' IS NOT NULL)':' IS NULL)')}),column:x.column};}
    if(name==='lookup'){
-    arity(2);const [input,mapping]=a;
+    const [input,mapping]=a;
     if(!scalarType(input.type)&&input.type.kind!=='null')fail(n,'lookup input must be a scalar or null');
     if(mapping.type.kind!=='array'||!mapping.known||!Array.isArray(mapping.value)||!mapping.value.length)fail(n,'lookup requires a nonempty mapping array known at check time');
     const pairs=mapping.value as {value:unknown;label:unknown}[];let labelType:Ty={kind:'never'};const seen=new Set<unknown>();let keyName:string|undefined;
