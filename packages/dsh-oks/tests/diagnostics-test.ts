@@ -235,6 +235,9 @@ try{
   const nestedErrorBackend={...tracked,async analyze(ctx:any){if(ctx.operator==='context')return {data:box({kind:'record',fields:{value:{kind:'scalar',name:'Int',nullable:false}},nullable:false},{value:box(error)})};return tracked.analyze!(ctx);}};
   const nestedError=await checkDesign('data result = query({limit:5,value:context()});','fixture.dari',nestedErrorBackend);
   assert.equal(nestedError.ok,false);assert(nestedError.checkedBindings.some(b=>b.name==='result'&&!b.checked));assert.deepEqual(intents,[]);
+  const invalidBinding=await checkDesign('data source = context(); data result = query({limit:5,value:source});','fixture.dari',nestedErrorBackend);
+  assert.equal(invalidBinding.ok,false);assert.equal(invalidBinding.status,'incomplete');
+  assert(invalidBinding.checkedBindings.every(b=>!b.checked));assert.equal(invalidBinding.types.source,undefined);assert.deepEqual(intents,[]);
   const dag=await checkDesign('data bad = [1,"x"]; data blocked = query({limit:5,value:bad}); data independent = query({limit:5,kind:"independent"});','fixture.dari',tracked);
   assert.equal(dag.ok,false);assert(dag.diagnostics.some(d=>d.message.includes('Incompatible types')));
   assert(dag.checkedBindings.some(b=>b.name==='blocked'&&!b.checked));assert(dag.checkedBindings.some(b=>b.name==='independent'&&b.checked));

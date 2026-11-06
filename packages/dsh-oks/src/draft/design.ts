@@ -232,7 +232,8 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
           else throw error;
         }
         const localError=diagnostics.list().some(d=>d.severity!=='warning'&&(d.asset===binding || (d.span.start.offset>=statement.span.start.offset&&d.span.start.offset<statement.span.end.offset)));
-        const checked=!diagnostics.hasErrors(before)&&!localError&&dependencies.every(name=>resolved.has(name))&&(shape!==undefined||presentation||opaqueInternal);
+        const invalidValue=hasError(value);if(invalidValue)upstreamUnavailable=true;
+        const checked=!invalidValue&&!diagnostics.hasErrors(before)&&!localError&&dependencies.every(name=>resolved.has(name))&&(shape!==undefined||presentation||opaqueInternal);
         if(checked)resolved.add(binding);
         else bindings.set(binding,box({kind:'error'}));
         if(checked&&!internal&&shape!==undefined&&shape.kind!=='figure')types[binding]=show(shape);
