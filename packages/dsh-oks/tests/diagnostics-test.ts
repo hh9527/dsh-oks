@@ -114,6 +114,10 @@ try{
  }
  const invalidTimeContext=await checkDesign('data x = time_windows(1,{unit:"day",count:1,mode:"current"});','fixture.dari',backend);
  assert(invalidTimeContext.diagnostics.some(d=>d.message.includes('time windows requires safe integer context utc.epochMillis')),JSON.stringify(invalidTimeContext.diagnostics));
+ const invalidTimeZone=await checkDesign('data x = time_windows({utc:{epochMillis:0},tz:{client:{id:"invalid/timezone"}}},{unit:"day",count:1,mode:"current"});','fixture.dari',backend);
+ assert.equal(invalidTimeZone.ok,false);assert(invalidTimeZone.diagnostics.length>0,JSON.stringify(invalidTimeZone));
+ const unexpectedTimeError=new Error('unexpected time failure');
+ assert.throws(()=>backend.checkCall!({operator:'time_windows',args:[{data:{get utc(){throw unexpectedTimeError;}}},{data:{unit:'day',count:1,mode:'current'}}],span} as any,()=>true),e=>e===unexpectedTimeError);
  const argumentsSource='data a = concat(1,True); data b = round("x",20); data c = map_opt(1,n=>({dependent:n.missing,independent:"x"+1}));';
  const argumentsResult=await checkDesign(argumentsSource,'fixture.dari',backend);
  const invalidFieldsAndLimit=await checkDesign('data facts = table([{n:1}],{kind:"example"}); data x = select({from:{s:facts},fields:r=>r.s.missing,limit:-1});','fixture.dari',backend);
