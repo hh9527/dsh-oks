@@ -134,9 +134,7 @@ test('install-profile installs twice, upgrades patches and starts the runtime', 
 
     let patch = readFileSync(join(target, 'profiles/web/cordis.patch.yml'), 'utf8');
     assert.equal(patch.split('id: preset-oks\n').length - 1, 1);
-    assert.equal(patch.split('id: preset-oks-knowledge\n').length - 1, 1);
-    assert.ok(patch.includes('id: oks-knowledge\n'));
-    assert.ok(patch.includes('knowledgeHelper: true'));
+    assert.ok(!patch.includes('id: preset-oks-knowledge\n'));
     assert.equal(patch.split('id: preset-oks-vocabulary\n').length - 1, 1);
     assert.ok(patch.includes('vocabularyHelper: true'));
     assert.equal(patch.split('id: agent-preset-registry\n').length - 1, 1);
@@ -144,7 +142,7 @@ test('install-profile installs twice, upgrades patches and starts the runtime', 
     assert.ok(patch.includes('# user config'));
     for (const name of ['dsh-fs-observation-policy', 'dsh-tool-fs', 'dsh-tool-fs-search']) {
       assert.equal(patch.split(`name: "@deepseek-ai/${name}"`).length - 1, 1);
-      assert.ok(!patch.split('id: preset-oks-knowledge\n')[1].includes(name));
+      assert.ok(!patch.split('id: preset-oks-vocabulary\n')[1].includes(name));
     }
     assert.ok(patch.includes('sampleOverCapGlobResults: false'));
 

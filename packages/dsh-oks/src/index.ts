@@ -14,7 +14,7 @@ import { installWorkMethods } from './work-methods.ts';
 import { createTimeContext } from './time-context.ts';
 import { guidedTools } from './guided-tools.ts';
 import { createTools } from './tools.ts';
-import { createKaRuntime, createKnowledgeConsultation } from './ka.ts';
+import { createKaRuntime } from './ka.ts';
 import { installKnowledgeHelper } from './ka-helper.ts';
 import type { LogFn, PluginContext } from './host.ts';
 import type { PluginConfig } from './config.ts';
@@ -34,7 +34,7 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
 
   const knowledge = createKnowledge({ ctx, log, config });
   ctx.effect(() => knowledge.dispose);
-  if (config.knowledgeHelper === true || config.vocabularyHelper === true) {
+  if (config.vocabularyHelper === true) {
     installKnowledgeHelper({ ctx, knowledge, log, config });
     return;
   }
@@ -44,10 +44,7 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
   const timeContext = createTimeContext({ ctx, log });
   timeContext.install();
 
-  const ka = createKnowledgeConsultation(
-    createKaRuntime({ ctx, log, config }),
-    createKaRuntime({ ctx, log, config, vocabulary: true }),
-  );
+  const ka = createKaRuntime({ ctx, log, config });
 
   const definitions = createTools({ knowledge, ka, timeContext, log, config, attachments:()=>ctx.get('attachments'), approval:()=>ctx.get('approval'), filePolicy:()=>ctx.get('sandboxPolicy') });
   ctx.effect(() => definitions.dispose);

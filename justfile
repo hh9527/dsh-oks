@@ -259,25 +259,6 @@ install-profile:
     block=lines.join('\n');text=text.slice(0,start)+block+text.slice(end);writeFileSync(file,text);
     JS
 
-    # 知识助手预设仅装配提示词和权限。
-    if ! grep -qE '^[[:space:]]*-[[:space:]]*id:[[:space:]]*preset-oks-knowledge[[:space:]]*$' "$PATCH_FILE"; then
-      cat >> "$PATCH_FILE" <<'YAML'
-
-    - insert:
-        - id: preset-oks-knowledge
-          name: "@deepseek-ai/dsh-agent-preset"
-          config:
-            id: oks-knowledge
-            name: OKS 知识助手
-            description: 根据领域关系地图与词汇助手提供知识导航。
-            plugins:
-              - id: oks-knowledge
-                name: "@local/dsh-oks"
-                config:
-                  knowledgeHelper: true
-    YAML
-    fi
-
     if ! grep -qE '^[[:space:]]*-[[:space:]]*id:[[:space:]]*preset-oks-vocabulary[[:space:]]*$' "$PATCH_FILE"; then
       cat >> "$PATCH_FILE" <<'YAML'
 

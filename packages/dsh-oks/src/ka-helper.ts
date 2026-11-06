@@ -1,14 +1,11 @@
-import { renderDomainSummary } from './domain-summary.ts';
 import { randomUUID } from 'node:crypto';
 import { renderWholeVocabulary } from './retrieval.ts';
 import type { Knowledge } from './knowledge.ts';
 import type { LogFn, PluginContext, SessionLike } from './host.ts';
 import type { PluginConfig } from './config.ts';
 import VA_PROMPT_TEXT from './va-prompt-tpl.md';
-import KA_PROMPT_TEXT from './ka-prompt-tpl.md';
 
 const MARKER = '<!-- 词表 -->';
-const DOMAIN_MARKER = '<!-- 领域摘要 -->';
 // 领域助手不承担文件交付或宿主开发职责；按宿主 section 身份过滤，保留其余约束。
 const UNRELATED_SECTIONS = new Set(['ui:deliverable-file-references', 'harness:source', 'app:web-surface']);
 const COLLAPSED = '（上文问答已收起）';
@@ -16,8 +13,6 @@ const collapsedMessage = () => ({
   id: randomUUID(), role: 'user',
   content: [{ type: 'text', text: COLLAPSED }], source: { kind: 'user' },
 });
-const PERSONA = '你是领域知识助手：根据关系地图和词汇助手提供的锚点，为当前问题推荐最少的相关知识入口，每项只给准确地址和一句用途说明。'
-  + '主 agent 自主使用 search/routes/info 获取详细知识并设计查询。你只提供知识导航，不执行查询、不读取文件。';
 
 /** 沿用固定边界收起：保留系统前缀，旧标记与全部问答一起替换，原始日志保留。 */
 export function resetKnowledgeContext(session: SessionLike): void {
@@ -54,8 +49,7 @@ export function installKnowledgeHelper({ ctx, knowledge, log, config }: {
   config?: PluginConfig;
 }): void {
   if (!ctx.systemPrompt) throw new Error('知识助手需要 systemPrompt 服务。');
-  const vocabulary = config?.vocabularyHelper === true;
-  const template = (vocabulary ? VA_PROMPT_TEXT : KA_PROMPT_TEXT).trim();
+  const template = VA_PROMPT_TEXT.trim();
   const active = new WeakSet<object>();
   const toolScopes = new WeakSet<object>();
   const prepareTools = (agent: import('./host.ts').AgentLike) => {
@@ -82,7 +76,7 @@ export function installKnowledgeHelper({ ctx, knowledge, log, config }: {
   ctx.on('agent/status', ({ agent, status }) => {
     if (status === 'idle') { resetKnowledgeContext(agent.session); active.delete(agent.session); }
   });
-  ctx.systemPrompt.section({ name: 'deployment:persona-prefix', order: 0, text: vocabulary ? '你是领域词汇助手，负责词汇对齐与归属定位。' : PERSONA });
+  ctx.systemPrompt.section({ name: 'deployment:persona-prefix', order: 0, text: '你是领域词汇助手，负责词汇对齐。' });
   const initialized = new WeakSet<object>();
   const dispose = ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const agent = context.agent;
@@ -97,10 +91,9 @@ export function installKnowledgeHelper({ ctx, knowledge, log, config }: {
     const entry = knowledge.ensureWorkspace({ agent });
     const index = await knowledge.ensureIndex(entry);
     context.signal?.throwIfAborted();
-    const feed = template.replace(DOMAIN_MARKER, () => vocabulary ? '' : renderDomainSummary(index.knowledge, entry.settings.domain))
-      .replace(MARKER, () => vocabulary ? renderWholeVocabulary(index) : '');
+    const feed = template.replace(MARKER, () => renderWholeVocabulary(index));
     const assembled = await next();
-    log(vocabulary ? `[oks] vocabulary system prompt · ${index.terms.length} 条` : '[oks] knowledge relationship map');
+    log(`[oks] vocabulary system prompt · ${index.terms.length} 条`);
     // 宿主在 assemble hook 前已收集 schema；同步裁剪本次请求，执行限制由 Agent scope 保证。
     return { ...assembled, ...(assembled.tools ? { tools: [] } : {}), sections: [
       ...assembled.sections.filter(section => section.name !== 'oks:knowledge-assistant' && !UNRELATED_SECTIONS.has(section.name)),

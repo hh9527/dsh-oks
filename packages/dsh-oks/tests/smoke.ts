@@ -91,7 +91,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['oks_read','report_extract_dari','remove_file','move_entry','dari_check','dari_resolve','dari_renew_context','oks_routes','oks_info','oks_search','ka_ask'];
+const EXPECTED_TOOLS = ['oks_read','report_extract_dari','remove_file','move_entry','dari_check','dari_resolve','dari_renew_context','oks_routes','oks_info','oks_search','va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {
@@ -201,23 +201,22 @@ console.log('=== 检索层：并发的首次检索只派生一次索引 ===');
 }
 
 
-console.log('=== ka_ask：工具边界与宿主子会话调用 ===');
+console.log('=== va_ask：工具边界与宿主子会话调用 ===');
 {
   const calls: any[]=[];const tools=new Map();let releases=0;
   apply({...ctx,tools:{register(tool: any){tools.set(tool.name,tool);return()=>{};}},
     get(name: any){return name==='subagents'?{async listChildren(){return[];},async startActivation(spec: any){
       calls.push(spec);return{childId:spec.childId,messageId:'initial',result:Promise.resolve({stopReason:'completed',output:[{type:'text',text:'请阅读 datasets/'+encodeURIComponent(datasetId)+'，关注当前问题相关字段。\n补充说明：保持原始阅读清单。'}]}),async dispose(){releases++;}};
     },async sendMessage(){throw Error('smoke does not send');}}:ctx.get(name);}},{});
-  const tool=tools.get('ka_ask');
+  const tool=tools.get('va_ask');
   const caller={session:{id:'smoke-parent',header:{cwd:DEV_ROOT}}};
   const result=await tool.execute({query:'丢包'},{agent:caller});
   ok('工具将调用方交给宿主管理',calls[0].request.parent===caller&&calls[0].delivery==='caller');
-  ok('先词汇预设再知识预设',calls.length===2&&calls[0].request.agentPreset==='oks-vocabulary'&&calls[1].request.agentPreset==='oks-knowledge');
-  ok('KA 收到原始问题和 VA 原文',calls[1].request.prompt[0].text.includes('丢包')&&calls[1].request.prompt[0].text.includes(result.vocabulary));
-  ok('工具等待宿主执行并返回答案',result.readingList==='请阅读 datasets/'+encodeURIComponent(datasetId)+'，关注当前问题相关字段。\n补充说明：保持原始阅读清单。'&&result.messageId==='initial'&&releases===0);
+  ok('只调用词汇预设',calls.length===1&&calls[0].request.agentPreset==='oks-vocabulary'&&calls[0].request.prompt[0].text==='丢包');
+  ok('工具等待宿主执行并返回答案',result.answer==='请阅读 datasets/'+encodeURIComponent(datasetId)+'，关注当前问题相关字段。\n补充说明：保持原始阅读清单。'&&result.messageId==='initial'&&releases===0);
   ok('模型直接在工具结果中收到答案',tool.output.render({},result)[0].text===result.answer);
   ok('拒绝空问题',/需要一个问题/.test(String(await refusalOf(()=>tool.execute({query:' '},{agent:caller})))));
-  ok('拒绝递归咨询',/不咨询自己/.test(String(await refusalOf(()=>tool.execute({query:'丢包'},{agent:{session:{id:'session-ka-self'}}})))));
+  ok('拒绝递归咨询',/不咨询自己/.test(String(await refusalOf(()=>tool.execute({query:'丢包'},{agent:{session:{id:'session-va-self'}}})))));
 }
 
 console.log('=== 惰性初始化：single flight 的机制 ===');

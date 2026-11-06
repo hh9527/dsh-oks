@@ -7,10 +7,10 @@ export function semanticId(ref: string): string {
 export function internalRef(id: string): string {
   const parts = id.split('/');
   if ((parts.length !== 2 && parts.length !== 4) || !graphRoots.includes(parts[0] as any) || id.includes('#')) {
-    throw new Error('Invalid knowledge node ID: ' + id + '; use datasets/name or datasets/name/dimensions/name (copy IDs from search or KA)');
+    throw new Error('Invalid knowledge node ID: ' + id + '; use datasets/name or datasets/name/dimensions/name (copy IDs from search)');
   }
   const ref = parts.slice(0, 2).join('/') + (parts.length === 4 ? '#' + parts.slice(2).join('/') : '');
-  try { refPath(ref); } catch { throw new Error('Noncanonical knowledge node ID: ' + id + '; copy the encoded ID from search or KA'); } // Decode exactly once.
+  try { refPath(ref); } catch { throw new Error('Noncanonical knowledge node ID: ' + id + '; copy the encoded ID from search'); } // Decode exactly once.
   return ref;
 }
 export function knowledgeNode(graph: SemanticGraph, id: string) {

@@ -8,11 +8,14 @@ import {readDariSource} from '../src/results.ts';
 const root=mkdtempSync(join(tmpdir(),'dari-resources-'));
 const outside=mkdtempSync(join(tmpdir(),'dari-outside-'));
 const knowledge={ensureWorkspace:()=>({root,modelHash:'test',settings:{workspaceRoot:root}})} as any;
-const definitions=createTools({knowledge,ka:{} as any,timeContext:{zones:new Map()} as any,log(){},config:undefined});
+const asks:string[]=[];
+const definitions=createTools({knowledge,ka:{async ask(_caller:unknown,_key:string,query:string){asks.push(query);return {helper:'session-va-test',messageId:'m',answer:'## 告警\n\n- alarm'};}} as any,timeContext:{zones:new Map()} as any,log(){},config:undefined});
 const tools=guidedTools(definitions,knowledge),exec={agent:{session:{id:'resources'}}} as any;
 const call=async(name:string,args:unknown)=>tools.find(t=>t.name===name)!.execute(args as never,exec) as Promise<any>;
 try {
- assert.deepEqual(tools.map(t=>t.name).sort(),['report_extract_dari','move_entry','remove_file','ka_ask','oks_search','oks_routes','oks_info','oks_read','dari_check','dari_resolve','dari_renew_context'].sort());
+ assert.deepEqual(tools.map(t=>t.name).sort(),['report_extract_dari','move_entry','remove_file','va_ask','oks_search','oks_routes','oks_info','oks_read','dari_check','dari_resolve','dari_renew_context'].sort());
+ const aligned=await call('va_ask',{query:'告警'});assert.equal(aligned.answer,'## 告警\n\n- alarm');assert.deepEqual(asks,['告警']);
+ await assert.rejects(call('va_ask',{query:' '}),/需要一个问题/);
  const index=await call('oks_read',{path:'oks://help/'});
  const paths=index.lines.map((line:any)=>line.text);
  for(const path of ['oks://help/workflow.md','oks://help/dari.md','oks://help/rules.md','oks://help/figure-line.md'])assert(paths.includes(path));

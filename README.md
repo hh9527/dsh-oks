@@ -9,7 +9,7 @@
 - `rfc/`：设计与变更记录。
 - `justfile`：构建和安装 OKS profile。
 
-安装分两步：`just build` 构建两个包到 `dist/`，`just install-profile` 复制发布目录并写入 profile 配置。主 Agent 启用官方文件读取、创建、编辑和搜索工具，KA/VA 保持独立工具清单。
+安装分两步：`just build` 构建两个包到 `dist/`，`just install-profile` 复制发布目录并写入 profile 配置。主 Agent 启用官方文件读取、创建、编辑和搜索工具，VA 保持独立工具清单。
 
 安装需要 just、watchexec、Node.js、pnpm。依赖版本统一在 `pnpm-workspace.yaml` 的 `catalog`，升级时改那里再执行 `just update-deps`，lockfile 会一起更新。
 

@@ -30,11 +30,8 @@ export interface OksDeclaration {
 
 /** 插件行 config 里可以覆盖的键（ka 相关配置见 src/ka.ts）。 */
 export interface PluginConfig extends OksDeclaration {
-  /** KA 预设：关系地图和 VA 咨询工具。 */
-  knowledgeHelper?: boolean;
   vocabularyHelper?: boolean;
   vaPreset?: string;
-  kaPreset?: string;
   kaReasoningEffort?: string;
 }
 
