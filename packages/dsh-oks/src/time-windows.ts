@@ -13,14 +13,13 @@ export function timeWindowOptions(raw:unknown):TimeWindowOptions {
 }
 /** Calendar arithmetic is host JS. The captured clock and explicit IANA zone are the only inputs. */
 export function timeWindows(context:unknown,raw:unknown){
- try{return calculateTimeWindows(context,raw);}catch(error){if(error instanceof RangeError)throw new TimeWindowValidationError(error.message,{cause:error});throw error;}
-}
-function calculateTimeWindows(context:unknown,raw:unknown){
  const a=timeWindowOptions(raw);
  if(!isRecord(context)||!isRecord(context.utc)||!Number.isSafeInteger(context.utc.epochMillis))throw new TimeWindowValidationError('time windows requires safe integer context utc.epochMillis');
  const zone=(context as any).tz?.client?.id;
  if(typeof zone!=='string'||!zone||/^[+-]/.test(zone))throw new TimeWindowValidationError('time windows requires context tz.client.id (IANA timezone)');
- const now=Temporal.Instant.fromEpochMilliseconds(context.utc.epochMillis as number).toZonedDateTimeISO(zone);
+ const epochMillis=context.utc.epochMillis as number;
+ try{
+ const now=Temporal.Instant.fromEpochMilliseconds(epochMillis).toZonedDateTimeISO(zone);
  let date=now.toPlainDate();
  if(a.unit==='year')date=date.with({month:1,day:1});
  if(a.unit==='quarter')date=date.with({month:Math.floor((date.month-1)/3)*3+1,day:1});
@@ -36,4 +35,5 @@ function calculateTimeWindows(context:unknown,raw:unknown){
   const label=a.mode==='rolling'?local(start):a.unit==='year'?String(start.year).padStart(4,'0'):a.unit==='quarter'?`${start.year}-Q${Math.floor((start.month-1)/3)+1}`:a.unit==='month'?start.toPlainDate().toString().slice(0,7):start.toPlainDate().toString();
   return {label,zone,start:boundary(start),end:boundary(end)};
  });
+ }catch(error){if(error instanceof RangeError)throw new TimeWindowValidationError(error.message,{cause:error});throw error;}
 }

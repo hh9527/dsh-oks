@@ -118,6 +118,8 @@ try{
  assert.equal(invalidTimeZone.ok,false);assert(invalidTimeZone.diagnostics.length>0,JSON.stringify(invalidTimeZone));
  const unexpectedTimeError=new Error('unexpected time failure');
  assert.throws(()=>backend.checkCall!({operator:'time_windows',args:[{data:{get utc(){throw unexpectedTimeError;}}},{data:{unit:'day',count:1,mode:'current'}}],span} as any,()=>true),e=>e===unexpectedTimeError);
+ const unexpectedRangeError=new RangeError('unexpected input access failure');
+ assert.throws(()=>backend.checkCall!({operator:'time_windows',args:[{data:{get utc(){throw unexpectedRangeError;}}},{data:{unit:'day',count:1,mode:'current'}}],span} as any,()=>true),e=>e===unexpectedRangeError);
  const argumentsSource='data a = concat(1,True); data b = round("x",20); data c = map_opt(1,n=>({dependent:n.missing,independent:"x"+1}));';
  const argumentsResult=await checkDesign(argumentsSource,'fixture.dari',backend);
  const invalidFieldsAndLimit=await checkDesign('data facts = table([{n:1}],{kind:"example"}); data x = select({from:{s:facts},fields:r=>r.s.missing,limit:-1});','fixture.dari',backend);
