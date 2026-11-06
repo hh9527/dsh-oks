@@ -4,7 +4,7 @@ import {typeOf,common,scalar,record,optional,present,known,unbox,show,rowType,Ty
 import type {SqlColumn} from './sql.ts';
 import {isRecord} from '../host.ts';
 import {DiagnosticCollector} from './diagnostics.ts';
-export type V={type:Ty;known:boolean;value?:any;sql?:string;fields?:Record<string,V>;items?:V[];column?:boolean;rows?:boolean;presence?:string};
+export type V={type:Ty;known:boolean;value?:any;sql?:string;fields?:Record<string,V>;items?:V[];column?:boolean;rows?:boolean;presence?:string;open?:boolean};
 const q=(s:string)=>'"'+s.replaceAll('"','""')+'"';
 const accessPath=(n:N):string|undefined=>{if(n.k==='ref')return n.name;if(n.k!=='get'||!n.input)return undefined;const base=accessPath(n.input);if(!base)return undefined;return base+(typeof n.key==='string'&&/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(n.key)?(n.optional?'?.':'.')+n.key:'['+JSON.stringify(n.key)+']');};
 const nullable=(t:Ty)=>t.kind==='null'||'nullable' in t&&t.nullable;
@@ -87,7 +87,7 @@ export class TypedCompiler{
    if(t.kind==='array'){if(typeof n.key!=='number')return this.errorValue(n,'Array projection requires a numeric index');if(t.length!==undefined&&n.key>=t.length)return this.errorValue(n,'Array index out of bounds');if(!input.items){if(this.checking)return this.bind(t.element,undefined);return this.errorValue(n,'Use a statically known array');}return input.items[n.key];}
    if(t.kind!=='record')return this.errorValue(n,'Cannot project '+String(n.key)+' from '+show(t));
    if(t.nullable&&!n.optional)return this.errorValue(n,'Use ?. to project from '+show(t));
-   if(!Object.hasOwn(t.fields,n.key!)){const keys=Object.keys(t.fields),path=accessPath(n.input!);return this.errorValue(n,'Unknown field '+String(n.key)+(path?' on '+path:'')+'; available fields (examples, up to 8 of '+keys.length+'): '+(keys.slice(0,8).map(k=>JSON.stringify(k)).join(', ')||'(none)'));}
+   if(!Object.hasOwn(t.fields,n.key!)){if(input.open&&this.checking)return {type:{kind:'error'},known:false};const keys=Object.keys(t.fields),path=accessPath(n.input!);return this.errorValue(n,'Unknown field '+String(n.key)+(path?' on '+path:'')+'; available fields (examples, up to 8 of '+keys.length+'): '+(keys.slice(0,8).map(k=>JSON.stringify(k)).join(', ')||'(none)'));}
    let v=input.fields?.[n.key!]??this.bind(t.fields[n.key!],input.known&&input.value!==null?input.value[n.key!]:undefined);
    if(n.optional&&t.nullable)v={...v,type:optional(v.type),known:input.known?true:v.known,...(input.known&&input.value===null?{value:null}:{})};
    return v;
@@ -189,7 +189,7 @@ export class TypedCompiler{
  validNumber(value:any,type:Ty,n:N){if(value!==null&&typeof value==='number'&&(!Number.isFinite(value)||type.kind==='scalar'&&type.name==='Int'&&!Number.isSafeInteger(value)))fail(n,'Numeric result is outside the supported range');}
  relational(n:N){
   const spec=n.a![0];if(spec.k!=='object')fail(n,'Expected select specification');const entries=Object.fromEntries(spec.entries!.map(e=>[e.key,e.value]));for(const key of Object.keys(entries))if(!['from','joins','where','fields','group_by','having','order_by','limit'].includes(key))this.reportFailure(entries[key],'Unknown select option '+key);
-  const captures=this.env(),tables:Record<string,unknown>={},scope:Record<string,V>=Object.create(null),joins:string[]=[];let sourceCount=0,unavailableSource=false;let baseBounds:{minRows?:number;maxRows?:number}={};
+  const captures=this.env(),tables:Record<string,unknown>={},scope:Record<string,V>=Object.create(null),joins:string[]=[];let sourceCount=0,unavailableSource=false,openScope=false;let baseBounds:{minRows?:number;maxRows?:number}={};
   const source=(s:N,left=false):string=>{
    if(s.k!=='object'||s.entries!.length!==1)fail(s,'Expected one source alias');const {key:alias,value:ref}=s.entries![0];if(Object.hasOwn(scope,alias))fail(s,'Duplicate table alias '+alias);const v=this.compile(ref,captures);
    if(v.type.kind!=='table'){
@@ -202,8 +202,8 @@ export class TypedCompiler{
    return '(SELECT *,1 AS '+q(presence)+' FROM '+q('t_'+inputKey)+') '+sqlAlias;
   };
   if(!entries.from)fail(n,'select requires from');const from=source(entries.from);
-  if(entries.joins){if(entries.joins.k!=='array')fail(entries.joins,'joins must be an array');for(const j of entries.joins.a!){if(j.k!=='object')fail(j,'Expected join object');const p=Object.fromEntries(j.entries!.map(e=>[e.key,e.value]));for(const key of Object.keys(p))if(!['kind','source','on'].includes(key))this.reportFailure(p[key],'Unknown join option '+key);if(!p.source)fail(j,'join requires kind,source,on');const validKind=!!p.kind&&p.kind.k==='lit'&&['inner','left'].includes(p.kind.v);if(!validKind||!p.on)this.reportFailure(j,'join requires kind,source,on');const sql=source(p.source);const predicate=p.on?this.callback(p.on,[{type:record(Object.fromEntries(Object.entries(scope).map(([k,v])=>[k,v.type]))),known:false,fields:{...scope}}],captures):undefined;const valid=predicate?this.bool(predicate,p.on):false;joins.push((p.kind?.v==='left'?' LEFT':' INNER')+' JOIN '+sql+' ON '+(valid?this.sql(predicate!,p.on):'NULL'));const alias=p.source.entries![0].key;if(!validKind){scope[alias]={type:{kind:'error'},known:false};unavailableSource=true;}else if(p.kind.v==='left')scope[alias]={...scope[alias],type:optional(scope[alias].type)};}}
-  const row:V={type:record(Object.fromEntries(Object.entries(scope).map(([k,v])=>[k,v.type]))),known:false,fields:scope};
+  if(entries.joins){if(entries.joins.k!=='array')fail(entries.joins,'joins must be an array');for(const j of entries.joins.a!){if(j.k!=='object')fail(j,'Expected join object');const p=Object.fromEntries(j.entries!.map(e=>[e.key,e.value]));for(const key of Object.keys(p))if(!['kind','source','on'].includes(key))this.reportFailure(p[key],'Unknown join option '+key);if(!p.source){this.reportFailure(j,'join requires kind,source,on');openScope=true;unavailableSource=true;if(p.on)this.callback(p.on,[{type:record(Object.fromEntries(Object.entries(scope).map(([k,v])=>[k,v.type]))),known:false,fields:{...scope},open:true}],captures);continue;}const validKind=!!p.kind&&p.kind.k==='lit'&&['inner','left'].includes(p.kind.v);if(!validKind||!p.on)this.reportFailure(j,'join requires kind,source,on');const sql=source(p.source);const predicate=p.on?this.callback(p.on,[{type:record(Object.fromEntries(Object.entries(scope).map(([k,v])=>[k,v.type]))),known:false,fields:{...scope},open:openScope}],captures):undefined;const valid=predicate?this.bool(predicate,p.on):false;joins.push((p.kind?.v==='left'?' LEFT':' INNER')+' JOIN '+sql+' ON '+(valid?this.sql(predicate!,p.on):'NULL'));const alias=p.source.entries![0].key;if(!validKind){scope[alias]={type:{kind:'error'},known:false};unavailableSource=true;}else if(p.kind.v==='left')scope[alias]={...scope[alias],type:optional(scope[alias].type)};}}
+  const row:V={type:record(Object.fromEntries(Object.entries(scope).map(([k,v])=>[k,v.type]))),known:false,fields:scope,open:openScope};
   const limit=entries.limit?this.compile(entries.limit,captures):undefined;let invalidLimit=false;
   if(limit&&limit.type.kind!=='error'&&(!limit.known||!Number.isSafeInteger(limit.value)||limit.value<0)){this.reportFailure(entries.limit,'limit requires a known nonnegative Int');invalidLimit=true;}
   const where=entries.where?this.callback(entries.where,[row],captures):undefined;const whereValid=where?this.bool(where,entries.where):false;
