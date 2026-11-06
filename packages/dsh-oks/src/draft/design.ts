@@ -136,7 +136,14 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         return (value as Record<string|number,unknown>)[e.key];
       }
       if(e.operator==='analysis_map'){
-        const input=await child(e.args[0]);let t:Ty;
+        let input:unknown;
+        try{input=await child(e.args[0]);}catch(error){
+          if(signal?.aborted)throw error;
+          if(error instanceof DraftSyntaxError||error instanceof TypeRuleError)addError(error,e.args[0].span,'type',statement.kind==='binding'?binding:undefined);
+          else if(!(error instanceof UpstreamTypeUnavailable))throw error;
+          input=box({kind:'error'});
+        }
+        let t:Ty;
         try{t=typeOf(input);}catch(error){if(!(error instanceof TypeRuleError))throw error;addError(new DraftSyntaxError(error.message,e.args[0].span),e.args[0].span,'type');t={kind:'error'};}
         if(t.kind!=='error'&&!hasError(input)&&t.kind!=='array'){addError(new DraftSyntaxError('map requires Array, got '+show(t),e.span),e.span,'type');t={kind:'error'};}
         if(t.kind==='array'&&t.element.kind==='never'){addError(new DraftSyntaxError('map requires an inferable element type',e.span),e.span,'type');t={kind:'error'};}

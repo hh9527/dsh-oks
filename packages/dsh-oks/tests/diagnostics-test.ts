@@ -267,12 +267,16 @@ try{
  await assert.rejects(Promise.race([checkDesign('data x = query({limit:5});','fixture.dari',slowBackend,slowCancellation.signal),new Promise((_,reject)=>setTimeout(()=>reject(new Error('cancellation did not finish')),500))]),e=>e===slowReason);
  for(const reverse of [false,true]){
   const concurrent={...backend,async preflight(){},async analyze(ctx:any){
-   if(ctx.operator!=='query')throw new Error('Unexpected analysis '+ctx.operator);
+   if(ctx.operator!=='query')return backend.analyze!(ctx);
    const name=ctx.args[0].data.bad;await new Promise(resolve=>setTimeout(resolve,(name==='first')===reverse?10:0));throw new DraftSyntaxError('rejected '+name,ctx.span);
   }};
   const siblings=await checkDesign('data x = union_all([query({limit:5,bad:"first"}),query({limit:5,bad:"second"})]);','fixture.dari',concurrent);
   assert.deepEqual(siblings.diagnostics.map(d=>d.message),['rejected first','rejected second']);
   assert(siblings.diagnostics[0].span.start.offset<siblings.diagnostics[1].span.start.offset);
+  const failedMapInput=await checkDesign('data x = map([query({limit:5,bad:"first"})],n=>({dependent:n.missing,independent:"x"+1}));','fixture.dari',concurrent);
+  assert(failedMapInput.diagnostics.some(d=>d.message==='rejected first'),JSON.stringify(failedMapInput.diagnostics));
+  assert(failedMapInput.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(failedMapInput.diagnostics));
+  assert(!failedMapInput.diagnostics.some(d=>d.message.includes('missing')),JSON.stringify(failedMapInput.diagnostics));
  }
  const intents:unknown[]=[];
  const modelFailure=new Error('model transport failed');
