@@ -52,6 +52,11 @@ for(const kind of ['map_opt','template_scope']){
  const value=c.compile(kind==='map_opt'?{k:'call',s:span,name:kind,a:[input,lambda]}:{k:kind,s:span,a:[input,lambda]},{});
  assert.equal(value.type.kind,'error');assert.deepEqual(c.diagnostics.list().map(d=>d.message),['Unknown binding missing_body','Unknown binding missing_input']);
 }
+{
+ const c=new TypedCompiler({}, {}, true);
+ const value=c.compile({k:'template_scope',s:span,a:[{k:'lit',s:span,v:1},{k:'lambda',s:span,params:['x'],body:{k:'object',s:span,entries:[{key:'dependent',value:{k:'get',s:span,input:{k:'ref',s:span,name:'x'},key:'field'}},{key:'independent',value:{k:'ref',s:span,name:'missing_body'}}]}}]},{});
+ assert.equal(value.type.kind,'error');assert.deepEqual(c.diagnostics.list().map(d=>d.message),['if let Some requires an Option with a known inner type','Unknown binding missing_body']);
+}
 const cases=new TypedCompiler({}, {}, true);
 cases.compile({k:'call',s:span,name:'case_when',a:[{k:'ref',s:span,name:'missing_condition'},{k:'lit',s:span,v:1},{k:'lit',s:span,v:'bad'}]},{});
 assert.deepEqual(cases.diagnostics.list().map(d=>d.message),['Incompatible types Int and String','Unknown binding missing_condition']);
@@ -141,6 +146,13 @@ try{
  const inlineMap=await checkDesign('data result = map([1,"x"],(n)=>({dependent:n+1,independent:"x"+1}));','fixture.dari',backend);
  assert(inlineMap.diagnostics.some(d=>d.message.includes('Incompatible types')),JSON.stringify(inlineMap.diagnostics));
  assert.equal(inlineMap.diagnostics.filter(d=>d.message.includes('Arithmetic requires numbers')).length,1,JSON.stringify(inlineMap.diagnostics));
+ for(const [input,message] of [['[]','map requires an inferable element type']]){
+  const result=await checkDesign(`data result = map(${input},(n)=>({dependent:n.missing,independent:"x"+1}));`,'fixture.dari',backend);
+  assert(result.diagnostics.some(d=>d.message.includes(message)),JSON.stringify(result.diagnostics));
+  assert.equal(result.diagnostics.filter(d=>d.message.includes('Arithmetic requires numbers')).length,1,JSON.stringify(result.diagnostics));
+  assert(!result.diagnostics.some(d=>d.message.includes('missing')),JSON.stringify(result.diagnostics));
+  assert(result.checkedBindings.some(b=>b.name==='result'&&!b.checked));
+ }
  const warningBackend={...backend,checkCall(ctx:any){return [{stage:'type',severity:'warning' as const,message:'advisory',span:ctx.span}];}};
  const warned=await checkDesign('data x = data(1);','fixture.dari',warningBackend);
  assert.equal(warned.ok,true,JSON.stringify(warned));assert.equal(warned.warnings[0]?.message,'advisory');assert(warned.checkedBindings[0].checked);

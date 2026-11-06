@@ -138,14 +138,15 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
       if(e.operator==='analysis_map'){
         const input=await child(e.args[0]);let t:Ty;
         try{t=typeOf(input);}catch(error){if(!(error instanceof TypeRuleError))throw error;addError(new DraftSyntaxError(error.message,e.args[0].span),e.args[0].span,'type');t={kind:'error'};}
+        if(t.kind!=='error'&&!hasError(input)&&t.kind!=='array'){addError(new DraftSyntaxError('map requires Array, got '+show(t),e.span),e.span,'type');t={kind:'error'};}
+        if(t.kind==='array'&&t.element.kind==='never'){addError(new DraftSyntaxError('map requires an inferable element type',e.span),e.span,'type');t={kind:'error'};}
         if(t.kind==='error'||hasError(input)){
           const params=JSON.parse(String((e.args[1] as Extract<Expr,{kind:'literal'}>).value)) as string[];
           const scope=new Map(locals);scope.set(params[0],box({kind:'error'}));if(params[1])scope.set(params[1],box(scalar('Int')));
           await evaluate(e.args[2],scope,[scope]);
           throw new UpstreamTypeUnavailable();
         }
-        if(t.kind!=='array')throw new DraftSyntaxError('map requires Array, got '+show(t),e.span);
-        if(t.element.kind==='never')throw new DraftSyntaxError('map requires an inferable element type',e.span);
+        if(t.kind!=='array')throw new UpstreamTypeUnavailable();
         const params=JSON.parse(String((e.args[1] as Extract<Expr,{kind:'literal'}>).value)) as string[];
         const scope=new Map(locals);scope.set(params[0],box(t.element));if(params[1])scope.set(params[1],box(scalar('Int')));
         // Only parameter values are specialized. The body/type structure is visited once.

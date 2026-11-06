@@ -53,7 +53,7 @@ export class TypedCompiler{
   if(n.k==='template_scope'){
    const input=this.compile(n.a![0],env),f=n.a![1];
    if(input.type.kind==='error'){if(this.checking)this.compile(f.body!,{...env,[f.params![0]]:input});return input;}
-   if(!nullable(input.type)||input.type.kind==='null')fail(n,'if let Some requires an Option with a known inner type');
+   if(!nullable(input.type)||input.type.kind==='null'){const invalid=this.errorValue(n,'if let Some requires an Option with a known inner type');if(this.checking)this.compile(f.body!,{...env,[f.params![0]]:invalid});return invalid;}
    // Check the body with a present binding even when the runtime value is absent.
    const inner={...input,type:present(input.type),known:input.known&&input.value!==null};
    const checker=input.known&&input.value===null&&!this.checking?new TypedCompiler({}, {}, true):this;
