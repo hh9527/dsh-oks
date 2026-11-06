@@ -44,6 +44,16 @@ assert.equal(direct.expr({k:'binary',s:span,op:'+',left:{k:'lit',s:span,v:1},rig
 assert.equal(direct.expr({k:'binary',s:span,op:'==',left:{k:'lit',s:span,v:1},right:{k:'lit',s:span,v:'x'}},{}).type.kind,'error');
 assert.equal(direct.diagnostics.list().length,3);
 assert.throws(()=>new TypedCompiler({}, {}, false).expr({k:'binary',s:span,op:'+',left:{k:'lit',s:span,v:1},right:{k:'lit',s:span,v:'x'}},{}),DraftSyntaxError);
+for(const [node,message] of [
+ [{k:'template_presence',s:span,input:{k:'lit',s:span,v:1}},'if let Some requires Option with a known inner type'],
+ [{k:'call',s:span,name:'sum',a:[{k:'lit',s:span,v:1}]},'sum requires a grouped Column or rows'],
+ [{k:'call',s:span,name:'is_some',a:[{k:'lit',s:span,v:1}]},'is_some requires Option'],
+] as const){
+ const checker=new TypedCompiler({}, {}, true);
+ assert.equal(checker.expr(node as any,{}).type.kind,'error');
+ assert.deepEqual(checker.diagnostics.list().map(d=>d.message),[message]);
+ assert.throws(()=>new TypedCompiler({}, {}, false).expr(node as any,{}),DraftSyntaxError);
+}
 const condition=compiler.compile({k:'template_scope',s:span,op:'condition',a:[{k:'ref',s:span,name:'opt'},{k:'lambda',s:span,params:['x'],body:{k:'ref',s:span,name:'missing'}}]},{opt:{type:{kind:'scalar',name:'Int',nullable:true},known:false}});
 assert.equal(condition.type.kind,'error');
 assert.deepEqual(compiler.diagnostics.list().map(d=>d.message),['Unknown binding missing']);

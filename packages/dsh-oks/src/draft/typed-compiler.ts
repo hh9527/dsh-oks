@@ -47,7 +47,7 @@ export class TypedCompiler{
   if(n.k==='template_presence'){
    const input=this.compile(n.input!,env);
    if(input.type.kind==='error')return input;
-   if(!nullable(input.type)||input.type.kind==='null')fail(n,'if let Some requires Option with a known inner type');
+   if(!nullable(input.type)||input.type.kind==='null')return this.errorValue(n,'if let Some requires Option with a known inner type');
    return {type:scalar('Bool'),known:input.known,...(input.known?{value:input.value!==null}:{})};
   }
   if(n.k==='template_scope'){
@@ -60,7 +60,7 @@ export class TypedCompiler{
    const out=checker.compile(f.body!,{...env,[f.params![0]]:inner});
    if(out.type.kind==='error')return out;
    if(n.op==='condition'){
-    if(out.type.kind!=='scalar'||out.type.name!=='Bool'||out.type.nullable)fail(f.body!,'if condition requires Bool, got '+show(out.type));
+    if(out.type.kind!=='scalar'||out.type.name!=='Bool'||out.type.nullable)return this.errorValue(f.body!,'if condition requires Bool, got '+show(out.type));
     return {type:scalar('Bool'),known:input.known&&(input.value===null||out.known),...(input.known?{value:input.value===null?false:out.value}:{})};
    }
    return {type:optional(out.type),known:input.known&&(input.value===null||out.known),...(input.known?{value:input.value===null?null:out.value}:{})};
@@ -190,12 +190,12 @@ export class TypedCompiler{
    }
    if(a.some(x=>x.type.kind==='error'))return {type:{kind:'error'},known:false};
    if(['count','sum','avg','min','max'].includes(name)){
-    const x=a[0];if(!x.column&&!x.rows)fail(n,name+' requires a grouped Column or rows');if(x.rows&&name!=='count')fail(n,name+' requires a Column');
-    if(['sum','avg'].includes(name)&&!numeric(x.type))fail(n,name+' requires a numeric Column');
+    const x=a[0];if(!x.column&&!x.rows)return this.errorValue(n,name+' requires a grouped Column or rows');if(x.rows&&name!=='count')return this.errorValue(n,name+' requires a Column');
+    if(['sum','avg'].includes(name)&&!numeric(x.type))return this.errorValue(n,name+' requires a numeric Column');
     const type=name==='count'?scalar('Int'):name==='avg'?scalar('Float',true):optional(x.type);
     return {type,known:false,sql:name.toUpperCase()+'('+(x.rows?'*':this.sql(x,n))+')'};
    }
-   if(name==='is_some'||name==='is_none'){const x=a[0];if(!nullable(x.type))fail(n,name+' requires Option');return {type:scalar('Bool'),known:x.known,...(x.known?{value:name==='is_some'?x.value!==null:x.value===null}:{sql:'('+this.presence(x,n)+(name==='is_some'?' IS NOT NULL)':' IS NULL)')}),column:x.column};}
+   if(name==='is_some'||name==='is_none'){const x=a[0];if(!nullable(x.type))return this.errorValue(n,name+' requires Option');return {type:scalar('Bool'),known:x.known,...(x.known?{value:name==='is_some'?x.value!==null:x.value===null}:{sql:'('+this.presence(x,n)+(name==='is_some'?' IS NOT NULL)':' IS NULL)')}),column:x.column};}
    fail(n,'Function is not available in this expression: '+name);
   }
   return fail(n,'Invalid typed expression '+n.k);
