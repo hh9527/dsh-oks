@@ -1,0 +1,77 @@
+import assert from 'node:assert/strict';
+import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {createDraftTools} from '../src/draft/tools.ts';
+import {testAttachments} from './test-attachments.ts';
+const root=mkdtempSync(join(tmpdir(),'dari-tools-'));
+let executions=0;
+let release:(()=>void)|undefined;
+const columns=[{name:'n',type:'Int',nullable:false}];
+const entry={root,modelHash:'test',settings:{workspaceRoot:root,domain:'test',queryMaxRows:200},runner:{async send(){return {ok:{accepted:true,queries:[{sql:'select n',bindings:[5],limit_slot:0,columns}]}};}}};
+const knowledge={ensureWorkspace:()=>entry,executorFor:()=>({executor:{async send(){executions++;if(release)await new Promise<void>(resolve=>{release=resolve;});return {rows:[{n:executions}],columns:['n'],truncated:false};},dispose(){}}})};
+const sessionFor=(id:string)=>{
+ const session:any={id,events:[{type:'step/start',seq:0,data:{turn:1,step:1}}],delivered:[] as any[]};
+ session.snapshotEvents=()=>session.events;
+ session.append=(type:string,data:unknown,options:unknown)=>{session.delivered.push({type,data,options});return{seq:session.events.length+1};};
+ return session;
+};
+const agentFor=(id:string)=>{const agent:any={session:sessionFor(id),injected:[] as any[]};agent.inject=(message:unknown)=>agent.injected.push(message);return agent;};
+const exec={agent:agentFor('one')} as any;
+const other={agent:agentFor('two')} as any;
+const timeContext={zones:new Map([[exec.agent.session,{kind:'resolved',timeZone:'UTC'}],[other.agent.session,{kind:'resolved',timeZone:'UTC'}]])};
+const drafts=createDraftTools({knowledge:knowledge as any,timeContext:timeContext as any,attachments:()=>testAttachments(root)});
+const call=async(name:string,args:object,caller=exec)=>drafts.tools.find(t=>t.name===name)!.execute(args as never,caller) as Promise<any>;
+const source=`data ctx = context();
+data facts = query({limit:5});
+data summary = select_one({from:{f:facts},group_by:r=>({}),fields:(g,rows)=>({n:sum(rows.f.n)})});
+figure chart = tree! { ColumnChart(spec={x:"n",value:"n"},data=facts) };
+report full = tree! { Report [p [Value(data=summary?.n)],UseFigure(ref = chart)] };
+answer tree! { Answer [p [Value(data=summary?.n)],p [Value(data=ctx.utc.epochMillis)],UseFigure(ref=chart),UseReport(ref=full)] };`;
+const src='analysis.dari',absolute=join(root,src);
+const originalNow=Date.now;
+let now=originalNow();Date.now=()=>now;
+try {
+ writeFileSync(absolute,source);
+ let checked=await call('dari_check',{src});assert.equal(checked.ok,true,JSON.stringify(checked));assert.equal(executions,0);
+ await assert.rejects(call('dari_check',{src,answer:'answer'}),/Expected only src, inspect/);
+ let first=await call('dari_resolve',{src});
+ assert.equal(first.ok,true,JSON.stringify(first));assert.equal(executions,1);
+ assert(first.answer.embedded.startsWith('1\n\n'+now));assert(first.answer.embedded.includes('!['));assert(first.answer.embedded.includes('full.report.html'));
+ assert.equal(first.data,undefined);assert.equal(first.figures,undefined);assert.equal(first.reports,undefined);
+ assert.equal(exec.agent.injected.length,1);
+ assert.equal(exec.agent.injected[0].role,'user');
+ assert.equal(exec.agent.injected[0].source.kind,'push-to-user');assert.equal(exec.agent.injected[0].source.label,'dsh-oks');
+ assert.equal(exec.agent.injected[0].content[0].text,first.answer.embedded);
+ now+=60000;
+ const cached=await call('dari_resolve',{src:absolute});
+ assert.equal(cached.batch,first.batch);assert.equal(cached.counts.executed,0);assert.equal(executions,1);assert.equal(cached.answer.embedded.split('[full]')[0],first.answer.embedded.split('[full]')[0]);
+ await assert.rejects(call('dari_resolve',{answer:false,src,data:['facts'],refresh:true}),/Expected only/);
+ const renewed=await call('dari_renew_context',{src:absolute});assert.equal(executions,1);assert.notEqual(renewed.batch,first.batch);
+ assert.equal(renewed.src,src);
+ checked=await call('dari_check',{src});assert.equal(checked.ok,true);assert.equal(executions,1);
+ const fresh=await call('dari_resolve',{src});
+ assert.equal(fresh.batch,renewed.batch);assert.equal(executions,2);assert(fresh.answer.embedded.startsWith('2\n\n'+now));
+ // Renewal affects neither another file nor another caller's captures.
+ writeFileSync(join(root,'second.dari'),source);
+ const second=await call('dari_resolve',{src:'second.dari'});
+ const isolated=await call('dari_resolve',{src},other);
+ const before=executions;
+ await call('dari_renew_context',{src});
+ assert.equal((await call('dari_resolve',{src:'second.dari'})).batch,second.batch);
+ assert.equal((await call('dari_resolve',{src},other)).batch,isolated.batch);assert.equal(executions,before);
+ // Full-draft checking catches errors even in unselected bindings.
+ writeFileSync(absolute,source+'\ndata unused = no_such_function();');
+ checked=await call('dari_check',{src});assert.equal(checked.ok,false);
+ assert.equal((await call('dari_resolve',{src})).ok,false);assert.equal(executions,before);
+ writeFileSync(absolute,source);
+ for(const selection of [{answer:true},{data:['missing']},{reports:['facts']},{figures:['chart']}])await assert.rejects(call('dari_resolve',{src,...selection}),/Expected only src/);
+ // Renewal during an active acquisition must not alter the running batch.
+ release=()=>{};
+ const running=call('dari_resolve',{src});
+ for(let i=0;i<30;i++)await new Promise<void>(resolve=>setImmediate(resolve));
+ await assert.rejects(call('dari_renew_context',{src}),/already.*running/);
+ release!();release=undefined;assert.equal((await running).ok,true);
+ assert.equal(executions,before+1);
+ console.log('DARI tools: full checks, typed outputs, publication, frozen context, renewal, canonical paths, isolation, selection and running guards passed');
+} finally {Date.now=originalNow;drafts.dispose();rmSync(root,{recursive:true,force:true});}

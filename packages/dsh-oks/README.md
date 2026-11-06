@@ -207,10 +207,13 @@ pnpm run build
 pnpm run check
 ```
 
-build/prepare/pretest 直接更新 lib，运行中的 link 安装需先暂停服务，验收通过后重启。
+build/pretest 直接更新 `dist/dsh-oks/lib`，运行中的 link 安装需先暂停服务，验收通过后重启。
 构建仅需 Node.js 与 pnpm；模型执行使用独立的 Telora 模型宿主。
 源码解析、依赖/缓存/来源、只读生命周期、图表/DARI 报告、知识索引、JS 日历和临时数据库生命周期各有独立测试。
-真实模型/只读 SQLite 的工具集成使用 model-integration-test.ts，可对只含两份产物的独立目录验收。
+
+`pnpm test` 运行 `tests/` 下的默认套件（类型检查覆盖 `src/` 与 `tests/`）；需要真实工作区的用例单独运行：`pnpm run test:smoke`、`pnpm run test:integration`。
+
+真实模型/只读 SQLite 的工具集成使用 [tests/model-integration-test.ts](tests/model-integration-test.ts)，可对只含产物的独立目录验收。
 
 语法、执行和交付方式见 [DARI 手册](src/help/dari.md)。
 
@@ -254,7 +257,7 @@ DARI 报告 HTML 保留两个非执行 script 节点：`dari-source`（text/plai
 
 [IC CPU 两期比较](examples/cpu-typed-pipeline.dari) 覆盖窗口、18 个模型查询、关系组合、单行对象、聚合和逐日图；[NS 网元分类](examples/ns-typed-pipeline.dari) 覆盖另一模型的列 schema 与普通聚合对象。示例使用 data 声明后处理，无需单独的 asset。
 
-`node --import ./scripts/markdown-loader.mjs draft-typed-test.ts` 验证无业务数据的类型检查、字段诊断、Option、左关联、空表/空组、聚合、单行守卫、有限展开、缓存恢复、schema 变化和预制图表手册示例。Issue [#49](https://github.com/hh9527/dsh-oks/issues/49) 跟踪实现与验收，当前为分支实现。
+`node --import ./scripts/markdown-loader.mjs tests/draft-typed-test.ts` 验证无业务数据的类型检查、字段诊断、Option、左关联、空表/空组、聚合、单行守卫、有限展开、缓存恢复、schema 变化和预制图表手册示例。Issue [#49](https://github.com/hh9527/dsh-oks/issues/49) 跟踪实现与验收，当前为分支实现。
 
 
 ### 运行批准配置

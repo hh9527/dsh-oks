@@ -1,0 +1,135 @@
+import {searchPoints} from '../src/point-navigation.ts';
+import {readPoints} from '../src/point-knowledge.ts';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { readBuildInformation } from '../src/service-metadata.ts';
+import { derivePublishedKnowledge } from '../src/published-knowledge.ts';
+import { collectProgrammedKnowledge } from '../src/programmed-knowledge.ts';
+import { encodePart, resolveFact } from '../src/knowledge-graph.ts';
+
+const leb = (n: number): number[] => n < 128 ? [n] : [(n % 128) | 128, ...leb(Math.floor(n / 128))];
+const header = [0,97,115,109,1,0,0,0];
+const section = (text: string, sectionName = 'telora.build.information'): number[] => {
+  const name = [...Buffer.from(sectionName)];
+  const payload = [...leb(name.length), ...name, ...Buffer.from(text)];
+  return [0, ...leb(payload.length), ...payload];
+};
+const publication = (facts: unknown[], items: unknown[] = []): unknown => ({ knowledge_contract: 'ontology-knowledge-v4', intent_contract: 'ontology-intent-v1', addressing: 'node-member-uri-v1', revision: 'fixture', facts, items });
+const fact = (key: string, value = {}, references: string[] = []): unknown => ({ key, value, references });
+const id = 'a/b#%中文'; const ds = `datasets/${encodePart(id)}`;
+const group = 'dimension_groups/shared'; const first = `${ds}#bindings/first`; const second = `${ds}#bindings/second`;
+const input = publication([fact('entities/customer'), fact(ds, { grain: ['id'] }), fact(group), fact(first, { group }, [group]), fact(second, { group }, [group]), fact(`${ds}#dimensions/one`, { projectable: false, binding: first }, [first]), fact(`${ds}#roles/customer`, { entity: 'entities/customer' }, ['entities/customer'])]);
+const bytes = Uint8Array.from([...header, ...section(JSON.stringify({ version: 1, entries: { 'ontology.knowledge': input } }))]);
+assert.deepEqual(readBuildInformation(bytes)?.['ontology.knowledge'], input);
+assert.equal(readBuildInformation(Uint8Array.from(header)), null);
+for (const malformed of [bytes.subarray(0, bytes.length - 1), Uint8Array.from([...header, ...section('{}')]), Uint8Array.from([...bytes, ...section('{"version":1,"entries":{}}')]), Uint8Array.from([...header, 0, 1, 5])]) assert.throws(() => readBuildInformation(malformed));
+// A custom-section-only module has no Service, executable code or Host imports.
+const envelope = JSON.stringify({ version: 1, entries: { 'ontology.knowledge': input } });
+const current = section(envelope, 'telora.build.information');
+assert.deepEqual(readBuildInformation(Uint8Array.from([...header, ...current]))?.['ontology.knowledge'], input);
+assert.throws(() => readBuildInformation(Uint8Array.from([...header, ...current, ...current])));
+assert.equal(readBuildInformation(Uint8Array.from([...header, ...section(envelope, 'telora.service.metadata')])), null);
+assert.deepEqual(readBuildInformation(Uint8Array.from([...header, ...section('{}', 'telora.service.metadata'), ...current]))?.['ontology.knowledge'], input);
+// Builtins are inline expressions, never graph addresses or reverse-link hubs.
+const inline = derivePublishedKnowledge(publication([
+  fact('types/Business', { kind: 'Ref', representation: 'Int', reverse_references: true }),
+  fact('types/Row', { kind: 'Ref', field_types: [
+    { name: 'flag', type: 'Bool' }, { name: 'count', type: 'Option(Int)' },
+    { name: 'nested', type: 'Array(Option(Dict(types/Business)))' },
+  ] }, ['types/Business']),
+  fact('datasets/inline'),
+  fact('datasets/inline#fields/value', { type: 'Float' }),
+]));
+assert.equal(inline.links.length, 2); // One named-type edge and one owned member.
+assert.equal(inline.keys.has('types/Int'), false);
+assert.equal(inline.keys.has('types/Float'), false);
+assert.equal(resolveFact(inline.knowledge, 'datasets/inline#fields/value').type, 'Float');
+assert.deepEqual((resolveFact(inline.knowledge, 'types/Business').referenced_by as any).types, ['types/Row']);
+assert.throws(() => derivePublishedKnowledge(publication([fact(ds), fact(ds)])), /Duplicate/);
+assert.throws(() => derivePublishedKnowledge(publication([fact(ds, {}, ['types/missing'])])), /Unresolved/);
+assert.throws(() => derivePublishedKnowledge(publication([fact(`${ds}#bindings/orphan`)])), /Unknown/);
+assert.throws(() => derivePublishedKnowledge({}), /contract/);
+const enriched = derivePublishedKnowledge(input, { version: 1, items: [{ key: ds, names: ['客户记录'], doc: '外部说明' }] });
+assert.equal(enriched.knowledge.items.find(item => item.key === ds)?.names[0], '客户记录');
+assert.equal(enriched.knowledge.items.find(item => item.key === ds)?.doc, '外部说明');
+assert.equal(resolveFact(enriched.knowledge, `${ds}#dimensions/one`).projectable, false);
+assert.throws(() => derivePublishedKnowledge(input, { version: 1, items: [{ key: ds, names: [], doc: '', projectable: true }] }), /presentation item/);
+assert.throws(() => derivePublishedKnowledge(input, { version: 1, items: [{ key: 'datasets/missing', names: [], doc: '' }] }), /presentation item/);
+const index = derivePublishedKnowledge(input);
+assert.equal(resolveFact(index.knowledge, `${ds}#dimensions/one`).projectable, false);
+assert.deepEqual((resolveFact(index.knowledge, group).referenced_by as any).bindings, [first, second]);
+assert.ok(index.keys.has(first) && index.keys.has(second));
+assert.equal(searchPoints(index.knowledge,{q:['customer'],scope:['entities']}).results[0].items[0].id,'entities/customer');
+if (process.argv[2]) {
+  const metadata = readBuildInformation(readFileSync(process.argv[2]));
+  assert.ok(metadata && Object.hasOwn(metadata, 'ontology.knowledge'));
+  const collected = await collectProgrammedKnowledge(metadata['ontology.knowledge']) as {graph:unknown;vocabulary:unknown};
+  const actual = derivePublishedKnowledge(collected.graph, undefined, collected.vocabulary);
+  for (const ty of Object.values(actual.knowledge.types)) {
+    assert.ok(!['Int', 'Float', 'String', 'Array', 'Dict'].includes(ty.kind as string));
+    const variants = Array.isArray(ty.variants) ? ty.variants.map((v: any) => v.name) : [];
+    if (ty.name == null) assert.ok(![['False', 'True'], ['None', 'Some']].some(names => JSON.stringify(names) === JSON.stringify(variants)));
+  }
+  assert.ok(Object.keys(actual.knowledge.datasets).length >= 5);
+  for (const root of ['entities', 'dimension_groups'] as const) assert.ok(Object.keys(actual.knowledge[root] ?? {}).length > 0, root);
+  const dataset=Object.keys(actual.knowledge.datasets)[0];
+  assert.equal(readPoints(actual.knowledge,{ids:['datasets/'+encodePart(dataset)]}).items.length,1);
+  console.log(JSON.stringify({ artifact: process.argv[2], revision: actual.revision, counts: actual.meta.counts, facts: actual.keys.size, links: actual.links.length }));
+}
+console.log('static knowledge: no discovery calls, strict metadata, closed references, separate bindings and JS navigation passed');
+
+// Domain names and imported type addresses discard source namespaces.
+{
+ const canonical='a::b::Type1',key='types/'+encodePart(canonical),value=key+'#values/yes';
+ const source=publication([fact(key,{name:canonical}),fact(value,{name:'yes'},[key])],[{key,names:[canonical,'业务类型'],doc:''}]);
+ const vocabulary=[{key,kind:'Ty',name:canonical,doc:'',aliases:[canonical,'业务类型'],owner:null,ownerValue:null},{key:value,kind:'Value',name:'yes',doc:'',aliases:[],owner:'ty',ownerValue:canonical}];
+ for(const index of [derivePublishedKnowledge(source),derivePublishedKnowledge(source,undefined,vocabulary)]){
+  const term=index.terms.find(t=>t.key==='types/Type1')!;
+  assert.equal(term.name,'Type1');assert.deepEqual(term.aliases,['业务类型']);
+  assert.deepEqual(index.knowledge.items.find(t=>t.key==='types/Type1')!.names,['Type1','业务类型']);
+  assert.equal(index.terms.find(t=>t.key==='types/Type1#values/yes')!.name,'yes');
+  assert.equal(index.terms.find(t=>t.key==='types/Type1#values/yes')!.ownerValue,'Type1');
+  assert.equal(resolveFact(index.knowledge,'types/Type1').name,canonical);
+ }
+}
+
+// Allocate once at import; remap structural references, never business literals.
+{
+ const a='types/'+encodePart('a::Name'),b='types/'+encodePart('b::Name'),c='types/'+encodePart('c::Name-1');
+ const member=a+'#values/yes',field='datasets/sample#fields/value';
+ const source=publication([
+  fact(b,{name:'b::Name',field_types:[{name:'a',type:'Option('+a+')'}]},[a]),
+  fact(a,{name:'a::Name',reverse_references:true,arguments:[b],variants:[{name:'Some',payload:b}],representation:b},[b]),
+  fact(c,{name:'c::Name-1'}),fact('datasets/sample'),
+  fact(member,{wires:[a],value:a},[a]),
+  fact(field,{type:'Array(Option('+b+'))',canonical_values:[{id:a,wires:[a]}],doc:a,source:a},[b]),
+  fact('entities/thing',{identity:a},[a]),
+ ],[{key:a,names:['a::Name','业务名'],doc:'说明'},{key:member,names:['是'],doc:''}]);
+ const presentation={version:1,items:[{key:b,names:['另一个名字'],doc:'外部说明'}]};
+ const vocabulary=[{key:a,kind:'Ty',name:'a::Name',aliases:[],doc:'',owner:null,ownerValue:null},{key:member,kind:'Value',name:'yes',aliases:[],doc:'',owner:'ty',ownerValue:'a::Name'}];
+ const original=JSON.stringify({source,presentation,vocabulary});
+ const index=derivePublishedKnowledge(source,presentation,vocabulary),graph=index.knowledge;
+ assert.deepEqual(Object.keys(graph.types).sort(),['Name','Name-1','Name-2']);
+ assert.equal(resolveFact(graph,'types/Name').representation,'types/Name-2');
+ assert.deepEqual(resolveFact(graph,'types/Name').arguments,['types/Name-2']);
+ assert.deepEqual(resolveFact(graph,'types/Name').variants,[{name:'Some',payload:'types/Name-2'}]);
+ assert.deepEqual(resolveFact(graph,'types/Name-2').field_types,[{name:'a',type:'Option(types/Name)'}]);
+ assert.equal(resolveFact(graph,field).type,'Array(Option(types/Name-2))');
+ assert.equal(resolveFact(graph,'entities/thing').identity,'types/Name');
+ assert.deepEqual(resolveFact(graph,field).canonical_values,[{id:a,wires:[a]}]);
+ assert.equal(resolveFact(graph,field).doc,a);assert.equal(resolveFact(graph,field).source,a);
+ assert.deepEqual(resolveFact(graph,'types/Name#values/yes').wires,[a]);
+ assert.equal(resolveFact(graph,'types/Name#values/yes').value,a);
+ assert(index.keys.has('types/Name#values/yes'));assert(!index.keys.has(member));
+ assert.equal(index.terms.find(t=>t.kind==='Value')!.ownerValue,'Name');
+ assert.equal(index.terms.find(t=>t.kind==='Value')!.key,'types/Name#values/yes');
+ assert(index.knowledge.items.find(t=>t.key==='types/Name-2')!.names.includes('另一个名字'));
+ assert(index.links.every(e=>!e.source.includes('%3A')&&!e.target.includes('%3A')));
+ const reordered=derivePublishedKnowledge({...source as object,facts:[...(source as any).facts].reverse()},presentation,vocabulary);
+ for(const id of ['Name','Name-1','Name-2'])assert.equal(resolveFact(reordered.knowledge,'types/'+id).name,resolveFact(graph,'types/'+id).name);
+ assert.equal(JSON.stringify({source,presentation,vocabulary}),original);
+ assert.throws(()=>derivePublishedKnowledge(publication([fact(a),fact('datasets/x',{},['types/Name'])])),/Unresolved/);
+ assert.throws(()=>derivePublishedKnowledge(publication([fact(a)],[{key:'types/Name',names:[],doc:''}])) ,/presentation item/);
+ console.log('Plugin type IDs: deterministic names and collision suffixes, members, nested type expressions, navigation, vocabulary, presentation and business literal preservation passed');
+}

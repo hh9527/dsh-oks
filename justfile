@@ -361,4 +361,4 @@ install-profile:
 
 # 隔离核验安装和启动，不构建真实插件、不启动服务。
 test-install:
-    python3 tests/install-profile.test.py
+    node --test tests/install-profile.test.mjs

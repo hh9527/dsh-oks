@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import {createDraftBackend} from '../src/draft/backend.ts';
+import {DraftRuntime} from '../src/draft/runtime.ts';
+import {parseExecutableDesign,checkDesign} from '../src/draft/design.ts';
+import type {WorkspaceEntry} from '../src/knowledge.ts';
+let executions=0,validations=0;
+const entry={modelHash:'fixture',settings:{domain:'test',dataFile:'fixture.sqlite',queryMaxRows:200},runner:{async send(_m:string,{intents}:any){validations++;return {ok:{accepted:true,queries:[{sql:'SELECT n LIMIT ?',bindings:[intents[0].limit],limit_slot:0,columns:[{name:'n',type:'Int',nullable:false}]}]}};}}} as unknown as WorkspaceEntry;
+const backend=createDraftBackend({entry,file:'answer.dari',contextZone:()=>({kind:'resolved',timeZone:'Asia/Shanghai'}),contextNow:()=>1790854863456,knowledge:{executorFor(){return {manifest:null,executor:{async send(){executions++;return {rows:[{n:42}],columns:['n'],truncated:false};},dispose(){}}};}}});
+const runtime=new DraftRuntime(backend,{parse:parseExecutableDesign});
+const source=`data ctx = context();
+data months = time_windows(ctx,{unit:"month",count:2,mode:"complete"});
+data facts = query({limit:5,start:months[0].start.dateTimeUtc});
+data rows = select({from:{facts},fields:(r)=>({label:"observed",n:r.facts.n})});
+data summary = select_one({from:{rows},fields:(r)=>({n:r.rows.n}),order_by:(out)=>[desc(out.n)],limit:1});
+figure chart = tree! { ColumnChart(spec={x:"label",value:"n"},data=rows) };
+report answer = tree! { Report [p ["Total: ",Value(data=summary?.n)],UseFigure(ref = chart)] };`;
+try{
+ const checked=await checkDesign(source,'answer.dari',backend);assert.equal(checked.ok,true,JSON.stringify(checked));assert.equal(executions,0);
+ let run=await runtime.run(source);assert.equal(run.status,'complete',run.error ?? '');
+ assert.equal(executions,1);assert.equal(validations,2,'fixed analysis time and real execution time produce independently transformed intents');
+ const report=runtime.read('answer',source).value;assert.match(report.sources[0].delivery!.html!,/>42<\/span>/);assert.match(report.sources[0].delivery!.html!,/<svg/);
+ const windows=runtime.read('months',source).value;
+ assert.equal((windows.data as any)[1].end.dateTimeUtc,'2026-09-30T16:00:00.000Z');
+ const timeNode=Object.values(windows.sources[0].origin.nodes).find(n=>n.method==='pipeline'&&n.snip?.includes('time_windows'))!;
+ assert(timeNode);assert.equal(timeNode.snipFile,undefined);assert.deepEqual(Object.keys(timeNode.inputs!),['ctx']);
+ run=await runtime.run(source);assert.equal(run.status,'complete');assert.equal(executions,1);
+ await runtime.run(source,{refresh:true});assert.equal(executions,2);
+ const before=executions;
+ run=await runtime.run(source.replace('count:2','count:0'),{refresh:true});assert.equal(run.status,'invalid');assert.equal(executions,before);
+ assert.equal((await checkDesign(source.replace('r.facts.n','r.facts.missing'),'answer.dari',backend)).ok,false);
+ console.log('JS time + typed SQL backend: check without data, figures, provenance, refresh, cache and static error gating passed');
+}finally{runtime.dispose();}
