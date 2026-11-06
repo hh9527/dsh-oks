@@ -164,6 +164,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         const pure=(e:Expr):boolean=>e.kind==='call'?['typed_value','data','context','time_windows','analysis_map'].includes(e.operator)&&e.args.every(pure):e.kind==='array'?e.values.every(pure):e.kind==='object'?e.entries.every(x=>pure(x.value)):e.kind==='project'?pure(e.input):true;
         if(!hasError(result)&&isKnown(input)&&variants.length===1&&pure(e.args[2])){
           const values=await settle(cases.map(v=>({span:e.args[2].span,run:()=>evaluate(e.args[2],v,[v])})));
+          if(values.some(hasError))return box({kind:'error'});
           if(values.every(isKnown))return box(type,values.map(unbox));
         }
         return box(type);
@@ -203,7 +204,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
       const findings=backend.checkCall?.(ctx,value=>!unknown(value))??[];
       diagnostics.reportAll(findings);
       if(findings.some(d=>d.severity!=='warning'))return box({kind:'error'});
-      if(e.operator==='data'&&args.length>1&&unknown(args[1]))return UNKNOWN;
+      if(e.operator==='data'&&args.length>1&&unknown(args[1]))return box(typeOf(args[0]));
       if(e.operator==='render_figure'&&isRecord(args[1])){
         try{figureShape={kind:'figure',data:typeOf(args[1].data),...(args[1].nodes===undefined?{}:{nodes:typeOf(args[1].nodes)})};}catch{}
       }

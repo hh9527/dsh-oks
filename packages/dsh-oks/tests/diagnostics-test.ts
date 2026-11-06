@@ -242,6 +242,13 @@ try{
   assert.equal(variantDag.ok,false);assert(variantDag.checkedBindings.some(b=>b.name==='result'&&!b.checked));
   assert(!variantDag.diagnostics.some(d=>d.message.includes('query parameters must be known')),JSON.stringify(variantDag.diagnostics));
   assert.deepEqual(intents,[{limit:5,kind:'independent'},{limit:5,kind:'map_independent'},{limit:5,value:2}]);
+  const nestedMap=await checkDesign('data result = query({limit:5,values:map([1,2],n=>data(n,{kind:case_when(n==1,"bad","example")}))});','fixture.dari',tracked);
+  assert.equal(nestedMap.ok,false);assert(nestedMap.diagnostics.some(d=>d.message.includes('data options must be')),JSON.stringify(nestedMap.diagnostics));
+  assert(nestedMap.checkedBindings.some(b=>b.name==='result'&&!b.checked));
+  assert.deepEqual(intents,[{limit:5,kind:'independent'},{limit:5,kind:'map_independent'},{limit:5,value:2}]);
+  const validNestedMap=await checkDesign('data result = query({limit:5,values:map([1,2],n=>data(n,{kind:case_when(n==1,"given","example")}))});','fixture.dari',tracked);
+  assert.equal(validNestedMap.ok,true,JSON.stringify(validNestedMap.diagnostics));
+  assert.deepEqual(intents.at(-1),{limit:5,values:[1,2]});
  }finally{tracked.dispose?.();}
 }finally{backend.dispose?.();}
 console.log('Diagnostic collector: checkpoints, explicit reports and error type propagation passed');
