@@ -116,6 +116,13 @@ try{
  const recordConflicts=recordArray.diagnostics.filter(d=>d.message.startsWith('Incompatible types'));
  assert.deepEqual(recordConflicts.map(d=>d.span.start.offset),[recordArraySource.indexOf('"x"'),recordArraySource.indexOf('True')],JSON.stringify(recordArray.diagnostics));
  assert(recordArray.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ const rootRecordArraySource='data x = [{a:1,b:1},{a:"x",b:True}];';
+ const rootRecordArray=await checkDesign(rootRecordArraySource,'fixture.dari',backend);
+ assert.deepEqual(rootRecordArray.diagnostics.filter(d=>d.message.startsWith('Incompatible types')).map(d=>d.span.start.offset),[rootRecordArraySource.indexOf('"x"'),rootRecordArraySource.indexOf('True')],JSON.stringify(rootRecordArray.diagnostics));
+ assert(rootRecordArray.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ const nullableArrayBackend={...backend,async analyze(ctx:any){if(ctx.operator==='context')return {data:box({kind:'record',fields:{a:{kind:'scalar',name:'Int',nullable:false}},nullable:true})};return backend.analyze!(ctx);}};
+ const nullableRecordArray=await checkDesign('data x = [{a:1},context()];','fixture.dari',nullableArrayBackend);
+ assert.equal(nullableRecordArray.types.x,'Array(Option({a:Int}))',JSON.stringify(nullableRecordArray));
  for(const source of ['data x = data(1,{kind:"bad"});','data x = time_windows(context(),{unit:"bad",count:1,mode:"current"});']){
   const result=await checkDesign(source,'fixture.dari',backend);assert.equal(result.diagnostics.length,1,JSON.stringify(result.diagnostics));assert.equal(result.diagnostics[0].asset,'x');
  }
