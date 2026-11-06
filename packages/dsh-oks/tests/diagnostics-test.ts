@@ -346,6 +346,8 @@ try{
  const warned=await checkDesign('data x = data(1);','fixture.dari',warningBackend);
  assert.equal(warned.ok,true,JSON.stringify(warned));assert.equal(warned.warnings[0]?.message,'advisory');assert(warned.checkedBindings[0].checked);
  const internalError=new Error('internal failure');
+ const brokenFigureBackend={...backend,checkCall(){return [];},async analyze(ctx:any){if(ctx.operator==='context')return {data:{columns:[{name:'n',type:'Unknown',nullable:false}],rows:[],truncated:false}};return backend.analyze!(ctx);}};
+ await assert.rejects(checkDesign('figure chart = tree! { BarChart(spec={x:"x",value:"n"},data=context()) };','fixture.dari',brokenFigureBackend),/Invalid or unknown table column type/);
  const unknownMapBackend={...backend,async analyze(ctx:any){if(ctx.operator==='context')return {data:UNKNOWN};return backend.analyze!(ctx);}};
  const unknownMap=await checkDesign('data x = map([context()],n=>({dependent:n.missing,independent:"x"+1}));','fixture.dari',unknownMapBackend);
  assert(unknownMap.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(unknownMap.diagnostics));

@@ -214,7 +214,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
       if(findings.some(d=>d.severity!=='warning'))return box({kind:'error'});
       if(e.operator==='data'&&args.length>1&&unknown(args[1]))return box(typeOf(args[0]));
       if(e.operator==='render_figure'&&isRecord(args[1])){
-        try{figureShape={kind:'figure',data:typeOf(args[1].data),...(args[1].nodes===undefined?{}:{nodes:typeOf(args[1].nodes)})};}catch{}
+        try{figureShape={kind:'figure',data:typeOf(args[1].data),...(args[1].nodes===undefined?{}:{nodes:typeOf(args[1].nodes)})};}catch(error){if(!(error instanceof TypeRuleError)&&!(error instanceof UpstreamTypeUnavailable))throw error;}
       }
       if ((unknown(args)&&e.operator!=='data') || e.operator === 'render_figure' || e.operator === 'render_report') {
         deferred.push({binding,operator:e.operator,at:e.span.start,reason:unknown(args)?'Requires runtime data; not executed during checking':'Rendering is deferred until execution'});
