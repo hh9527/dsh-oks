@@ -6,8 +6,14 @@ import {createDraftBackend} from '../src/draft/backend.ts';
 import {runTyped} from '../src/draft/typed-runtime.ts';
 import {DraftSyntaxError} from '../src/draft/pipeline.ts';
 import {TypedCompiler} from '../src/draft/typed-compiler.ts';
+import {parseTypedExpression,type N} from '../src/draft/typed-syntax.ts';
 
 const span={start:{offset:0,line:1,column:1},end:{offset:1,line:1,column:2}};
+const originalDefinition:N={k:'lit',s:span,v:7},definitions=new Map<string,N>([['existing',originalDefinition]]);
+assert.throws(()=>parseTypedExpression('map(1,x=>x)',span.start,{definitions,expressionName:'broken'}),DraftSyntaxError);
+assert.deepEqual([...definitions],[['existing',originalDefinition]]);
+parseTypedExpression('1',span.start,{definitions,expressionName:'valid'});
+assert.equal(definitions.get('valid')?.v,1);
 const diagnostics=new DiagnosticCollector();
 const root=new DiagnosticCollector(),left=root.scope({file:'fixture.dari'}),right=root.scope({file:'fixture.dari'});
 left.report({stage:'type',message:'left',span});right.report({stage:'type',message:'right',span});
