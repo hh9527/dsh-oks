@@ -10,7 +10,7 @@ import { canonicalJson } from '../key.ts';
 import { isRecord } from '../host.ts';
 import type { Knowledge, WorkspaceEntry } from '../knowledge.ts';
 import { limitProblem } from '../intent-limit.ts';
-import { appendNode, describeRows, isResultColumn, originOf, rowsOf, resultStamp } from '../results.ts';
+import { appendNode, describeRows, isResultColumn, originOf, rowsOf, resultStamp,RowsValidationError } from '../results.ts';
 import type { DataOrigin, OriginNode, ResultColumn } from '../results.ts';
 import {timeWindowOptions,timeWindows,TIME_WINDOWS_VERSION,TimeWindowValidationError} from '../time-windows.ts';
 import { encode, resolveZone } from '../time.ts';
@@ -244,21 +244,21 @@ export function createDraftBackend(options: {
       if(isRecord(second))check(()=>{if(!Object.hasOwn(second,'data')||Object.keys(second).some(key=>key!=='data'&&key!=='nodes'))throw new Error('render_figure inputs must be {data,nodes?}');});
       let raw:unknown,validSpec=false;
       if(known(first))try{raw=componentSpec(first,ctx.figureKind);validateFigure(raw);validSpec=true;}catch(error){if(!(error instanceof FigureValidationError)&&!(error instanceof TableSpecValidationError)&&!(error instanceof ComponentSpecValidationError))throw error;diagnostics.report({file,stage:'figure',message:error.message,span:ctx.span});}
-      if(validSpec)check(()=>{
+      if(validSpec)try{(()=>{
         if(!isRecord(second))return;
         if(isRecord(second.data)&&Array.isArray(second.data.columns)){
           const columns=second.data.columns.map(c=>isRecord(c)?String(c.name):String(c));
           const spec=raw as Record<string,unknown>;
-          const missing=spec.kind==='table'?(()=>{const table=parseTableSpec(spec);return [...new Set([...(table.columns??[]),...Object.keys(table.labels)])].filter(c=>!columns.includes(c));})():(()=>{const parsed=parseChartSpec(spec);if('error' in parsed)throw new Error(parsed.error);return missingColumns(parsed.spec,columns,1);})();
-          if(missing.length)throw new Error(`Missing figure columns: ${missing.join(', ')}`);
+          const missing=spec.kind==='table'?(()=>{const table=parseTableSpec(spec);return [...new Set([...(table.columns??[]),...Object.keys(table.labels)])].filter(c=>!columns.includes(c));})():(()=>{const parsed=parseChartSpec(spec);if('error' in parsed)throw new FigureValidationError(parsed.error);return missingColumns(parsed.spec,columns,1);})();
+          if(missing.length)throw new FigureValidationError(`Missing figure columns: ${missing.join(', ')}`);
           if(isBox(second.data)&&spec.kind!=='table'){
             const t=typeOf(second.data);const value=typeof spec.value==='string'?spec.value:undefined;
             const column=t.kind==='table'?t.columns.find(c=>c.name===value):undefined;
-            if(column&&!['Int','Float'].includes(column.type))throw new Error(`Figure value ${value} requires a numeric column, got ${column.type}`);
+            if(column&&!['Int','Float'].includes(column.type))throw new FigureValidationError(`Figure value ${value} requires a numeric column, got ${column.type}`);
             if(t.kind==='table'&&(spec.kind==='line'||spec.kind==='area')){
               const x=t.columns.find(c=>c.name===spec.x);
               const compatible:Record<string,string[]>={Int:['Int'],Float:['Int','Float'],String:['String'],Rfc3339:['String','DateTimeUtc'],EpochMillis:['Int','EpochMillis']};
-              if(x&&!compatible[String(spec.xType)]?.includes(x.type))throw new Error(`Figure x ${spec.x} with xType ${spec.xType} has incompatible column type ${x.type}`);
+              if(x&&!compatible[String(spec.xType)]?.includes(x.type))throw new FigureValidationError(`Figure x ${spec.x} with xType ${spec.xType} has incompatible column type ${x.type}`);
             }
           }
         }
@@ -269,17 +269,17 @@ export function createDraftBackend(options: {
           const parsed=parseTableSpec(spec);
           const columns=new Set(rows.flatMap(row=>Object.keys(row)));
           const missing=rows.length?[...new Set([...(parsed.columns??[]),...Object.keys(parsed.labels)])].filter(c=>!columns.has(c)):[];
-          if(missing.length)throw new Error(`Missing figure columns: ${missing.join(', ')}`);
+          if(missing.length)throw new FigureValidationError(`Missing figure columns: ${missing.join(', ')}`);
         }else{
           const parsed=parseChartSpec(spec);
-          if('error' in parsed)throw new Error(parsed.error);
+          if('error' in parsed)throw new FigureValidationError(parsed.error);
           const columns=[...new Set(rows.flatMap(row=>Object.keys(row)))];
           const missing=missingColumns(parsed.spec,columns,rows.length);
-          if(missing.length)throw new Error(`Missing figure columns: ${missing.join(', ')}`);
-          const issue=shapeProblem(rows,parsed.spec);if(issue)throw new Error(issue);
+          if(missing.length)throw new FigureValidationError(`Missing figure columns: ${missing.join(', ')}`);
+          const issue=shapeProblem(rows,parsed.spec);if(issue)throw new FigureValidationError(issue);
           if(parsed.spec.kind==='graph'&&known(second.nodes))rowsOf(second.nodes,'render_figure.nodes');
         }
-      });
+      })();}catch(error){if(!(error instanceof FigureValidationError)&&!(error instanceof TableSpecValidationError)&&!(error instanceof RowsValidationError))throw error;diagnostics.report({file,stage:'figure',message:error.message,span:ctx.span});}
     }
     if(ctx.operator==='render_report'&&ctx.asset?.program&&isRecord(second)){
       const program=ctx.asset.program;

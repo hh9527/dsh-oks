@@ -411,19 +411,20 @@ export function readTextLines(text:string,rel:string,offset:unknown,limit:unknow
 /** 从一份 data 里取行对象数组：`{ rows, … }` 与"data 直接就是数组"两种形状都认。
  *  标量、对象、嵌套是加工结果的常态，直接读取绑定值；这里明确拒绝，
  *  免得形状不对的数据一路走到绘图那层才报出一句看不懂的错。 */
+export class RowsValidationError extends Error {}
 export function rowsOf(data: unknown, asset: unknown): Array<Record<string, unknown>> {
   const rows = isRecord(data) ? data.rows : data;
   if (!Array.isArray(rows)) {
-    throw new Error(`这份数据的 data 不是行对象数组：${JSON.stringify(asset)}。`
+    throw new RowsValidationError(`这份数据的 data 不是行对象数组：${JSON.stringify(asset)}。`
       + '要画图就先在稿件中把它加工成行对象数组。');
   }
   if (isRecord(data) && data.columns !== undefined) {
-    if (!Array.isArray(data.columns)) throw new Error('data.columns 需要列声明数组。');
+    if (!Array.isArray(data.columns)) throw new RowsValidationError('data.columns 需要列声明数组。');
     for (const [index, column] of data.columns.entries()) {
       if (!isRecord(column) || typeof column.name !== 'string' || column.name.trim() === ''
           || (!isTableColumn(column) && (!Array.isArray(column.types) || !column.types.every((type: unknown) => typeof type === 'string')))
           || typeof column.nullable !== 'boolean') {
-        throw new Error(`data.columns[${index}] 列声明无效：需要 {"name":"count","type":"Int","nullable":false} 或带 types 数组的列对象；行对象数组或仅带 rows 的对象也可直接用于表格与图表。`);
+        throw new RowsValidationError(`data.columns[${index}] 列声明无效：需要 {"name":"count","type":"Int","nullable":false} 或带 types 数组的列对象；行对象数组或仅带 rows 的对象也可直接用于表格与图表。`);
       }
     }
   }
