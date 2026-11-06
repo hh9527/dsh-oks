@@ -60,6 +60,7 @@ const small=(body:string)=>`data a = query({period:"base",limit:10});data b = qu
  assert(partial.diagnostics.some(d=>d.message.includes('missing_independent')),JSON.stringify(partial.diagnostics));
  assert(!partial.diagnostics.some(d=>/missing on broken|Expected Table, got Error|Upstream type/.test(d.message)),JSON.stringify(partial.diagnostics));
  assert(partial.checkedBindings.some(b=>b.name==='downstream'&&!b.checked));assert.equal(reads,before);
+ assert.equal(partial.types.downstream,undefined);assert.equal(partial.checkedBindings.find(b=>b.name==='downstream')?.shape,undefined);
  const siblings=await checkDesign(small(`data sample = select({from:{s:a},fields:r=>({
   first:case_when(True,r.s.missing_left,r.s.missing_right),
   second:r.s.missing_a+r.s.missing_b

@@ -208,7 +208,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         let opaqueInternal=false;
         const result=checkedBindings.find(n=>n.name===binding);
         const presentation=statement.value.kind==='call'&&statement.value.operator==='render_report';
-        try{shape=figureShape??typeOf(value);if(!internal&&shape.kind!=='figure')types[binding]=show(shape);}catch(error){
+        try{shape=figureShape??typeOf(value);}catch(error){
           if(error instanceof TypeRuleError){if(internal)opaqueInternal=true;else addError(new DraftSyntaxError(error.message,statement.span),statement.span,'type');}
           else if(error instanceof UpstreamTypeUnavailable){if(!presentation)upstreamUnavailable=true;}
           else throw error;
@@ -217,7 +217,8 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         const checked=!diagnostics.hasErrors(before)&&!localError&&dependencies.every(name=>resolved.has(name))&&(shape!==undefined||presentation||opaqueInternal);
         if(checked)resolved.add(binding);
         else bindings.set(binding,box({kind:'error'}));
-        if(result){result.checked=checked;if(shape!==undefined)result.shape=shape;}
+        if(checked&&!internal&&shape!==undefined&&shape.kind!=='figure')types[binding]=show(shape);
+        if(result){result.checked=checked;if(checked&&shape!==undefined)result.shape=shape;}
       }
     }
     catch (error) { if(error instanceof UpstreamTypeUnavailable)upstreamUnavailable=true;else if(error instanceof DraftSyntaxError||error instanceof TypeRuleError)addError(error,statement.span);else throw error; if (statement.kind === 'binding') bindings.set(binding,box({kind:'error'})); }

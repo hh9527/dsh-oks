@@ -93,6 +93,7 @@ try{
   const dag=await checkDesign('data bad = [1,"x"]; data blocked = query({limit:5,value:bad}); data independent = query({limit:5,kind:"independent"});','fixture.dari',tracked);
   assert.equal(dag.ok,false);assert(dag.diagnostics.some(d=>d.message.includes('Incompatible types')));
   assert(dag.checkedBindings.some(b=>b.name==='blocked'&&!b.checked));assert(dag.checkedBindings.some(b=>b.name==='independent'&&b.checked));
+  assert.equal(dag.types.blocked,undefined);assert.equal(dag.checkedBindings.find(b=>b.name==='blocked')?.shape,undefined);
   assert.deepEqual(intents,[{limit:5,kind:'independent'}]);
  }finally{tracked.dispose?.();}
 }finally{backend.dispose?.();}
