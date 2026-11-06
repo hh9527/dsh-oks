@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {DiagnosticCollector} from '../src/draft/diagnostics.ts';
-import {UNKNOWN,box,common,optional,UpstreamTypeUnavailable,type Ty} from '../src/draft/typed-types.ts';
+import {UNKNOWN,box,common,optional,hasError,UpstreamTypeUnavailable,type Ty} from '../src/draft/typed-types.ts';
 import {checkDesign,parseAnalysisDesign} from '../src/draft/design.ts';
 import {createDraftBackend} from '../src/draft/backend.ts';
 import {runTyped} from '../src/draft/typed-runtime.ts';
@@ -33,6 +33,8 @@ assert.deepEqual(ordered.list().map(d=>d.message),['earlier','later']);
 const sameLocation=(reverse:boolean)=>{const c=new DiagnosticCollector();const entries=[{stage:'type',message:'same',span,asset:'a'},{stage:'type',message:'same',span,asset:'b'},{stage:'type',severity:'error' as const,message:'same',span,asset:'a'}];c.reportAll(reverse?entries.reverse():entries);return c.list();};
 assert.deepEqual(sameLocation(false),sameLocation(true));assert.equal(sameLocation(false).length,2);
 const error:Ty={kind:'error'};
+assert(hasError(box({kind:'record',fields:{value:{kind:'scalar',name:'Int',nullable:false}},nullable:false},{value:box(error)})));
+assert(!hasError(box({kind:'scalar',name:'Int',nullable:false})));
 assert.deepEqual(common(error,{kind:'scalar',name:'Int',nullable:false}),error);
 assert.deepEqual(optional(error),error);
 const compiler=new TypedCompiler({}, {}, true);
@@ -230,6 +232,9 @@ try{
  try{await assert.rejects(checkDesign('data x = query({limit:5});','fixture.dari',failedModel),e=>e===modelFailure);}finally{failedModel.dispose?.();}
  const tracked=createDraftBackend({entry:{settings:{},modelHash:'dag',runner:{async send(_method:string,{intents:items}:any){intents.push(...items);return {ok:{accepted:true,queries:[{sql:'SELECT 1 LIMIT ?',bindings:[items[0].limit],limit_slot:0,columns:[{name:'n',type:'Int',nullable:false}]}]}};}}} as any,file:'fixture.dari',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge:{executorFor(){throw new Error('Unexpected business read');}}});
  try{
+  const nestedErrorBackend={...tracked,async analyze(ctx:any){if(ctx.operator==='context')return {data:box({kind:'record',fields:{value:{kind:'scalar',name:'Int',nullable:false}},nullable:false},{value:box(error)})};return tracked.analyze!(ctx);}};
+  const nestedError=await checkDesign('data result = query({limit:5,value:context()});','fixture.dari',nestedErrorBackend);
+  assert.equal(nestedError.ok,false);assert(nestedError.checkedBindings.some(b=>b.name==='result'&&!b.checked));assert.deepEqual(intents,[]);
   const dag=await checkDesign('data bad = [1,"x"]; data blocked = query({limit:5,value:bad}); data independent = query({limit:5,kind:"independent"});','fixture.dari',tracked);
   assert.equal(dag.ok,false);assert(dag.diagnostics.some(d=>d.message.includes('Incompatible types')));
   assert(dag.checkedBindings.some(b=>b.name==='blocked'&&!b.checked));assert(dag.checkedBindings.some(b=>b.name==='independent'&&b.checked));
