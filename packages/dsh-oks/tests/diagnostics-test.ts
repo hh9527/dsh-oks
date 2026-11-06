@@ -55,5 +55,13 @@ try{
  const internalError=new Error('internal failure');
  await assert.rejects(checkDesign('data x = 1 + 2;','fixture.dari',{...backend,async analyze(){throw internalError;}}),e=>e===internalError);
  await assert.rejects(checkDesign('data x = 1;','fixture.dari',{...backend,async preflight(){throw internalError;}}),e=>e===internalError);
+ const intents:unknown[]=[];
+ const tracked=createDraftBackend({entry:{settings:{},modelHash:'dag',runner:{async send(_method:string,{intents:items}:any){intents.push(...items);return {ok:{accepted:true,queries:[{sql:'SELECT 1 LIMIT ?',bindings:[items[0].limit],limit_slot:0,columns:[{name:'n',type:'Int',nullable:false}]}]}};}}} as any,file:'fixture.dari',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge:{executorFor(){throw new Error('Unexpected business read');}}});
+ try{
+  const dag=await checkDesign('data bad = [1,"x"]; data blocked = query({limit:5,value:bad}); data independent = query({limit:5,kind:"independent"});','fixture.dari',tracked);
+  assert.equal(dag.ok,false);assert(dag.diagnostics.some(d=>d.message.includes('Incompatible types')));
+  assert(dag.checkedBindings.some(b=>b.name==='blocked'&&!b.checked));assert(dag.checkedBindings.some(b=>b.name==='independent'&&b.checked));
+  assert.deepEqual(intents,[{limit:5,kind:'independent'}]);
+ }finally{tracked.dispose?.();}
 }finally{backend.dispose?.();}
 console.log('Diagnostic collector: checkpoints, explicit reports and error type propagation passed');

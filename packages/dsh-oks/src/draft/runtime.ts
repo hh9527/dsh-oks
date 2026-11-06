@@ -35,7 +35,7 @@ export interface DraftBackend {
   /** 仅记录执行所需的模型标识，不复制宿主配置。 */
   executionContext?(): ExecutionContext['model'];
   /** Deterministic checks must complete before execute is called for any node. */
-  preflight(document: DraftDocument, signal?: AbortSignal): Promise<void>;
+  preflight(document: DraftDocument, signal?: AbortSignal, options?: {validateQueries?:boolean}): Promise<void>;
   /** Analysis-only interpretation: concrete parameters and schemas, never business acquisition. */
   analyze?(context:CallContext):Promise<Computed>;
   beginRun?(run:string):void;

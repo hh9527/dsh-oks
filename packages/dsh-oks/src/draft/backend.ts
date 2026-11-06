@@ -164,7 +164,7 @@ export function createDraftBackend(options: {
     if ('error' in parsed) throw new Error(parsed.error);
     return parsed;
   };
-  const preflight = async (document: DraftDocument, signal?: AbortSignal) => {
+  const preflight = async (document: DraftDocument, signal?: AbortSignal, options?: {validateQueries?:boolean}) => {
     const diagnostics=new DiagnosticCollector();diagnostics.reportAll(document.diagnostics??[]);
     const plannedQueries:{intent:unknown;span:Span}[]=[];
     const constants = new Map<string, unknown>();
@@ -217,7 +217,7 @@ export function createDraftBackend(options: {
       }
     }
     // Model-dependent checks need a locally valid document; they never execute business SQL.
-    if(!diagnostics.hasErrors())for(const query of plannedQueries){
+    if(options?.validateQueries!==false&&!diagnostics.hasErrors())for(const query of plannedQueries){
       try{await lower(query.intent,signal);}catch(error){if(signal?.aborted)throw error;diagnostics.report({file,stage:'validation',message:error instanceof Error?error.message:String(error),span:query.span});}
     }
     const errors=diagnostics.list().filter(d=>d.severity!=='warning');

@@ -91,13 +91,14 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
   else if(reports.length===1)answer=reports[0];
   else if(options.requireSelection&&reports.length>1)diagnostics.report({file,stage:'validation',message:`Select answer from: ${reports.join(', ')}`,span:doc.pipeline});
   diagnostics.reportAll((doc.diagnostics??[]).filter(d=>d.severity==='warning'));
-  try { await backend.preflight(doc,signal); } catch (error) { if(!(error instanceof DraftSyntaxError))throw error;addError(error,doc.pipeline); }
+  try { await backend.preflight(doc,signal,{validateQueries:false}); } catch (error) { if(!(error instanceof DraftSyntaxError))throw error;addError(error,doc.pipeline); }
   const analyze=backend.analyze;
   if(!analyze)throw new Error('Backend does not provide an analysis implementation');
   const bindings = new Map<string,unknown>();
   for (const {statement,internal,bindings:dependencies} of doc.nodes) {
     let figureShape:Extract<CheckedBinding['shape'],{kind:'figure'}>|undefined;
     const binding = statement.kind === 'binding' ? statement.name : 'output';
+    if(dependencies.some(name=>!resolved.has(name))){if(statement.kind==='binding')bindings.set(binding,UNKNOWN);continue;}
     type Environment=Map<string,unknown>;
     const evaluate = async (e: Expr,locals:Environment=new Map(),variants:Environment[]=[new Map()]): Promise<unknown> => {
       const child=(e:Expr)=>evaluate(e,locals,variants);
@@ -193,6 +194,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         const localError=diagnostics.list().some(d=>d.severity!=='warning'&&(d.asset===binding || (d.span.start.offset>=statement.span.start.offset&&d.span.start.offset<statement.span.end.offset)));
         const checked=!diagnostics.hasErrors(before)&&!localError&&dependencies.every(name=>resolved.has(name))&&(shape!==undefined||presentation);
         if(checked)resolved.add(binding);
+        else bindings.set(binding,UNKNOWN);
         if(result){result.checked=checked;if(shape!==undefined)result.shape=shape;}
       }
     }
