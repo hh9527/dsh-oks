@@ -94,6 +94,20 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
   const analyze=backend.analyze;
   if(!analyze)throw new Error('Backend does not provide an analysis implementation');
   const bindings = new Map<string,unknown>();
+  const settle=async<T>(items:readonly {span:Expr['span'];run:()=>Promise<T>}[]):Promise<T[]>=>{
+    const results=await Promise.allSettled(items.map(item=>item.run()));
+    const collected=new DiagnosticCollector();let unavailable:UpstreamTypeUnavailable|undefined;
+    for(const [index,result] of results.entries())if(result.status==='rejected'){
+      const error=result.reason;
+      if(signal?.aborted)throw error;
+      if(error instanceof UpstreamTypeUnavailable){unavailable=error;continue;}
+      if(!(error instanceof DraftSyntaxError)&&!(error instanceof TypeRuleError))throw error;
+      collected.reportAll(error instanceof DraftSyntaxError&&error.diagnostics.length?error.diagnostics:[{file,stage:error instanceof TypeRuleError?'type':'validation',message:error.message,span:error instanceof DraftSyntaxError?error.span:items[index].span}]);
+    }
+    const errors=collected.list();if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);
+    if(unavailable)throw unavailable;
+    return results.map(result=>(result as PromiseFulfilledResult<T>).value);
+  };
   for (const {statement,internal,bindings:dependencies} of doc.nodes) {
     let figureShape:Extract<CheckedBinding['shape'],{kind:'figure'}>|undefined;
     const binding = statement.kind === 'binding' ? statement.name : 'output';
@@ -104,8 +118,8 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
       signal?.throwIfAborted();
       if (e.kind === 'literal') return e.value;
       if (e.kind === 'ref') return locals.has(e.name)?locals.get(e.name):bindings.has(e.name) ? bindings.get(e.name) : UNKNOWN;
-      if (e.kind === 'array') return Promise.all(e.values.map(child));
-      if (e.kind === 'object') return Object.fromEntries(await Promise.all(e.entries.map(async x=>[x.key,await child(x.value)])));
+      if (e.kind === 'array') return settle(e.values.map(value=>({span:value.span,run:()=>child(value)})));
+      if (e.kind === 'object') {const values=await settle(e.entries.map(({value})=>({span:value.span,run:()=>child(value)})));return Object.fromEntries(e.entries.map(({key},i)=>[key,values[i]]));}
       if (e.kind === 'project') {
         let value = await child(e.input);
         if(isBox(value)){const t=typeOf(value);const field=t.kind==='record'&&!t.nullable&&typeof e.key==='string'&&Object.hasOwn(t.fields,e.key)?t.fields[e.key]:t.kind==='array'&&typeof e.key==='number'&&e.key>=0&&(t.length===undefined||e.key<t.length)?t.element:undefined;if(!field)throw new DraftSyntaxError('Invalid projection from '+show(t),e.span);return box(field,isKnown(value)?unbox(value)[e.key]:UNKNOWN);}
@@ -133,12 +147,12 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         // Materialize pure parameter expressions when subsequent query arguments need them.
         const pure=(e:Expr):boolean=>e.kind==='call'?['typed_value','data','context','time_windows','analysis_map'].includes(e.operator)&&e.args.every(pure):e.kind==='array'?e.values.every(pure):e.kind==='object'?e.entries.every(x=>pure(x.value)):e.kind==='project'?pure(e.input):true;
         if(isKnown(input)&&variants.length===1&&pure(e.args[2])){
-          const values=await Promise.all(cases.map(v=>evaluate(e.args[2],v,[v])));
+          const values=await settle(cases.map(v=>({span:e.args[2].span,run:()=>evaluate(e.args[2],v,[v])})));
           if(values.every(isKnown))return box(type,values.map(unbox));
         }
         return box(type);
       }
-      const args = await Promise.all(e.args.map(child));
+      const args = await settle(e.args.map(arg=>({span:arg.span,run:()=>child(arg)})));
       const ctx: CallContext = {operator:e.operator,figureKind:e.figureKind,args:args.map(data=>({data,sources:[]})),statement,span:e.span,run:'check',batch:'check',sourceHash:'check',signal,
         asset:typeof args[0] === 'string'?doc.assets.get(args[0]):undefined};
       if(['typed_value','relational','relational_one','table_union','typed_table'].includes(e.operator)){
@@ -147,7 +161,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         return computed.data;
       }
       if(e.operator==='query'){
-        const candidates=unknown(args)?await Promise.all(variants.map(v=>Promise.all(e.args.map(a=>evaluate(a,v,[v]))))):[args];
+        const candidates=unknown(args)?await settle(variants.map(v=>({span:e.span,run:()=>settle(e.args.map(a=>({span:a.span,run:()=>evaluate(a,v,[v])})))}))):[args];
         let schema:Ty|undefined;
         for(const values of candidates){
           if(unknown(values))throw new DraftSyntaxError('query parameters must be known during checking; business values cannot determine a remote query',e.span);

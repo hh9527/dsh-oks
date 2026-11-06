@@ -57,6 +57,15 @@ try{
  const internalError=new Error('internal failure');
  await assert.rejects(checkDesign('data x = 1 + 2;','fixture.dari',{...backend,async analyze(){throw internalError;}}),e=>e===internalError);
  await assert.rejects(checkDesign('data x = 1;','fixture.dari',{...backend,async preflight(){throw internalError;}}),e=>e===internalError);
+ for(const reverse of [false,true]){
+  const concurrent={...backend,async preflight(){},async analyze(ctx:any){
+   if(ctx.operator!=='query')throw new Error('Unexpected analysis '+ctx.operator);
+   const name=ctx.args[0].data.bad;await new Promise(resolve=>setTimeout(resolve,(name==='first')===reverse?10:0));throw new Error('rejected '+name);
+  }};
+  const siblings=await checkDesign('data x = union_all([query({limit:5,bad:"first"}),query({limit:5,bad:"second"})]);','fixture.dari',concurrent);
+  assert.deepEqual(siblings.diagnostics.map(d=>d.message),['rejected first','rejected second']);
+  assert(siblings.diagnostics[0].span.start.offset<siblings.diagnostics[1].span.start.offset);
+ }
  const intents:unknown[]=[];
  const tracked=createDraftBackend({entry:{settings:{},modelHash:'dag',runner:{async send(_method:string,{intents:items}:any){intents.push(...items);return {ok:{accepted:true,queries:[{sql:'SELECT 1 LIMIT ?',bindings:[items[0].limit],limit_slot:0,columns:[{name:'n',type:'Int',nullable:false}]}]}};}}} as any,file:'fixture.dari',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge:{executorFor(){throw new Error('Unexpected business read');}}});
  try{
