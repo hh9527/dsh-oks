@@ -98,6 +98,9 @@ const small=(body:string)=>`data a = query({period:"base",limit:10});data b = qu
  const joined=await checkDesign(small(`data sample = select({from:{s:a},joins:[{kind:"inner",source:{t:b},on:r=>1}],fields:r=>({bad:r.s.missing_field})});`),'typed.dari',backend);
  assert(joined.diagnostics.some(d=>/Predicate must return Bool/.test(d.message)),JSON.stringify(joined.diagnostics));
  assert(joined.diagnostics.some(d=>/missing_field/.test(d.message)),JSON.stringify(joined.diagnostics));
+ const joinOptions=await checkDesign(small('data sample = select({from:{s:a},joins:[{kind:"inner",source:{t:b},extra_one:1,extra_two:2,on:r=>r.t.missing_join}],fields:r=>({bad:r.s.missing_field})});'),'typed.dari',backend);
+ for(const expected of ['Unknown join option extra_one','Unknown join option extra_two','missing_join','missing_field'])assert(joinOptions.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(joinOptions.diagnostics));
+ assert(!joinOptions.diagnostics.some(d=>d.message.includes('Predicate must return Bool')),JSON.stringify(joinOptions.diagnostics));
  const halted=await checkDesign(small('data sample = select({from:{s:a},where:r=>r.s.missing_predicate,fields:42});'),'typed.dari',backend);
  assert(halted.diagnostics.some(d=>/missing_predicate/.test(d.message)),JSON.stringify(halted.diagnostics));
  assert(halted.diagnostics.some(d=>/Expected a row function/.test(d.message)),JSON.stringify(halted.diagnostics));

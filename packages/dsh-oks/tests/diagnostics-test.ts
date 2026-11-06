@@ -65,6 +65,12 @@ await assert.rejects(runTyped({operator:'relational',args:[{data:ast.value},{dat
  assert(error instanceof DraftSyntaxError);assert.equal(error.diagnostics.length,2);return true;
 });
 assert.equal(prepares,0);
+const joinSource='data a = table([{n:1}],{kind:"example"}); data b = table([{n:2}],{kind:"example"}); data x = select({from:{s:a},joins:[{kind:"inner",source:{t:b},extra:1,on:r=>r.s.n==r.t.n}],fields:r=>({n:r.s.n})});';
+const joinStatement=parseAnalysisDesign(joinSource,'fixture.dari').nodes.at(-1)!.statement;
+if(joinStatement.value.kind!=='call'||joinStatement.value.args[0].kind!=='literal')throw new Error('Expected relational AST');
+const joinTable={columns:[{name:'n',type:'Int',nullable:false}],rows:[],truncated:false};
+await assert.rejects(runTyped({operator:'relational',args:[{data:joinStatement.value.args[0].value},{data:{__source0:joinTable,__source1:joinTable}}],statement:joinStatement,span:joinStatement.span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL prepare');}} as any,true),error=>error instanceof DraftSyntaxError&&error.diagnostics.some(d=>d.message==='Unknown join option extra'));
+assert.equal(prepares,0);
 const blockedSource='data facts = table([{n:1}],{kind:"example"}); data bad = 1; data x = select({from:{s:facts},fields:r=>({v:bad + 1})});';
 const blockedStatement=parseAnalysisDesign(blockedSource,'fixture.dari').nodes.at(-1)!.statement;
 if(blockedStatement.value.kind!=='call'||blockedStatement.value.args[0].kind!=='literal')throw new Error('Expected relational AST');
