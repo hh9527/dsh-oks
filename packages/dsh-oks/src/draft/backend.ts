@@ -172,12 +172,22 @@ export function createDraftBackend(options: {
     const diagnostics=options?.diagnostics?.scope()??new DiagnosticCollector();diagnostics.reportAll(document.diagnostics??[]);
     const plannedQueries:{intent:unknown;span:Span}[]=[];
     const constants = new Map<string, unknown>();
+    let currentStatement:DraftDocument['nodes'][number]['statement'];
+    const visitSafely=async(expr:Expr):Promise<void>=>{
+      try{await visit(expr);}catch(error){
+        if(signal?.aborted||!(error instanceof DraftSyntaxError))throw error;
+        const figure=currentStatement.kind==='binding'&&currentStatement.value.kind==='call'&&currentStatement.value.operator==='render_figure';
+        diagnostics.reportAll((error.diagnostics.length?error.diagnostics:[{file,stage:figure?'figure':'validation',message:error.message,span:error.span}]).map(d=>({...d,...(currentStatement.kind==='binding'?{asset:currentStatement.name}:{})})));
+      }
+    };
     const visit = async (expr: Expr): Promise<void> => {
-      if (expr.kind === 'array') { for (const value of expr.values) await visit(value); }
-      else if (expr.kind === 'object') { for (const { value } of expr.entries) await visit(value); }
-      else if (expr.kind === 'project') { await visit(expr.input); constant(expr, constants); }
+      if (expr.kind === 'array') { for (const value of expr.values) await visitSafely(value); }
+      else if (expr.kind === 'object') { for (const { value } of expr.entries) await visitSafely(value); }
+      else if (expr.kind === 'project') { const before=diagnostics.checkpoint();await visitSafely(expr.input);if(!diagnostics.hasErrors(before))constant(expr, constants); }
       else if (expr.kind === 'call') {
-        for (const arg of expr.args) await visit(arg);
+        const before=diagnostics.checkpoint();
+        for (const arg of expr.args) await visitSafely(arg);
+        if(diagnostics.hasErrors(before))return;
         try {
           const first = expr.args[0] ? constant(expr.args[0], constants) : UNKNOWN;
           const second = expr.args[1] ? constant(expr.args[1], constants) : UNKNOWN;
@@ -207,17 +217,11 @@ export function createDraftBackend(options: {
       }
     };
     for (const { statement } of document.nodes) {
-      try {
-        await visit(statement.value);
-        if (statement.kind === 'binding') {
-          const value = constant(statement.value, constants);
-          if (value !== UNKNOWN) constants.set(statement.name, value);
-        }
-      } catch(error) {
-        if(signal?.aborted)throw error;
-        if(!(error instanceof DraftSyntaxError))throw error;
-        const figure=statement.kind==='binding'&&statement.value.kind==='call'&&statement.value.operator==='render_figure';
-        diagnostics.reportAll((error.diagnostics.length?error.diagnostics:[{file,stage:figure?'figure':'validation',message:error.message,span:error.span}]).map(d=>({...d,...(statement.kind==='binding'?{asset:statement.name}:{})})));
+      currentStatement=statement;const before=diagnostics.checkpoint();
+      await visitSafely(statement.value);
+      if (statement.kind === 'binding'&&!diagnostics.hasErrors(before)) {
+        const value = constant(statement.value, constants);
+        if (value !== UNKNOWN) constants.set(statement.name, value);
       }
     }
     // Model-dependent checks need a locally valid document; they never execute business SQL.

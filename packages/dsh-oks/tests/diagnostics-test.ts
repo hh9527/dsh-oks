@@ -112,6 +112,10 @@ try{
  for(const source of ['data x = data(1,{kind:"bad"});','data x = time_windows(context(),{unit:"bad",count:1,mode:"current"});']){
   const result=await checkDesign(source,'fixture.dari',backend);assert.equal(result.diagnostics.length,1,JSON.stringify(result.diagnostics));assert.equal(result.diagnostics[0].asset,'x');
  }
+ const nestedPreflight=await checkDesign('data x = [data(1,{kind:"bad"}),data(2,{kind:"bad"})];','fixture.dari',backend);
+ assert.equal(nestedPreflight.diagnostics.length,2,JSON.stringify(nestedPreflight.diagnostics));
+ assert(nestedPreflight.diagnostics.every(d=>d.asset==='x'),JSON.stringify(nestedPreflight.diagnostics));
+ assert.notEqual(nestedPreflight.diagnostics[0].span.start.offset,nestedPreflight.diagnostics[1].span.start.offset);
  const invalidTimeContext=await checkDesign('data x = time_windows(1,{unit:"day",count:1,mode:"current"});','fixture.dari',backend);
  assert(invalidTimeContext.diagnostics.some(d=>d.message.includes('time windows requires safe integer context utc.epochMillis')),JSON.stringify(invalidTimeContext.diagnostics));
  const invalidTimeZone=await checkDesign('data x = time_windows({utc:{epochMillis:0},tz:{client:{id:"invalid/timezone"}}},{unit:"day",count:1,mode:"current"});','fixture.dari',backend);
