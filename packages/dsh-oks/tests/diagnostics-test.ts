@@ -57,6 +57,15 @@ for(const kind of ['map_opt','template_scope']){
  const value=c.compile({k:'template_scope',s:span,a:[{k:'lit',s:span,v:1},{k:'lambda',s:span,params:['x'],body:{k:'object',s:span,entries:[{key:'dependent',value:{k:'get',s:span,input:{k:'ref',s:span,name:'x'},key:'field'}},{key:'independent',value:{k:'ref',s:span,name:'missing_body'}}]}}]},{});
  assert.equal(value.type.kind,'error');assert.deepEqual(c.diagnostics.list().map(d=>d.message),['if let Some requires an Option with a known inner type','Unknown binding missing_body']);
 }
+{
+ const c=new TypedCompiler({}, {}, true);
+ const entry=(value:number)=>({k:'object',s:span,entries:[{key:'value',value:{k:'lit',s:span,v:value}},{key:'label',value:{k:'lit',s:span,v:'label'}}]});
+ const result=c.compile({k:'call',s:span,name:'lookup',a:[{k:'ref',s:span,name:'missing_input'},{k:'array',s:span,a:[entry(1),entry(1),entry(2),entry(2)]}]},{});
+ assert.equal(result.type.kind,'error');assert.deepEqual(c.diagnostics.list().map(d=>d.message),['lookup duplicate value 1','lookup duplicate value 2','Unknown binding missing_input']);assert.equal(c.bindings.length,0);
+ const bad=new TypedCompiler({}, {}, true);
+ bad.compile({k:'call',s:span,name:'lookup',a:[{k:'object',s:span,entries:[]},{k:'array',s:span,a:[]}]},{});
+ assert.deepEqual(bad.diagnostics.list().map(d=>d.message),['lookup input must be a scalar or null','lookup requires a nonempty mapping array known at check time']);
+}
 const cases=new TypedCompiler({}, {}, true);
 cases.compile({k:'call',s:span,name:'case_when',a:[{k:'ref',s:span,name:'missing_condition'},{k:'lit',s:span,v:1},{k:'lit',s:span,v:'bad'}]},{});
 assert.deepEqual(cases.diagnostics.list().map(d=>d.message),['Incompatible types Int and String','Unknown binding missing_condition']);

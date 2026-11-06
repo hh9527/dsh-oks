@@ -145,6 +145,31 @@ export class TypedCompiler{
     if(invalid)return {type:{kind:'error'},known:false};
     const k=a.every(x=>x.known);return {type:scalar('String',a.some(x=>nullable(x.type))),known:k,...(k?{value:a.some(x=>x.value===null)?null:a.map(x=>x.value).join('')}:{sql:'('+a.map(x=>this.sql(x,n)).join('||')+')'})};
    }
+   if(name==='lookup'){
+    const [input,mapping]=a;let invalid=a.some(x=>x.type.kind==='error');
+    if(input.type.kind!=='error'&&!scalarType(input.type)&&input.type.kind!=='null'){this.reportFailure(args[0],'lookup input must be a scalar or null');invalid=true;}
+    if(mapping.type.kind==='error')return {type:{kind:'error'},known:false};
+    if(mapping.type.kind!=='array'||!mapping.known||!Array.isArray(mapping.value)||!mapping.value.length){this.reportFailure(args[1],'lookup requires a nonempty mapping array known at check time');return {type:{kind:'error'},known:false};}
+    const pairs=mapping.value as {value:unknown;label:unknown}[];let labelType:Ty={kind:'never'};const seen=new Set<unknown>();let keyName:string|undefined;
+    for(const [index,pair] of pairs.entries()){
+     const at=args[1].k==='array'?args[1].a![index]:args[1];
+     if(!isRecord(pair)||Object.keys(pair).length!==2||!Object.hasOwn(pair,'value')||!Object.hasOwn(pair,'label')){this.reportFailure(at,'lookup mapping entries require exactly value and label');invalid=true;continue;}
+     const keyType=typeOf(pair.value),valueType=typeOf(pair.label);
+     if(!scalarType(keyType)){this.reportFailure(at,'lookup mapping value must be a non-null scalar');invalid=true;}
+     else{
+      if(input.type.kind==='scalar'&&input.type.name!==keyType.name){this.reportFailure(at,'lookup key type must match input type '+show(present(input.type)));invalid=true;}
+      if(keyName!==undefined&&keyName!==keyType.name){this.reportFailure(at,'lookup mapping keys must have one type');invalid=true;}else keyName=keyType.name;
+      if(seen.has(pair.value)){this.reportFailure(at,'lookup duplicate value '+JSON.stringify(pair.value));invalid=true;}seen.add(pair.value);
+     }
+     if(!scalarType(valueType)&&valueType.kind!=='null'){this.reportFailure(at,'lookup label must be a scalar or null');invalid=true;}
+     else try{labelType=common(labelType,valueType);}catch(error){if(!this.checking||!(error instanceof TypeRuleError))throw error;this.reportFailure(at,error.message);invalid=true;}
+    }
+    if(invalid)return {type:{kind:'error'},known:false};
+    const type=labelType.kind==='null'?labelType:optional(labelType);
+    if(input.known)return {type,known:true,column:input.column,value:input.value===null?null:pairs.find(p=>p.value===input.value)?.label??null};
+    const sql='(CASE '+this.sql(input,n)+pairs.map(p=>' WHEN '+this.param(p.value)+' THEN '+this.param(p.label)).join('')+' ELSE NULL END)';
+    return {type,known:false,column:input.column,sql};
+   }
    if(a.some(x=>x.type.kind==='error'))return {type:{kind:'error'},known:false};
    if(['count','sum','avg','min','max'].includes(name)){
     const x=a[0];if(!x.column&&!x.rows)fail(n,name+' requires a grouped Column or rows');if(x.rows&&name!=='count')fail(n,name+' requires a Column');
@@ -153,26 +178,6 @@ export class TypedCompiler{
     return {type,known:false,sql:name.toUpperCase()+'('+(x.rows?'*':this.sql(x,n))+')'};
    }
    if(name==='is_some'||name==='is_none'){const x=a[0];if(!nullable(x.type))fail(n,name+' requires Option');return {type:scalar('Bool'),known:x.known,...(x.known?{value:name==='is_some'?x.value!==null:x.value===null}:{sql:'('+this.presence(x,n)+(name==='is_some'?' IS NOT NULL)':' IS NULL)')}),column:x.column};}
-   if(name==='lookup'){
-    const [input,mapping]=a;
-    if(!scalarType(input.type)&&input.type.kind!=='null')fail(n,'lookup input must be a scalar or null');
-    if(mapping.type.kind!=='array'||!mapping.known||!Array.isArray(mapping.value)||!mapping.value.length)fail(n,'lookup requires a nonempty mapping array known at check time');
-    const pairs=mapping.value as {value:unknown;label:unknown}[];let labelType:Ty={kind:'never'};const seen=new Set<unknown>();let keyName:string|undefined;
-    for(const pair of pairs){
-     if(!isRecord(pair)||Object.keys(pair).length!==2||!Object.hasOwn(pair,'value')||!Object.hasOwn(pair,'label'))fail(n,'lookup mapping entries require exactly value and label');
-     const keyType=typeOf(pair.value),valueType=typeOf(pair.label);
-     if(!scalarType(keyType))fail(n,'lookup mapping value must be a non-null scalar');
-     if(input.type.kind==='scalar'&&input.type.name!==keyType.name)fail(n,'lookup key type must match input type '+show(present(input.type)));
-     if(keyName!==undefined&&keyName!==keyType.name)fail(n,'lookup mapping keys must have one type');keyName=keyType.name;
-     if(!scalarType(valueType)&&valueType.kind!=='null')fail(n,'lookup label must be a scalar or null');
-     if(seen.has(pair.value))fail(n,'lookup duplicate value '+JSON.stringify(pair.value));seen.add(pair.value);
-     labelType=common(labelType,valueType);
-    }
-    const type=labelType.kind==='null'?labelType:optional(labelType);
-    if(input.known)return {type,known:true,column:input.column,value:input.value===null?null:pairs.find(p=>p.value===input.value)?.label??null};
-    const sql='(CASE '+this.sql(input,n)+pairs.map(p=>' WHEN '+this.param(p.value)+' THEN '+this.param(p.label)).join('')+' ELSE NULL END)';
-    return {type,known:false,column:input.column,sql};
-   }
    fail(n,'Function is not available in this expression: '+name);
   }
   return fail(n,'Invalid typed expression '+n.k);
