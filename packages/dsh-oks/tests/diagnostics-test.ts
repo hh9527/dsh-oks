@@ -150,6 +150,11 @@ try{
  assert(invalidOutput.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(invalidOutput.diagnostics));
  assert(!invalidOutput.diagnostics.some(d=>d.message.includes('dependent')),JSON.stringify(invalidOutput.diagnostics));
  assert(invalidOutput.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ const invalidCallback=await checkDesign('data facts = table([{n:1}],{kind:"example"}); data x = select({from:{s:facts},fields:(r,extra)=>({missing:r.s.absent,dependent:extra.field,independent:"x"+1})});','fixture.dari',backend);
+ assert(invalidCallback.diagnostics.some(d=>d.message==='Expected a row function with 1 parameter(s)'),JSON.stringify(invalidCallback.diagnostics));
+ assert(invalidCallback.diagnostics.some(d=>d.message.includes('Unknown field absent')),JSON.stringify(invalidCallback.diagnostics));
+ assert(invalidCallback.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(invalidCallback.diagnostics));
+ assert(!invalidCallback.diagnostics.some(d=>d.message.includes('extra.field')),JSON.stringify(invalidCallback.diagnostics));
  const invalidGroup=await checkDesign('data facts = table([{n:1},{n:2}],{kind:"example"}); data x = select({from:{s:facts},group_by:r=>r.s.missing,fields:(k,rows)=>({key:k.dependent,total:count(rows),bad:"x"+1}),limit:5});','fixture.dari',backend);
  assert(invalidGroup.diagnostics.some(d=>d.message.includes('Unknown field missing')),JSON.stringify(invalidGroup.diagnostics));
  assert(invalidGroup.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(invalidGroup.diagnostics));

@@ -247,7 +247,13 @@ export class TypedCompiler{
  }
  presence(v:V,n:N):string{if(v.presence)return v.presence;if(v.type.kind==='record')return this.param(v.known?(v.value===null?null:1):null);return this.sql(v,n);}
  fieldNode(callback:N,name:string):N{const body=callback.k==='lambda'?callback.body:undefined;return body?.k==='object'?body.entries?.find(entry=>entry.key===name)?.value??callback:callback;}
- callback(n:N,args:V[],env:Record<string,V>):V{if(n.k!=='lambda'||n.params?.length!==args.length)return this.errorValue(n,'Expected a row function with '+args.length+' parameter(s)');return this.compile(n.body!,{...env,...Object.fromEntries(n.params!.map((p,i)=>[p,args[i]]))});}
+ callback(n:N,args:V[],env:Record<string,V>):V{
+  if(n.k!=='lambda'||n.params?.length!==args.length){
+   if(this.checking){if(n.k==='lambda')this.compile(n.body!,{...env,...Object.fromEntries((n.params??[]).map((p,i)=>[p,args[i]??{type:{kind:'error'},known:false}]))});else this.compile(n,env);}
+   return this.errorValue(n,'Expected a row function with '+args.length+' parameter(s)');
+  }
+  return this.compile(n.body!,{...env,...Object.fromEntries(n.params!.map((p,i)=>[p,args[i]]))});
+ }
  reportFailure(n:N,message:string){if(!this.checking)fail(n,message);this.diagnostics.report({stage:'type',message,span:n.s});}
  errorValue(n:N,message:string):V{this.reportFailure(n,message);return {type:{kind:'error'},known:false};}
  commonType(a:Ty,b:Ty,n:N):Ty{try{return common(a,b);}catch(error){if(!this.checking||!(error instanceof TypeRuleError))throw error;this.reportFailure(n,error.message);return {kind:'error'};}}
