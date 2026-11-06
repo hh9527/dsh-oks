@@ -17,6 +17,7 @@
 ```sh
 node --import ./packages/dsh-oks/scripts/markdown-loader.mjs experiments/analysis-execution/check-model.ts ic /path/to/ic.wasm /path/to/telora-run
 node --import ./packages/dsh-oks/scripts/markdown-loader.mjs experiments/analysis-execution/check-model.ts ns /path/to/ns.wasm /path/to/telora-run
+node --import ./packages/dsh-oks/scripts/markdown-loader.mjs experiments/analysis-execution/check-model.ts ic /path/to/ic.wasm /path/to/telora-run diagnostics
 ```
 
 脚本对源码示例运行完整检查，业务执行器及运行时钟一旦被访问即抛错。
@@ -27,3 +28,5 @@ node --import ./packages/dsh-oks/scripts/markdown-loader.mjs experiments/analysi
 | NS 网元分类 | 1 | 3 | 4 | 1814 |
 
 以上为本次现有模型制品的单次验证结果，不作为性能基准。检查时刻不能证明真实执行日期下的查询必定可用；运行期继续检查实际 transform、结果 schema、单元格、基数及预算。map 仍要求静态有界输入；空数组缺少元素类型时不能推导其函数体。
+
+`diagnostics` 模式在 IC 示例的同一投影中构造两个不存在的字段，验证两条诊断及下游未就绪状态；脚本禁止访问业务执行器。
