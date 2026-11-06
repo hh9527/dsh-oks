@@ -17,6 +17,15 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
   const dataExpr=ctx.expression?.kind==='call'?ctx.expression.args[0]:undefined;
   const rowsExpr=dataExpr?.kind==='call'&&dataExpr.operator==='data'?dataExpr.args[0]:undefined;
   const firstRow=rowsExpr?.kind==='array'?rowsExpr.values[0]:undefined;
+  const rows=isBox(value)?value.value:value;
+  const columnSpan=(name:string)=>{
+   if(rowsExpr?.kind==='array'&&Array.isArray(rows))for(const [i,row] of rows.entries()){
+    const cell=isRecord(row)?row[name]:undefined;if(cell===undefined||!known(cell)||hasError(cell))continue;
+    const cellType=typeOf(cell),rowExpr=rowsExpr.values[i];
+    if(cellType.kind!=='scalar'&&cellType.kind!=='null'&&rowExpr?.kind==='object')return rowExpr.entries.find(e=>e.key===name)?.value.span??ctx.span;
+   }
+   return firstRow?.kind==='object'?firstRow.entries.find(e=>e.key===name)?.value.span??ctx.span:ctx.span;
+  };
   if(!check&&!known(value))throw new DraftSyntaxError('table rows must be known given/example values',ctx.span);
   const type=typeOf(value,ctx.args[0]?.logicalType as Ty|undefined);
   if(check&&(type.kind==='error'||type.kind==='array'&&type.element.kind==='error'))throw new UpstreamTypeUnavailable();
@@ -24,14 +33,14 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
   const diagnostics=ctx.diagnostics?.scope()??new DiagnosticCollector(),columns:SqlColumn[]=[];
   for(const [name,t] of Object.entries(type.element.fields)){
    if(check&&t.kind==='error')continue;
-   if(t.kind!=='scalar'){const message='table column '+name+' requires an inferred scalar type',span=firstRow?.kind==='object'?firstRow.entries.find(e=>e.key===name)?.value.span??ctx.span:ctx.span;if(!check)throw new DraftSyntaxError(message,span);diagnostics.report({stage:'type',message,span});}
+   if(t.kind!=='scalar'){const message='table column '+name+' requires an inferred scalar type',span=columnSpan(name);if(!check)throw new DraftSyntaxError(message,span);diagnostics.report({stage:'type',message,span});}
    else columns.push({name,type:t.name,nullable:t.nullable});
   }
   const errors=diagnostics.list();if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);
   if(check&&hasError(value))throw new UpstreamTypeUnavailable();
   const logicalType:Ty={kind:'table',columns,minRows:type.length,maxRows:type.length};
-  const rows=unbox(value);if(known(value))validateTypedRows(rows,columns);
-  return {data:check?mark({columns,rows:UNKNOWN,truncated:UNKNOWN},logicalType):{columns,rows,truncated:false},logicalType};
+  const materializedRows=unbox(value);if(known(value))validateTypedRows(materializedRows,columns);
+  return {data:check?mark({columns,rows:UNKNOWN,truncated:UNKNOWN},logicalType):{columns,rows:materializedRows,truncated:false},logicalType};
  }
  if(ctx.operator==='table_union'){
   const value=ctx.args[0]?.data;

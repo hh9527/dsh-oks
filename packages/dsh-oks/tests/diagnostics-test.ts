@@ -226,6 +226,9 @@ try{
  assert(partialTableDesign.checkedBindings.some(b=>b.name==='x'&&!b.checked));
  assert.equal(tableErrors.diagnostics.find(d=>d.message.includes('table column first'))?.span.start.offset,tableSource.indexOf('{x:1}'));
  assert.equal(tableErrors.diagnostics.find(d=>d.message.includes('table column second'))?.span.start.offset,tableSource.indexOf('[1]'));
+ const laterTableSource='data x = table([{bad:None},{bad:{nested:1}}],{kind:"example"});';
+ const laterTable=await checkDesign(laterTableSource,'fixture.dari',backend);
+ assert.equal(laterTable.diagnostics.find(d=>d.message.includes('table column bad'))?.span.start.offset,laterTableSource.indexOf('{nested:1}'),JSON.stringify(laterTable.diagnostics));
  const unionSource='data a = table([{first:1,second:1}],{kind:"example"}); data b = table([{first:"x",second:True}],{kind:"example"}); data x = union_all([a,b]);';
  const unionErrors=await checkDesign(unionSource,'fixture.dari',backend);
  for(const name of ['first','second'])assert(unionErrors.diagnostics.some(d=>d.message.includes('union_all column '+name)),JSON.stringify(unionErrors.diagnostics));
