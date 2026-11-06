@@ -27,5 +27,9 @@
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "scripts": {
+    "build": "node --no-warnings build.mjs",
+    "typecheck": "node ../dsh-oks/node_modules/typescript/bin/tsc -p tsconfig.json"
   }
 }

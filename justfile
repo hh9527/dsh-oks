@@ -60,14 +60,16 @@ install-profile:
     command -v pnpm >/dev/null 2>&1 || fail '构建与安装需要 pnpm'
     BUILD_DIR="$(mktemp -d "${TMPDIR:-$HOME/.cache/tmp}/oks-profile.XXXXXX")"
     trap 'rm -rf -- "$BUILD_DIR"' EXIT
-    tar -C "$REPO_DIR" --exclude=.git --exclude=node_modules --exclude=target --exclude='./packages/dsh-oks/lib' -cf - . | tar -C "$BUILD_DIR" -xf -
+    tar -C "$REPO_DIR" --exclude=.git --exclude=node_modules --exclude=target --exclude=lib -cf - . | tar -C "$BUILD_DIR" -xf -
     (
       cd "$BUILD_DIR"
       pnpm install --frozen-lockfile --ignore-scripts || exit "$?"
       cd packages/dsh-oks
       pnpm run build
     ) || fail '插件构建失败'
+    (cd "$BUILD_DIR/packages/dsh-markdown-message" && node --no-warnings build.mjs) || fail '客户端包构建失败'
     [ -f "$BUILD_DIR/packages/dsh-oks/lib/index.mjs" ] || fail '缺少 index.mjs'
+    [ -f "$BUILD_DIR/packages/dsh-markdown-message/lib/client.js" ] || fail '缺少客户端入口'
     mkdir -p "$PACKAGE_DIR"
     BUILD_PACKAGE="$BUILD_DIR/packages/dsh-oks" PACKAGE_DIR="$PACKAGE_DIR" node --input-type=module <<'JS'
     import {readFileSync,writeFileSync,cpSync} from 'node:fs';
@@ -376,5 +378,9 @@ install-profile:
     say "启动：just --justfile $DSH_HOME_DIR/justfile run（端口 $OKS_INSTALL_PORT，工作区 $OKS_WORKSPACE）"
 
 # 隔离核验安装和启动，不构建真实插件、不启动服务。
+# 检查客户端能力包的类型（复用 dsh-oks 的 TypeScript，无需额外依赖）。
+check-client:
+    cd packages/dsh-markdown-message && node ../dsh-oks/node_modules/typescript/bin/tsc -p tsconfig.json
+
 test-install:
     python3 tests/install-profile.test.py

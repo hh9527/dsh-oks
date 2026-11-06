@@ -18,17 +18,8 @@ class InstallTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="oks-install-") as tmp:
             root = Path(tmp)
             repo = root / "source repo"
-            base_ignore = shutil.ignore_patterns(
-                ".git", "node_modules", "target", "__pycache__")
-
-            def ignore(directory, names):
-                # Only the plugin build output is generated; the client package ships lib/.
-                ignored = set(base_ignore(directory, names))
-                if Path(directory).name == "dsh-oks" and Path(directory).parent.name == "packages":
-                    ignored |= {name for name in names if name == "lib"}
-                return ignored
-
-            shutil.copytree(REPO, repo, ignore=ignore)
+            shutil.copytree(REPO, repo, ignore=shutil.ignore_patterns(
+                ".git", "node_modules", "target", "lib", "__pycache__"))
             tools = root / "bin"
             tools.mkdir()
             stub = '''#!/usr/bin/env python3

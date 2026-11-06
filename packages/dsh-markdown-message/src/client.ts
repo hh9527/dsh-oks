@@ -1,6 +1,8 @@
-window.__ModuleLoader__.load({
+const loader = (window as any).__ModuleLoader__;
+
+loader.load({
   id: "@local/dsh-markdown-message",
-  factory: (require) => {
+  factory: (require: (id: string) => any) => {
     const React = require("react");
     const { MarkdownText } = require("@deepseek-ai/dsh-client-ui-primitives");
 
@@ -9,7 +11,7 @@ window.__ModuleLoader__.load({
     const SOURCE_KIND = "tool-generated-markdown";
     const NODE_KIND = "tool-generated-markdown";
 
-    const textOf = (event) => {
+    const textOf = (event: any): string => {
       const content = event && event.data && event.data.content;
       if (!Array.isArray(content)) return "";
       return content
@@ -18,18 +20,18 @@ window.__ModuleLoader__.load({
         .join("\n");
     };
 
-    const sourceOf = (event) => {
+    const sourceOf = (event: any): Record<string, any> => {
       const source = event && event.data && event.data.source;
       return source && typeof source === "object" ? source : {};
     };
 
-    const labelOf = (source) => {
+    const labelOf = (source: Record<string, any>): string => {
       if (typeof source.label === "string" && source.label.trim() !== "") return source.label.trim();
       // No hard-coded product name: an unlabeled producer still names its own source kind.
       return typeof source.kind === "string" && source.kind !== "" ? source.kind : "";
     };
 
-    function MarkdownMessageView(props) {
+    function MarkdownMessageView(props: any): any {
       const data = props && props.node && props.node.data ? props.node.data : {};
       const text = typeof data.text === "string" ? data.text : "";
       const source = data.source && typeof data.source === "object" ? data.source : {};
@@ -70,20 +72,20 @@ window.__ModuleLoader__.load({
     const definition = {
       kind: NODE_KIND,
       target: "chat",
-      match: (event) => {
+      match: (event: any): any => {
         if (!event || event.type !== "user/message") return null;
         const data = event.data;
         if (!data || data.role !== "user") return null;
         if (!data.source || data.source.kind !== SOURCE_KIND) return null;
         return { id: String(data.id), role: "start", exclusive: true };
       },
-      start: (_context, match) => ({
+      start: (_context: any, match: { event: any }): any => ({
         seq: match.event.seq,
         text: textOf(match.event),
         source: sourceOf(match.event),
       }),
       publication: () => "immediate",
-      buildViewNode: (context) => {
+      buildViewNode: (context: any): any => {
         const state = context.state;
         if (!state || typeof state.text !== "string") return null;
         const event = context.start && context.start.event;
@@ -102,7 +104,7 @@ window.__ModuleLoader__.load({
       },
     };
 
-    function apply(ctx) {
+    function apply(ctx: any): void {
       ctx.uiConversation.events.register({ ...definition, match: { "user/message": definition.match } });
       ctx.slots.inject("conversation.chat.node", () =>
         ctx.slots.register({ name: "conversation.chat.node", key: NODE_KIND }, MarkdownMessageView));

@@ -48,4 +48,6 @@ DSH 默认把非 `source.kind === 'user'` 的用户消息归为上下文，而�
 
 ## 安装
 
-仓库根目录的 `just install-profile` 会把它复制到安装目录、写入 profile 依赖并加入 bundles。
+源码是 `src/*.ts`，`node build.mjs` 用 Node 的类型剥离生成 `lib/*.js`；产物不进入版本控制。类型检查复用 `dsh-oks` 的 TypeScript：仓库根目录执行 `just check-client`。
+
+仓库根目录的 `just install-profile` 会在临时副本里构建这个包，把 `lib/` 与 patch 复制到安装目录，写入 profile 依赖并加入 bundles。
