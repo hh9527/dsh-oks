@@ -20,7 +20,7 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
   if(!check&&!known(value))throw new DraftSyntaxError('table rows must be known given/example values',ctx.span);
   const type=typeOf(value,ctx.args[0]?.logicalType as Ty|undefined);
   if(type.kind!=='array'||type.element.kind!=='record'||!Object.keys(type.element.fields).length)throw new DraftSyntaxError('table requires a nonempty array of scalar records',ctx.span);
-  const diagnostics=new DiagnosticCollector(),columns:SqlColumn[]=[];
+  const diagnostics=ctx.diagnostics?.scope()??new DiagnosticCollector(),columns:SqlColumn[]=[];
   for(const [name,t] of Object.entries(type.element.fields)){
    if(t.kind!=='scalar'){const message='table column '+name+' requires an inferred scalar type',span=firstRow?.kind==='object'?firstRow.entries.find(e=>e.key===name)?.value.span??ctx.span:ctx.span;if(!check)throw new DraftSyntaxError(message,span);diagnostics.report({stage:'type',message,span});}
    else columns.push({name,type:t.name,nullable:t.nullable});
@@ -41,7 +41,7 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
   const types=tables.map(t=>typeOf(t));for(const t of types)if(t.kind!=='table')throw new DraftSyntaxError('union_all requires Table values',ctx.span);
   const first=(types[0] as Extract<Ty,{kind:'table'}>).columns;
   for(const table of types.slice(1)){const cols=(table as Extract<Ty,{kind:'table'}>).columns;if(cols.length!==first.length||cols.some((c,i)=>c.name!==first[i].name))throw new DraftSyntaxError('union_all column names/order differ',ctx.span);}
-  const diagnostics=new DiagnosticCollector(),columns:SqlColumn[]=[];
+  const diagnostics=ctx.diagnostics?.scope()??new DiagnosticCollector(),columns:SqlColumn[]=[];
   for(const [i,c] of first.entries()){
    let t=scalar(c.type,c.nullable),invalid=false;
    for(const [index,table] of types.slice(1).entries()){
@@ -62,7 +62,7 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
  const ast=JSON.parse(String(ctx.args[0]?.data)) as N;
  const input=ctx.args[1]?.data;if(!isRecord(input))throw new DraftSyntaxError('Typed inputs must be named',ctx.span);
  const hint=ctx.args[1]?.logicalType as Ty|undefined;
- const compiler=new TypedCompiler(input,hint?.kind==='record'?hint.fields:{},check);
+ const compiler=new TypedCompiler(input,hint?.kind==='record'?hint.fields:{},check,ctx.diagnostics?.scope());
  if(ctx.operator==='typed_value'){
   const v=compiler.compile(ast);if(check){compiler.throwIfErrors();if(hasError(input))throw new UpstreamTypeUnavailable();return {data:box(v.type,v.known?v.value:UNKNOWN),logicalType:v.type};}
   if(!v.known)fail(ast,'Scalar expression requires a materialized value');compiler.validNumber(v.value,v.type,ast);return {data:v.value,logicalType:v.type};

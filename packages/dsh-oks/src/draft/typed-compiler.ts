@@ -14,9 +14,9 @@ const argumentBounds:Record<string,[number,number]>={case_when:[3,3],round:[2,2]
 export function fail(n:N,m:string):never{throw new DraftSyntaxError(m,n.s);}
 export class TypedCompiler{
  readonly bindings:unknown[]=[];
- readonly diagnostics=new DiagnosticCollector();
+ readonly diagnostics:DiagnosticCollector;
  readonly captures:Record<string,unknown>;readonly hints:Record<string,Ty>;readonly checking:boolean;
- constructor(captures:Record<string,unknown>,hints:Record<string,Ty>={},checking=false){this.captures=captures;this.hints=hints;this.checking=checking;}
+ constructor(captures:Record<string,unknown>,hints:Record<string,Ty>={},checking=false,diagnostics=new DiagnosticCollector()){this.captures=captures;this.hints=hints;this.checking=checking;this.diagnostics=diagnostics;}
  param(v:unknown):string{this.bindings.push(v);return '?'+this.bindings.length;}
  bind(type:Ty,value:unknown):V{
   const k=value!==undefined&&known(value),raw=k?unbox(value):undefined;

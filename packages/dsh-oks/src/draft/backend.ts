@@ -168,8 +168,8 @@ export function createDraftBackend(options: {
     if ('error' in parsed) throw new Error(parsed.error);
     return parsed;
   };
-  const preflight = async (document: DraftDocument, signal?: AbortSignal, options?: {validateQueries?:boolean}) => {
-    const diagnostics=new DiagnosticCollector();diagnostics.reportAll(document.diagnostics??[]);
+  const preflight = async (document: DraftDocument, signal?: AbortSignal, options?: {validateQueries?:boolean;diagnostics?:DiagnosticCollector}) => {
+    const diagnostics=options?.diagnostics?.scope()??new DiagnosticCollector();diagnostics.reportAll(document.diagnostics??[]);
     const plannedQueries:{intent:unknown;span:Span}[]=[];
     const constants = new Map<string, unknown>();
     const visit = async (expr: Expr): Promise<void> => {
@@ -228,7 +228,7 @@ export function createDraftBackend(options: {
     if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);
   };
   const checkCall = (ctx:CallContext, known:(value:unknown)=>boolean):SourceDiagnostic[] => {
-    const diagnostics=new DiagnosticCollector();
+    const diagnostics=ctx.diagnostics?.scope({file})??new DiagnosticCollector();
     const check=(work:()=>void,span=ctx.span)=>{try{work();}catch(error){diagnostics.report({file,stage:ctx.operator==='render_figure'?'figure':ctx.operator==='render_report'?'template':'validation',message:error instanceof Error?error.message:String(error),span});}};
     const first=ctx.args[0]?.data,second=ctx.args[1]?.data;
     if(['render_figure','render_report'].includes(ctx.operator)&&ctx.args[1]&&known(second))check(()=>{if(!isRecord(second))throw new Error(`${ctx.operator} inputs must be a named object`);});

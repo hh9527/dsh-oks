@@ -6,8 +6,12 @@ const identity=(d:SourceDiagnostic)=>canonicalJson([d.file,d.stage,d.severity??'
 /** Diagnostics belong to one analysis and retain their original source locations. */
 export class DiagnosticCollector {
   private readonly entries:SourceDiagnostic[]=[];
+  private readonly parent?:DiagnosticCollector;
+  private readonly defaults:Partial<SourceDiagnostic>;
+  constructor(parent?:DiagnosticCollector,defaults:Partial<SourceDiagnostic>={}){this.parent=parent;this.defaults=defaults;}
 
-  report(diagnostic:SourceDiagnostic):void { this.entries.push(diagnostic); }
+  scope(defaults:Partial<SourceDiagnostic>={}):DiagnosticCollector { return new DiagnosticCollector(this,defaults); }
+  report(diagnostic:SourceDiagnostic):void { const entry={...this.defaults,...diagnostic};this.entries.push(entry);this.parent?.report(entry); }
   reportAll(diagnostics:readonly SourceDiagnostic[]):void { for(const diagnostic of diagnostics)this.report(diagnostic); }
   checkpoint():number { return this.entries.length; }
   hasErrors(since=0):boolean { return this.entries.slice(since).some(d=>d.severity!=='warning'); }

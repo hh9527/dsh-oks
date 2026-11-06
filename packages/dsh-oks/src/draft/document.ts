@@ -23,10 +23,10 @@ export function parseDraft(source:string,file='draft.dari'):DraftDocument {
 }
 
 /** Collect independent section diagnostics; an invalid container still prevents reliable section recovery. */
-export function parseDraftForValidation(source:string,file='draft.dari'):DraftDocument {
+export function parseDraftForValidation(source:string,file='draft.dari',collector?:DiagnosticCollector):DraftDocument {
 
-  const prepared=parseDomDraft(source,file);
-  const diagnostics=new DiagnosticCollector();
+  const prepared=parseDomDraft(source,file,collector);
+  const diagnostics=collector?.scope({file})??new DiagnosticCollector();
   let stage='container',unit:string|undefined;
   const collect=(run:()=>void)=>{try{run();}catch(error){if(!(error instanceof DraftSyntaxError))throw error;diagnostics.reportAll((error.diagnostics.length?error.diagnostics:[{file,stage,message:error.message,span:error.span}]).map(d=>({...d,stage:d.stage==='container'?stage:d.stage,...(unit?{asset:unit}:{})})));}};
   const original=new SourceFile(file,source);

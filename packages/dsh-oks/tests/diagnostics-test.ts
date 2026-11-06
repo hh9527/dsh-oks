@@ -9,6 +9,13 @@ import {TypedCompiler} from '../src/draft/typed-compiler.ts';
 
 const span={start:{offset:0,line:1,column:1},end:{offset:1,line:1,column:2}};
 const diagnostics=new DiagnosticCollector();
+const root=new DiagnosticCollector(),left=root.scope({file:'fixture.dari'}),right=root.scope({file:'fixture.dari'});
+left.report({stage:'type',message:'left',span});right.report({stage:'type',message:'right',span});
+assert.deepEqual(left.list().map(d=>d.message),['left']);assert.deepEqual(right.list().map(d=>d.message),['right']);
+assert.deepEqual(root.list().map(d=>[d.file,d.message]),[['fixture.dari','left'],['fixture.dari','right']]);
+const shared=new DiagnosticCollector(),failedCompiler=new TypedCompiler({}, {}, true,shared.scope({file:'fixture.dari'})),validCompiler=new TypedCompiler({}, {}, true,shared.scope({file:'fixture.dari'}));
+failedCompiler.compile({k:'ref',s:span,name:'missing'},{});validCompiler.compile({k:'lit',s:span,v:1},{});validCompiler.throwIfErrors();
+assert.deepEqual(shared.list().map(d=>[d.file,d.message]),[['fixture.dari','Unknown binding missing']]);
 const checkpoint=diagnostics.checkpoint();
 diagnostics.report({stage:'type',severity:'warning',message:'warning',span});
 assert(!diagnostics.hasErrors(checkpoint));

@@ -8,8 +8,8 @@ import { DiagnosticCollector } from './diagnostics.ts';
 import type { DraftBackend, CallContext } from './runtime.ts';
 
 /** Source language has one query operator. Plan/execution separation is internal IR. */
-export function parseDesign(source: string, file?: string): DraftDocument {
-  const doc = parseDraftForValidation(source, file);
+export function parseDesign(source: string, file?: string, collector?:DiagnosticCollector): DraftDocument {
+  const doc = parseDraftForValidation(source, file, collector);
   const visit = (e: Expr): void => {
     if (e.kind === 'call') {
       if (e.operator === 'exec_query') throw new DraftSyntaxError('Use query(intent); exec_query is not a DARI operator', e.span);
@@ -23,8 +23,8 @@ export function parseDesign(source: string, file?: string): DraftDocument {
 }
 
 /** Analysis and execution share parsing/name resolution; only their lowering differs. */
-export function parseAnalysisDesign(source:string,file?:string):DraftDocument {
-  const doc=parseDesign(source,file);
+export function parseAnalysisDesign(source:string,file?:string,collector?:DiagnosticCollector):DraftDocument {
+  const doc=parseDesign(source,file,collector);
   for(const node of doc.nodes)if(node.analysis)node.statement.value=node.analysis;
   return doc;
 }
@@ -73,7 +73,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
     diagnostics.reportAll(entries.map(d=>({...d,file:d.file??file,...(d.stage==='syntax'&&(!d.file||d.file===file)?{excerpt:sourceExcerpt(sourceFile,d.span)}:{})})));
   };
   let doc: DraftDocument;
-  try { doc = parseAnalysisDesign(source,file); }
+  try { doc = parseAnalysisDesign(source,file,diagnostics); }
   catch (error) { if (!(error instanceof DraftSyntaxError)) throw error; addError(error,error.span,'syntax'); return {ok:false,status:'invalid' as const,queries,types,checkedBindings,deferred,diagnostics:diagnostics.list(),warnings,reports,...(answer===undefined?{}:{answer}),execution:'not performed' as const}; }
   if(doc.declarations)for(const [name,kind] of doc.declarations)checkedBindings.push({name,kind,checked:false});
   else for(const {statement,internal} of doc.nodes)if(!internal&&statement.kind==='binding'){
@@ -91,7 +91,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
   else if(reports.length===1)answer=reports[0];
   else if(options.requireSelection&&reports.length>1)diagnostics.report({file,stage:'validation',message:`Select answer from: ${reports.join(', ')}`,span:doc.pipeline});
   diagnostics.reportAll((doc.diagnostics??[]).filter(d=>d.severity==='warning'));
-  try { await backend.preflight(doc,signal,{validateQueries:false}); } catch (error) { if(!(error instanceof DraftSyntaxError))throw error;addError(error,doc.pipeline); }
+  try { await backend.preflight(doc,signal,{validateQueries:false,diagnostics}); } catch (error) { if(!(error instanceof DraftSyntaxError))throw error;addError(error,doc.pipeline); }
   signal?.throwIfAborted();
   const analyze=backend.analyze;
   if(!analyze)throw new Error('Backend does not provide an analysis implementation');
@@ -168,7 +168,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         return box(type);
       }
       const args = await settle(e.args.map(arg=>({span:arg.span,run:()=>child(arg)})));
-      const ctx: CallContext = {operator:e.operator,figureKind:e.figureKind,args:args.map(data=>({data,sources:[]})),statement,expression:e,span:e.span,run:'check',batch:'check',sourceHash:'check',signal,
+      const ctx: CallContext = {operator:e.operator,figureKind:e.figureKind,args:args.map(data=>({data,sources:[]})),statement,expression:e,diagnostics:diagnostics.scope({file}),span:e.span,run:'check',batch:'check',sourceHash:'check',signal,
         asset:typeof args[0] === 'string'?doc.assets.get(args[0]):undefined};
       if(hasError(args)&&!['typed_value','relational','relational_one'].includes(e.operator))throw new UpstreamTypeUnavailable();
       if(['typed_value','relational','relational_one','table_union','typed_table'].includes(e.operator)){

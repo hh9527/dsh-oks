@@ -6,7 +6,7 @@ import {DiagnosticCollector} from './diagnostics.ts';
 import type {Element,Attribute,Reference} from './document.ts';
 
 /** DOM-like source parser. It constructs the same located IR as the data compiler. */
-export function parseDomDraft(source:string,file:string){
+export function parseDomDraft(source:string,file:string,collector?:DiagnosticCollector){
   const original=new SourceFile(file,source);
   let at=0,sequence=0,elements=0;
   const definitions=new Map<string,N>();
@@ -16,7 +16,7 @@ export function parseDomDraft(source:string,file:string){
   const figures=new Map<string,Element>();
   const templates:{name:string;title:string;element:Element;span:Span;format?:'markdown'}[]=[];
   const references:Reference[]=[];
-  const identifierDiagnostics=new DiagnosticCollector();
+  const identifierDiagnostics=collector?.scope({file})??new DiagnosticCollector();
   const childSpans=new WeakMap<Element,Map<number,Span>>();
   let title='Report';
   const location=(start:number,end=at)=>original.span(start,end);

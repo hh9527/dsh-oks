@@ -11,6 +11,7 @@ import type { DraftDocument, DraftAsset } from './document.ts';
 import { DraftSyntaxError } from './pipeline.ts';
 import type { Expr, Operator, Span, Statement, SourceDiagnostic, PipelineNode } from './pipeline.ts';
 import type { DataOrigin, ResultColumn } from '../results.ts';
+import type {DiagnosticCollector} from './diagnostics.ts';
 
 /** at identifies the value's location in a constructor; path identifies its original upstream projection. */
 export type ValueSource = { display?: { kind: 'chart' | 'table'; content: string }; delivery?: { html: string; title: string }; origin: DataOrigin; at: (string | number)[]; path: (string | number)[] };
@@ -25,6 +26,7 @@ export type CallContext = {
   asset?: DraftAsset;
   statement: Statement;
   expression?: Expr;
+  diagnostics?: DiagnosticCollector;
   span: Span;
   run: string;
   batch: string;
@@ -36,7 +38,7 @@ export interface DraftBackend {
   /** 仅记录执行所需的模型标识，不复制宿主配置。 */
   executionContext?(): ExecutionContext['model'];
   /** Deterministic checks must complete before execute is called for any node. */
-  preflight(document: DraftDocument, signal?: AbortSignal, options?: {validateQueries?:boolean}): Promise<void>;
+  preflight(document: DraftDocument, signal?: AbortSignal, options?: {validateQueries?:boolean;diagnostics?:DiagnosticCollector}): Promise<void>;
   /** Analysis-only interpretation: concrete parameters and schemas, never business acquisition. */
   analyze?(context:CallContext):Promise<Computed>;
   beginRun?(run:string):void;
