@@ -24,6 +24,7 @@ export type CallContext = {
   args: DraftValue[];
   asset?: DraftAsset;
   statement: Statement;
+  expression?: Expr;
   span: Span;
   run: string;
   batch: string;

@@ -69,10 +69,15 @@ try{
  const mixed=await checkDesign('data x = [1,"x"];','fixture.dari',backend);
  assert.equal(mixed.ok,false);assert(mixed.diagnostics.some(d=>/Incompatible types/.test(d.message)),JSON.stringify(mixed));
  assert(mixed.checkedBindings.some(b=>b.name==='x'&&!b.checked));
- const tableErrors=await checkDesign('data x = table([{first:{x:1},second:[1]}],{kind:"example"});','fixture.dari',backend);
+ const tableSource='data x = table([{first:{x:1},second:[1]}],{kind:"example"});';
+ const tableErrors=await checkDesign(tableSource,'fixture.dari',backend);
  for(const name of ['first','second'])assert(tableErrors.diagnostics.some(d=>d.message.includes('table column '+name)),JSON.stringify(tableErrors.diagnostics));
- const unionErrors=await checkDesign('data a = table([{first:1,second:1}],{kind:"example"}); data b = table([{first:"x",second:True}],{kind:"example"}); data x = union_all([a,b]);','fixture.dari',backend);
+ assert.equal(tableErrors.diagnostics.find(d=>d.message.includes('table column first'))?.span.start.offset,tableSource.indexOf('{x:1}'));
+ assert.equal(tableErrors.diagnostics.find(d=>d.message.includes('table column second'))?.span.start.offset,tableSource.indexOf('[1]'));
+ const unionSource='data a = table([{first:1,second:1}],{kind:"example"}); data b = table([{first:"x",second:True}],{kind:"example"}); data x = union_all([a,b]);';
+ const unionErrors=await checkDesign(unionSource,'fixture.dari',backend);
  for(const name of ['first','second'])assert(unionErrors.diagnostics.some(d=>d.message.includes('union_all column '+name)),JSON.stringify(unionErrors.diagnostics));
+ assert(unionErrors.diagnostics.every(d=>d.span.start.offset===unionSource.lastIndexOf('b]')));
  assert(unionErrors.checkedBindings.some(b=>b.name==='x'&&!b.checked));
  const mapped=await checkDesign('data bad = [1,"x"]; data result = map(bad,(n)=>({dependent:n+1,independent:"x"+1}));','fixture.dari',backend);
  assert(mapped.diagnostics.some(d=>d.message.includes('Incompatible types')),JSON.stringify(mapped.diagnostics));

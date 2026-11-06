@@ -14,12 +14,15 @@ export function validateTypedRows(rows:Record<string,unknown>[],columns:SqlColum
 export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:boolean):Promise<Computed>{
  if(ctx.operator==='typed_table'){
   const value=ctx.args[0]?.data;
+  const dataExpr=ctx.expression?.kind==='call'?ctx.expression.args[0]:undefined;
+  const rowsExpr=dataExpr?.kind==='call'&&dataExpr.operator==='data'?dataExpr.args[0]:undefined;
+  const firstRow=rowsExpr?.kind==='array'?rowsExpr.values[0]:undefined;
   if(!check&&!known(value))throw new DraftSyntaxError('table rows must be known given/example values',ctx.span);
   const type=typeOf(value,ctx.args[0]?.logicalType as Ty|undefined);
   if(type.kind!=='array'||type.element.kind!=='record'||!Object.keys(type.element.fields).length)throw new DraftSyntaxError('table requires a nonempty array of scalar records',ctx.span);
   const diagnostics=new DiagnosticCollector(),columns:SqlColumn[]=[];
   for(const [name,t] of Object.entries(type.element.fields)){
-   if(t.kind!=='scalar'){const message='table column '+name+' requires an inferred scalar type';if(!check)throw new DraftSyntaxError(message,ctx.span);diagnostics.report({stage:'type',message,span:ctx.span});}
+   if(t.kind!=='scalar'){const message='table column '+name+' requires an inferred scalar type',span=firstRow?.kind==='object'?firstRow.entries.find(e=>e.key===name)?.value.span??ctx.span:ctx.span;if(!check)throw new DraftSyntaxError(message,span);diagnostics.report({stage:'type',message,span});}
    else columns.push({name,type:t.name,nullable:t.nullable});
   }
   const errors=diagnostics.list();if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);
@@ -29,6 +32,7 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
  }
  if(ctx.operator==='table_union'){
   const value=ctx.args[0]?.data;
+  const tablesExpr=ctx.expression?.kind==='call'?ctx.expression.args[0]:undefined;
   if(check&&isBox(value)){
    const t=typeOf(value);if(t.kind!=='array'||t.element.kind!=='table'||t.length===0)throw new DraftSyntaxError('union_all requires a nonempty array of tables',ctx.span);
    const type:Ty={kind:'table',columns:t.element.columns};return {data:mark({columns:type.columns,rows:UNKNOWN,truncated:UNKNOWN},type),logicalType:type};
@@ -40,11 +44,11 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
   const diagnostics=new DiagnosticCollector(),columns:SqlColumn[]=[];
   for(const [i,c] of first.entries()){
    let t=scalar(c.type,c.nullable),invalid=false;
-   for(const table of types.slice(1)){
+   for(const [index,table] of types.slice(1).entries()){
     const col=(table as Extract<Ty,{kind:'table'}>).columns[i];
     try{t=common(t,scalar(col.type,col.nullable));}catch(error){
      if(!check||!(error instanceof TypeRuleError))throw error;
-     diagnostics.report({stage:'type',message:'union_all column '+c.name+': '+error.message,span:ctx.span});invalid=true;
+     diagnostics.report({stage:'type',message:'union_all column '+c.name+': '+error.message,span:tablesExpr?.kind==='array'?tablesExpr.values[index+1]?.span??ctx.span:ctx.span});invalid=true;
     }
    }
    if(!invalid){if(t.kind!=='scalar')throw new Error('Invalid union type');columns.push({name:c.name,type:t.name,nullable:t.nullable});}
