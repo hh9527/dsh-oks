@@ -240,6 +240,10 @@ try{
  const mismatchedRows='data x = table([{a:[1,"x"],b:1},{a:[1,2],b:True,c:2}],{kind:"example"});';
  const mismatchedResult=await checkDesign(mismatchedRows,'fixture.dari',backend);
  for(const expected of ['table column a:','table column b:','table rows must have the same columns'])assert(mismatchedResult.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(mismatchedResult.diagnostics));
+ const invalidFirstRow='data x = table([1,{a:[1,"x"],b:1},{a:[1,2],b:True}],{kind:"example"});';
+ const invalidFirstResult=await checkDesign(invalidFirstRow,'fixture.dari',backend);
+ for(const expected of ['table rows must be records','table column a:','table column b:'])assert(invalidFirstResult.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(invalidFirstResult.diagnostics));
+ assert.equal(invalidFirstResult.diagnostics.find(d=>d.message==='table rows must be records')?.span.start.offset,invalidFirstRow.indexOf('[1,')+1);
  const unionSource='data a = table([{first:1,second:1}],{kind:"example"}); data b = table([{first:"x",second:True}],{kind:"example"}); data x = union_all([a,b]);';
  const unionErrors=await checkDesign(unionSource,'fixture.dari',backend);
  for(const name of ['first','second'])assert(unionErrors.diagnostics.some(d=>d.message.includes('union_all column '+name)),JSON.stringify(unionErrors.diagnostics));

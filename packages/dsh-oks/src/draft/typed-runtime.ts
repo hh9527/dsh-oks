@@ -42,12 +42,13 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
     }
     return {kind:'record',fields,nullable:false};
    });
-   const first=rowTypes[0];
-   if(first.kind==='record'){
+   const firstIndex=rowTypes.findIndex(row=>row.kind==='record'),first=rowTypes[firstIndex];
+   if(first?.kind==='record'){
     const fields={...first.fields};
-    for(const [index,row] of rowTypes.entries())if(index>0){
+    for(const [index,row] of rowTypes.entries())if(index!==firstIndex){
      const rowExpr=rowsExpr?.kind==='array'?rowsExpr.values[index]:undefined;
-     if(row.kind!=='record'||Object.keys(row.fields).join('\0')!==Object.keys(first.fields).join('\0'))diagnostics.report({stage:'type',message:'table rows must have the same columns in the same order',span:rowExpr?.span??ctx.span});
+     if(row.kind!=='record')diagnostics.report({stage:'type',message:'table rows must be records',span:rowExpr?.span??ctx.span});
+     else if(Object.keys(row.fields).join('\0')!==Object.keys(first.fields).join('\0'))diagnostics.report({stage:'type',message:'table rows must have the same columns in the same order',span:rowExpr?.span??ctx.span});
      if(row.kind!=='record')continue;
      for(const [name,current] of Object.entries(row.fields)){
      if(!Object.hasOwn(fields,name))continue;
