@@ -122,6 +122,10 @@ try{
  const invalidUnion=await checkDesign('data result = union_all([[1,"x"],42]);','fixture.dari',backend);
  assert(invalidUnion.diagnostics.some(d=>d.message.includes('Incompatible types')),JSON.stringify(invalidUnion.diagnostics));
  assert(invalidUnion.diagnostics.some(d=>d.message==='union_all requires Table values'),JSON.stringify(invalidUnion.diagnostics));
+ const partialUnionSource='data broken = [1,"x"]; data a = table([{first:1,second:1}],{kind:"example"}); data b = table([{first:"x",second:True}],{kind:"example"}); data c = table([{other:1}],{kind:"example"}); data result = union_all([broken,a,b,42,c]);';
+ const partialUnion=await checkDesign(partialUnionSource,'fixture.dari',backend);
+ for(const expected of ['Incompatible types','union_all column first','union_all column second','union_all requires Table values','union_all column names/order differ'])assert(partialUnion.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(partialUnion.diagnostics));
+ assert(partialUnion.checkedBindings.some(b=>b.name==='result'&&!b.checked));
  await assert.rejects(runTyped({operator:'table_union',args:[{data:[box({kind:'error'}),42,true]}],statement,span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL execution');}} as any,true),error=>error instanceof DraftSyntaxError&&error.diagnostics.some(d=>d.message==='union_all requires Table values'));
  await assert.rejects(runTyped({operator:'table_union',args:[{data:[UNKNOWN,42]}],statement,span,run:'check'} as any,{async execute(){prepares++;throw new Error('Unexpected SQL execution');}} as any,true),error=>error instanceof DraftSyntaxError&&error.diagnostics.some(d=>d.message==='union_all requires Table values'));
  assert.equal(prepares,0);

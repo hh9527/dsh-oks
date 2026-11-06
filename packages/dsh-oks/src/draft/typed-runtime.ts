@@ -55,23 +55,27 @@ export async function runTyped(ctx:CallContext,workspace:SqlWorkspace,check:bool
     if(!check)throw new DraftSyntaxError(message,span);inputDiagnostics.report({stage:'type',message,span});
    }
   }
-  const inputErrors=inputDiagnostics.list();if(inputErrors.length)throw new DraftSyntaxError(inputErrors[0].message,inputErrors[0].span,inputErrors);
-  if(unavailable)throw new UpstreamTypeUnavailable();
-  const first=(types[0] as Extract<Ty,{kind:'table'}>).columns;
-  for(const table of types.slice(1)){const cols=(table as Extract<Ty,{kind:'table'}>).columns;if(cols.length!==first.length||cols.some((c,i)=>c.name!==first[i].name))throw new DraftSyntaxError('union_all column names/order differ',ctx.span);}
-  const diagnostics=ctx.diagnostics?.scope()??new DiagnosticCollector(),columns:SqlColumn[]=[];
+  const knownTables=types.flatMap((type,index)=>type.kind==='table'?[{type,index}]:[]);
+  const first=knownTables[0]?.type.columns??[];
+  const comparable=knownTables.slice(1).filter(({type,index})=>{
+   if(type.columns.length===first.length&&type.columns.every((c,i)=>c.name===first[i].name))return true;
+   const message='union_all column names/order differ',span=tablesExpr?.kind==='array'?tablesExpr.values[index]?.span??ctx.span:ctx.span;
+   if(!check)throw new DraftSyntaxError(message,span);inputDiagnostics.report({stage:'type',message,span});return false;
+  });
+  const columns:SqlColumn[]=[];
   for(const [i,c] of first.entries()){
    let t=scalar(c.type,c.nullable),invalid=false;
-   for(const [index,table] of types.slice(1).entries()){
-    const col=(table as Extract<Ty,{kind:'table'}>).columns[i];
+   for(const {type,index} of comparable){
+    const col=type.columns[i];
     try{t=common(t,scalar(col.type,col.nullable));}catch(error){
      if(!check||!(error instanceof TypeRuleError))throw error;
-     diagnostics.report({stage:'type',message:'union_all column '+c.name+': '+error.message,span:tablesExpr?.kind==='array'?tablesExpr.values[index+1]?.span??ctx.span:ctx.span});invalid=true;
+     inputDiagnostics.report({stage:'type',message:'union_all column '+c.name+': '+error.message,span:tablesExpr?.kind==='array'?tablesExpr.values[index]?.span??ctx.span:ctx.span});invalid=true;
     }
    }
    if(!invalid){if(t.kind!=='scalar')throw new Error('Invalid union type');columns.push({name:c.name,type:t.name,nullable:t.nullable});}
   }
-  const errors=diagnostics.list();if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);
+  const errors=inputDiagnostics.list();if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);
+  if(unavailable)throw new UpstreamTypeUnavailable();
   const type:Ty={kind:'table',columns};if(check)return {data:mark({columns,rows:UNKNOWN,truncated:UNKNOWN},type),logicalType:type};
   const inputs=Object.fromEntries(tables.map((t,i)=>['s'+i,unbox(t)]));
   const sql=tables.map((_,i)=>'SELECT '+columns.map(c=>q(c.name)).join(',')+' FROM '+q('t_s'+i)).join(' UNION ALL ');
