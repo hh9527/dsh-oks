@@ -70,6 +70,11 @@ try {
  const invalid=await call('dari_resolve',{src});assert.equal(invalid.ok,false);assert.equal(invalid.execution,'not performed');
  for(const field of ['missing_a','missing_b'])assert(invalid.diagnostics.some((d:any)=>d.message.includes(field)),JSON.stringify(invalid));
  assert.equal(executions,before);assert.equal(publications,beforePublications);assert.equal(exec.agent.injected.length,beforeMessages);assert.equal(exec.agent.session.delivered.length,beforeDeliveries);
+ writeFileSync(absolute,source+'\ndata broken = 1 + * 2;\ndata type_bad = "x" + 1;\ndata broken_again = 3 + * 4;');
+ const syntaxInvalid=await call('dari_resolve',{src});assert.equal(syntaxInvalid.ok,false);assert.equal(syntaxInvalid.execution,'not performed');
+ assert.equal(syntaxInvalid.diagnostics.filter((d:any)=>d.stage==='syntax').length,2,JSON.stringify(syntaxInvalid));
+ assert(syntaxInvalid.diagnostics.some((d:any)=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(syntaxInvalid));
+ assert.equal(executions,before);assert.equal(publications,beforePublications);assert.equal(exec.agent.injected.length,beforeMessages);assert.equal(exec.agent.session.delivered.length,beforeDeliveries);
  writeFileSync(absolute,source);
  for(const selection of [{answer:true},{data:['missing']},{reports:['facts']},{figures:['chart']}])await assert.rejects(call('dari_resolve',{src,...selection}),/Expected only src/);
  // Renewal during an active acquisition must not alter the running batch.

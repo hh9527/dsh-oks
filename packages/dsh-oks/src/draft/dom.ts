@@ -1,6 +1,6 @@
 import {DraftSyntaxError,type PipelineNode,type Span,type Expr,type SourceDiagnostic} from './pipeline.ts';
 import {parseTypedExpression,UnavailableSyntaxDependency,type N} from './typed-syntax.ts';
-import {SourceFile} from './source.ts';
+import {SourceFile,sourceExcerpt} from './source.ts';
 import {componentKind} from './components.ts';
 import {DiagnosticCollector} from './diagnostics.ts';
 import type {Element,Attribute,Reference} from './document.ts';
@@ -243,7 +243,10 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
   if(!declarations.size)fail('Expected data, figure or report declaration',0,Math.min(1,source.length));
   const identifierErrors=identifierDiagnostics.list();
   syntaxDiagnostics.reportAll(identifierErrors);
-  const findings=syntaxDiagnostics.list();if(findings.length)throw new DraftSyntaxError(findings[0].message,findings[0].span,findings);
+  const findings=syntaxDiagnostics.list();if(findings.length){
+    if(!collector||identifierErrors.length)throw new DraftSyntaxError(findings[0].message,findings[0].span,findings);
+    collector.reportAll(findings.map(d=>({...d,file:d.file??file,excerpt:sourceExcerpt(original,d.span)})));
+  }
   let queries=0;
   const visit=(e:Expr)=>{if(e.kind==='call'){if(e.operator==='query')queries++;e.args.forEach(visit);}else if(e.kind==='array')e.values.forEach(visit);else if(e.kind==='object')e.entries.forEach(x=>visit(x.value));else if(e.kind==='project')visit(e.input);};
   nodes.forEach(n=>visit(n.statement.value));if(queries>128)fail('Pipeline exceeds 128 queries',0);
