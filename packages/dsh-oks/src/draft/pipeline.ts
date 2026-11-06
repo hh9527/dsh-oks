@@ -18,6 +18,8 @@ export type Statement = (
 export type PipelineNode = {
   /** Analysis lowering retains higher-order structure instead of executable expansion. */
   analysis?:Expr;
+  /** No executable lowering exists because a syntax-failed dependency is unavailable. */
+  analysisOnly?:boolean;
   typed?:boolean;
   internal?: boolean;
   display?: { label: string; template: string; figureId?: string; component: string };

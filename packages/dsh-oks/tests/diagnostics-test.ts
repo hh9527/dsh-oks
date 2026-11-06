@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {DiagnosticCollector} from '../src/draft/diagnostics.ts';
 import {UNKNOWN,box,common,optional,hasError,UpstreamTypeUnavailable,type Ty} from '../src/draft/typed-types.ts';
-import {checkDesign,parseAnalysisDesign} from '../src/draft/design.ts';
+import {checkDesign,parseAnalysisDesign,parseExecutableDesign} from '../src/draft/design.ts';
 import {createDraftBackend} from '../src/draft/backend.ts';
 import {runTyped} from '../src/draft/typed-runtime.ts';
 import {DraftSyntaxError} from '../src/draft/pipeline.ts';
@@ -248,6 +248,14 @@ try{
   assert.equal(result.diagnostics.length,1,JSON.stringify(result.diagnostics));
   assert(result.checkedBindings.some(b=>b.name==='mapped'&&!b.checked));
  }
+ const recoveredMapSource='data bad = 1+*2; data mapped = map(bad,n=>({dependent:n.missing,independent:"x"+1}));';
+ const recoveredMap=await checkDesign(recoveredMapSource,'fixture.dari',backend);
+ assert(recoveredMap.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(recoveredMap.diagnostics));
+ assert(!recoveredMap.diagnostics.some(d=>d.message.includes('missing')||d.message.includes('statically known length')),JSON.stringify(recoveredMap.diagnostics));
+ assert(recoveredMap.checkedBindings.some(b=>b.name==='mapped'&&!b.checked));
+ const recoveredMapDoc=parseAnalysisDesign(recoveredMapSource,'fixture.dari',new DiagnosticCollector());
+ assert(recoveredMapDoc.nodes.some(n=>n.statement.kind==='binding'&&n.statement.name==='mapped'&&n.analysisOnly));
+ assert.throws(()=>parseExecutableDesign(recoveredMapSource,'fixture.dari'),DraftSyntaxError);
  for(const body of ['p [Value(data=bad)]','p [Value(data=bad.field)]','if (bad) [p ["yes"]] else [p ["no"]]']){
   const result=await checkDesign(`data bad = 1 + * 2; data valid = 1; answer tree! { Answer [${body}] };`,'fixture.dari',backend);
   assert.equal(result.diagnostics.length,1,JSON.stringify(result.diagnostics));

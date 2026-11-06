@@ -31,6 +31,8 @@ export function parseAnalysisDesign(source:string,file?:string,collector?:Diagno
 
 export function parseExecutableDesign(source: string, file?: string): DraftDocument {
   const doc = parseDesign(source, file);
+  const analysisOnly=doc.nodes.find(node=>node.analysisOnly);
+  if(analysisOnly)throw new DraftSyntaxError('Cannot execute an incomplete declaration',analysisOnly.statement.span);
   const lower = (e: Expr): Expr => {
     if (e.kind === 'call') {
       const call = {...e, args:e.args.map(lower)};
