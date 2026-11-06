@@ -209,20 +209,21 @@ export class TypedCompiler{
   }}
   const asColumns=(v:V):V=>({...v,column:v.type.kind==='scalar'?true:v.column,...(v.fields?{fields:Object.fromEntries(Object.entries(v.fields).map(([k,v])=>[k,asColumns(v)]))}:{})});
   if(!entries.fields)fail(n,'select requires fields');
-  const values=this.callback(entries.fields,groups?[groups,{...asColumns(row),rows:true}]:[row],captures);
-  if(values.type.kind!=='record'||!values.fields||!Object.keys(values.fields).length){if(values.type.kind!=='error')this.reportFailure(entries.fields,'fields requires a nonempty record');this.throwIfErrors();if(values.type.kind==='error')throw new UpstreamTypeUnavailable();fail(entries.fields,'fields requires a nonempty record');}
+  let values=this.callback(entries.fields,groups?[groups,{...asColumns(row),rows:true}]:[row],captures);let unavailableOutput=false;
+  if(values.type.kind!=='record'||!values.fields||!Object.keys(values.fields).length){if(values.type.kind!=='error')this.reportFailure(entries.fields,'fields requires a nonempty record');unavailableOutput=true;values={type:record({}),known:false,fields:{}};}
+  const valueFields=values.fields!;
   const outputFields:Record<string,V>={};const columns:SqlColumn[]=[];
-  for(const [name,v] of Object.entries(values.fields)){
+  for(const [name,v] of Object.entries(valueFields)){
    if(v.type.kind==='error'){outputFields[name]=v;continue;}
    if(v.type.kind!=='scalar'||v.column){this.reportFailure(this.fieldNode(entries.fields,name),v.column?'Column must be aggregated: '+name:'Table field '+name+' must have an inferred scalar type, got '+show(v.type));outputFields[name]={type:{kind:'error'},known:false};continue;}
    columns.push({name,type:v.type.name,nullable:v.type.nullable});outputFields[name]={type:v.type,known:false,sql:q(name)};
   }
-  let projection=Object.entries(values.fields).map(([name,v])=>(outputFields[name].type.kind==='error'?'NULL':this.sql(v,entries.fields))+' AS '+q(name)).join(',');
-  const names=Object.keys(values.fields);if(new Set(names.map(name=>name.toLowerCase())).size!==names.length)this.reportFailure(entries.fields,'Output column names must be distinct ignoring case for SQLite lowering');
+  let projection=Object.entries(valueFields).map(([name,v])=>(outputFields[name].type.kind==='error'?'NULL':this.sql(v,entries.fields))+' AS '+q(name)).join(',');
+  const names=Object.keys(valueFields);if(new Set(names.map(name=>name.toLowerCase())).size!==names.length)this.reportFailure(entries.fields,'Output column names must be distinct ignoring case for SQLite lowering');
   if(groups&&Object.keys(groups.fields??{}).length===0&&!/\b(COUNT|SUM|AVG|MIN|MAX)\s*\(/.test(projection))projection+=',COUNT(*) AS "__dari_global_anchor"';
   let inner='SELECT '+projection+' FROM '+from+joins.join('')+(where?' WHERE '+(whereValid?this.sql(where,entries.where):'NULL'):'');
   if(groups){const keys=Object.values(groups.fields??{});if(keys.length)inner+=' GROUP BY '+keys.map(v=>v.type.kind==='scalar'||v.type.kind==='null'?this.sql(v,entries.group_by):'NULL').join(',');}
-  const output:V={type:record(Object.fromEntries(Object.entries(outputFields).map(([name,v])=>[name,v.type]))),known:false,fields:outputFields};
+  const output:V=unavailableOutput?{type:{kind:'error'},known:false}:{type:record(Object.fromEntries(Object.entries(outputFields).map(([name,v])=>[name,v.type]))),known:false,fields:outputFields};
   if(entries.having&&!groups)this.reportFailure(entries.having,'having requires group_by');
   let sql='SELECT '+columns.map(c=>q(c.name)).join(',')+' FROM ('+inner+')';if(entries.having&&groups){const p=this.callback(entries.having,[output],captures);const valid=this.bool(p,entries.having);sql+=' WHERE '+(valid?this.sql(p,entries.having):'NULL');}
   if(entries.order_by){const f=entries.order_by;if(f.k!=='lambda'||f.params?.length!==1||f.body?.k!=='array')this.reportFailure(f,'order_by requires (out) => [asc/desc(...)]');else{const env={...captures,[f.params![0]]:output};const order=f.body.a!.map(item=>{
@@ -235,7 +236,7 @@ export class TypedCompiler{
   let minRows=groups&&Object.keys(groups.fields??{}).length===0&&!entries.having?1:!groups&&!entries.where&&!joins.length?(baseBounds.minRows??0):0,maxRows:number|undefined=groups&&Object.keys(groups.fields??{}).length===0?1:!joins.length?baseBounds.maxRows:undefined;
   if(limit&&limit.type.kind!=='error'&&!invalidLimit){if(limit.value>0&&!entries.order_by&&maxRows!==1&&(!unavailableSource||maxRows!==undefined))this.reportFailure(entries.limit,'limit requires order_by');maxRows=Math.min(maxRows??Infinity,limit.value);minRows=Math.min(minRows,limit.value);sql+=' LIMIT '+limit.value;}
   this.throwIfErrors();
-  if(unavailableSource||limit?.type.kind==='error')throw new UpstreamTypeUnavailable();
+  if(unavailableSource||unavailableOutput||limit?.type.kind==='error')throw new UpstreamTypeUnavailable();
   if(n.name==='select_one')sql='SELECT * FROM ('+sql+') LIMIT 2';
   return {sql,tables,columns,type:n.name==='select_one'?optional(rowType(columns)):{kind:'table',columns,minRows,...(maxRows===undefined?{}:{maxRows})} as Ty,minRows,maxRows,guard:n.name==='select_one'&&(maxRows===undefined||maxRows>1)};
  }

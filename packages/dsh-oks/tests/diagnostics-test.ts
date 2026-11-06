@@ -118,6 +118,11 @@ try{
  assert(invalidFieldsAndLimit.diagnostics.some(d=>d.message.includes('Unknown field missing')),JSON.stringify(invalidFieldsAndLimit.diagnostics));
  assert(invalidFieldsAndLimit.diagnostics.some(d=>d.message==='limit requires a known nonnegative Int'),JSON.stringify(invalidFieldsAndLimit.diagnostics));
  assert(invalidFieldsAndLimit.checkedBindings.some(b=>b.name==='x'&&!b.checked));
+ const invalidOutput=await checkDesign('data facts = table([{n:1}],{kind:"example"}); data x = select({from:{s:facts},fields:r=>r.s.missing,order_by:o=>[asc(o.dependent),asc("x"+1)]});','fixture.dari',backend);
+ assert(invalidOutput.diagnostics.some(d=>d.message.includes('Unknown field missing')),JSON.stringify(invalidOutput.diagnostics));
+ assert(invalidOutput.diagnostics.some(d=>d.message.includes('Arithmetic requires numbers')),JSON.stringify(invalidOutput.diagnostics));
+ assert(!invalidOutput.diagnostics.some(d=>d.message.includes('dependent')),JSON.stringify(invalidOutput.diagnostics));
+ assert(invalidOutput.checkedBindings.some(b=>b.name==='x'&&!b.checked));
  assert.equal(argumentsResult.diagnostics.filter(d=>d.message==='concat requires String').length,2,JSON.stringify(argumentsResult.diagnostics));
  assert.equal(argumentsResult.diagnostics.filter(d=>d.message.startsWith('round requires')).length,2,JSON.stringify(argumentsResult.diagnostics));
  assert(argumentsResult.diagnostics.some(d=>d.message==='map_opt requires Option'),JSON.stringify(argumentsResult.diagnostics));
