@@ -5,7 +5,7 @@ import {DraftRuntime} from '../src/draft/runtime.ts';
 import type {WorkspaceEntry} from '../src/knowledge.ts';
 let reads=0;
 const columns=[{name:'server_id',type:'String',nullable:false},{name:'cpu',type:'Float',nullable:true}];
-const entry={modelHash:'typed-test',settings:{domain:'test',queryMaxRows:100},runner:{async send(_m:string,{intents}:any){return {ok:{accepted:true,queries:[{sql:JSON.stringify(intents[0]),bindings:[10],limit_slot:0,columns}]}};}}} as unknown as WorkspaceEntry;
+const entry={modelHash:'typed-test',settings:{domain:'test',queryMaxRows:100},runner:{async send(_m:string,{intents}:any){return {ok:{accepted:true,queries:[{sql:JSON.stringify(intents[0]),bindings:[10],max_rows:5,columns}]}};}}} as unknown as WorkspaceEntry;
 const backend=createDraftBackend({entry,file:'typed.dari',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge:{executorFor(){reads++;return {manifest:null,executor:{async send(sql:string){const i=JSON.parse(sql);return {columns:['server_id','cpu'],truncated:false,rows:i.period==='base'?[{server_id:'a',cpu:30},{server_id:'b',cpu:null},{server_id:'c',cpu:50}]:[{server_id:'a',cpu:35},{server_id:'b',cpu:80},{server_id:'c',cpu:48}]};}}} as any;}}});
 const source=`
 data base = query({period:"base",limit:10});
@@ -146,7 +146,7 @@ for(const [body,pattern]of [
  ['data x = select({from:{s:a},fields:(r)=>({id:r.s.server_id}),order_by:(o)=>[asc(o.missing)]});',/Unknown field missing/],
  ['data x = select({from:{s:a},fields:(r)=>({id:r.s.server_id}),limit:1});',/limit requires order_by/],
  ['data x = select({from:{s:a},joins:[{kind:"left",source:{t:b},on:(r)=>r.s.server_id==r.t.server_id}],fields:(r)=>({cpu:r.t.cpu})});',/Use \?\./],
- ['data x = select_one({from:{s:a},fields:(r)=>({cpu:r.s.cpu}),order_by:(o)=>[asc(o.cpu)],limit:1}); data next = query({limit:10,cpu:x?.cpu});',/query parameters must be known/],
+ ['data x = select_one({from:{s:a},fields:(r)=>({cpu:r.s.cpu}),order_by:(o)=>[asc(o.cpu)],limit:1}); data next = query({take:10,cpu:x?.cpu});',/query parameters must be known/],
  ['data x = select({from:{s:a},fields:(r)=>({cpu:avg(r.s.cpu)})});',/requires a grouped Column/],
  ['data x = select({from:{s:a},fields:(r)=>({name:r.s.server_id})}); data both = union_all([a,x]);',/column names\/order differ/],
 ] as const){const before: number=reads;const c=await checkDesign(small(body),'typed.dari',backend);assert.equal(c.ok,false,body);assert(c.diagnostics.some(d=>pattern.test(d.message)),JSON.stringify(c));assert.equal(reads,before);}

@@ -13,7 +13,7 @@ const definitions=createTools({knowledge,ka:{async ask(_caller:unknown,_key:stri
 const tools=guidedTools(definitions,knowledge),exec={agent:{session:{id:'resources'}}} as any;
 const call=async(name:string,args:unknown)=>tools.find(t=>t.name===name)!.execute(args as never,exec) as Promise<any>;
 try {
- assert.deepEqual(tools.map(t=>t.name).sort(),['report_extract_dari','move_entry','remove_file','va_ask','oks_search','oks_routes','oks_info','oks_read','dari_check','dari_resolve','dari_renew_context'].sort());
+ assert.deepEqual(tools.map(t=>t.name).sort(),['report_extract_dari','move_entry','remove_file','va_ask','oks_discover','oks_search','oks_routes','oks_info','oks_read','dari_check','dari_resolve','dari_renew_context'].sort());
  const aligned=await call('va_ask',{query:'告警'});assert.equal(aligned.answer,'## 告警\n\n- alarm');assert.deepEqual(asks,['告警']);
  await assert.rejects(call('va_ask',{query:' '}),/需要一个问题/);
  const index=await call('oks_read',{path:'oks://help/'});

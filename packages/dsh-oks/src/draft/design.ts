@@ -199,7 +199,9 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
             const [computed]=await settle([{span:e.span,run:()=>analyze({...ctx,args:values.map(data=>({data:unbox(data),sources:[]}))})}]);
             signal?.throwIfAborted();
             const columns=(computed.data as {columns:unknown}).columns;
-            const t=typeOf({columns,rows:UNKNOWN,truncated:UNKNOWN});schema=schema?common(schema,t):t;
+            const t=typeOf({columns,rows:UNKNOWN});
+            if(t.kind==='table')t.maxRows=(computed.data as {maxRows?:number}).maxRows;
+            schema=schema?common(schema,t):t;
           }catch(error){
             if(signal?.aborted||!(error instanceof DraftSyntaxError)&&!(error instanceof TypeRuleError))throw error;
             candidateErrors.reportAll(error instanceof DraftSyntaxError&&error.diagnostics.length?error.diagnostics:[{file,stage:error instanceof TypeRuleError?'type':'validation',message:error.message,span:error instanceof DraftSyntaxError?error.span:e.span}]);
@@ -208,7 +210,7 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
         const failures=candidateErrors.list();if(failures.length)throw new DraftSyntaxError(failures[0].message,failures[0].span,failures);
         if(unavailableCandidate)throw new UpstreamTypeUnavailable();
         if(!schema||schema.kind!=='table')throw new DraftSyntaxError('query has no analyzable parameter values',e.span);
-        queries.push({binding,at:e.span.start,columns:schema.columns,result:{rows:'runtime',columns:'checked',truncated:'runtime'}});
+        queries.push({binding,at:e.span.start,columns:schema.columns,result:{rows:'runtime',columns:'checked',maxRows:schema.maxRows}});
         const data={columns:schema.columns,rows:UNKNOWN,truncated:UNKNOWN};return {...data,[TYPED]:schema,value:data};
       }
       const findings=backend.checkCall?.(ctx,value=>!unknown(value))??[];
@@ -279,5 +281,5 @@ export async function checkDesign(source: string, file: string, backend: DraftBa
   const errors=unique.filter(d=>d.severity!=='warning');
   const unresolved = upstreamUnavailable||deferred.some(d=>d.operator==='query');
   return {ok:errors.length===0 && !unresolved,status:errors.length?'invalid':unresolved?'incomplete':'checked',queries,types,checkedBindings,deferred,diagnostics:errors,warnings,reports,...(answer===undefined?{}:{answer}),
-    execution:'not performed',runtimeChecks:['Remote result schema and cell types, table completeness and resource budgets','select_one cardinality guards that could not be statically proven','Actual figure column values and rendering','Runtime provenance chains and rendered report assembly']};
+    execution:'not performed',runtimeChecks:['Remote result schema, cell types and resource budgets','select_one cardinality guards that could not be statically proven','Actual figure column values and rendering','Runtime provenance chains and rendered report assembly']};
 }

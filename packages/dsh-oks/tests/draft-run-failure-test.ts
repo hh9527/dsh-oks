@@ -14,7 +14,7 @@ async function scenario(source:string,rows:{n:number}[],truncated:boolean,verify
  mkdirSync(join(root,'.work'));writeFileSync(join(root,'.work/test.dari'),source);
  let executions=0;
  const entry={root,modelHash:'test',settings:{workspaceRoot:root,domain:'test',queryMaxRows:200},runner:{
-  async send(){return{ok:{accepted:true,queries:[{sql:'select 1',bindings:[3],limit_slot:0,columns:[{name:'n',type:'Int',nullable:false}]}]}}}
+  async send(){return{ok:{accepted:true,queries:[{sql:'select 1',bindings:[3],max_rows:5,columns:[{name:'n',type:'Int',nullable:false}]}]}}}
  }} as unknown as WorkspaceEntry;
  const knowledge={ensureWorkspace:()=>entry,executorFor:()=>({manifest:null,executor:{async send(){executions++;return{rows,columns:['n'],truncated}},dispose(){}}})} as unknown as Knowledge;
  const drafts=createDraftTools({knowledge,attachments:()=>testAttachments(root),timeContext:{zones:new Map(),install(){}} as TimeContext});
@@ -30,7 +30,7 @@ async function scenario(source:string,rows:{n:number}[],truncated:boolean,verify
 }
 
 test('truncated query preserves root failure through multi-hop blocked report',async()=>{
- await scenario(`data facts = query({limit:3});
+ await scenario(`data facts = query({take:3});
 data devMap = select({from:{f:facts},fields:r=>({n:r.f.n})});
 data mapped = select({from:{d:devMap},fields:r=>({n:r.d.n})});
 data top1 = select_one({from:{m:mapped},fields:r=>({n:r.m.n}),order_by:o=>[asc(o.n)],limit:1});

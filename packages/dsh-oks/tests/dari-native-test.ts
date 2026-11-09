@@ -37,7 +37,7 @@ try {
   assert.match(html,/data-oks-shrink="">完整结论/);
   const archive=readReportPage(html);assert.ok(!('error' in archive));
   assert.equal(archive.source,source);assert(!('values' in archive));assert(!html.includes('id="dari-values"'));
-  const badQuery=draft('a(href="file:///bad") ["bad"]').replace('data text =','data facts = query({limit:1}); data text =');
+  const badQuery=draft('a(href="file:///bad") ["bad"]').replace('data text =','data facts = query({take:1}); data text =');
   assert.equal((await runtime.run(badQuery)).status,'invalid');assert.equal(queries,0,'report compilation gates all execution');
   console.log('DARI reports: structural validation, literal text, escaping, source archive and execution gating passed');
 } finally {runtime.dispose();}

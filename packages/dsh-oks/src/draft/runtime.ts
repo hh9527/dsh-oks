@@ -16,7 +16,7 @@ import type {DiagnosticCollector} from './diagnostics.ts';
 /** at identifies the value's location in a constructor; path identifies its original upstream projection. */
 export type ValueSource = { display?: { kind: 'chart' | 'table'; content: string }; delivery?: { html: string; title: string }; origin: DataOrigin; at: (string | number)[]; path: (string | number)[] };
 /** Internal plan payload; carried by a whole value reference, never by JSON construction/projection. */
-export type QueryPlan = { environment: string; intent: unknown; sql: string; bindings: unknown[]; columns: ResultColumn[]; limit_slot: number };
+export type QueryPlan = { environment: string; intent: unknown; sql: string; bindings: unknown[]; columns: ResultColumn[]; max_rows: number };
 export type DraftValue = { logicalType?:unknown; data: unknown; sources: ValueSource[]; plan?: QueryPlan; reportValues?: Record<string,unknown> };
 export type Computed = { logicalType?:unknown; data: unknown; evidence?: unknown };
 export type CallContext = {

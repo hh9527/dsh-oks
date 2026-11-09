@@ -91,7 +91,7 @@ const ctx = {
 apply(ctx, {});
 const toolNames = [...registered.keys()];
 console.error(`registered tools: ${toolNames.join(', ')}\n`);
-const EXPECTED_TOOLS = ['oks_read','report_extract_dari','remove_file','move_entry','dari_check','dari_resolve','dari_renew_context','oks_routes','oks_info','oks_search','va_ask'];
+const EXPECTED_TOOLS = ['oks_read','report_extract_dari','remove_file','move_entry','dari_check','dari_resolve','dari_renew_context','oks_routes','oks_info','oks_discover','oks_search','va_ask'];
 console.log(`=== 工具集 ===\n  ${toolNames.join(', ')} ${
   EXPECTED_TOOLS.every((name) => toolNames.includes(name)) && toolNames.length === EXPECTED_TOOLS.length ? '✓' : '✗'}`);
 for (const name of EXPECTED_TOOLS) {

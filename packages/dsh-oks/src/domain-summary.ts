@@ -1,3 +1,4 @@
+import {ENABLE_OKS_SEARCH} from './features.ts';
 import { encodePart } from './knowledge-graph.ts';
 import { isRecord, type ToolExec } from './host.ts';
 import type { Knowledge } from './knowledge.ts';
@@ -55,8 +56,8 @@ export function renderDomainSummary(graph: object, domain: string): string {
   const summary = domainSummary(graph, domain);
   const note = (item: { name?: string; doc: string }) => [item.name, item.doc].filter(Boolean).map(value => prose(value!)).join('：');
   const lines = ['# 全局领域摘要', '', '领域：'+code(domain), '',
-    '本摘要概览领域对象、数据集和关系。具体字段、度量、身份映射、连接条件与约束按需通过 oks_search / oks_routes / oks_info 获取；领域词汇与规范值通过 va_ask 获取。', '',
-    '知识节点 ID 用于 search 的 scope、routes 的 from/to 和 info 的 ids，query 使用 info 提供的短名称。定域检索：oks_search({q:["词汇"],scope:["datasets/ID"]})；内容分类可用 datasets/ID/fields、/dimensions、/measures，枚举成员用 types/ID/values，模型允许的直接引用点用 types/ID/references；精确读取：oks_info({ids:["entities/ID"]})。', '',
+    '本摘要概览领域对象、数据集和关系。具体字段、度量、身份映射、连接条件与约束按需通过 oks_discover / oks_routes / oks_info 获取；先调用 va_ask；oks_discover 每条 query 的 entity/props/values 只能逐字使用其返回的 ASCII 英文词表原词，不自行翻译、改写或拼接。', '',
+    '概念速查：oks_discover({queries:[{entity:"device",props:["cpu"]}]})；示例词须先由 va_ask 返回，values 可省略。返回 # Entity / ## Dataset 下的成员相对路径与类型；将 Dataset ID 与相对路径连接后交给 oks_info。路径发现使用 oks_routes({from:"datasets/a",to:"datasets/b"})，精确读取使用 oks_info({ids:["datasets/ID/measures/ID"]})。query 使用知识定义提供的短名称。'+(ENABLE_OKS_SEARCH?' 补充定域搜索：oks_search({q:["cpu"],scope:["datasets/ID"]})，q 只使用 VA 原词。':''), '',
     '## 业务实体（Entity）', '',
     ...summary.entities.map(e=>'- '+code('entities/'+encodePart(e.id))+(note(e)?'：'+note(e):'')), '',
     '## 数据集与查询能力（Dataset）', '',

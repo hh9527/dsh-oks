@@ -180,11 +180,29 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
     if(['Figure','figure','figurecaption','figcaption','table','caption','thead','tbody','tfoot','tr','td','th'].includes(tag))
       fail(`Unsupported report element ${tag}; use UseFigure(ref = name, caption = "...")`,start,at);
     whitespace();if(source[at]==='('){
-      at++;whitespace();while(source[at]!==')'){
-        const begin=at,key=name(true);if(attrs.has(key))fail('Duplicate attribute '+key,begin);
-        eat('=');const part=expression(new Set([',',')']));attrs.set(key,attribute(tag,key,part));
-        whitespace();if(source[at]!==',')break;at++;whitespace();
-      }eat(')');
+      const opening=at;
+      try{
+        at++;whitespace();while(source[at]!==')'){
+          const begin=at,key=name(true);if(attrs.has(key))fail('Duplicate attribute '+key,begin);
+          whitespace();
+          const colon=key.indexOf(':');
+          if(source[at]===':' || colon>=0&&source[at]!=='='){
+            const offset=colon>=0?begin+colon:at;
+            fail('Node attributes use "=", not ":"; write '+tag+'('+key.split(':')[0]+'=...)',offset,offset+1,{expected:'=',found:':'});
+          }
+          eat('=');const part=expression(new Set([',',')']));attrs.set(key,attribute(tag,key,part));
+          whitespace();if(source[at]!==',')break;at++;whitespace();
+        }eat(')');
+      }catch(error){
+        if(!(error instanceof DraftSyntaxError)||error instanceof ParserLimitError||error.message==='Expression nesting exceeds 128')throw error;
+        // Recover only when this attribute list has a matching closing parenthesis.
+        // The delimiter scanner already ignores strings/comments and nested expressions.
+        at=opening+1;
+        try{expression(new Set([')']),true);}catch{throw error;}
+        if(source[at]!==')')throw error;
+        at++;attrs.clear();
+        syntaxDiagnostics.reportAll(error.diagnostics.length?error.diagnostics:[{file,stage:'syntax',message:error.message,span:error.span}]);
+      }
     }
     const children:(Element|string)[]=[],spans=new Map<number,Span>();let empty=true;
     whitespace();if(source[at]==='{')fail('Node children use [ ... ] with commas; records use { ... }');
@@ -209,6 +227,7 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
     const savedDefinitions=new Map(definitions),savedDeclarations=new Map(declarations),savedFigures=new Map(figures);
     const savedNodes=nodes.length,savedReferences=references.length,savedTemplates=templates.length,savedScopes=scopes.length,savedSequence=sequence,savedTitle=title;
     const identifierCheckpoint=identifierDiagnostics.checkpoint();
+    const syntaxCheckpoint=syntaxDiagnostics.checkpoint();
     let recoverableBinding:string|undefined,recoverableKind:'data'|'figure'|'report'|'answer'|undefined,recoverableEnd:number|undefined;
     try{
     const start=at,kind=name();
@@ -226,6 +245,10 @@ export function parseDomDraft(source:string,file:string,collector?:DiagnosticCol
       const tree=element();
       eat('}');
       eat(';');
+      if(syntaxDiagnostics.hasErrors(syntaxCheckpoint)){
+        const findings=syntaxDiagnostics.list().filter(d=>d.span.start.offset>=declarationStart);
+        throw new DraftSyntaxError(findings[0].message,findings[0].span,findings);
+      }
       if(kind==='figure'){
         if(componentKind(tree.name)===undefined)fail('figure requires a chart component or Table',tree.span.start.offset,tree.span.end.offset);
         if(tree.children.length)fail('Chart components have attributes and no children',tree.span.start.offset,tree.span.end.offset);

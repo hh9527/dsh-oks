@@ -8,6 +8,7 @@
 | 工具 | 职责 |
 | --- | --- |
 | `va_ask({query})` | 将问题用词对齐到领域词汇；主 agent 自主检索和读取详情 |
+| `oks_discover({queries:[{entity:"原词",props:[...],values?:[...]}]})` | 按概念实体、属性及可选具名值速查承载 Dataset 和查询地址 |
 | `oks_search({q:[...],scope:[...]})` | 多个词在共享范围内检索根节点、内容分类或直接引用点 |
 | `oks_routes({from,to,via?})` | 查找路径，内联方向、基数和连接键 |
 | `oks_info({ids})` | 批量读取精确知识点 |

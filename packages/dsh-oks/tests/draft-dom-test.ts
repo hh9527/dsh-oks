@@ -15,11 +15,11 @@ import type {TimeContext} from '../src/time-context.ts';
 const root=mkdtempSync(join(tmpdir(),'oks-dom-'));mkdirSync(join(root,'.work'));
 let reads=0,approvals=0;
 const columns=[{name:'name',type:'String',nullable:false},{name:'cpu',type:'Float',nullable:true}];
-const entry={root,modelHash:'dom-test',settings:{domain:'test',queryMaxRows:100,requireRunApproval:true,dataFile:'fixture.sqlite'},runner:{async send(){return {ok:{accepted:true,queries:[{sql:'select name,cpu limit ?1',bindings:[10],limit_slot:0,columns}]}};}}} as unknown as WorkspaceEntry;
+const entry={root,modelHash:'dom-test',settings:{domain:'test',queryMaxRows:100,requireRunApproval:true,dataFile:'fixture.sqlite'},runner:{async send(){return {ok:{accepted:true,queries:[{sql:'select name,cpu limit ?1',bindings:[10],max_rows:5,columns}]}};}}} as unknown as WorkspaceEntry;
 const knowledge={ensureWorkspace:()=>entry,executorFor(){reads++;return {manifest:null,executor:{async send(){return {columns:['name','cpu'],truncated:false,rows:[{name:'A&B <x>',cpu:30},{name:'B',cpu:null}]};},dispose(){}}};}} as unknown as Knowledge;
 const backend=createDraftBackend({entry,file:'dom.dari',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge});
 const source=`// Immutable data, shared by independently declared figures and reports.
-data facts = query({limit:10});
+data facts = query({take:10});
 data winner = select_one({from:{f:facts},fields:(r)=>({name:r.f.name,cpu:r.f.cpu}),order_by:(o)=>[desc(o.cpu),asc(o.name)],limit:1});
 figure cpu = tree! { BarChart(spec = {x:"name",value:"cpu"}, data = facts) };
 report answer = tree! { Report(title = "CPU & memory") [

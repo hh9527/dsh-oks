@@ -256,7 +256,7 @@ try{
  assert.throws(()=>parseAnalysisDesign(syntaxSource,'fixture.dari'),DraftSyntaxError);
  let syntaxQueryCalls=0;
  const syntaxQueryBackend={...backend,async analyze(ctx:any){if(ctx.operator==='query')syntaxQueryCalls++;return backend.analyze!(ctx);}};
- const syntaxQuery=await checkDesign('data bad = 1 + * 2; data dependent = query({limit:bad});','fixture.dari',syntaxQueryBackend);
+ const syntaxQuery=await checkDesign('data bad = 1 + * 2; data dependent = query({take:bad});','fixture.dari',syntaxQueryBackend);
  assert.equal(syntaxQueryCalls,0);assert(syntaxQuery.checkedBindings.some(b=>b.name==='dependent'&&!b.checked));
  const independentLowering=await checkDesign('data bad = 1+*2; data x = {dependent:bad,independent:map(1,n=>n)};','fixture.dari',backend);
  assert(independentLowering.diagnostics.some(d=>d.message==='map requires an array with a statically known length <= 50'),JSON.stringify(independentLowering.diagnostics));
@@ -572,7 +572,7 @@ try{
  const modelFailure=new Error('model transport failed');
  const failedModel=createDraftBackend({entry:{settings:{},modelHash:'failed',runner:{async send(){throw modelFailure;}}} as any,file:'fixture.dari',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge:{executorFor(){throw new Error('Unexpected business read');}}});
  try{await assert.rejects(checkDesign('data x = query({limit:5});','fixture.dari',failedModel),e=>e===modelFailure);}finally{failedModel.dispose?.();}
- const tracked=createDraftBackend({entry:{settings:{},modelHash:'dag',runner:{async send(_method:string,{intents:items}:any){intents.push(...items);return {ok:{accepted:true,queries:[{sql:'SELECT 1 LIMIT ?',bindings:[items[0].limit],limit_slot:0,columns:[{name:'n',type:'Int',nullable:false}]}]}};}}} as any,file:'fixture.dari',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge:{executorFor(){throw new Error('Unexpected business read');}}});
+ const tracked=createDraftBackend({entry:{settings:{},modelHash:'dag',runner:{async send(_method:string,{intents:items}:any){intents.push(...items);return {ok:{accepted:true,queries:[{sql:'SELECT 1 LIMIT ?',bindings:[items[0].take ?? 5],max_rows:5,columns:[{name:'n',type:'Int',nullable:false}]}]}};}}} as any,file:'fixture.dari',contextZone:()=>({kind:'resolved',timeZone:'UTC'}),knowledge:{executorFor(){throw new Error('Unexpected business read');}}});
  try{
   const nestedErrorBackend={...tracked,async analyze(ctx:any){if(ctx.operator==='context')return {data:box({kind:'record',fields:{value:{kind:'scalar',name:'Int',nullable:false}},nullable:false},{value:box(error)})};return tracked.analyze!(ctx);}};
   const nestedError=await checkDesign('data result = query({limit:5,value:context()});','fixture.dari',nestedErrorBackend);

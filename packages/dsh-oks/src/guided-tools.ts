@@ -1,3 +1,5 @@
+import {ENABLE_OKS_SEARCH} from './features.ts';
+import {discoverConcepts,renderConcepts} from './concept-knowledge.ts';
 import {renderInfo} from './info-receipt.ts';
 import {renderSearch,renderRoutes} from './navigation-receipt.ts';
 import {searchPoints,routePoints} from './point-navigation.ts';
@@ -18,17 +20,24 @@ export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge)
     if (!isRecord(args) || Object.keys(args).some(k => !allowed.includes(k))) throw new Error('Use only the declared tool parameters: ' + allowed.join(', '));
     return args;
   };
-  const method = async (name:string,args:object,exec:ToolExec) => {
+  const method = async (name:string,args:Record<string,unknown>,exec:ToolExec) => {
     exec.signal?.throwIfAborted();
     const entry=knowledge.ensureWorkspace(exec);
     const index=await knowledge.ensureIndex(entry);
     exec.signal?.throwIfAborted();
-    return {ok:true,model:entry.modelHash,data:name==='info'?readPoints(index.knowledge,args):name==='routes'?routePoints(index.knowledge,args):searchPoints(index.knowledge,args)};
+    return {ok:true,model:entry.modelHash,data:name==='discover'?discoverConcepts(index.knowledge,args):name==='info'?readPoints(index.knowledge,args):name==='routes'?routePoints(index.knowledge,args):searchPoints(index.knowledge,args)};
   };
   const fixed: ToolDefinition[] = [
     {
+      name: 'oks_discover',
+      description: 'Find conceptual properties and their Dataset query mappings in one call: {queries:[{entity:"term",props:[...],values?:[...]}]}. Prerequisite: call va_ask. entity, props and values must contain only verbatim ASCII English vocabulary entries returned by va_ask, preserving spelling and case. Never use Chinese, raw user wording, translations, rewrites, abbreviations or concatenated terms. If no suitable entry was returned, ask va_ask again. Fuzzy matching is internal; do not manufacture fuzzy query variants. Use entity and property terms; properties include dimensions, measures and counters. Optional values match named enum values/aliases, then find properties of their owning Type. Property terms and value-derived properties are complementary, not a requirement that a measure use the enum type. Returns a compact Markdown list grouped first by matched Entity (# entities/ID), then Dataset (## datasets/ID), with relative dimension/measure paths and each member’s type; append the relative path to the Dataset ID for an oks_info ID. Named value details can be read with oks_info. does not choose joins, infer aggregate safety or read business data. Use oks_routes/oks_info for relationships and complete constraints, for complete definitions. Returns all matches, deduplicated by Entity, Dataset and member; no per-term result cap.'+(ENABLE_OKS_SEARCH?' Use oks_search for scoped lexical searches.':''),
+      parameters:{type:'object',properties:{queries:{type:'array',minItems:1,maxItems:12,items:{type:'object',properties:{entity:{type:'string',minLength:1,maxLength:200},props:{type:'array',maxItems:12,items:{type:'string',minLength:1,maxLength:200}},values:{type:'array',maxItems:12,items:{type:'string',minLength:1,maxLength:200}}},required:['entity','props'],additionalProperties:false}}},required:['queries'],additionalProperties:false},
+      output:{schema:OBJECT_OUTPUT,render:renderConcepts},
+      async execute(raw,exec){return method('discover',check(raw,['queries']),exec);},
+    },
+    {
       name:'oks_search',
-      description:'Lexical knowledge search: {q:[...],scope:[...]}. Both arrays are required and nonempty; all q terms share the same scope. Category scopes datasets/entities/types find roots; exact root IDs search their members. Content directories restrict search to a section; types/ID/references searches enabled direct reference sites. Multiple scopes form a union. Valid empty scopes return no matches; unknown scopes are errors. Partial words and small English typos are supported. Returns at most 10 matches per term, grouped by parent ID; append the displayed relative name to that exact parent to obtain an oks_info ID. Use va_ask for unfamiliar vocabulary, then search its terms to discover actual IDs. Use oks_routes for relationships. No business data reads.',
+      description:'Lexical knowledge search: {q:[...],scope:[...]}. Prerequisite: call va_ask. Every q item must be a verbatim ASCII English vocabulary entry returned by va_ask, preserving spelling and case; never use Chinese, raw user wording, translations, rewrites, abbreviations or concatenated terms. Ask va_ask again if needed. scope uses actual knowledge IDs or declared categories, not vocabulary terms. Both arrays are required and nonempty; all q terms share the same scope. Category scopes datasets/entities/types find roots; exact root IDs search their members. Content directories restrict search to a section; types/ID/references searches enabled direct reference sites. Multiple scopes form a union. Valid empty scopes return no matches; unknown scopes are errors. Partial words and small English typos are supported. Returns at most 10 matches per term, grouped by parent ID; append the displayed relative name to that exact parent to obtain an oks_info ID. Use va_ask for unfamiliar vocabulary, then search its terms to discover actual IDs. Use oks_routes for relationships. No business data reads.',
       parameters:{type:'object',properties:{q:{type:'array',minItems:1,maxItems:12,items:{type:'string',minLength:1,maxLength:200}},scope:{type:'array',minItems:1,maxItems:12,items:{type:'string'}}},required:['q','scope'],additionalProperties:false},
       output:{schema:OBJECT_OUTPUT,render:renderSearch},
       async execute(raw,exec){return method('search',check(raw,['q','scope']),exec);},
@@ -75,5 +84,5 @@ export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge)
       },
     };
     return t;
-  }), ...fixed];
+  }), ...fixed.filter(tool=>ENABLE_OKS_SEARCH||tool.name!=='oks_search')];
 }

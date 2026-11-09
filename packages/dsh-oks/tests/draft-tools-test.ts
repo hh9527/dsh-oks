@@ -8,7 +8,7 @@ const root=mkdtempSync(join(tmpdir(),'dari-tools-'));
 let executions=0,publications=0;
 let release:(()=>void)|undefined;
 const columns=[{name:'n',type:'Int',nullable:false}];
-const entry={root,modelHash:'test',settings:{workspaceRoot:root,domain:'test',queryMaxRows:200},runner:{async send(){return {ok:{accepted:true,queries:[{sql:'select n',bindings:[5],limit_slot:0,columns}]}};}}};
+const entry={root,modelHash:'test',settings:{workspaceRoot:root,domain:'test',queryMaxRows:200},runner:{async send(){return {ok:{accepted:true,queries:[{sql:'select n',bindings:[5],max_rows:5,columns}]}};}}};
 const knowledge={ensureWorkspace:()=>entry,executorFor:()=>({executor:{async send(){executions++;if(release)await new Promise<void>(resolve=>{release=resolve;});return {rows:[{n:executions}],columns:['n'],truncated:false};},dispose(){}}})};
 const sessionFor=(id:string)=>{
  const session:any={id,events:[{type:'step/start',seq:0,data:{turn:1,step:1}}],delivered:[] as any[]};
@@ -24,7 +24,7 @@ const attachmentStore=testAttachments(root);
 const drafts=createDraftTools({knowledge:knowledge as any,timeContext:timeContext as any,attachments:()=>({...attachmentStore,async saveFile(input){publications++;return attachmentStore.saveFile(input);}})});
 const call=async(name:string,args:object,caller=exec)=>drafts.tools.find(t=>t.name===name)!.execute(args as never,caller) as Promise<any>;
 const source=`data ctx = context();
-data facts = query({limit:5});
+data facts = query({take:5});
 data summary = select_one({from:{f:facts},group_by:r=>({}),fields:(g,rows)=>({n:sum(rows.f.n)})});
 figure chart = tree! { ColumnChart(spec={x:"n",value:"n"},data=facts) };
 report full = tree! { Report [p [Value(data=summary?.n)],UseFigure(ref = chart)] };

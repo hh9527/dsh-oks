@@ -11,7 +11,7 @@ data prev = weeks[0];
 data last = weeks[1];
 data facts = query({
     op:"Graph",root:"d",nodes:[{id:"d",entity:"<数据集短名称>"}],edges:[],
-    select:[],count:"d",limit:100
+    select:[],count:"d"
 });
 data summary = select_one({from:{s:facts},group_by:(r)=>({}),
     fields:(g,rows)=>({returned_groups:count(rows)})});
@@ -22,6 +22,8 @@ answer tree! { Answer [
 ```
 
 示例中的模型名称是占位符，以知识定义替换。扩展组件使用 PascalCase（如 Value、Lit、UseFigure），普通标签使用小写（如 p、strong）。`data` 定义不可变计算，`figure` 定义图表，`report` 定义报告；`answer tree! { Answer [...] }` 是唯一回答出口。figure/report/answer 的节点树必须用 `tree! { ... }` 包围，内部仍用 `tag(...) [...]`；figure 的根节点为图表组件或 Table。`=` 仅声明不可变绑定，不支持重新赋值。True/False/None 是 DARI 字面量，工具参数与返回 JSON 仍用 true/false/null。所有绑定共用命名空间，先定义后引用，每条声明以 `;` 结束；支持 `//` 和 `/* ... */` 注释。
+
+**tree! 中的节点采用 XML-node 语义，括号内是节点属性，使用 `=`，不是对象字段的 `:`。** 正确：`Value(data=summary?.total)`；错误：`Value(data: summary?.total)`。节点属性中嵌入的普通对象仍使用 `:`，例如 `ColumnChart(spec={x:"name",value:"count"},data=rows)`。
 
 表达式使用字符串、数字、Bool（True/False）、None、对象、数组、函数和绑定引用。分析稿自行定义的绑定、对象键和表列使用 ASCII 名称；中文用于报告正文、图表和表格标签等展示内容。读取外部模型中已有的特殊键时使用双引号及方括号，例如 `row["设备分类"]`；可空对象使用 `map_opt(obj,r=>r["设备分类"])`。
 
@@ -74,7 +76,8 @@ data facts = query({
     select:[{node:"a",dimension:"alarm_tenant_id"}],
     measures:[{node:"a",measure:"alarm_count"}],
     time_windows:[{node:"a",dimension:"alarm_occur_utc_raw",
-        start:days[0].start.epochMillis,end:days[6].end.epochMillis}],limit:500
+        start:days[0].start.epochMillis,end:days[6].end.epochMillis}],
+    order_by:[{column:"a_alarm_count",direction:"Desc"}],take:500
 });
 ```
 
@@ -126,14 +129,15 @@ lookup 的映射是检查期已知非空数组，每项恰好 value/label。valu
 
 ## 模型查询：{{intentContract}}
 
-Intent 顶层 op 为 Graph、GraphPair 或 GraphUnion，顶层 limit 必填 1..500，限制业务操作完成后的输出行数；业务 take/Top-N 另行表达，嵌套操作数无需 limit。query 检查得到 schema，解析时取数并报告截断。
+Intent 顶层 op 为 Graph、GraphPair 或 GraphUnion。多行查询必须在最终结果层显式 order_by 并 take(n)，n 是检查时已知的 1..500 整数。写为 `order_by:[{column:"<完整结果列名>",direction:"Desc"}],take:10`；排序与取前 N 在数据库中执行，query 的 limit 参数不合法。无分组的标量计数/普通聚合可证明最多一行，无需 take。已有全局 top_by_measure 或 GraphPair.rank_by 也提供上界，其最终 take 同样不超过 500；分区 top_per、分支内 take 不能证明最终上界。query 在 check 时返回 schema 并检查上界，resolve 按已检查的计划取数，不截断结果。
 
 ### Graph
 
 ```js
 {op:"Graph",root:"d",nodes:[{id:"d",entity:"<数据集短名称>"}],edges:[],
  select:[{node:"d",dimension:"<维度短名称>"}],
- measures:[{node:"d",measure:"<指标短名称>"}],limit:500}
+ measures:[{node:"d",measure:"<指标短名称>"}],
+ order_by:[{column:"d_<指标短名称>",direction:"Desc"}],take:10}
 ```
 
 | 键 | 形状/含义 |
@@ -148,12 +152,12 @@ Intent 顶层 op 为 Graph、GraphPair 或 GraphUnion，顶层 limit 必填 1..5
 | count / count_value | 节点别名 / `{node,dimension}`；行数/非空值计数 |
 | count_having | `{op,value}`，整数计数筛选；count_groups/include_empty 为 Bool |
 | measure_having | `{node,measure,op,value}` 数组，value 按度量输出类型 |
-| order_by / take | `[{node,dimension,direction}]` / 正整数，direction=Asc|Desc，原始全局 Top-N |
+| order_by / take | `[{column,direction}]` / 1..500，按最终投影列排序取前 N；dimension 可用 `{node,dimension,direction}` 指代已投影列 |
 | top_by_measure | `{node,measure,direction,take}`，按声明的聚合值排名 |
 | top_per | `{owner,sample,rank,take}`，逐 owner 的原始样本 Top-N |
 | row_grain / distinct | Root 或 Association / Bool，遵循模型粒度约束 |
 
-必填 Graph、root、nodes、edges、select；投影维度/指标或显式指定计数对象。隐藏身份键不可拆分用户可见分组。原始 order_by+take 与聚合 Min/Max 不同，最高平均值与最高样本峰值不同；原始 take 使用完整粒度身份并列裁决。原始 ASC 空值在前，DESC 空值在后；Min 忽略空值。top_per 要求恰好一条 sample→owner 边，owner 端 One/Optional，样本有粒度，rank 为有序样本维度。
+必填 Graph、root、nodes、edges、select；投影维度/指标或显式指定计数对象。隐藏身份键不可拆分用户可见分组。原始 order_by+take 与聚合 Min/Max 不同，最高平均值与最高样本峰值不同；最终 order_by 应补充已投影的身份列作为并列裁决。Min 忽略空值。top_per 要求恰好一条 sample→owner 边，owner 端 One/Optional，样本有粒度，rank 为有序样本维度。
 
 measure_having 的度量要在 measures 中。常见合法结构是 group_by_identity=[root] 且只选根维度；另一种为 context→owner、sample→owner，两条 owner 端 One/Optional，身份完整，group_by_identity=[root,owner]，只选 context/owner 维度，可附加一条至多为一的 owner→ancestor 边并选 ancestor 维度。后者恰好三或四节点，不附加计数、业务连接或 include_empty；具体合法性由模型检查。exists.having 按自身总体校验。
 
@@ -178,7 +182,7 @@ Latest 是模型声明的数值指标，仍用 measures 选择；按权威 UTC �
 比较同一实体两组总体的一项数值指标；比较多个指标时分别查询，再用后处理统一量纲与排序。
 
 ```js
-{op:"GraphPair",limit:500,left:<Graph>,right:<Graph>,
+{op:"GraphPair",left:<Graph>,right:<Graph>,
  align_by:[{left:{node:"a"},right:{node:"b"}}],
  select:[{side:"Left",node:"a",dimension:"<展示维度>"}],
  rank_by:{op:"GrowthRate",current:"Right",baseline:"Left",direction:"Desc",take:10}}
@@ -194,9 +198,9 @@ align_by 非空，配对相同实体的完整身份，节点不重复；每侧�
 | Ratio | numerator,denominator,direction,take | 分子侧/分母侧 |
 | GrowthRate | current,baseline,direction,take | (当前侧−基线侧)/基线侧 |
 
-侧名 Left/Right 且互异，direction=Asc|Desc，take=1..1000。两指标数值且单位兼容，不同指标 ID 要相同非 null 单位。NULL 排除；Ratio 排除零分母，GrowthRate 排除非正基线。追加 comparison_value，按该值排名，身份并列升序；Subtract 保留单位（百分数相减为百分点），Ratio/GrowthRate 无量纲，0.2 增长率表示 20%。rank_by 与 count_groups:True 不能并用；无排名时 count_groups 计所有对齐身份，无 comparison_value。
+侧名 Left/Right 且互异，direction=Asc|Desc，最终 take=1..500。两指标数值且单位兼容，不同指标 ID 要相同非 null 单位。NULL 排除；Ratio 排除零分母，GrowthRate 排除非正基线。追加 comparison_value，按该值排名，身份并列升序；Subtract 保留单位（百分数相减为百分点），Ratio/GrowthRate 无量纲，0.2 增长率表示 20%。rank_by 与 count_groups:True 不能并用；无排名时 count_groups 计所有对齐身份，无 comparison_value。
 
-GraphUnion 为 `{op:"GraphUnion",limit:500,branches:[{result_node,graph},...]}`：至少两个 Graph 返回相同实体、按相同顺序选相同维度，分支是无序原始行，按完整结果身份并集去重。
+GraphUnion 为 `{op:"GraphUnion",branches:[{result_node,graph},...],order_by:[{column:"<首分支完整结果列名>",direction:"Asc"}],take:500}`：至少两个 Graph 返回相同实体、按相同顺序选相同维度，分支是无序原始行，按完整结果身份并集去重。
 
 ## 图表与排版
 

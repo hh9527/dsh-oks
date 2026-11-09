@@ -9,7 +9,6 @@ import { statSync } from 'node:fs';
 import { canonicalJson } from '../key.ts';
 import { isRecord } from '../host.ts';
 import type { Knowledge, WorkspaceEntry } from '../knowledge.ts';
-import { limitProblem } from '../intent-limit.ts';
 import { appendNode, describeRows, isResultColumn, originOf, rowsOf, resultStamp,RowsValidationError } from '../results.ts';
 import type { DataOrigin, OriginNode, ResultColumn } from '../results.ts';
 import {timeWindowOptions,timeWindows,TIME_WINDOWS_VERSION,TimeWindowValidationError} from '../time-windows.ts';
@@ -122,16 +121,14 @@ export function createDraftBackend(options: {
 }): DraftBackend {
   const { knowledge, entry, file } = options;
   const checks = new Checks();
-  const planEnvironment = () => ({model:entry.modelHash,domain:entry.settings.domain,compiler:1});
-  const queryEnvironment = () => ({...planEnvironment(), dataFile: entry.settings.dataFile, limit: entry.settings.queryMaxRows });
+  const planEnvironment = () => ({model:entry.modelHash,domain:entry.settings.domain,compiler:2});
+  const queryEnvironment = () => ({...planEnvironment(), dataFile: entry.settings.dataFile });
   const environment = (operator: Operator): unknown => operator === 'query' ? planEnvironment() : operator === 'exec_query' ? queryEnvironment()
     : operator === 'context' ? { clock: 1 }
     : operator === 'time_windows' ? {calendar:'Temporal',version:TIME_WINDOWS_VERSION}
     : { operator, version: 2 };
-  type PreparedQuery = { sql: string; bindings: unknown[]; columns: ResultColumn[]; limit_slot: number };
+  type PreparedQuery = { sql: string; bindings: unknown[]; columns: ResultColumn[]; max_rows: number };
   const lower = async (intent: unknown, signal?: AbortSignal): Promise<PreparedQuery> => {
-    const problem = limitProblem(intent);
-    if (problem) throw new IntentValidationError(problem);
     const key = digest({ intent, environment: planEnvironment() });
     const cached = checks.get(key);
     if (cached?.error) throw new IntentValidationError(cached.error);
@@ -147,10 +144,9 @@ export function createDraftBackend(options: {
       const error = `Intent rejected: ${JSON.stringify(response.ok?.diagnostics ?? response.error ?? response)}`;
       throw new Error(error);
     }
-    const limitSlot = lowered[0].limit_slot;
-    if (typeof limitSlot !== 'number' || !Number.isInteger(limitSlot) || limitSlot < 0
-        || limitSlot >= lowered[0].bindings.length || lowered[0].bindings[limitSlot] !== (intent as {limit:number}).limit) {
-      throw new Error('Invalid model limit_slot: expected the binding index of the requested top-level limit');
+    const maxRows = lowered[0].max_rows;
+    if (typeof maxRows !== 'number' || !Number.isInteger(maxRows) || maxRows < 1 || maxRows > 500) {
+      throw new Error('Invalid model max_rows: expected a checked result bound in 1..500');
     }
     const rawColumns = lowered[0].columns;
     if (!Array.isArray(rawColumns) || !rawColumns.every(isResultColumn)
@@ -158,7 +154,7 @@ export function createDraftBackend(options: {
       throw new Error('Invalid model result columns: expected ordered {name,type,nullable} declarations');
     }
     const columns = rawColumns as ResultColumn[];
-    const result: PreparedQuery = { sql: lowered[0].sql, bindings: lowered[0].bindings, limit_slot: limitSlot,
+    const result: PreparedQuery = { sql: lowered[0].sql, bindings: lowered[0].bindings, max_rows: maxRows,
       columns: columns.map(({name, type, nullable}) => ({name, type, nullable})) };
     checks.set(key, { result });
     return result;
@@ -320,7 +316,7 @@ export function createDraftBackend(options: {
       const intent = ctx.args[0].data;
       const lowered = await lower(intent, ctx.signal);
       const plan:QueryPlan={...lowered,intent,environment:digest(planEnvironment())};
-      return {data:{columns:lowered.columns},evidence:{plan}};
+      return {data:{columns:lowered.columns,maxRows:lowered.max_rows},evidence:{plan}};
     }
     if (ctx.operator === 'time_windows') {
       ctx.signal?.throwIfAborted();
@@ -348,18 +344,17 @@ export function createDraftBackend(options: {
       }
       const acquiredAt = new Date().toISOString();
       const { executor, manifest } = knowledge.executorFor(entry.settings);
-      const limit = (intent as { limit: number }).limit;
-      const bindings = [...lowered.bindings];
-      bindings[lowered.limit_slot] = limit + 1;
-      const outcome = await executor.send(lowered.sql, bindings, ctx.signal, limit + 1);
-      const truncated = outcome.truncated || outcome.rows.length > limit;
+      const outcome = await executor.send(lowered.sql, lowered.bindings, ctx.signal, lowered.max_rows + 1);
+      if (outcome.truncated || outcome.rows.length > lowered.max_rows) {
+        throw new Error('Query violated its checked result bound');
+      }
       if (lowered.columns && (lowered.columns.length !== outcome.columns.length
           || lowered.columns.some((column, index) => column.name !== outcome.columns[index]))) {
         throw new Error('Model result columns do not match SQL result column order');
       }
-      const described = describeRows(outcome.columns, outcome.rows.slice(0, limit));
+      const described = describeRows(outcome.columns, outcome.rows);
       validateTypedRows(described.rows,lowered.columns);
-      const data = { rows: described.rows, columns: lowered.columns ?? described.columns, truncated };
+      const data = { rows: described.rows, columns: lowered.columns ?? described.columns };
       return { data, evidence: { ...observed, acquiredAt, model: entry.modelHash, domain: entry.settings.domain, batch: ctx.batch, manifest } };
     }
     if (ctx.operator === 'render_figure') {

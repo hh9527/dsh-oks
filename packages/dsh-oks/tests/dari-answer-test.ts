@@ -9,7 +9,7 @@ const root=mkdtempSync(join(tmpdir(),'dari-answer-'));
 let executions=0,files=0;
 const saved:{name:string;content:string}[]=[];
 const columns=[{name:'n',type:'Int',nullable:false},{name:'label',type:'String',nullable:false}];
-const entry={root,modelHash:'answer-test',settings:{workspaceRoot:root,domain:'test',queryMaxRows:200},runner:{async send(){return {ok:{accepted:true,queries:[{sql:'select n,label',bindings:[5],limit_slot:0,columns}]}};}}};
+const entry={root,modelHash:'answer-test',settings:{workspaceRoot:root,domain:'test',queryMaxRows:200},runner:{async send(){return {ok:{accepted:true,queries:[{sql:'select n,label',bindings:[5],max_rows:5,columns}]}};}}};
 const knowledge={ensureWorkspace:()=>entry,executorFor:()=>({executor:{async send(){executions++;return {rows:[{n:42,label:'*not emphasis* [link](x) <tag>'}],columns:['n','label'],truncated:false};},dispose(){}}})};
 const exec={agent:{session:{id:'answer'}}} as any;
 const timeContext={zones:new Map([[exec.agent.session,{kind:'resolved',timeZone:'UTC'}]])};
@@ -17,7 +17,7 @@ const attachments=testAttachments(root);
 const drafts=createDraftTools({knowledge:knowledge as any,timeContext:timeContext as any,attachments:()=>({...attachments,saveFile:async args=>{files++;saved.push({name:args.name!,content:Buffer.from(args.data).toString()});return attachments.saveFile(args);}})});
 const plain=createDraftTools({knowledge:knowledge as any,timeContext:timeContext as any});
 const call=async(name:string,args:object,tools=drafts)=>tools.tools.find(t=>t.name===name)!.execute(args as never,exec) as Promise<any>;
-const source=`data facts = query({limit:5});
+const source=`data facts = query({take:5});
 data summary = select_one({from:{f:facts},fields:r=>({n:r.f.n,label:r.f.label}),order_by:o=>[desc(o.n)],limit:1});
 figure chart = tree! { ColumnChart(spec={x:"label",value:"n"},data=facts) };
 answer tree! { Answer [

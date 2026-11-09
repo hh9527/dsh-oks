@@ -243,7 +243,7 @@ export interface QueryPayload {
   sql?: unknown;
   bindings?: unknown;
   columns?: unknown;
-  limit_slot?: unknown;
+  max_rows?: unknown;
 }
 
 export interface DocumentPayload {

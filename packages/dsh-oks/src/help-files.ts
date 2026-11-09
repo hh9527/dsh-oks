@@ -1,3 +1,5 @@
+import {ENABLE_OKS_SEARCH} from './features.ts';
+import search from './help/search.md';
 import workflow from './help/workflow.md';
 import dari from './help/dari.md';
 import rules from './help/rules.md';
@@ -6,7 +8,7 @@ import {presentationOverview} from './presentation-guide.ts';
 
 /** Readable manuals and the stable main-agent prefix are generated from the same text. */
 export const helpFiles:Record<string,string> = {
-  'oks://help/workflow.md':workflow,
+  'oks://help/workflow.md':workflow+(ENABLE_OKS_SEARCH?'\n\n## 定域搜索\n\n'+search:''),
   'oks://help/dari.md':dari.replaceAll('{{intentContract}}',modelContracts.intent).replace('{{figureIndex}}',presentationOverview().join('\n')),
   'oks://help/rules.md':rules,
 };

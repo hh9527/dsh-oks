@@ -29,7 +29,7 @@ export function common(a:Ty,b:Ty):Ty{
  if(a.kind==='table'&&b.kind==='table'){
   if(a.columns.length!==b.columns.length||a.columns.some((c,i)=>c.name!==b.columns[i].name))throw new TypeRuleError('Incompatible table columns');
   const columns=a.columns.map((c,i)=>{const t=common(scalar(c.type,c.nullable),scalar(b.columns[i].type,b.columns[i].nullable));if(t.kind!=='scalar')throw new Error('Invalid column type');return {name:c.name,type:t.name,nullable:t.nullable};});
-  return {kind:'table',columns};
+  return {kind:'table',columns,...(a.maxRows!==undefined&&b.maxRows!==undefined?{maxRows:Math.max(a.maxRows,b.maxRows)}:{}),...(a.minRows!==undefined&&b.minRows!==undefined?{minRows:Math.min(a.minRows,b.minRows)}:{})};
  }
  if(a.kind==='null')return optional(b);if(b.kind==='null')return optional(a);
  if(a.kind==='scalar'&&b.kind==='scalar'){if(a.name===b.name)return scalar(a.name,a.nullable||b.nullable);if(['Int','Float'].includes(a.name)&&['Int','Float'].includes(b.name))return scalar('Float',a.nullable||b.nullable);}

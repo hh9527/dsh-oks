@@ -36,7 +36,7 @@ function getPoint(graph:SemanticGraph,id:string):Point {
   if(!point)throw new Error('Not a public knowledge point: '+id);
   return point;
 }
-const navigation=new Set(['peers','reference_locations','referenced_by','related','traversable','bindings','binding','group','dimension_groups','measure_groups','types','datasets','entities','dimensions','measures','time_roles','business_links','relations','fields','roles']);
+const navigation=new Set(['props','peers','reference_locations','referenced_by','related','traversable','bindings','binding','group','dimension_groups','measure_groups','types','datasets','entities','dimensions','measures','time_roles','business_links','relations','fields','roles']);
 function publicRef(value:any):any {
   if(typeof value!=='string')return value;
   try{return semanticId(value);}catch{return value;}
@@ -49,6 +49,7 @@ function definition(point:Point):Fact {
     out[key]=value;
   }
   for(const key of ['field','anchor_field','row','entity','identity','type','from_dataset','to_dataset','from_role','to_role'])if(Object.hasOwn(out,key))out[key]=publicRef(out[key]);
+  if(Array.isArray(out.subjects))out.subjects=out.subjects.map((subject:any)=>({...subject,entity:publicRef(subject.entity),field:publicRef(subject.field)}));
   if(Array.isArray(out.requires))out.requires=out.requires.map(publicRef);
   if(point.kind==='Relation'&&record(out.key)){
     const keyRefs=(key:Fact):Fact=>Object.fromEntries(Object.entries(key).map(([k,v])=>[k,['from','to'].includes(k)?publicRef(v):Array.isArray(v)?v.map(x=>record(x)?keyRefs(x):x):v]));

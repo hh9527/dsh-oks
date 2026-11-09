@@ -10,10 +10,10 @@ import type {TimeContext} from '../src/time-context.ts';
 
 const root=mkdtempSync(join(tmpdir(),'oks-approval-'));mkdirSync(join(root,'.work'));
 const path=join(root,'.work/test.dari'),src='.work/test.dari';
-const source='data facts = query({limit:5}); data one = select_one({from:{f:facts},fields:r=>({n:r.f.n}),order_by:o=>[asc(o.n)],limit:1}); answer tree! { Answer [p [Value(data=one?.n)]] };';
+const source='data facts = query({take:5}); data one = select_one({from:{f:facts},fields:r=>({n:r.f.n}),order_by:o=>[asc(o.n)],limit:1}); answer tree! { Answer [p [Value(data=one?.n)]] };';
 let executions=0,requests=0;
 const columns=[{name:'n',type:'Int',nullable:false}];
-const entry={root,modelHash:'test',settings:{domain:'test',queryMaxRows:100,requireRunApproval:true,dataFile:'fixture.sqlite'},runner:{async send(){return {ok:{accepted:true,queries:[{sql:'select n limit ?1',bindings:[5],limit_slot:0,columns}]}};}}} as unknown as WorkspaceEntry;
+const entry={root,modelHash:'test',settings:{domain:'test',queryMaxRows:100,requireRunApproval:true,dataFile:'fixture.sqlite'},runner:{async send(){return {ok:{accepted:true,queries:[{sql:'select n limit ?1',bindings:[5],max_rows:5,columns}]}};}}} as unknown as WorkspaceEntry;
 const knowledge={ensureWorkspace:()=>entry,executorFor(){executions++;return {manifest:null,executor:{async send(){return {rows:[{n:7}],columns:['n'],truncated:false};},dispose(){}}};}} as unknown as Knowledge;
 let decide:ApprovalService['request']=async()=> 'rejected';
 let available=true;

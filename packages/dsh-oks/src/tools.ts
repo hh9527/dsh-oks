@@ -1,3 +1,4 @@
+import {ENABLE_OKS_SEARCH} from './features.ts';
 import {reportExtractDariTool} from './report-extract.ts';
 import {moveEntryTool} from './move-entry.ts';
 import {removeFileTool,type FilePolicyService} from './remove-file.ts';
@@ -27,7 +28,7 @@ export function createTools({ knowledge, ka, timeContext, attachments, approval,
     {
       name: 'va_ask',
       timeoutMs: 125_000,
-      description: 'Align wording from the original user question to domain vocabulary. Returns vocabulary grouped by user wording, without knowledge addresses or query plans. Search relevant returned terms with oks_search to discover actual knowledge IDs, then use oks_info and oks_routes as needed. Include the original question and explicit constraints.',
+      description: 'Align wording from the original user question to domain vocabulary. Returns verbatim ASCII English vocabulary entries grouped by user wording, preserving spelling and case, without knowledge addresses or query plans. Use relevant returned entity/property/value terms with oks_discover for conceptual mappings, to discover actual knowledge IDs, then use oks_info and oks_routes as needed. Include the original question and explicit constraints.'+(ENABLE_OKS_SEARCH?' Use oks_search for scoped lexical searches when needed.':''),
       parameters: {
         type: 'object',
         properties: {

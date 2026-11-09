@@ -1,4 +1,4 @@
 {
   "title": "知识服务查询 (OKS)",
-  "description": "通过 ka_ask、oks_search、oks_routes、oks_info 获取领域知识，使用宿主文件工具编写 DARI；dari_check 检查全稿，dari_resolve 获取所选数据与展示引用，dari_renew_context 更新采集上下文。oks_read 只读内置手册。"
+  "description": "通过 ka_ask、oks_discover、oks_routes、oks_info 获取领域知识，使用宿主文件工具编写 DARI；dari_check 检查全稿，dari_resolve 获取所选数据与展示引用，dari_renew_context 更新采集上下文。oks_read 只读内置手册。"
 }

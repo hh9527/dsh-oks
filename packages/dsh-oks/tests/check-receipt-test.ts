@@ -10,14 +10,14 @@ import {scalar,record,type Ty} from '../src/draft/typed-types.ts';
 
 const root=mkdtempSync(join(tmpdir(),'check-receipt-'));
 let acquired=0;
-const entry={root,modelHash:'fixture',settings:{workspaceRoot:root,queryMaxRows:100},runner:{async send(){return {ok:{accepted:true,queries:[{sql:'select 1 n',bindings:[5],limit_slot:0,columns:[{name:'n',type:'Int',nullable:false}]}]}};}}};
+const entry={root,modelHash:'fixture',settings:{workspaceRoot:root,queryMaxRows:100},runner:{async send(){return {ok:{accepted:true,queries:[{sql:'select 1 n',bindings:[5],max_rows:5,columns:[{name:'n',type:'Int',nullable:false}]}]}};}}};
 const knowledge={ensureWorkspace:()=>entry,executorFor(){acquired++;throw new Error('Check must not acquire rows');}};
 const exec={agent:{session:{id:'receipt'}}} as any;
 const tools=createDraftTools({knowledge:knowledge as any,timeContext:{zones:new Map([[exec.agent.session,{kind:'resolved',timeZone:'UTC'}]])} as any});
 const check=tools.tools.find(t=>t.name==='dari_check')!;
 const resolve=tools.tools.find(t=>t.name==='dari_resolve')!;
 const file=join(root,'receipt.dari');
-const source=`data facts = query({limit:5});
+const source=`data facts = query({take:5});
 data unused = {b:1,a:"x"};
 figure chart = tree! { BarChart(spec={x:"n",value:"n"},data=facts) };
 answer tree! { Answer [p ["ok"]] };`;
