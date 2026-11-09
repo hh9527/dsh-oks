@@ -31,7 +31,7 @@ q/scope 是非空数组，最多各 12 项；每词独立匹配、最多返回 1
 
 references 返回实际引用点，如 datasets/current_alarm/dimensions/alarm_severity；未开放反向引用时为空，不递归扩展。合法空范围无命中，未知范围报错。回执按词和父路径分段，将父路径与相对名用 `/` 连接即可得到精确 ID，保持原有编码。
 
-`oks_routes({from:"datasets/a",to:"datasets/b"})` 返回一对 Dataset/Entity 根节点的最短候选路径，含一跳关系、方向、基数、完整连接键、角色 ID 和 guard。Entity 经承载其身份的 Dataset 进入路径；同一承载 Dataset 无需跨表连接。max_depth 默认 2、可设 1..3，最多 8 条路径和 10,000 次边探索；无路径和截断均明确报告。路径存在与聚合安全分别判断。
+`oks_routes({from:"datasets/a",to:"datasets/b",via:["datasets/c"]})` 返回满足约束的最短路径集合；via 可省略，指定时按顺序经过这些 Dataset/Entity 根节点。返回方向、基数、完整连接键、角色 ID 和 guard。Entity 经承载其身份的 Dataset 进入路径；同一承载 Dataset 无需跨表连接。按层搜索并逐路径防环，不设固定跳数上限；找到答案层后停止，稳定返回该层最多 20 条路径，超过时明确标记截断。未找到时明确报告没有满足约束的无环路径。via 表达业务必经节点，不是搜索深度。路径存在与聚合安全分别判断。
 
 `oks_info({ids:["datasets/device_kpi/measures/cpu_usage"]})` 批量读取 1..64 个精确点，每点仅返回自身定义，未知 ID 逐点报告。回执显式给出查询短名称。Field.roles 的 Appellation/Reference/Classification/Metric 分别是称谓、指代、分类、指标；筛选和聚合能力由 Dimension/Measure 声明决定。
 

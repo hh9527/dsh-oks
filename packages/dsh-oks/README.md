@@ -9,7 +9,7 @@
 | --- | --- |
 | `va_ask({query})` | 将问题用词对齐到领域词汇；主 agent 自主检索和读取详情 |
 | `oks_search({q:[...],scope:[...]})` | 多个词在共享范围内检索根节点、内容分类或直接引用点 |
-| `oks_routes({from,to,max_depth?})` | 查找路径，内联方向、基数和连接键 |
+| `oks_routes({from,to,via?})` | 查找路径，内联方向、基数和连接键 |
 | `oks_info({ids})` | 批量读取精确知识点 |
 | `oks_read({path,offset?,limit?})` | 只读内置手册；path 为 oks://help/ 时列出手册 |
 | `dari_check({src})` | 全稿检查，返回列类型和诊断；不执行业务 SQL |

@@ -35,10 +35,10 @@ export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge)
     },
     {
       name:'oks_routes',
-      description:'Find bounded shortest relationship paths for one pair of exact Dataset/Entity root IDs: {from,to,max_depth?}. Includes direct one-hop relations; Entity endpoints resolve through datasets carrying their identity. Default max_depth=2, max 3, at most 8 shortest paths and 10000 expansions. Returns full node/relation IDs, declared edge direction, traversal cardinality, complete join keys, role IDs and guards. Explicit no-path/truncation status; no via parameter. These declarations do not prove aggregation safety: read the relevant measure constraints with oks_info and validate the query with dari_check.',
-      parameters:{type:'object',properties:{from:{type:'string'},to:{type:'string'},max_depth:{type:'integer',minimum:1,maximum:3}},required:['from','to'],additionalProperties:false},
+      description:'Find the shortest cycle-free relationship paths satisfying {from,to,via?}, using exact Dataset/Entity root IDs. via is an optional ordered list of required nodes; omit it for unconstrained shortest paths. Entity nodes resolve through datasets carrying their identity. No fixed hop limit. Returns at most 20 paths from the first matching depth in stable order, with full node/relation IDs, declared edge direction, traversal cardinality, complete join keys, role IDs and guards. Explicit no-path/return-truncation status. These declarations do not prove aggregation safety: read the relevant measure constraints with oks_info and validate the query with dari_check.',
+      parameters:{type:'object',properties:{from:{type:'string'},to:{type:'string'},via:{type:'array',items:{type:'string'}}},required:['from','to'],additionalProperties:false},
       output:{schema:OBJECT_OUTPUT,render:renderRoutes},
-      async execute(raw,exec){return method('routes',check(raw,['from','to','max_depth']),exec);},
+      async execute(raw,exec){return method('routes',check(raw,['from','to','via']),exec);},
     },
     {
       name: 'oks_info', description: 'Read exact knowledge points from scoped search results or routes. Returns Markdown sections headed by exact IDs, explicit short query names and complete definitions; complex expressions remain JSON blocks. ids is a batch of 1..64 complete node IDs; each item contains only its own definition, no recursive navigation or inline child graph. Empty descriptions are omitted. Types, enums, formulas, predicates, identity parts and query constraints are retained. Unknown IDs are reported individually. Query names stay short as defined by each point ID and its facts.',

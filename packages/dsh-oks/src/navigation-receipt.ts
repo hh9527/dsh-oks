@@ -30,6 +30,7 @@ function keyText(value:any):string{
 }
 export function renderRoutes(_args:unknown,value:{data:ReturnType<typeof routePoints>}):RenderBlock[]{
   const r=value.data,lines=[`## ${r.from} → ${r.to}`,''];
+  if(r.via.length)lines.push(`必经节点（依次）：${r.via.join(' → ')}`,'');
   for(let i=0;i<r.paths.length;i++){
     const p=r.paths[i];if(r.paths.length>1)lines.push(`### 路径 ${i+1}`,'');
     if(r.from!==p.nodes[0])lines.push(`起点承载：${r.from} in ${p.nodes[0]}`,'');
@@ -44,7 +45,7 @@ export function renderRoutes(_args:unknown,value:{data:ReturnType<typeof routePo
     if(r.to!==p.nodes.at(-1))lines.push('',`终点承载：${r.to} in ${p.nodes.at(-1)}`);
     lines.push('');
   }
-  if(!r.paths.length)lines.push(r.truncated?'搜索已截断，尚未找到路径':`✗ 最大深度 ${r.max_depth} 内未找到路径`);
-  else if(r.truncated)lines.push('候选路径已截断');
+  if(!r.paths.length)lines.push('✗ 未找到满足约束的无环路径');
+  else if(r.truncated)lines.push('最短路径超过 20 条，返回前 20 条');
   return [{type:'text',text:lines.join('\n').trim()}];
 }
