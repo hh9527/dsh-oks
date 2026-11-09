@@ -19,6 +19,7 @@ assert.throws(()=>renderResolveReceipt({ok:true}),/Missing resolved Answer/);
 const failed=renderResolveReceipt({ok:false,status:'failed',failures:[{name:'root',status:'failed',at:{line:3,column:5},error:'Truncated input'},{name:'blocked',status:'blocked',at:{line:4,column:1},error:'Upstream root is blocked'}],diagnostics:[{span:{start:{line:3,column:5}},message:'Truncated input'}],outputs:[{name:'unused',shape:'hidden-shape'}]});
 assert.equal(failed,'ResolveFailed\n-------------\n\n## diagnostics\n- L3:5: Truncated input');
 assert(!failed.includes('Upstream'));assert(!failed.includes('hidden-shape'));
+assert.match(renderResolveReceipt({ok:false,failures:[{status:'failed',error:'Upstream service rejected the request'}]}),/Upstream service rejected/);
 const errors=renderResolveReceipt({ok:false,failures:Array.from({length:25},(_,i)=>({error:'Error '+i,at:{line:i+1,column:1}}))});
 assert.equal(errors.split('\n').filter(l=>l.startsWith('- L')).length,20);assert(errors.includes('5 more errors omitted'));
 assert.equal(renderResolveReceipt({ok:false,status:'approval-rejected'}),'ResolveFailed\n-------------\n\n## diagnostics\n- approval-rejected');

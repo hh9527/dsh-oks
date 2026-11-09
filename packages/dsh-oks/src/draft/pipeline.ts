@@ -18,13 +18,15 @@ export type Statement = (
 export type PipelineNode = {
   /** Analysis lowering retains higher-order structure instead of executable expansion. */
   analysis?:Expr;
+  /** No executable lowering exists because a syntax-failed dependency is unavailable. */
+  analysisOnly?:boolean;
   typed?:boolean;
   internal?: boolean;
   display?: { label: string; template: string; figureId?: string; component: string };
   statement: Statement;
   bindings: string[];
 };
-export type SourceDiagnostic = {file?:string;stage:string;message:string;span:Span;asset?:string;expected?:string;found?:string;excerpt?:{line:number;column:number;text:string;marker:string};related?:{message:string;span:Span}[]};
+export type SourceDiagnostic = {file?:string;stage:string;severity?:'error'|'warning';message:string;span:Span;asset?:string;expected?:string;found?:string;excerpt?:{line:number;column:number;text:string;marker:string};related?:{message:string;span:Span}[]};
 export class DraftSyntaxError extends Error {
   readonly span: Span;
   readonly diagnostics: SourceDiagnostic[];

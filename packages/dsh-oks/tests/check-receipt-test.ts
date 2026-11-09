@@ -46,6 +46,14 @@ try{
  const unknown=await run({data:['absent']});assert.equal(unknown.ok,false);assert.match(unknown.text,/Unknown data binding "absent"/);
  writeFileSync(file,'data row = {"周次":1};\ndata a = row.周次;\ndata b = row.周次;');
  const lexical=await run({data:['a']});assert.equal(lexical.ok,false);assert(!lexical.text.includes('Unknown data binding'));assert.equal((lexical.text.match(/row\["周次"\]/g)??[]).length,2);
+ const syntaxSource='data broken = 1+*2;\ndata dependent = broken+1;\ndata valid = 1;';
+ writeFileSync(file,syntaxSource);const syntaxFailed=await run({data:['broken']});
+ assert.equal(syntaxFailed.ok,false);assert.match(syntaxFailed.text,/- data.broken\n- data.dependent/);assert.match(syntaxFailed.text,/- data.valid: Int/);assert(!syntaxFailed.text.includes('Unknown data binding'));
+ const syntaxAgain=await run();assert(!syntaxAgain.text.includes('- data.valid: Int'));assert(!syntaxAgain.text.includes('- data.broken: Int'));
+ writeFileSync(file,syntaxSource.replace('1+*2','1+2'));const syntaxFixed=await run();
+ assert.equal(syntaxFixed.ok,true,syntaxFixed.text);assert.match(syntaxFixed.text,/- data.broken: Int/);assert.match(syntaxFixed.text,/- data.dependent: Int/);assert(!syntaxFixed.text.includes('- data.valid: Int'));
+ writeFileSync(file,Array.from({length:25},(_,i)=>`data syntax${i} = 1+*2;`).join('\n'));
+ const syntaxCapped=await run();assert.equal(syntaxCapped.ok,false);assert.equal(syntaxCapped.text.split('\n').filter((l:string)=>/^- L\d/.test(l)).length,20);assert.match(syntaxCapped.text,/5 more errors omitted/);
  for(const raw of [null,[],{data:'facts'},{figures:[1]},{data:['']},{data:Array(33).fill('facts')}])assert.throws(()=>parseInspect(raw));
  const table=(nullable:boolean,reverse=false):Ty=>({kind:'table',columns:(reverse?['b','a']:['a','b']).map(name=>({name,type:'Int',nullable}))});
  assert.notEqual(shapeFingerprint(table(false)),shapeFingerprint(table(true)));assert.notEqual(shapeFingerprint(table(false)),shapeFingerprint(table(false,true)));

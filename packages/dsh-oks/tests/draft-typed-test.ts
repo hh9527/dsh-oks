@@ -41,6 +41,81 @@ try{
 console.log('Typed Pipeline: query schemas, typed joins/projections/Option, aggregation, select_one, report, cache and zero-data diagnostics passed');
 
 const small=(body:string)=>`data a = query({period:"base",limit:10});data b = query({period:"current",limit:10});${body}`;
+{
+ const before=reads;
+ const text=small(`data broken = select({from:{s:a},fields:r=>({
+  first:r.s.missing_first,
+  second:r.s.missing_second,
+  invalid:r.s.server_id + 1,
+  nested:r.s.missing_nested + 1
+ })}); data blocked = select({from:{s:broken},fields:r=>({id:r.s.first})});`);
+ const result=await checkDesign(text,'typed.dari',backend);
+ assert.equal(result.ok,false);assert.equal(reads,before);
+ for(const expected of ['missing_first','missing_second','Arithmetic requires numbers','missing_nested'])assert(result.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(result.diagnostics));
+ assert.equal(result.diagnostics.filter(d=>d.message.includes('Arithmetic requires numbers')).length,1,JSON.stringify(result.diagnostics));
+ assert(result.checkedBindings.some(b=>b.name==='broken'&&!b.checked));assert(result.checkedBindings.some(b=>b.name==='blocked'&&!b.checked));
+ const partial=await checkDesign(small(`data broken = select({from:{s:a},fields:r=>({bad:r.s.missing_root})});
+ data downstream = select({from:{s:a},fields:r=>({dependent:broken.missing,independent:r.s.missing_independent})});`),'typed.dari',backend);
+ assert(partial.diagnostics.some(d=>d.message.includes('missing_root')),JSON.stringify(partial.diagnostics));
+ assert(partial.diagnostics.some(d=>d.message.includes('missing_independent')),JSON.stringify(partial.diagnostics));
+ assert(!partial.diagnostics.some(d=>/missing on broken|Expected Table, got Error|Upstream type/.test(d.message)),JSON.stringify(partial.diagnostics));
+ assert(partial.checkedBindings.some(b=>b.name==='downstream'&&!b.checked));assert.equal(reads,before);
+ assert.equal(partial.types.downstream,undefined);assert.equal(partial.checkedBindings.find(b=>b.name==='downstream')?.shape,undefined);
+ const siblings=await checkDesign(small(`data sample = select({from:{s:a},fields:r=>({
+  first:case_when(True,r.s.missing_left,r.s.missing_right),
+  second:r.s.missing_a+r.s.missing_b
+ })});`),'typed.dari',backend);
+ for(const name of ['missing_left','missing_right','missing_a','missing_b'])assert(siblings.diagnostics.some(d=>d.message.includes(name)),JSON.stringify(siblings.diagnostics));
+ assert(!siblings.diagnostics.some(d=>/Arithmetic requires numbers|case_when requires/.test(d.message)));
+ const ordering=await checkDesign(small('data sample = select({from:{s:a},fields:r=>({id:r.s.server_id}),order_by:o=>[asc(o.missing_one),desc(o.missing_two)]});'),'typed.dari',backend);
+ for(const name of ['missing_one','missing_two'])assert(ordering.diagnostics.some(d=>d.message.includes(name)),JSON.stringify(ordering.diagnostics));
+ assert(!ordering.diagnostics.some(d=>/Ordering requires a scalar/.test(d.message)));
+ const grouped=await checkDesign(small(`data sample = select({from:{s:a},
+  where:r=>r.s.missing_predicate,
+  group_by:r=>({bad:r.s.missing_group}),
+  fields:(g,rows)=>({valid:count(rows),bad:sum(rows.s.missing_value)})});`),'typed.dari',backend);
+ for(const name of ['missing_predicate','missing_group','missing_value'])assert(grouped.diagnostics.some(d=>d.message.includes(name)),JSON.stringify(grouped.diagnostics));
+ assert(!grouped.diagnostics.some(d=>/Predicate must return Bool|Group keys must be scalar|sum requires/.test(d.message)));
+ const multiGroupSource=small('data sample = select({from:{s:a},group_by:r=>({first:r.s,second:r.s}),fields:(g,rows)=>({one:rows.s.cpu,two:rows.s.cpu})});');
+ const multiGroup=await checkDesign(multiGroupSource,'typed.dari',backend);
+ for(const [message,source] of [['Group key first','first:r.s'],['Group key second','second:r.s'],['aggregated: one','one:rows.s.cpu'],['aggregated: two','two:rows.s.cpu']]){
+  const diagnostic=multiGroup.diagnostics.find(d=>d.message.includes(message));assert(diagnostic,JSON.stringify(multiGroup.diagnostics));
+  assert.equal(diagnostic.span.start.offset,multiGroupSource.indexOf(source)+source.indexOf(':')+1);
+ }
+ const groupCascade=await checkDesign(small('data sample = select({from:{s:a},group_by:r=>({bad:r.s}),fields:(g,rows)=>({x:g.bad.missing,n:count(rows)})});'),'typed.dari',backend);
+ assert(groupCascade.diagnostics.some(d=>d.message.includes('Group key bad')),JSON.stringify(groupCascade.diagnostics));
+ assert(!groupCascade.diagnostics.some(d=>d.message.includes('missing')),JSON.stringify(groupCascade.diagnostics));
+ const later=await checkDesign(small('data sample = select({from:{s:a},where:r=>r.s.missing_where,fields:r=>({bad:r.s.missing_field,id:r.s.server_id}),order_by:o=>[asc(o.bad),desc(o.missing_order)],limit:-1});'),'typed.dari',backend);
+ for(const name of ['missing_where','missing_field','missing_order','limit requires a known nonnegative Int'])assert(later.diagnostics.some(d=>d.message.includes(name)),JSON.stringify(later.diagnostics));
+ assert(!later.diagnostics.some(d=>/Ordering requires a scalar|Unknown field bad/.test(d.message)));
+ const malformedOptions=await checkDesign(small('data sample = select({from:{s:a},fields:r=>({id:r.s.server_id}),having:o=>o.id=="x",order_by:42,limit:-1});'),'typed.dari',backend);
+ for(const expected of ['having requires group_by','order_by requires','limit requires a known nonnegative Int'])assert(malformedOptions.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(malformedOptions.diagnostics));
+ const malformedWhere=await checkDesign(small('data sample = select({from:{s:a},where:42,fields:r=>({id:r.s.missing_field})});'),'typed.dari',backend);
+ for(const expected of ['Expected a row function','missing_field'])assert(malformedWhere.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(malformedWhere.diagnostics));
+ assert(!malformedWhere.diagnostics.some(d=>d.message.includes('Predicate must return Bool')),JSON.stringify(malformedWhere.diagnostics));
+ const unknownOptions=await checkDesign(small('data sample = select({from:{s:a},extra_one:1,extra_two:2,fields:r=>({id:r.s.missing_field})});'),'typed.dari',backend);
+ for(const expected of ['Unknown select option extra_one','Unknown select option extra_two','missing_field'])assert(unknownOptions.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(unknownOptions.diagnostics));
+ const joined=await checkDesign(small(`data sample = select({from:{s:a},joins:[{kind:"inner",source:{t:b},on:r=>1}],fields:r=>({bad:r.s.missing_field})});`),'typed.dari',backend);
+ assert(joined.diagnostics.some(d=>/Predicate must return Bool/.test(d.message)),JSON.stringify(joined.diagnostics));
+ assert(joined.diagnostics.some(d=>/missing_field/.test(d.message)),JSON.stringify(joined.diagnostics));
+ const joinOptions=await checkDesign(small('data sample = select({from:{s:a},joins:[{kind:"inner",source:{t:b},extra_one:1,extra_two:2,on:r=>r.t.missing_join}],fields:r=>({bad:r.s.missing_field})});'),'typed.dari',backend);
+ for(const expected of ['Unknown join option extra_one','Unknown join option extra_two','missing_join','missing_field'])assert(joinOptions.diagnostics.some(d=>d.message.includes(expected)),JSON.stringify(joinOptions.diagnostics));
+ assert(!joinOptions.diagnostics.some(d=>d.message.includes('Predicate must return Bool')),JSON.stringify(joinOptions.diagnostics));
+ const partialSources=await checkDesign(small('data broken = [1,"x"]; data sample = select({from:{s:broken},joins:[{kind:"inner",source:{t:a},on:r=>r.s.n==r.t.cpu}],fields:r=>({dependent:r.s.missing,independent:r.t.missing_field})});'),'typed.dari',backend);
+ assert(partialSources.diagnostics.some(d=>d.message.includes('Incompatible types')),JSON.stringify(partialSources.diagnostics));
+ assert(partialSources.diagnostics.some(d=>d.message.includes('missing_field')),JSON.stringify(partialSources.diagnostics));
+ assert(!partialSources.diagnostics.some(d=>/Unknown field missing on r.s|Predicate must return Bool|Expected Table, got Error/.test(d.message)),JSON.stringify(partialSources.diagnostics));
+ assert(partialSources.checkedBindings.some(b=>b.name==='sample'&&!b.checked));
+ const unknownBounds=await checkDesign(small('data broken = [1,"x"]; data sample = select({from:{s:broken},fields:r=>({v:1}),limit:1});'),'typed.dari',backend);
+ assert(unknownBounds.diagnostics.some(d=>d.message.includes('Incompatible types')),JSON.stringify(unknownBounds.diagnostics));
+ assert(!unknownBounds.diagnostics.some(d=>d.message.includes('limit requires order_by')),JSON.stringify(unknownBounds.diagnostics));
+ const invalidLimit=await checkDesign(small('data broken = [1,"x"]; data sample = select({from:{s:broken},fields:r=>({v:1}),limit:-1});'),'typed.dari',backend);
+ assert(invalidLimit.diagnostics.some(d=>d.message.includes('limit requires a known nonnegative Int')),JSON.stringify(invalidLimit.diagnostics));
+ const halted=await checkDesign(small('data sample = select({from:{s:a},where:r=>r.s.missing_predicate,fields:42});'),'typed.dari',backend);
+ assert(halted.diagnostics.some(d=>/missing_predicate/.test(d.message)),JSON.stringify(halted.diagnostics));
+ assert(halted.diagnostics.some(d=>/Expected a row function/.test(d.message)),JSON.stringify(halted.diagnostics));
+ assert.equal(reads,before);
+}
 async function checkedRun(body:string){const text=small(body);const checked=await checkDesign(text,'typed.dari',backend);assert.equal(checked.ok,true,JSON.stringify(checked));const rt=new DraftRuntime(backend,{parse:parseExecutableDesign});const run=await rt.run(text);return {rt,run,text};}
 {
  const {rt,run,text}=await checkedRun(`data part = select({from:{x:b},where:(r)=>r.x.server_id == "a",fields:(r)=>({server_id:r.x.server_id,cpu:r.x.cpu})});

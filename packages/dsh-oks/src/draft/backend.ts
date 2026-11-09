@@ -3,27 +3,28 @@ import {runTyped,validateTypedRows} from './typed-runtime.ts';
 import {isBox,typeOf,show,unbox,record,scalar,type Ty} from './typed-types.ts';
 import {SqlWorkspace} from './sql.ts';
 import { projectionError } from './projection.ts';
-import { componentSpec } from './components.ts';
+import { componentSpec,ComponentSpecValidationError } from './components.ts';
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { canonicalJson } from '../key.ts';
 import { isRecord } from '../host.ts';
 import type { Knowledge, WorkspaceEntry } from '../knowledge.ts';
 import { limitProblem } from '../intent-limit.ts';
-import { appendNode, describeRows, isResultColumn, originOf, rowsOf, resultStamp } from '../results.ts';
+import { appendNode, describeRows, isResultColumn, originOf, rowsOf, resultStamp,RowsValidationError } from '../results.ts';
 import type { DataOrigin, OriginNode, ResultColumn } from '../results.ts';
-import {timeWindowOptions,timeWindows,TIME_WINDOWS_VERSION} from '../time-windows.ts';
+import {timeWindowOptions,timeWindows,TIME_WINDOWS_VERSION,TimeWindowValidationError} from '../time-windows.ts';
 import { encode, resolveZone } from '../time.ts';
 import type { ContextTimeZone } from '../time.ts';
 import { tableMarkdown } from '../view/table.ts';
 import { buildOption, CHART_WIDTH } from '../chart/option.ts';
 import { renderEchartsSvg } from '../chart/echarts.ts';
-import { chartTitle, missingColumns, parseChartSpec, parseTableSpec, shapeProblem } from '../chart/spec.ts';
+import { chartTitle, missingColumns, parseChartSpec, parseTableSpec, shapeProblem,TableSpecValidationError } from '../chart/spec.ts';
 import {selectReport} from '../report/structure.ts';
 import { assembleReport } from '../report/assemble.ts';
 import type { ReportBinding } from '../report/assemble.ts';
 import { restoreAssets } from '../report/page.ts';
 import { DraftSyntaxError } from './pipeline.ts';
+import { DiagnosticCollector } from './diagnostics.ts';
 import type { Expr, Operator, Span, SourceDiagnostic } from './pipeline.ts';
 import type { DraftDocument } from './document.ts';
 import type { CallContext, Computed, DraftBackend, DraftValue, QueryPlan } from './runtime.ts';
@@ -37,6 +38,9 @@ const jsonPath = (path: (string | number)[]) => '.data' + path.map(key => `[${JS
 const fail = (message: string, span: Span): never => { throw new DraftSyntaxError(message, span); };
 
 type CachedCheck = { error?:string;result?:unknown; };
+class IntentValidationError extends Error {}
+class FigureValidationError extends Error {}
+class PresentationValidationError extends Error {}
 /** Per-source validation cache. Only deterministic completed checks are admitted. */
 class Checks {
   private entries = new Map<string, CachedCheck>();
@@ -102,9 +106,10 @@ function scalarText(value: unknown): { value: string } | { error: string } {
     : { error: 'Template span must select a JSON scalar' };
 }
 
+class DataNatureValidationError extends Error {}
 function dataNature(raw: unknown): OriginNode['nature'] {
   if (raw === undefined) return 'given';
-  if (!isRecord(raw) || Object.keys(raw).some(key => key !== 'kind') || !['given', 'parameter', 'assumption', 'example'].includes(String(raw.kind))) throw new Error('data options must be {kind:"given"|"parameter"|"assumption"|"example"}');
+  if (!isRecord(raw) || Object.keys(raw).some(key => key !== 'kind') || !['given', 'parameter', 'assumption', 'example'].includes(String(raw.kind))) throw new DataNatureValidationError('data options must be {kind:"given"|"parameter"|"assumption"|"example"}');
   return raw.kind as OriginNode['nature'];
 }
 
@@ -126,17 +131,20 @@ export function createDraftBackend(options: {
   type PreparedQuery = { sql: string; bindings: unknown[]; columns: ResultColumn[]; limit_slot: number };
   const lower = async (intent: unknown, signal?: AbortSignal): Promise<PreparedQuery> => {
     const problem = limitProblem(intent);
-    if (problem) throw new Error(problem);
+    if (problem) throw new IntentValidationError(problem);
     const key = digest({ intent, environment: planEnvironment() });
     const cached = checks.get(key);
-    if (cached?.error) throw new Error(cached.error);
+    if (cached?.error) throw new IntentValidationError(cached.error);
     if (cached?.result) return cached.result as PreparedQuery;
     const response = await entry.runner!.send(`${entry.settings.domain}/transform`, { intents: [intent] }, signal);
     if (signal?.aborted) throw new Error('aborted');
     const lowered = response.ok?.queries;
+    if(response.ok?.accepted===false&&Array.isArray(response.ok?.diagnostics)){
+      const error = `Intent rejected: ${JSON.stringify(response.ok.diagnostics)}`;
+      checks.set(key, { error });throw new IntentValidationError(error);
+    }
     if (response.ok?.accepted !== true || !Array.isArray(lowered) || lowered.length !== 1 || !isRecord(lowered[0]) || typeof lowered[0].sql !== 'string' || !Array.isArray(lowered[0].bindings)) {
       const error = `Intent rejected: ${JSON.stringify(response.ok?.diagnostics ?? response.error ?? response)}`;
-      if (response.ok?.accepted === false && Array.isArray(response.ok?.diagnostics)) checks.set(key, { error });
       throw new Error(error);
     }
     const limitSlot = lowered[0].limit_slot;
@@ -157,30 +165,40 @@ export function createDraftBackend(options: {
   };
   const sqlWorkspace=new SqlWorkspace();
   const validateFigure = (raw: unknown) => {
-    if (!isRecord(raw)) throw new Error('render_figure spec must be an object');
+    if (!isRecord(raw)) throw new FigureValidationError('render_figure spec must be an object');
     if (raw.kind === 'table') return parseTableSpec(raw);
     const parsed = parseChartSpec(raw);
-    if ('error' in parsed) throw new Error(parsed.error);
+    if ('error' in parsed) throw new FigureValidationError(parsed.error);
     return parsed;
   };
-  const preflight = async (document: DraftDocument, signal?: AbortSignal) => {
-    const diagnostics:SourceDiagnostic[]=[...document.diagnostics??[]];
+  const preflight = async (document: DraftDocument, signal?: AbortSignal, options?: {validateQueries?:boolean;diagnostics?:DiagnosticCollector}) => {
+    const diagnostics=options?.diagnostics?.scope()??new DiagnosticCollector();diagnostics.reportAll(document.diagnostics??[]);
     const plannedQueries:{intent:unknown;span:Span}[]=[];
     const constants = new Map<string, unknown>();
+    let currentStatement:DraftDocument['nodes'][number]['statement'];
+    const visitSafely=async(expr:Expr):Promise<void>=>{
+      try{await visit(expr);}catch(error){
+        if(signal?.aborted||!(error instanceof DraftSyntaxError))throw error;
+        const figure=currentStatement.kind==='binding'&&currentStatement.value.kind==='call'&&currentStatement.value.operator==='render_figure';
+        diagnostics.reportAll((error.diagnostics.length?error.diagnostics:[{file,stage:figure?'figure':'validation',message:error.message,span:error.span}]).map(d=>({...d,...(currentStatement.kind==='binding'?{asset:currentStatement.name}:{})})));
+      }
+    };
     const visit = async (expr: Expr): Promise<void> => {
-      if (expr.kind === 'array') { for (const value of expr.values) await visit(value); }
-      else if (expr.kind === 'object') { for (const { value } of expr.entries) await visit(value); }
-      else if (expr.kind === 'project') { await visit(expr.input); constant(expr, constants); }
+      if (expr.kind === 'array') { for (const value of expr.values) await visitSafely(value); }
+      else if (expr.kind === 'object') { for (const { value } of expr.entries) await visitSafely(value); }
+      else if (expr.kind === 'project') { const before=diagnostics.checkpoint();await visitSafely(expr.input);if(!diagnostics.hasErrors(before))constant(expr, constants); }
       else if (expr.kind === 'call') {
-        for (const arg of expr.args) await visit(arg);
+        const before=diagnostics.checkpoint();
+        for (const arg of expr.args) await visitSafely(arg);
+        if(diagnostics.hasErrors(before))return;
         try {
           const first = expr.args[0] ? constant(expr.args[0], constants) : UNKNOWN;
           const second = expr.args[1] ? constant(expr.args[1], constants) : UNKNOWN;
-          if (['render_figure', 'render_report'].includes(expr.operator) && second !== UNKNOWN && !isRecord(second)) throw new Error(`${expr.operator} inputs must be a named object`);
-          if (expr.operator === 'render_figure' && second !== UNKNOWN && isRecord(second) && (!Object.hasOwn(second, 'data') || Object.keys(second).some(key => key !== 'data' && key !== 'nodes'))) throw new Error('render_figure inputs must be {data,nodes?}');
+          if (['render_figure', 'render_report'].includes(expr.operator) && second !== UNKNOWN && !isRecord(second)) fail(`${expr.operator} inputs must be a named object`,expr.span);
+          if (expr.operator === 'render_figure' && second !== UNKNOWN && isRecord(second) && (!Object.hasOwn(second, 'data') || Object.keys(second).some(key => key !== 'data' && key !== 'nodes'))) fail('render_figure inputs must be {data,nodes?}',expr.span);
           if (expr.operator === 'time_windows' && second !== UNKNOWN) timeWindowOptions(second);
           if (expr.operator === 'query' && first !== UNKNOWN) plannedQueries.push({intent:first,span:expr.span});
-          if (expr.operator === 'render_figure' && first !== UNKNOWN){try{validateFigure(componentSpec(first,expr.figureKind));}catch(error){fail(error instanceof Error?error.message:String(error),expr.args[0].span);}}
+          if (expr.operator === 'render_figure' && first !== UNKNOWN){try{validateFigure(componentSpec(first,expr.figureKind));}catch(error){if(!(error instanceof FigureValidationError)&&!(error instanceof TableSpecValidationError)&&!(error instanceof ComponentSpecValidationError))throw error;fail(error.message,expr.args[0].span);}}
           if (expr.operator === 'data' && expr.args[1]) {
             const nature = constant(expr.args[1], constants);
             if (nature !== UNKNOWN) dataNature(nature);
@@ -192,62 +210,56 @@ export function createDraftBackend(options: {
             const keys = expr.args[1].kind === 'object' ? expr.args[1].entries.map(entry => entry.key) : Object.keys(second as Record<string, unknown>);
             const missing = [...refs].filter(ref => !keys.includes(ref));
             const unused = keys.filter(key => !refs.has(key));
-            if (missing.length || unused.length) throw new Error(`Template bindings mismatch: missing [${missing}], unused [${unused}]`);
+            if (missing.length || unused.length) fail(`Template bindings mismatch: missing [${missing}], unused [${unused}]`,expr.span);
           }
         } catch (error) {
           if (signal?.aborted) throw error;
-          if(error instanceof DraftSyntaxError)throw error;
-          fail(error instanceof Error ? error.message : String(error), expr.span);
+          if(error instanceof DataNatureValidationError||error instanceof TimeWindowValidationError)fail(error.message,expr.span);
+          throw error;
         }
       }
     };
     for (const { statement } of document.nodes) {
-      try {
-        await visit(statement.value);
-        if (statement.kind === 'binding') {
-          const value = constant(statement.value, constants);
-          if (value !== UNKNOWN) constants.set(statement.name, value);
-        }
-      } catch(error) {
-        if(signal?.aborted)throw error;
-        if(!(error instanceof DraftSyntaxError))throw error;
-        const figure=statement.kind==='binding'&&statement.value.kind==='call'&&statement.value.operator==='render_figure';
-        diagnostics.push(...(error.diagnostics.length?error.diagnostics:[{file,stage:figure?'figure':'validation',message:error.message,span:error.span}]).map(d=>({...d,...(statement.kind==='binding'?{asset:statement.name}:{})})));
+      currentStatement=statement;const before=diagnostics.checkpoint();
+      await visitSafely(statement.value);
+      if (statement.kind === 'binding'&&!diagnostics.hasErrors(before)) {
+        const value = constant(statement.value, constants);
+        if (value !== UNKNOWN) constants.set(statement.name, value);
       }
     }
     // Model-dependent checks need a locally valid document; they never execute business SQL.
-    if(!diagnostics.length)for(const query of plannedQueries){
-      try{await lower(query.intent,signal);}catch(error){if(signal?.aborted)throw error;diagnostics.push({file,stage:'validation',message:error instanceof Error?error.message:String(error),span:query.span});}
+    if(options?.validateQueries!==false&&!diagnostics.hasErrors())for(const query of plannedQueries){
+      try{await lower(query.intent,signal);}catch(error){if(signal?.aborted||!(error instanceof IntentValidationError))throw error;diagnostics.report({file,stage:'validation',message:error.message,span:query.span});}
     }
-    diagnostics.sort((a,b)=>a.span.start.offset-b.span.start.offset);
-    if(diagnostics.length)throw new DraftSyntaxError(diagnostics[0].message,diagnostics[0].span,diagnostics);
+    const errors=diagnostics.list().filter(d=>d.severity!=='warning');
+    if(errors.length)throw new DraftSyntaxError(errors[0].message,errors[0].span,errors);
   };
   const checkCall = (ctx:CallContext, known:(value:unknown)=>boolean):SourceDiagnostic[] => {
-    const diagnostics:SourceDiagnostic[]=[];
-    const check=(work:()=>void,span=ctx.span)=>{try{work();}catch(error){diagnostics.push({file,stage:ctx.operator==='render_figure'?'figure':ctx.operator==='render_report'?'template':'validation',message:error instanceof Error?error.message:String(error),span});}};
+    const diagnostics=ctx.diagnostics?.scope({file})??new DiagnosticCollector();
+    const check=(work:()=>void,span=ctx.span)=>{try{work();}catch(error){if(!(error instanceof PresentationValidationError))throw error;diagnostics.report({file,stage:ctx.operator==='render_figure'?'figure':ctx.operator==='render_report'?'template':'validation',message:error.message,span});}};
     const first=ctx.args[0]?.data,second=ctx.args[1]?.data;
-    if(['render_figure','render_report'].includes(ctx.operator)&&ctx.args[1]&&known(second))check(()=>{if(!isRecord(second))throw new Error(`${ctx.operator} inputs must be a named object`);});
-    if(ctx.operator==='data'&&ctx.args[1]&&known(second))check(()=>{dataNature(second);});
-    if(ctx.operator==='time_windows'&&known(second))check(()=>{timeWindowOptions(second);});
+    if(['render_figure','render_report'].includes(ctx.operator)&&ctx.args[1]&&known(second))check(()=>{if(!isRecord(second))throw new PresentationValidationError(`${ctx.operator} inputs must be a named object`);});
+    if(ctx.operator==='data'&&ctx.args[1]&&known(second))try{dataNature(unbox(second));}catch(error){if(!(error instanceof DataNatureValidationError))throw error;diagnostics.report({file,stage:'validation',message:error.message,span:ctx.span});}
+    if(ctx.operator==='time_windows'&&known(second))try{if(known(first))timeWindows(unbox(first),unbox(second));else timeWindowOptions(unbox(second));}catch(error){if(!(error instanceof TimeWindowValidationError))throw error;diagnostics.report({file,stage:'validation',message:error.message,span:ctx.span});}
     if(ctx.operator==='render_figure'){
-      if(isRecord(second))check(()=>{if(!Object.hasOwn(second,'data')||Object.keys(second).some(key=>key!=='data'&&key!=='nodes'))throw new Error('render_figure inputs must be {data,nodes?}');});
-      if(known(first))check(()=>{
-        const raw=componentSpec(first,ctx.figureKind);
-        validateFigure(raw);
+      if(isRecord(second))check(()=>{if(!Object.hasOwn(second,'data')||Object.keys(second).some(key=>key!=='data'&&key!=='nodes'))throw new PresentationValidationError('render_figure inputs must be {data,nodes?}');});
+      let raw:unknown,validSpec=false;
+      if(known(first))try{raw=componentSpec(first,ctx.figureKind);validateFigure(raw);validSpec=true;}catch(error){if(!(error instanceof FigureValidationError)&&!(error instanceof TableSpecValidationError)&&!(error instanceof ComponentSpecValidationError))throw error;diagnostics.report({file,stage:'figure',message:error.message,span:ctx.span});}
+      if(validSpec)try{(()=>{
         if(!isRecord(second))return;
         if(isRecord(second.data)&&Array.isArray(second.data.columns)){
           const columns=second.data.columns.map(c=>isRecord(c)?String(c.name):String(c));
           const spec=raw as Record<string,unknown>;
-          const missing=spec.kind==='table'?(()=>{const table=parseTableSpec(spec);return [...new Set([...(table.columns??[]),...Object.keys(table.labels)])].filter(c=>!columns.includes(c));})():(()=>{const parsed=parseChartSpec(spec);if('error' in parsed)throw new Error(parsed.error);return missingColumns(parsed.spec,columns,1);})();
-          if(missing.length)throw new Error(`Missing figure columns: ${missing.join(', ')}`);
+          const missing=spec.kind==='table'?(()=>{const table=parseTableSpec(spec);return [...new Set([...(table.columns??[]),...Object.keys(table.labels)])].filter(c=>!columns.includes(c));})():(()=>{const parsed=parseChartSpec(spec);if('error' in parsed)throw new FigureValidationError(parsed.error);return missingColumns(parsed.spec,columns,1);})();
+          if(missing.length)throw new FigureValidationError(`Missing figure columns: ${missing.join(', ')}`);
           if(isBox(second.data)&&spec.kind!=='table'){
             const t=typeOf(second.data);const value=typeof spec.value==='string'?spec.value:undefined;
             const column=t.kind==='table'?t.columns.find(c=>c.name===value):undefined;
-            if(column&&!['Int','Float'].includes(column.type))throw new Error(`Figure value ${value} requires a numeric column, got ${column.type}`);
+            if(column&&!['Int','Float'].includes(column.type))throw new FigureValidationError(`Figure value ${value} requires a numeric column, got ${column.type}`);
             if(t.kind==='table'&&(spec.kind==='line'||spec.kind==='area')){
               const x=t.columns.find(c=>c.name===spec.x);
               const compatible:Record<string,string[]>={Int:['Int'],Float:['Int','Float'],String:['String'],Rfc3339:['String','DateTimeUtc'],EpochMillis:['Int','EpochMillis']};
-              if(x&&!compatible[String(spec.xType)]?.includes(x.type))throw new Error(`Figure x ${spec.x} with xType ${spec.xType} has incompatible column type ${x.type}`);
+              if(x&&!compatible[String(spec.xType)]?.includes(x.type))throw new FigureValidationError(`Figure x ${spec.x} with xType ${spec.xType} has incompatible column type ${x.type}`);
             }
           }
         }
@@ -258,17 +270,17 @@ export function createDraftBackend(options: {
           const parsed=parseTableSpec(spec);
           const columns=new Set(rows.flatMap(row=>Object.keys(row)));
           const missing=rows.length?[...new Set([...(parsed.columns??[]),...Object.keys(parsed.labels)])].filter(c=>!columns.has(c)):[];
-          if(missing.length)throw new Error(`Missing figure columns: ${missing.join(', ')}`);
+          if(missing.length)throw new FigureValidationError(`Missing figure columns: ${missing.join(', ')}`);
         }else{
           const parsed=parseChartSpec(spec);
-          if('error' in parsed)throw new Error(parsed.error);
+          if('error' in parsed)throw new FigureValidationError(parsed.error);
           const columns=[...new Set(rows.flatMap(row=>Object.keys(row)))];
           const missing=missingColumns(parsed.spec,columns,rows.length);
-          if(missing.length)throw new Error(`Missing figure columns: ${missing.join(', ')}`);
-          const issue=shapeProblem(rows,parsed.spec);if(issue)throw new Error(issue);
+          if(missing.length)throw new FigureValidationError(`Missing figure columns: ${missing.join(', ')}`);
+          const issue=shapeProblem(rows,parsed.spec);if(issue)throw new FigureValidationError(issue);
           if(parsed.spec.kind==='graph'&&known(second.nodes))rowsOf(second.nodes,'render_figure.nodes');
         }
-      });
+      })();}catch(error){if(!(error instanceof FigureValidationError)&&!(error instanceof TableSpecValidationError)&&!(error instanceof RowsValidationError))throw error;diagnostics.report({file,stage:'figure',message:error.message,span:ctx.span});}
     }
     if(ctx.operator==='render_report'&&ctx.asset?.program&&isRecord(second)){
       const program=ctx.asset.program;
@@ -276,20 +288,20 @@ export function createDraftBackend(options: {
       check(()=>{
         const missing=[...refs].filter(key=>!Object.hasOwn(second,key));
         const unused=Object.keys(second).filter(key=>!refs.has(key));
-        if(missing.length||unused.length)throw new Error(`Template bindings mismatch: missing [${missing}], unused [${unused}]`);
+        if(missing.length||unused.length)throw new PresentationValidationError(`Template bindings mismatch: missing [${missing}], unused [${unused}]`);
       });
       for(const [name,reference]of Object.entries(ctx.asset.references??{}))if(reference.kind==='condition')check(()=>{
         const t=typeOf(second[name]);
-        if(t.kind!=='scalar'||t.name!=='Bool'||t.nullable)throw new Error('if condition requires Bool, got '+show(t)+'; use ?? False for Option(Bool)');
+        if(t.kind!=='scalar'||t.name!=='Bool'||t.nullable)throw new PresentationValidationError('if condition requires Bool, got '+show(t)+'; use ?? False for Option(Bool)');
       },reference.span);
-      for(const [name,reference]of Object.entries(ctx.asset.references??{}))if(reference.kind==='value'&&isBox(second[name]))check(()=>{const t=typeOf(second[name]);if(t.kind!=='scalar'&&t.kind!=='null')throw new Error('Value.data must select a scalar, got '+show(t));},reference.span);
+      for(const [name,reference]of Object.entries(ctx.asset.references??{}))if(reference.kind==='value'&&isBox(second[name]))check(()=>{const t=typeOf(second[name]);if(t.kind!=='scalar'&&t.kind!=='null')throw new PresentationValidationError('Value.data must select a scalar, got '+show(t));},reference.span);
       for(const [name,reference]of Object.entries(ctx.asset.references??{}))if(reference.kind==='value'&&known(second[name]))check(()=>{
         const value=unbox(second[name]);
-        if(value!==null&&!['string','number','boolean'].includes(typeof value))throw new Error('Value.data must select a scalar; construct a summary in pipeline');
+        if(value!==null&&!['string','number','boolean'].includes(typeof value))throw new PresentationValidationError('Value.data must select a scalar; construct a summary in pipeline');
       },reference.span);
 
     }
-    return diagnostics;
+    return diagnostics.list();
   };
   const contextValue = (now:number):Computed => {
       const { zone } = resolveZone(undefined, options.contextZone());
@@ -433,7 +445,9 @@ export function createDraftBackend(options: {
     if(ctx.operator==='context')return contextValue(ANALYSIS_CONTEXT_TIME);
     if(['typed_value','relational','relational_one','table_union','typed_table'].includes(ctx.operator))return runTyped(ctx,sqlWorkspace,true);
     // These implementations only compute parameter values or transform an intent into a schema/plan.
-    if(['data','time_windows','query'].includes(ctx.operator))return parameterValue(ctx);
+    if(['data','time_windows','query'].includes(ctx.operator)){
+      try{return await parameterValue(ctx);}catch(error){if(error instanceof IntentValidationError)throw new DraftSyntaxError(error.message,ctx.span);throw error;}
+    }
     throw new DraftSyntaxError('Operator is not available during analysis: '+ctx.operator,ctx.span);
   };
   return { preflight, checkCall, analyze, beginRun:run=>sqlWorkspace.beginRun(run), finishRun:async run=>sqlWorkspace.finishRun(run), dispose:()=>{void sqlWorkspace.clear();}, environment, execute, assemble, executionContext:()=>({hash:entry.modelHash??null,domain:entry.settings?.domain??null}) };
