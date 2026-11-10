@@ -8,6 +8,8 @@ export const X_TYPES = ['Int','Float','String','Rfc3339','EpochMillis'] as const
 export type XType = typeof X_TYPES[number];
 
 export interface ChartSpec {
+  allowNoData?: boolean;
+  valueMin?: number;
   donut?: boolean | null;
   /** 图元专属：line / area 的缺失点连成直线还是断开。 */
   connectNulls?: boolean | null;
@@ -88,8 +90,8 @@ const parseLayout = (raw: unknown): { layout: LayoutOverrides } | { error: strin
 /** 解析表格规格：`columns` 选列与顺序，`title` 是表注。
  *  展示哪一份数据由入参顶层的 `src` 给——与图共用同一个字段。 */
 export class TableSpecValidationError extends Error {}
-export const parseTableSpec = (spec: Record<string, unknown>): { title: string | null; columns: string[] | null; labels: Record<string,string> } => {
-  const unknown = Object.keys(spec).filter(key => !['kind','title','columns','labels'].includes(key));
+export const parseTableSpec = (spec: Record<string, unknown>): { title: string | null; columns: string[] | null; labels: Record<string,string>; allowNoData: boolean } => {
+  const unknown = Object.keys(spec).filter(key => !['kind','title','columns','labels','allowNoData'].includes(key));
   if (unknown.length) throw new TableSpecValidationError(`Unknown table spec fields: ${unknown.join(', ')}; see tools/render_figure#kinds/table`);
   if (spec.columns !== undefined && spec.columns !== null && (!Array.isArray(spec.columns)
       || spec.columns.length === 0 || spec.columns.some(name => typeof name !== 'string' || name === '')
@@ -98,7 +100,9 @@ export const parseTableSpec = (spec: Record<string, unknown>): { title: string |
   }
   if (spec.title !== undefined && spec.title !== null && typeof spec.title !== 'string') throw new TableSpecValidationError('table title must be a string');
   if (spec.labels !== undefined && (!isRecord(spec.labels) || Object.values(spec.labels).some(value=>typeof value!=='string'||!value.trim()))) throw new TableSpecValidationError('table labels must map column names to nonempty strings');
+  if (spec.allowNoData !== undefined && typeof spec.allowNoData !== 'boolean') throw new TableSpecValidationError('spec.allowNoData must be a boolean');
   return {
+    allowNoData: spec.allowNoData === true,
     title: typeof spec.title === 'string' && spec.title.trim() !== '' ? spec.title.trim() : null,
     columns: Array.isArray(spec.columns) ? spec.columns as string[] : null,
     labels: (spec.labels ?? {}) as Record<string,string>,
@@ -117,7 +121,7 @@ const referencedColumns = (spec: ChartSpec): string[] =>
     // 空字符串表示"这个图元不需要这一项"（如 histogram 没有 x），不该被当成一个列名去核对。
     .filter((name): name is string => typeof name === 'string' && name !== '');
 
-/** 数据里缺了哪些被引用的列。空数据没有列可校验，也不该因此报错——空结果照样出一张空图。 */
+/** 数据里缺了哪些被引用的列。空数据没有列可校验，也不该因此报错——空结果由 allowNoData 决定是否允许交付。 */
 export const missingColumns = (spec: ChartSpec, columns: readonly string[], rowCount: number): string[] =>
   rowCount === 0 ? [] : referencedColumns(spec).filter((name) => !columns.includes(name));
 
@@ -191,7 +195,7 @@ const parseMarks = (raw: unknown, kind: ChartKind): { marks: MarkLine[] } | { er
 
 /** 顶层与嵌套对象的键名清单：错误层级诊断指向正确路径。 */
 const STYLE_KEYS = ['sort', 'labels', 'colors'];
-const SPEC_KEYS = ['kind', 'title', 'x', 'value', 'series', 'xType', 'xLabel', 'valueLabel', 'unit', 'stack', 'size', 'second', 'marks', 'bins', 'donut', 'connectNulls', 'entityColor', 'style', 'layout'];
+const SPEC_KEYS = ['valueMin', 'allowNoData', 'kind', 'title', 'x', 'value', 'series', 'xType', 'xLabel', 'valueLabel', 'unit', 'stack', 'size', 'second', 'marks', 'bins', 'donut', 'connectNulls', 'entityColor', 'style', 'layout'];
 const LAYOUT_KEYS = ['labelFont', 'titleFont', 'slantTicks', 'tickCount'];
 
 /** Reject misplaced fields and point to their accepted path before normalizing values. */
@@ -264,7 +268,9 @@ export const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: str
     const value = record[name];
     return typeof value === 'string' && value.length > 0 ? value : null;
   };
+  if (record.allowNoData !== undefined && typeof record.allowNoData !== 'boolean') return {error:'spec.allowNoData must be a boolean'};
   const spec: ChartSpec = {
+    allowNoData: record.allowNoData === true,
     kind: kind as ChartSpec['kind'],
     title: text('title'),
     x: text('x') ?? '',
@@ -307,6 +313,12 @@ export const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: str
     }
     if (!supports(spec.kind, 'stack')) return { error: unsupported('stack', spec.kind) };
     spec.stack = record.stack as ChartSpec['stack'];
+  }
+  if (record.valueMin !== undefined) {
+    if (typeof record.valueMin !== 'number' || !Number.isFinite(record.valueMin)) return {error:'spec.valueMin must be a finite number'};
+    if (!['bar','column','grouped_bar','grouped_column'].includes(spec.kind)) return {error:'spec.valueMin is supported only by bar / column charts'};
+    if (spec.stack !== null) return {error:'spec.valueMin cannot be combined with stack'};
+    spec.valueMin = record.valueMin;
   }
   if (record.bins !== undefined && record.bins !== null) {
     if (typeof record.bins !== 'number' || !Number.isInteger(record.bins) || record.bins < 1 || record.bins > 200) {
@@ -450,6 +462,10 @@ const lineProblem = (rows: readonly Record<string, unknown>[], spec: ChartSpec):
 /** 数据形状不满足图元的要求时报错：规格写对了、数据不对，同样画不出那张图。
  *  render_figure 是唯一的出图入口，这份判断也只此一处。 */
 export const shapeProblem = (rows: readonly Record<string, unknown>[], spec: ChartSpec): string | null => {
+  if (spec.valueMin !== undefined && rows.some(row => {
+    const value = toNumber(row[spec.value]);
+    return value !== null && value < spec.valueMin!;
+  })) return 'spec.valueMin exceeds a data value; lower the axis minimum to keep every value visible';
   if (spec.kind === 'line' || spec.kind === 'area') return lineProblem(rows, spec);
   if (spec.kind !== 'radar' || rows.length === 0) return null;
   // 雷达的轴就是指标：少于三根轴围不出形状，画出来像一张坏掉的折线。

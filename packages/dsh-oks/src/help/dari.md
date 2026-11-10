@@ -152,7 +152,7 @@ Intent 顶层 op 为 Graph、GraphPair 或 GraphUnion。多行查询必须在最
 | count / count_value | 节点别名 / `{node,dimension}`；行数/非空值计数 |
 | count_having | `{op,value}`，整数计数筛选；count_groups/include_empty 为 Bool |
 | measure_having | `{node,measure,op,value}` 数组，value 按度量输出类型 |
-| order_by / take | `[{column,direction}]` / 1..500，按最终投影列排序取前 N；dimension 可用 `{node,dimension,direction}` 指代已投影列 |
+| order_by / take | `[{column,direction}]` / 1..500，按输出别名排序取前 N；Graph 可用 `{node,dimension,direction}` / `{node,measure,direction}` 按未输出键排序，隐藏键不进入结果；聚合隐藏维度不得细分分组，DISTINCT 须使用已输出键 |
 | top_by_measure | `{node,measure,direction,take}`，按声明的聚合值排名 |
 | top_per | `{owner,sample,rank,take}`，逐 owner 的原始样本 Top-N |
 | row_grain / distinct | Root 或 Association / Bool，遵循模型粒度约束 |
@@ -229,6 +229,10 @@ BarChart/ColumnChart 单组，不接受 series，颜色按 x 类别使用 style.
 LineChart/AreaChart 的 xType 必填 Int|Float|String|Rfc3339|EpochMillis，不推断编码。Int/Float 数值轴，String 类别轴；Rfc3339 接受带时区 RFC3339 文本，EpochMillis 接受整数毫秒。检查列类型、运行校验实际值；数值/时间 x 在各序列内非递减。
 
 排版用 `layout:{labelFont:12,titleFont:16}`，行高、条厚、间距和画布高度依字号与类别/序列数推导，不设置 height/rowHeight。排序/标签用 `style:{sort:"desc",labels:True}`。未知键及层级放错在检查中报错；颜色、标题、轴名和单位等专用键见所选分册。
+
+图表与 Table 的 `spec.allowNoData` 默认 `False`：无数据时运行报错。显式设为 `True`，有数据正常显示，无数据显示“无数据”（图表使用淡色居中水印，表格保留已知表头）。字段、类型及非空数据合法性检查照常执行，无需构造占位行。
+
+柱条图可显式设置 `spec.valueMin` 为数值轴起点（与 value 列相同单位），例如原值为 99.56 时设 `valueMin:99`、`style:{labels:True}`，条柱从 99 起，标签仍为 99.56；若数据为 0.9956，起点应为 0.99。轴上自动注明起点；下界不能高于任何数据值；不与 stack 合用。无需减去基数或另造标签列。
 
 ## Report 与 Answer
 

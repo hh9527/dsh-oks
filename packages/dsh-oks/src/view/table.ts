@@ -11,6 +11,7 @@ export const TABLE_MAX_COLUMNS = 12;
 const CELL_MAX_CHARS = 60;
 
 export interface TableSpec {
+  allowNoData?: boolean;
   /** 展示的列与顺序；省略就按数据里出现的列顺序。 */
   columns?: string[];
   /** 数据列名到展示表头的映射。 */
@@ -54,18 +55,18 @@ export function tableMarkdown(
   rows: readonly Record<string, unknown>[],
   spec: TableSpec,
 ): { embedded: string; columns: string[] } | { error: string } {
-  if (rows.length === 0) return { error: '这份数据没有行：空表不落盘——先查清楚为什么没有数据。' };
+  if (rows.length === 0 && !spec.allowNoData) return { error: '表格没有数据；允许无数据时设置 spec.allowNoData: True' };
   if (rows.length > TABLE_MAX_ROWS) {
     return { error: `表最多 ${TABLE_MAX_ROWS} 行（收到 ${rows.length} 行）：先聚合或投影，再出表；`
       + '要展示完整明细，用图或报表里的其他表达。' };
   }
   const available = [...new Set(rows.flatMap((row) => Object.keys(row)))];
   const columns = spec.columns === undefined || spec.columns.length === 0 ? available : spec.columns;
-  const unknown = [...new Set([...columns, ...Object.keys(spec.labels ?? {})])].filter((name) => !available.includes(name));
+  const unknown = rows.length === 0 ? [] : [...new Set([...columns, ...Object.keys(spec.labels ?? {})])].filter((name) => !available.includes(name));
   if (unknown.length > 0) {
     return { error: `这些列不在数据里：${unknown.join(', ')}。可用的列：${available.join(', ') || '(没有列)'}` };
   }
-  if (columns.length === 0) return { error: '这份数据没有任何列：出不了表。' };
+  if (columns.length === 0) return rows.length === 0 ? {embedded: '无数据\n', columns} : { error: '这份数据没有任何列：出不了表。' };
   if (columns.length > TABLE_MAX_COLUMNS) {
     return { error: `表最多 ${TABLE_MAX_COLUMNS} 列（收到 ${columns.length} 列）：用 spec.columns 选要展示的那几列。` };
   }
@@ -77,5 +78,5 @@ export function tableMarkdown(
   for (const row of rows) {
     lines.push(`| ${columns.map((name) => escapeCell(cellText(row[name]))).join(' | ')} |`);
   }
-  return { embedded: `${lines.join('\n')}\n`, columns };
+  return { embedded: `${lines.join('\n')}\n${rows.length === 0 ? '\n无数据\n' : ''}`, columns };
 }

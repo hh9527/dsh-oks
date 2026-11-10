@@ -590,6 +590,7 @@ export const presentationFacts = {
           "doc": "columns 为字符串列名数组，决定选列和顺序；labels 将数据列名映射为展示表头，未映射时使用列名。",
           "facts": {
             "required": [],
+            "allowNoData": "Bool，默认 False；True 时接受无数据，保留已知表头并显示无数据",
             "columns": "字符串数组：按显示顺序列出现有数据列名，默认使用数据键名。",
             "labels": "对象：将数据列名映射为显示表头，未映射的列沿用列名。",
             "example": {
@@ -650,6 +651,7 @@ export const presentationFacts = {
           "doc": "x/value/series 指向数据列名；标题、轴名、单位与排版可覆盖。类别顺序默认沿用输入。查询/汇总与展示分开完成。",
           "facts": {
             "fields": {
+              "allowNoData": "Bool，默认 False；True 时接受无数据并显示无数据水印，有数据正常显示",
               "title": "String",
               "x": "数据列名",
               "value": "数据列名",
@@ -657,7 +659,8 @@ export const presentationFacts = {
               "xType": "line/area 必填：Int / Float / String / Rfc3339 / EpochMillis；分别为整数、数值、类别文本、RFC3339 文本、整数毫秒",
               "xLabel": "坐标轴名称",
               "valueLabel": "度量名称",
-              "unit": "显示单位"
+              "unit": "显示单位",
+              "valueMin": "柱条图可选的数值轴下界；与 value 同单位，保持原值标签并标明轴起点，不与 stack 合用"
             },
             "style": {
               "sort": [

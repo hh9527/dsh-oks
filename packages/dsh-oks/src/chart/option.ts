@@ -51,6 +51,8 @@ const chartTitle = (frame: ReturnType<typeof chartFrame>, titleFont: number) => 
 
 /** 一次渲染要用的全部输入。字段分三层：语义（这份数据是什么）、表达开关（怎么表达）、排版。 */
 export interface OptionInput {
+  allowNoData?: boolean;
+  valueMin?: number;
   kind: ChartKind;
   title: string | null;
   x: string;
@@ -141,14 +143,15 @@ const niceMax = (value: number): number => {
 
 /** 没有可画的数据时，给一张只有标题与说明的图，而不是空白画布。 */
 const emptyOption = (spec: OptionInput, layout: ReturnType<typeof resolveLayout>): EChartsCoreOption => ({
-  title: {
-    text: spec.title ?? '',
-    subtext: '（没有数据）',
+  title: [{
+    text: spec.title ?? '', left: 'center', top: 8,
+    textStyle: {fontSize: layout.titleFont, color: '#1c2b3a'},
+  }, {
+    text: '无数据',
     left: 'center',
     top: 'middle',
-    textStyle: { fontSize: layout.titleFont, fontWeight: 'bold', color: '#1c2b3a' },
-    subtextStyle: { fontSize: layout.labelFont, color: '#8494a5' },
-  },
+    textStyle: { fontSize: layout.titleFont * 2, fontWeight: 'normal', color: '#c4ccd5' },
+  }],
 });
 
 /** 名字到色板的落点：同一串文字每次都得到同一个数（FNV-1a，跨运行、跨机器都一样）。 */
@@ -170,6 +173,11 @@ export const buildOption = (
   spec: OptionInput,
   nodes: readonly Row[] | undefined = undefined,
 ): { option: EChartsCoreOption; height: number } => {
+  if (rows.length === 0) {
+    if (!spec.allowNoData) throw new Error('图表没有数据；允许无数据时设置 spec.allowNoData: True');
+    const layout = resolveLayout({categories: [], overrides: spec.layout ?? {}});
+    return {option: emptyOption(spec, layout), height: plotHeight('column', 0, layout.labelFont)};
+  }
   const originalKind=spec.kind;
   const grouped=originalKind==='grouped_bar'||originalKind==='grouped_column';
   if(grouped)spec={...spec,kind:originalKind==='grouped_bar'?'bar':'column'};
@@ -624,12 +632,12 @@ export const buildOption = (
   // 折线的数值轴跟着数据走（scale），别的图元从 0 起。
   // 折线读的是"走势"，而走势常常发生在很窄的一段里——可用率 98.4–99.9% 落在 0–100 的轴上
   // 就是一条平线（真机报告里的图 9/图 10 正是如此：三条线的全部差距只有 3px）。
-  // 柱与面积不能这样：长度与面积本身就是量，不从 0 起会说谎。
+  // 柱默认从 0 起；显式 valueMin 允许截断数值轴并标明起点，数据与标签保持原值。
   const fitRange = spec.kind === 'line';
 
   const measureAxis = {
     type: 'value' as const,
-    name: axisName(spec.valueLabel, spec.unit),
+    name: spec.valueMin === undefined ? axisName(spec.valueLabel, spec.unit) : `${axisName(spec.valueLabel, spec.unit) ?? ''}（轴起点 ${spec.valueMin}${spec.unit ?? ''}）`,
     nameLocation: 'middle' as const,
     nameGap: frame.line * 2,
     nameTextStyle: { fontSize: labelFont, color: '#5b6b7c' },
@@ -652,6 +660,7 @@ export const buildOption = (
     ...(markMin !== null && (fitRange || markMin < 0)
       ? { min: (bounds: { min: number }) => Math.min(bounds.min, markMin) }
       : {}),
+    ...(spec.valueMin === undefined ? {} : {min: spec.valueMin}),
     // echarts 的 splitNumber 是"分割段数"，档数减一。
     splitNumber: Math.max(1, layout.tickCount - 1),
     axisLine: { show: false },
@@ -922,6 +931,7 @@ export const buildOption = (
   const secondAxis = second === null || secondName === null ? null : {
     ...measureAxis,
     name: secondName,
+    ...(spec.valueMin === undefined ? {} : {min: undefined}),
     // 第二个度量总是折线，所以它的轴也按数据收紧——主轴是柱（从 0 起）时它照样收紧。
     ...(fitRange ? {} : { scale: true, boundaryGap: [0.08, 0.08] }),
     position: horizontal ? ('top' as const) : ('right' as const),

@@ -57,6 +57,17 @@ answer tree! { Answer [p [Value(data=summary?.n)]] };`);
  const tool=drafts.tools.find(t=>t.name==='dari_resolve')!;{const receipt=(tool.output.render as Function)({},large)[0].text;assert.match(receipt,/^Succeed/);assert(!receipt.includes('large.svg'),"the answer body lives in the delivered message");}
  write('data value = 42;answer tree! { Answer [p [Value(data=value)]] };');
  assert.equal((await resolve({agent:{session:{id:'other'}}})).answer.embedded,'42');
+ const emptyBase='data seed = table([{label:"A",n:1}],{kind:"example"});\ndata empty = select({from:{r:seed},where:r=>r.r.n<0,fields:r=>({label:r.r.label,n:r.r.n})});\n';
+ for(const component of ['BarChart','Table']){
+  const spec=component==='Table'?'labels:{label:"名称"}':'x:"label",value:"n"';
+  write(emptyBase+'figure f = tree! { '+component+'(spec={'+spec+'},data=empty) };answer tree! { Answer [UseFigure(ref=f)] };');
+  assert.equal((await resolve()).ok,false,'empty figures reject by default');
+  write(emptyBase+'figure f = tree! { '+component+'(spec={'+spec+',allowNoData:True},data=empty) };report r = tree! { Report [UseFigure(ref=f)] };answer tree! { Answer [UseFigure(ref=f),UseReport(ref=r)] };');
+  const accepted=await resolve();assert.equal(accepted.ok,true,JSON.stringify(accepted));
+  const embedded=accepted.answer.embedded;
+  if(component==='Table'){assert.match(embedded,/名称/);assert.match(embedded,/无数据/);}else assert.match(readFileSync(links(embedded)[0],'utf8'),/无数据/);
+  assert.match(readFileSync(links(embedded).find(p=>p.endsWith('.report.html'))!,'utf8'),/无数据/);
+ }
  rmSync(physical);assert.equal(readFileSync(imagePath,'utf8'),original);assert.equal(readFileSync(reportPath,'utf8'),archived);
  assert.equal(queries,0);assert.equal(existsSync(join(root,'artifacts')),false);assert.equal(existsSync(join(root,'.oks')),false);
  console.log('DARI Answer delivery: shared chart dependencies, embedded data, inline tables, report links, cached computations, durable artifacts and no data selectors passed');

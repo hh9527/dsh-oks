@@ -366,7 +366,8 @@ export function createDraftBackend(options: {
       const rows = rowsOf(input.data, 'render_figure.data');
       if (spec.kind === 'table') {
         const parsed = parseTableSpec(spec);
-        const table = tableMarkdown(rows, { ...(parsed.columns ? { columns: parsed.columns } : {}), labels:parsed.labels, ...(parsed.title ? { title: parsed.title } : {}) });
+        const schemaColumns = isRecord(input.data) && Array.isArray(input.data.columns) ? input.data.columns.map(c => isRecord(c) ? String(c.name) : String(c)) : undefined;
+        const table = tableMarkdown(rows, { allowNoData: parsed.allowNoData, ...((parsed.columns ?? schemaColumns) ? { columns: parsed.columns ?? schemaColumns } : {}), labels:parsed.labels, ...(parsed.title ? { title: parsed.title } : {}) });
         if ('error' in table) throw new Error(table.error);
         return { data: { rows, spec }, evidence: { display: { kind: 'table', content: table.embedded } } };
       }
