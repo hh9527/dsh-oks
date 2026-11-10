@@ -6,7 +6,7 @@ import type { PluginConfig } from './config.ts';
 export const VA_HELPER_PREFIX = 'session-va-';
 export const CONSULT_TIMEOUT_MS = 120_000;
 export interface AskResult { helper: string; messageId: string; answer: string }
-export interface KaRuntime {
+export interface VaRuntime {
   ask(caller: AgentLike, key: string, query: string, signal?: AbortSignal): Promise<AskResult>;
 }
 export function renderAsk(_args: unknown, value: AskResult | null | undefined): RenderBlock[] {
@@ -23,9 +23,9 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 type Outcome = { output: ContentBlock[]; stopReason: string; diagnostic?: string };
 
 /** 子助手异步运行，工具等待答案。每个父 Agent 复用一个子会话，咨询串行执行。 */
-export function createKaRuntime({ ctx, log, config }: {
+export function createVaRuntime({ ctx, log, config }: {
   ctx: PluginContext; log: LogFn; config: PluginConfig | undefined;
-}): KaRuntime {
+}): VaRuntime {
   const preset = config?.vaPreset?.trim() || 'oks-vocabulary';
   const prefix = VA_HELPER_PREFIX;
   const label = '词汇助手';
@@ -86,7 +86,7 @@ export function createKaRuntime({ ctx, log, config }: {
               messageId = await service.sendMessage(caller, childId, prompt, { signal: requestSignal });
             } else {
               const route = caller.session.requestHeader?.()?.config ?? caller.options;
-              const effort = config?.kaReasoningEffort?.trim() || (/^deepseek(?:[-_/]|$)/i.test(route?.model ?? '') ? 'off' : 'inherit');
+              const effort = config?.vaReasoningEffort?.trim() || (/^deepseek(?:[-_/]|$)/i.test(route?.model ?? '') ? 'off' : 'inherit');
               activation = await service.startActivation({ provider: 'spawn', label, childId, delivery: 'caller', signal: requestSignal,
                 request: { parent: caller, cwd, agentPreset: preset, prompt,
                   ...(effort === 'inherit' ? {} : { agentOptions: { reasoningEffort: effort } }) } });

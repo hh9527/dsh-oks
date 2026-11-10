@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createKaRuntime, renderAsk, CONSULT_TIMEOUT_MS } from '../src/ka.ts';
-import { installKnowledgeHelper, resetKnowledgeContext } from '../src/ka-helper.ts';
+import { createVaRuntime, renderAsk, CONSULT_TIMEOUT_MS } from '../src/va.ts';
+import { installVocabularyHelper, resetVocabularyContext } from '../src/va-helper.ts';
 const caller = (id = 'parent') => ({ id, ctx: { tools: { restrict() {} } }, session: { id, header: { cwd: '/workspace' } } }) as any;
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 function harness(options:any={}){
@@ -15,7 +15,7 @@ function harness(options:any={}){
   const result=new Promise(resolve=>runs.set(spec.childId,resolve));if(!options.manual)queueMicrotask(()=>settled(spec.childId));
   return{childId:spec.childId,messageId:'initial',result,async dispose(){disposed.push(spec.childId);settled(spec.childId,'aborted','')}};
  },async sendMessage(parent:any,childId:string,prompt:any,request:any){sends.push({parent,childId,prompt,...request});request.signal.throwIfAborted();if(!options.manual)queueMicrotask(()=>settled(childId));return 'followup-'+sends.length},async drainChildren(_p:any,ids:string[]){for(const id of ids){disposed.push(id);settled(id,'aborted','')}}};
- const runtime=createKaRuntime({ctx:{get:()=>options.missing?undefined:service,on(n:string,f:any){handlers.set(n,[...(handlers.get(n)??[]),f]);return()=>{}},effect(f:any){effects.push(f())}} as any,config:options.config,log(){}});
+ const runtime=createVaRuntime({ctx:{get:()=>options.missing?undefined:service,on(n:string,f:any){handlers.set(n,[...(handlers.get(n)??[]),f]);return()=>{}},effect(f:any){effects.push(f())}} as any,config:options.config,log(){}});
  return{runtime,starts,sends,settled,disposed,handlers,unload:()=>effects.forEach(f=>f())};
 }
 test('首次 caller delivery 等待答案，续问复用子会话并返回完整答案',async()=>{
@@ -48,7 +48,7 @@ test('错误、空答案、卸载及提交失败都不会当作成功答案',asy
 });
 test('推理档位按当前路由继承，只有 DeepSeek 默认 off',async()=>{
  for(const [model,effort] of [['deepseek-flash','off'],['qwen',undefined]]){const h=harness(),p=caller();p.session.requestHeader=()=>({config:{model}});await h.runtime.ask(p,'p','问题');assert.deepEqual(h.starts[0].request.agentOptions,effort?{reasoningEffort:effort}:undefined)}
- const custom=harness({config:{vaPreset:'custom',kaReasoningEffort:'low'}});await custom.runtime.ask(caller(),'p','问题');assert.equal(custom.starts[0].request.agentPreset,'custom');assert.deepEqual(custom.starts[0].request.agentOptions,{reasoningEffort:'low'});
+ const custom=harness({config:{vaPreset:'custom',vaReasoningEffort:'low'}});await custom.runtime.ask(caller(),'p','问题');assert.equal(custom.starts[0].request.agentPreset,'custom');assert.deepEqual(custom.starts[0].request.agentOptions,{reasoningEffort:'low'});
 });
 test('助手装配按当前工作区提供完整词表，空工具面与逐字文本',async()=>{
  let assemble:any;const sections:any[]=[],restrictions:any[]=[],policies:any[]=[],seen:string[]=[];
@@ -56,7 +56,7 @@ test('助手装配按当前工作区提供完整词表，空工具面与逐字�
  on(name:string,fn:any){if(name==='system-prompt/assemble')assemble=fn;return()=>{};},effect(fn:any){fn();}};
  const knowledge={ensureWorkspace({agent}:any){seen.push(agent.session.header.cwd);return {settings:{domain:agent.session.header.cwd}};},
  async ensureIndex(entry:any){const root=entry.settings.domain;return{knowledge:{entities:{[root]:{}},datasets:{},relations:{},items:[]},terms:[{key:'datasets/device',kind:'Dataset',name:root+'$&',aliases:['{{literal}}'],doc:'说明'}]};}};
- installKnowledgeHelper({ctx,knowledge,log(){},config:{vocabularyHelper:true}} as any);assert.deepEqual(restrictions,[]);assert.match(sections[0].text,/词汇助手/);
+ installVocabularyHelper({ctx,knowledge,log(){},config:{vocabularyHelper:true}} as any);assert.deepEqual(restrictions,[]);assert.match(sections[0].text,/词汇助手/);
  const p=caller();p.session.append=(...args:any[])=>policies.push(args);
  const next=async()=>({sections:[{name:'platform',text:'platform'}],tools:[],variables:{}});
  const first=await assemble({},{agent:p},next);await assemble({},{agent:p},next);
@@ -88,30 +88,30 @@ test('连续 100 轮收起问答后模型表面恒定，日志保留所有问答
  for(let i=0;i<100;i++){
   session.append('user/message',{content:[{type:'text',text:'问题 '+i}]});
   session.append('assistant/message',{message:{content:[{type:'text',text:'回答 '+i}]}});
-  resetKnowledgeContext(session as any);
+  resetVocabularyContext(session as any);
   assert.equal(nodes.length,2);assert.equal(nodes[0],0);
   assert.deepEqual(events[nodes[1]].data.content,[{type:'text',text:'（上文问答已收起）'}]);
-  const count=events.length;resetKnowledgeContext(session as any);assert.equal(events.length,count);
+  const count=events.length;resetVocabularyContext(session as any);assert.equal(events.length,count);
  }
  assert.equal(events.filter(e=>e.type==='user/message' && e.data.content?.[0]?.text.startsWith('问题 ')).length,100);
  assert.equal(events.filter(e=>e.type==='assistant/message').length,100);
 });
 
 
-test('VA 作为 KA 的独立子会话，复用自己的预设与前缀',async()=>{
- const h=harness({vocabulary:true});const ka=caller('session-ka-parent');
- const first=await h.runtime.ask(ka,ka.session.id,'CPU');
+test('VA 作为独立子会话，复用自己的预设与前缀',async()=>{
+ const h=harness({vocabulary:true});const parentAgent=caller('session-parent');
+ const first=await h.runtime.ask(parentAgent,parentAgent.session.id,'CPU');
  assert.match(first.helper,/^session-va-/);assert.equal(h.starts[0].label,'词汇助手');
- assert.equal(h.starts[0].request.agentPreset,'oks-vocabulary');assert.equal(h.starts[0].request.parent,ka);
- assert.equal((await h.runtime.ask(ka,ka.session.id,'内存')).helper,first.helper);
+ assert.equal(h.starts[0].request.agentPreset,'oks-vocabulary');assert.equal(h.starts[0].request.parent,parentAgent);
+ assert.equal((await h.runtime.ask(parentAgent,parentAgent.session.id,'内存')).helper,first.helper);
 });
 
 
 test('同一轮工具往返保留上下文，咨询结束后收起',async()=>{
  const handlers=new Map<string,any[]>();let replacements=0;
- const session:any={id:'ka',surface:{nodes:[0,1]},eventAt:(n:number)=>n===0?{type:'system/message',data:{message:{content:[{type:'text',text:'prefix'}]}}}:{type:'assistant/message'},append(){replacements++}};
+ const session:any={id:'parentAgent',surface:{nodes:[0,1]},eventAt:(n:number)=>n===0?{type:'system/message',data:{message:{content:[{type:'text',text:'prefix'}]}}}:{type:'assistant/message'},append(){replacements++}};
  const ctx={systemPrompt:{section(){}},tools:{restrict(){},register(){return()=>{}}},get(){},on(n:string,f:any){handlers.set(n,[...(handlers.get(n)??[]),f]);return()=>{}},effect(){}};
- installKnowledgeHelper({ctx,knowledge:{},log(){}} as any);
+ installVocabularyHelper({ctx,knowledge:{},log(){}} as any);
  const step=handlers.get('agent/pre-step')![0];const agent={session,ctx:{tools:{restrict(){}}}};
  await step({agent},async()=>({kind:'skip'}));const before=replacements;
  await step({agent},async()=>({kind:'skip'}));assert.equal(replacements,before);
@@ -119,12 +119,12 @@ test('同一轮工具往返保留上下文，咨询结束后收起',async()=>{
  assert.equal(replacements,before+1);
 });
 
-test('KA/VA 按职责过滤宿主提示词与工具 schema，保留安全约束',async()=>{
+test('VA 按职责过滤宿主提示词与工具 schema，保留安全约束',async()=>{
  for(const vocabularyHelper of [true]){
   let assemble:any;
   const ctx={systemPrompt:{section(){}},tools:{restrict(){},register(){return()=>{}}},get(){},on(n:string,f:any){if(n==='system-prompt/assemble')assemble=f;return()=>{}},effect(){}};
   const knowledge={ensureWorkspace(){return{settings:{domain:'test'}}},async ensureIndex(){return{knowledge:{},terms:[]}}};
-  installKnowledgeHelper({ctx,knowledge,log(){},config:{vocabularyHelper}} as any);
+  installVocabularyHelper({ctx,knowledge,log(){},config:{vocabularyHelper}} as any);
   const agent=caller();agent.session.append=()=>{};
   const original={sections:[{name:'safety',text:'keep safety'},{name:'ui:deliverable-file-references',text:'Prefer showing the primary results'},{name:'harness:source',text:'source checkout'},{name:'app:web-surface',text:'web development'}],tools:[{name:'va_ask'},{name:'bash'}]};
   const result=await assemble({},{agent},async()=>original);

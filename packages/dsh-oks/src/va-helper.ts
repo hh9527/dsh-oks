@@ -15,9 +15,9 @@ const collapsedMessage = () => ({
 });
 
 /** 沿用固定边界收起：保留系统前缀，旧标记与全部问答一起替换，原始日志保留。 */
-export function resetKnowledgeContext(session: SessionLike): void {
+export function resetVocabularyContext(session: SessionLike): void {
   const nodes = session.surface?.nodes;
-  if (!nodes || !session.eventAt) throw new Error('知识助手需要宿主的会话表面接口。');
+  if (!nodes || !session.eventAt) throw new Error('词汇助手需要宿主的会话表面接口。');
   const ranges: number[][] = [];
   let range: number[] = [];
   for (const seq of nodes) {
@@ -42,26 +42,26 @@ export function resetKnowledgeContext(session: SessionLike): void {
 }
 
 /** 专用预设的提示词与权限。装配以当前子会话定位领域摘要与词表，诊断装配不访问工作区。 */
-export function installKnowledgeHelper({ ctx, knowledge, log, config }: {
+export function installVocabularyHelper({ ctx, knowledge, log, config }: {
   ctx: PluginContext;
   knowledge: Knowledge;
   log: LogFn;
   config?: PluginConfig;
 }): void {
-  if (!ctx.systemPrompt) throw new Error('知识助手需要 systemPrompt 服务。');
+  if (!ctx.systemPrompt) throw new Error('词汇助手需要 systemPrompt 服务。');
   const template = VA_PROMPT_TEXT.trim();
   const active = new WeakSet<object>();
   const toolScopes = new WeakSet<object>();
   const prepareTools = (agent: import('./host.ts').AgentLike) => {
     if (toolScopes.has(agent)) return;
-    if (!agent.ctx?.tools) throw new Error('知识助手需要 Agent 独立的工具作用域。');
+    if (!agent.ctx?.tools) throw new Error('词汇助手需要 Agent 独立的工具作用域。');
     agent.ctx.tools.restrict({ allow: [] });
     toolScopes.add(agent);
   };
   // pre-step 同样覆盖重启后恢复、上轮异常中断以及浏览器直接续问的情况。
   ctx.on('agent/pre-step', async (payload, next) => {
     const session = payload.agent?.session;
-    if (session && !active.has(session)) { resetKnowledgeContext(session); active.add(session); }
+    if (session && !active.has(session)) { resetVocabularyContext(session); active.add(session); }
     const decision = await next();
     // 首轮也使用同一个固定标记；由宿主在系统前缀之后提交，保持所有轮次的输入形状一致。
     const hasMarker = session?.surface?.nodes?.some(seq => {
@@ -74,7 +74,7 @@ export function installKnowledgeHelper({ ctx, knowledge, log, config }: {
     return decision;
   });
   ctx.on('agent/status', ({ agent, status }) => {
-    if (status === 'idle') { resetKnowledgeContext(agent.session); active.delete(agent.session); }
+    if (status === 'idle') { resetVocabularyContext(agent.session); active.delete(agent.session); }
   });
   ctx.systemPrompt.section({ name: 'deployment:persona-prefix', order: 0, text: '你是领域词汇助手，负责词汇对齐。' });
   const initialized = new WeakSet<object>();

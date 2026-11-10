@@ -1,4 +1,4 @@
 {
   "title": "Knowledge service (OKS)",
-  "description": "Navigate domain knowledge with ka_ask, oks_discover, oks_routes and oks_info. Author DARI using host file tools; dari_check validates the whole source, dari_resolve returns selected data and embedded artifacts, and dari_renew_context renews acquisition context. oks_read reads built-in manuals only."
+  "description": "Use va_ask for vocabulary alignment, oks_discover for fuzzy conceptual discovery, and oks_routes/oks_info for paths and details. Author DARI with host file tools; dari_check validates source, dari_resolve delivers Answer, and dari_renew_context renews acquisition context. oks_read reads built-in manuals."
 }

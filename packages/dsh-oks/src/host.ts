@@ -122,7 +122,7 @@ export interface ToolExec {
   agent?: AgentLike;
 }
 
-/** 定位工作区只需要会话这一层（工具 exec 与 ka 装配时给的都是这个最小形状）。 */
+/** 定位工作区只需要会话这一层（工具 exec 与 VA 装配时给的都是这个最小形状）。 */
 export interface WorkspaceProbe {
   agent?: { session?: SessionLike } | null;
 }

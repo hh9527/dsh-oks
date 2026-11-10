@@ -33,7 +33,7 @@ agent 先设计和检查分析稿，使用 `dari_resolve({src})` 把唯一 Answe
 再加入当前问题。模型上下文不随咨询次数增长，原始问答完整保留在会话日志中。
 工具面为空，权限为只读。
 主 agent 可按需把用户问题与明确约束交给 `va_ask`，工具返回词汇对齐结果；
-主 agent 随后自主使用 search/routes/info 获取相关局部知识。
+主 Agent 随后自主使用 oks_discover 获取概念映射，按需使用 oks_routes/oks_info 获取相关局部知识。
 首次调用使用 `startActivation`，续问使用 `sendMessage`，均采用官方宿主的原生生命周期。
 模型路由继承父会话当前请求。DeepSeek 模型的知识助手默认使用 `off`，其他模型默认继承推理档位；显式配置优先，模型须支持配置的档位。
 这些选项写在父预设的 OKS 插件行 `config` 中：
@@ -41,7 +41,7 @@ agent 先设计和检查分析稿，使用 `dari_resolve({src})` 把唯一 Answe
 ```yaml
 vaPreset: oks-vocabulary
 # 可选覆盖：inherit 表示沿用父会话档位
-# kaReasoningEffort: "inherit"
+# vaReasoningEffort: "inherit"
 ```
 
 安装器会注册助手预设。手工配置时，注册 ID 为 `oks-vocabulary` 的 agent preset，

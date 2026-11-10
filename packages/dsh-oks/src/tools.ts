@@ -7,19 +7,19 @@ import type { ApprovalService, AttachmentsService, LogFn, ToolDefinition, ToolEx
 import type { Knowledge } from './knowledge.ts';
 import type { TimeContext } from './time-context.ts';
 import { createDraftTools } from './draft/tools.ts';
-import { renderAsk } from './ka.ts';
-import type { KaRuntime } from './ka.ts';
+import { renderAsk } from './va.ts';
+import type { VaRuntime } from './va.ts';
 import { OBJECT_OUTPUT } from './response.ts';
 
 interface AskArgs { query?: string }
 
 /** Public knowledge consultation and DARI lifecycle tools. */
-export function createTools({ knowledge, ka, timeContext, attachments, approval, filePolicy }: {
+export function createTools({ knowledge, va, timeContext, attachments, approval, filePolicy }: {
   knowledge: Knowledge;
   filePolicy?:()=>FilePolicyService|undefined;
   attachments?:()=>AttachmentsService|undefined;
   approval?:()=>ApprovalService|undefined;
-  ka: KaRuntime;
+  va: VaRuntime;
   timeContext: TimeContext;
   log: LogFn;
   config: PluginConfig | undefined;
@@ -52,7 +52,7 @@ export function createTools({ knowledge, ka, timeContext, attachments, approval,
         if (caller === undefined || typeof key !== 'string' || key.length === 0) {
           throw new Error('dsh-oks: 无法确定调用方会话，va_ask 需要它来登记词汇子会话。');
         }
-        return ka.ask(caller, key, query, exec?.signal);
+        return va.ask(caller, key, query, exec?.signal);
       },
     },
   ];
