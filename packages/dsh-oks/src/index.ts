@@ -4,8 +4,6 @@
 export { createProjector } from './project.ts';
 export type { JsonValue, ProjectRule, Projector } from './project.ts';
 export { buildOption, CHART_WIDTH, plotHeight } from './chart/option.ts';
-export { artifactName, NAME_MAX, resultStamp } from './results.ts';
-export { embedArtifactMeta, readArtifactMeta } from './results.ts';
 export { renderEchartsSvg } from './chart/echarts.ts';
 export { renderMarkdown } from './chart/markdown.ts';
 
@@ -48,9 +46,12 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
 
   const definitions = createTools({ knowledge, va, timeContext, log, config, attachments:()=>ctx.get('attachments'), approval:()=>ctx.get('approval'), filePolicy:()=>ctx.get('sandboxPolicy') });
   ctx.effect(() => definitions.dispose);
-  for (const definition of guidedTools(definitions, knowledge)) {
+  for (const definition of guidedTools(definitions, knowledge, definitions.infoContracts)) {
     const dispose = ctx.tools.register(definition);
     if (typeof dispose === 'function') ctx.effect(() => dispose);
   }
 
 }
+
+// Finite host capabilities consumed by the isolated DARI service.
+export {dariHost} from './dari-host.ts';

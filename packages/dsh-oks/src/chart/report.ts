@@ -5,14 +5,8 @@
  *  不读取关联文件，自足的文件发给别人也能直接打开。
  *
  *  安全上只有一条规矩：**页面全部由我们生成**。SVG 的清理（脚本、事件属性、外链）在这一层保证；
- *  报告正文的严格性由 `src/report/` 那套校验负责。
+ *  报告正文由 DARI tree! 类型检查和受控渲染生成。
  */
-import type { DataOrigin } from '../results.ts';
-
-export type DisplaySource =
-  | { kind: 'chart'; svg: string; origin: DataOrigin; data: unknown; spec: unknown }
-  | { kind: 'table'; embedded: string; origin: DataOrigin; data: unknown; spec: unknown };
-
 /** 收拾一张图表 SVG：去掉外壳与可执行内容、尺寸交给栏宽。内联与单独成件都走这里。 */
 export const cleanChartSvg = (svg: string): string => {
   const cleaned = svg

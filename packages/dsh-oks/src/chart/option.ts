@@ -681,7 +681,7 @@ export const buildOption = (
       ? categories.map((category, i) => {
         const totals = seriesNames.reduce((sum, other) => sum + (points.get(other)?.get(category) ?? 0), 0);
         const value = raw[i];
-        return value === null || totals === 0 ? null : Math.round((value / totals) * 1000) / 10;
+        return value === null || totals === 0 ? null : (value / totals) * 100;
       })
       : raw;
     const color = colorAt(name, index);

@@ -1,0 +1,21 @@
+// Dataset and member references come from the model's published contracts.
+type Params = Schema({floor: ic::CpuFloor});
+data request: Params = input();
+
+data readings = query_remote! {
+    let a = from(ic::device_kpi);
+    let selected = a |> group_by_identity(a)
+      |> filter(a.cpu_usage > request.floor);
+    let output = project({device:selected.device_kpi_res_id,cpu:selected.cpu_usage});
+    output |> order_by(desc(output.cpu)) |> take(5)
+};
+
+data highest = query! {
+    let a = from(readings);
+    let output = project({cpu:a.cpu});
+    output |> order_by(desc(output.cpu)) |> take_opt()
+};
+
+answer tree! { Answer [
+    p ["最高 CPU：",Value(data = highest,field = project!(cpu))]
+]};

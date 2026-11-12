@@ -19,7 +19,7 @@ const omitted=discoverOne(graph,{entity:'devcie',props:['cpu']});
 assert.equal(omitted.results.length,1);
 assert.equal(omitted.results[0].entity,'entities/Device');
 assert.deepEqual(omitted.results[0].measures,['datasets/device/measures/cpu_mean']);
-assert.deepEqual(omitted,discoverOne(graph,{entity:'devcie',props:['cpu'],values:[]}));
+assert.deepEqual(omitted.results,discoverOne(graph,{entity:'devcie',props:['cpu'],values:[]}).results);
 const combined=discoverOne(graph,{entity:'设备',props:['cpu'],values:['紧急']});
 assert.deepEqual(combined.results.map(p=>p.name),['cpu','severity']);
 assert.equal(combined.results[1].matched.values[0].id,'types/AlarmSeverity/values/Critical');

@@ -1,3 +1,4 @@
+import {createDariTools} from './dari-tools.ts';
 import {ENABLE_OKS_SEARCH} from './features.ts';
 import {reportExtractDariTool} from './report-extract.ts';
 import {moveEntryTool} from './move-entry.ts';
@@ -6,7 +7,6 @@ import type { PluginConfig } from './config.ts';
 import type { ApprovalService, AttachmentsService, LogFn, ToolDefinition, ToolExec } from './host.ts';
 import type { Knowledge } from './knowledge.ts';
 import type { TimeContext } from './time-context.ts';
-import { createDraftTools } from './draft/tools.ts';
 import { renderAsk } from './va.ts';
 import type { VaRuntime } from './va.ts';
 import { OBJECT_OUTPUT } from './response.ts';
@@ -14,7 +14,7 @@ import { OBJECT_OUTPUT } from './response.ts';
 interface AskArgs { query?: string }
 
 /** Public knowledge consultation and DARI lifecycle tools. */
-export function createTools({ knowledge, va, timeContext, attachments, approval, filePolicy }: {
+export function createTools({ knowledge, va, timeContext, attachments, approval, filePolicy, config }: {
   knowledge: Knowledge;
   filePolicy?:()=>FilePolicyService|undefined;
   attachments?:()=>AttachmentsService|undefined;
@@ -23,7 +23,7 @@ export function createTools({ knowledge, va, timeContext, attachments, approval,
   timeContext: TimeContext;
   log: LogFn;
   config: PluginConfig | undefined;
-}): ToolDefinition[] & { dispose(): void } {
+}): ToolDefinition[] & { dispose(): void; infoContracts?:(points:any[],exec:ToolExec)=>Promise<Record<string,unknown>> } {
   const definitions: ToolDefinition[] = [
     {
       name: 'va_ask',
@@ -56,6 +56,6 @@ export function createTools({ knowledge, va, timeContext, attachments, approval,
       },
     },
   ];
-  const drafts = createDraftTools({approval, knowledge, timeContext, attachments });
-  return Object.assign([...definitions, reportExtractDariTool({knowledge,approval,filePolicy}), removeFileTool({knowledge,approval,filePolicy}), moveEntryTool({knowledge,approval,filePolicy}), ...drafts.tools], { dispose: drafts.dispose });
+  const drafts:{tools:ToolDefinition[];dispose:()=>void;infoContracts?:(points:any[],exec:ToolExec)=>Promise<Record<string,unknown>>} = createDariTools({config:config?.dari,knowledge,timeContext,attachments});
+  return Object.assign([...definitions, reportExtractDariTool({knowledge,approval,filePolicy}), removeFileTool({knowledge,approval,filePolicy}), moveEntryTool({knowledge,approval,filePolicy}), ...drafts.tools], { dispose: drafts.dispose, ...(drafts.infoContracts?{infoContracts:drafts.infoContracts}:{}) });
 }

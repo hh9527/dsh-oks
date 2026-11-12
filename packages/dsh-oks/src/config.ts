@@ -30,6 +30,7 @@ export interface OksDeclaration {
 
 /** 插件行 config 里可以覆盖的键（VA 相关配置见 src/va.ts）。 */
 export interface PluginConfig extends OksDeclaration {
+  dari?: { service:string; model:string; runner:string; hostModule?:string };
   vocabularyHelper?: boolean;
   vaPreset?: string;
   vaReasoningEffort?: string;

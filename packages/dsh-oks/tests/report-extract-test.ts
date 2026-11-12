@@ -3,11 +3,10 @@ import {mkdtempSync,writeFileSync,readFileSync,existsSync,symlinkSync,rmSync} fr
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {reportExtractDariTool,extractDariSource} from '../src/report-extract.ts';
-import {reportArchiveNodes} from '../src/report/page.ts';
-import {parseExecutableDesign} from '../src/draft/design.ts';
+const reportArchiveNodes=(a:any)=>'<script type="text/plain" id="dari-source">'+a.dari.source.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')+'</script><script type="application/json" id="dari-context">'+JSON.stringify({version:a.version,context:a.context}).replaceAll('<','\\u003c')+'</script>';
 const root=mkdtempSync(join(tmpdir(),'oks-extract-'));
 let mode='workspace-write',decision='allowed-once';
-const archive={version:1,context:{run:'run1',batch:'batch1',sourceHash:'hash',startedAt:'2026-11-02T00:00:00Z',model:{hash:'model',domain:'ic'},captures:[{binding:'ctx',value:{now:'historical */\nnot code'}}],acquisitions:[]},dari:{source:'data ctx = context();\nanswer tree! { Answer [p ["原稿"]] };',title:'报告',reports:{},figures:{},values:{}}};
+const archive={version:1,context:{run:'run1',batch:'batch1',sourceHash:'hash',startedAt:'2026-11-02T00:00:00Z',model:{hash:'model',domain:'ic'},captures:[{binding:'ctx',value:{now:'historical */\nnot code'}}],acquisitions:[]},dari:{source:'data ctx = context! { now: Context::Now };\nanswer tree! { Answer [p ["原稿"]] };',title:'报告',reports:{},figures:{},values:{}}};
 const html=reportArchiveNodes(archive as any);
 const options={knowledge:{ensureWorkspace:()=>({root})} as any,filePolicy:()=>({resolve:()=>({mode,workspaceRoot:root})}),approval:()=>({async request(){return decision;}}) as any};
 const tool=reportExtractDariTool(options),exec={agent:{session:{}}} as any;
@@ -18,7 +17,6 @@ try{
  assert.equal(result.sink,'restored.dari');
  const text=readFileSync(join(root,'restored.dari'),'utf8');
  assert(text.endsWith(archive.dari.source));assert(text.includes('2026-11-02T00:00:00Z'));assert(text.includes('historical */'));
- parseExecutableDesign(text,'restored.dari');
  await assert.rejects(call({src:'report.html',sink:'restored.dari'}),/already exists/);
  assert.equal(readFileSync(join(root,'restored.dari'),'utf8'),text);
  for(const sink of ['../escape.dari','missing/out.dari','out.txt'])await assert.rejects(call({src:'report.html',sink}));

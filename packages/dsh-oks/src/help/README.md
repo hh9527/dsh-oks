@@ -8,10 +8,10 @@
 
 workflow 与 dari 避免重复解释。准入前缀的内容应是完成所有任务的基本能力；仅某类任务所需的内容按需读取。Report 因 UseReport 属于 Answer 保留在 dari，若后续膨胀，优先拆出。
 
-图表分册 figure-*.md 仍按需读取，必填 spec 索引由 presentationFacts 和 COMPONENT_KINDS 生成后嵌入 dari；figure-options.md 提供完整通用规格。不重新添加独立呈现前缀或旧散装手册入口。
+图表分册 dari-figures.md 按需读取，图表组件与属性由 chart/components.ts 和 dari-host.ts 实现。不重新添加独立呈现前缀或旧散装手册入口。
 
 Markdown 在构建期内联到单文件插件；手册内容改变就改变实际固定前缀文本，宿主按新文本构建上下文，不维护独立旧手册缓存。runtime skill 仅保留已载入提示，不复制完整方法论。
 
 词表进入独立 VA；VA 不注入主 agent 的 DARI 手册。暂不生成目录/行号索引。
 
-语法或工具接口发生改变时，同步核对实现（draft/dom.ts、draft/document.ts）、dari.md、presentation-facts.ts 中的签名与示例、examples，以及 tree-sitter-dari 的文法与样例。dari.md 是运行时提示词，描述必须与实现一致；示例通过现有的手册示例与组件执行检查验证，不能仅修改解析器而留下旧写法。
+语法或工具接口发生改变时，同步核对实现（lab-ontology/dari/src、dari-tools.ts、dari-host.ts）、dari.md、dari-figures.md 中的签名与示例、examples，以及 tree-sitter-dari 的文法与样例。dari.md 是运行时提示词，描述必须与实现一致；示例通过现有的手册示例与组件执行检查验证，不能仅修改解析器而留下旧写法。

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const optIn = new Set(['model-integration-test.ts']);
+const optIn = new Set(['dari-adapter-test.ts']);
 const tests = readdirSync(join(root, 'tests')).filter(name => name.endsWith('-test.ts') && !optIn.has(name)).sort();
 
 const failed = [];

@@ -24,6 +24,20 @@ export function renderInfo(_args:unknown,value:{data:ReturnType<typeof readPoint
         lines.push('',`### ${key}`,'',fence+'json',json,fence);
       }else lines.push(`- ${key}: ${literal(v)}`);
     }
+    if(item.dari){
+      lines.push('', '### .dari', '');
+      const c=item.dari;
+      if(c.available===false)lines.push('此知识点没有公开的 .dari 源码契约');
+      else {
+        if(c.dataset)lines.push('- dataset: `'+c.dataset+'`');
+        if(c.symbol)lines.push('- symbol: `'+c.symbol+'`');
+        if(c.type)lines.push('- type: `'+c.type+'`');
+        if(c.variants?.length)lines.push('- variants: '+c.variants.map((v:string)=>'`'+v+'`').join(', '));
+        for(const d of c.datasets??[])lines.push('- dataset: `'+d.symbol+'`');
+        for(const m of c.members??[]){lines.push('- '+m.kind+' `'+m.symbol+'`: `'+m.type+'`');if(m.variants?.length)lines.push('  - variants: '+m.variants.map((v:string)=>'`'+v+'`').join(', '));}
+        for(const r of c.relations??(c.kind==='relation'?[c]:[]))lines.push('- relation `'+r.symbol+'`: '+r.from+' ('+r.fromCardinality+') → '+r.to+' ('+r.toCardinality+')');
+      }
+    }
     sections.push(lines.join('\n'));
   }
   for(const error of value.data.errors??[])sections.push(`## ${error.id}\n\n读取失败：${error.error}`);

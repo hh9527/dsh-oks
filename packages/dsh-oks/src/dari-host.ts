@@ -1,0 +1,188 @@
+import {formatValue,precision,type Type} from './display-values.ts';
+import {COMPONENT_KINDS,componentSpec} from './chart/components.ts';
+import {parseChartSpec,parseTableSpec,missingColumns,shapeProblem} from './chart/spec.ts';
+import {buildOption,CHART_WIDTH} from './chart/option.ts';
+import {renderEchartsSvg} from './chart/echarts.ts';
+import {embedFigureCsv} from './chart/svg-data.ts';
+import {tableMarkdown} from './view/table.ts';
+import {renderMarkdown} from './chart/markdown.ts';
+import {cleanChartSvg,REPORT_STYLE} from './chart/report.ts';
+import {Temporal} from '@js-temporal/polyfill';
+import {timeWindows,timeWindowOptions} from './time-windows.ts';
+// Structural ABI: the language package owns its types; the presentation host only reads them.
+const scalar=(name:string):Type=>({kind:'scalar',name});
+const schema=(fields:Record<string,Type>):Type=>({kind:'schema',fields});
+const storage=(type:Type):string=>type.kind==='option'||type.kind==='nominal'?storage(type.inner!):type.name!;
+const presentation=(type:Type):{multiplier:number;suffix:string;precision?:number}|undefined=>type.presentation??(type.inner?presentation(type.inner):undefined);
+const boundary=schema({epoch_millis:scalar('EpochMillis'),date_time_utc:scalar('DateTimeUtc'),rfc3339:scalar('String')});
+function closedEnum(name:string,variants:string[]){const parse=(value:unknown)=>{if(typeof value!=='string'||!variants.includes(value))throw Error('Invalid '+name+' variant');return value;};return {kind:'nominal',name,inner:scalar('String'),codec:{variants,parse,encode:parse,decode:parse}};}
+const stackVariants=['None','Total','Percent'];
+const stackType=closedEnum('Stack',stackVariants);
+const timeUnits=['Minute','Hour','Day','Week','Month','Quarter','Year'];
+const windowModes=['Complete','Current','Rolling'];
+function enumOption(value:any,name:string,variants:string[],checking:boolean):string{
+ const member=checking?value?.variant:value;
+ if(checking&&(value?.[Symbol.for('dari.enum')]!==true||value.enum!==name)||!variants.includes(member))throw Error('Use '+name+'::'+variants.join(' / '+name+'::'));
+ return member.toLowerCase();
+}
+function windowOptions(value:any,checking:boolean){
+ if(!value||typeof value!=='object')throw Error('time_windows requires {unit,count,mode}');
+ return timeWindowOptions({...value,unit:enumOption(value.unit,'TimeUnit',timeUnits,checking),mode:enumOption(value.mode,'WindowMode',windowModes,checking)});
+}
+function bucketOptions(value:any,checking:boolean){
+ if(!value||Object.keys(value).some(k=>!['unit','time_zone'].includes(k))||typeof value.time_zone!=='string'||/^[+-]/.test(value.time_zone))throw Error('time_bucket requires static {unit:TimeUnit,time_zone:IANA String}');
+ const unit=enumOption(value.unit,'TimeUnit',timeUnits,checking);new Intl.DateTimeFormat('en',{timeZone:value.time_zone});return {unit,timeZone:value.time_zone};
+}
+
+// Public DARI names are independent of the chart renderer's JS vocabulary.
+const chartNames:Record<string,string>={allow_no_data:'allowNoData',value_min:'valueMin',connect_nulls:'connectNulls',entity_color:'entityColor',x_type:'xType',x_label:'xLabel',value_label:'valueLabel'};
+const layoutNames:Record<string,string>={label_font:'labelFont',title_font:'titleFont',slant_ticks:'slantTicks',tick_count:'tickCount'};
+function chartInput(raw:Record<string,unknown>,names=chartNames):Record<string,unknown>{
+ const result:Record<string,unknown>={};
+ for(const [key,value]of Object.entries(raw)){
+  if(Object.values(names).includes(key))throw Error('Use '+Object.keys(names).find(k=>names[k]===key)+' instead of '+key);
+  result[names[key]??key]=key==='layout'&&value&&typeof value==='object'?chartInput(value as Record<string,unknown>,layoutNames):value;
+ }
+ return result;
+}
+function chartOutput(raw:object):Record<string,unknown>{
+ const reverse=Object.fromEntries(Object.entries({...chartNames,...layoutNames}).map(([a,b])=>[b,a]));
+ return Object.fromEntries(Object.entries(raw).map(([k,v])=>[reverse[k]??k,k==='layout'&&v&&typeof v==='object'?chartOutput(v as Record<string,unknown>):v]));
+}
+
+function presentationSpec(raw:Record<string,unknown>):Record<string,unknown>{
+ precision(raw.precision);const spec=chartInput(raw);delete spec.precision;
+ if(raw.stack!==undefined){const value=raw.stack as any;if(!value||value[Symbol.for('dari.enum')]!==true||value.enum!=='Stack'||!stackVariants.includes(value.variant))throw Error('stack requires Stack::None, Stack::Total or Stack::Percent');if(value.variant==='None')delete spec.stack;else spec.stack=value.variant==='Total'?'total':'percent';}
+ return spec;
+}
+function stacking(raw:Record<string,unknown>,fields:Record<string,Type>){
+ if(raw.stack&&fields[String(raw.value)]){
+  let t=fields[String(raw.value)];while(t.kind==='option')t=t.inner!;
+  const operations=(t as any).codec?.operations as string[]|undefined;
+  if(operations&&!operations.includes('Sum'))throw Error('Stacking requires an additive metric; this business type does not allow Sum');
+ }
+}
+function formatChart(option:any,fields:Record<string,Type>,spec:any,digits?:number){
+ const base=fields[spec.value],policy=presentation(base??scalar('Float'));
+ const count=spec.kind==='histogram';
+ const fmt=(v:unknown,type:Type|undefined=base,suffix=policy?.suffix??spec.unit??'')=>typeof v==='number'?String(formatValue({...type,kind:type?.kind??'scalar',presentation:{multiplier:1,suffix,precision:presentation(type??scalar('Float'))?.precision}},v,digits)):String(v??'');
+ const axes=(a:any)=>Array.isArray(a)?a:a?[a]:[];
+ for(const axis of [...axes(option.xAxis),...axes(option.yAxis)])if(axis.type==='value'){
+  const isValue=spec.kind==='bar'||spec.kind==='grouped_bar'?axes(option.xAxis).includes(axis):axes(option.yAxis).includes(axis);
+  const secondary=axes(option.yAxis).indexOf(axis)===1;const type=secondary?fields[spec.second?.value]:isValue?base:fields[spec.x],suffix=count?'':secondary?(presentation(type??scalar('Float'))?.suffix??spec.second?.unit??''):spec.stack==='percent'&&isValue?'%':isValue?(policy?.suffix??spec.unit??''):(presentation(type??scalar('Float'))?.suffix??'');
+  axis.axisLabel={...axis.axisLabel,formatter:(v:number)=>fmt(v,count?scalar('Int'):type,suffix)};
+ }
+ option.tooltip={...option.tooltip,valueFormatter:(v:unknown)=>Array.isArray(v)?v.map(x=>fmt(x)).join(', '):fmt(v)};
+ for(const series of axes(option.series)){
+  const type=series.yAxisIndex===1?fields[spec.second?.value]:count?scalar('Int'):base;
+  const suffix=spec.stack==='percent'?'%':series.yAxisIndex===1?(presentation(type??scalar('Float'))?.suffix??spec.second?.unit??''):(policy?.suffix??spec.unit??'');
+  const display=(v:any)=>Array.isArray(v)?spec.kind==='heatmap'?fmt(v[2],type,suffix):v.map((x:unknown,i:number)=>fmt(x,spec.kind==='scatter'&&i===0?fields[spec.x]:type,spec.kind==='scatter'&&i===0?presentation(fields[spec.x])?.suffix??'':suffix)).join(', '):fmt(v,type,suffix);
+  if(!series.label?.formatter)series.label={...series.label,formatter:(p:any)=>(series.type==='pie'?p.name+': ':'')+display(p.value)};
+  if(series.type==='gauge')series.detail={...series.detail,formatter:(v:number)=>fmt(v,type,suffix)};
+  series.tooltip={...series.tooltip,valueFormatter:display};
+ }
+}
+// Wide series are a presentation projection: source columns keep their nominal types.
+function wideSeries(name:string,raw:Record<string,unknown>,fields:Record<string,Type>,rows:Record<string,unknown>[]=[]):{spec:Record<string,unknown>;fields:Record<string,Type>;rows:Record<string,unknown>[]}{
+ if(!Array.isArray(raw.series))return {spec:raw,fields,rows};
+ if(!['GroupedBarChart','GroupedColumnChart','LineChart'].includes(name))throw Error('Wide series require GroupedBarChart, GroupedColumnChart or LineChart');
+ if(raw.second!==undefined)throw Error('Wide series use a shared value axis; omit second');
+ if(!raw.series.length)throw Error('Wide series must contain at least one column');
+ if(raw.value!==undefined)throw Error('Wide series specify value per series; remove spec.value');
+ if(raw.stack || (raw.style as any)?.sort && (raw.style as any).sort!=='none')throw Error('Wide metrics support parallel display; sort the input table and omit stack/style.sort');
+ if(typeof raw.x!=='string'||!fields[raw.x])throw Error('Wide series require an existing x column');
+ const labels=new Set<string>(),columns=new Set<string>(),units=new Set<string>();
+ const series=raw.series.map((entry:any)=>{
+  if(!entry||typeof entry.value!=='string'||!fields[entry.value])throw Error('Wide series value must reference an existing column');
+  if(!['Int','Float'].includes(storage(fields[entry.value])))throw Error('Wide series numeric mapping '+entry.value+' must have Int/Float representation');
+  if(typeof entry.label!=='string'||!entry.label.trim())throw Error('Wide series require a nonempty label');
+  if(typeof entry.unit!=='string')throw Error('Wide series require an explicit unit');
+  const policy=presentation(fields[entry.value]);if(policy&&entry.unit!==policy.suffix)throw Error('Wide series unit conflicts with the value type presentation');
+  if(labels.has(entry.label)||columns.has(entry.value))throw Error('Wide series labels and columns must be unique');
+  labels.add(entry.label);columns.add(entry.value);units.add(entry.unit);return entry;
+ });
+ if(units.size!==1||raw.unit!==undefined&&raw.unit!==series[0].unit)throw Error('Wide series units must agree with the shared value axis');
+ const x=raw.x;
+ return {spec:{...raw,x:'__x',series:'__series',value:'__value',unit:series[0].unit},fields:{__x:fields[x],__series:scalar('String'),__value:scalar('Float')},rows:rows.flatMap(row=>series.map(entry=>({__x:row[x],__series:entry.label,__value:typeof row[entry.value]==='number'?Number((Number(row[entry.value])*(presentation(fields[entry.value])?.multiplier??1)).toPrecision(12)):row[entry.value]})))};
+}
+function validate(name:string,raw:Record<string,unknown>,fields:Record<string,Type>){
+ const kind=COMPONENT_KINDS[name as keyof typeof COMPONENT_KINDS];if(!kind)throw Error('Unknown figure component '+name);
+ const spec=componentSpec(raw,kind) as Record<string,unknown>,columns=Object.keys(fields);
+ if(kind==='table'){const t=parseTableSpec(spec);const missing=[...(t.columns??[]),...Object.keys(t.labels)].filter(k=>!columns.includes(k));if(missing.length)throw Error('Unknown table columns: '+missing.join(', '));return spec;}
+ const p=parseChartSpec(spec);if('error'in p)throw Error(p.error);
+ const policy=fields[p.spec.value]?presentation(fields[p.spec.value]):undefined;if(policy&&p.spec.unit&&p.spec.unit!==policy.suffix)throw Error('Figure unit conflicts with the value type presentation');
+ if(p.spec.second){const secondary=fields[p.spec.second.value]?presentation(fields[p.spec.second.value]):undefined;if(secondary&&p.spec.second.unit&&p.spec.second.unit!==secondary.suffix)throw Error('Figure second unit conflicts with the value type presentation');}
+ const missing=missingColumns(p.spec,columns,1);if(missing.length)throw Error('Unknown figure columns: '+missing.join(', '));
+ for(const key of [p.spec.value,p.spec.size,p.spec.second?.value,...(p.spec.kind==='scatter'?[p.spec.x]:[])])if(key&&fields[key]&&!['Int','Float'].includes(storage(fields[key])))throw Error('Figure numeric mapping '+key+' must have Int/Float representation');
+ if(p.spec.kind==='line'||p.spec.kind==='area'){
+  const accepted:Record<string,string[]>={Int:['Int'],Float:['Int','Float'],String:['String'],Rfc3339:['String','Rfc3339','DateTimeUtc'],EpochMillis:['Int','EpochMillis']};
+  if(!accepted[p.spec.xType!]?.includes(storage(fields[p.spec.x])))throw Error('Figure xType '+p.spec.xType+' is incompatible with '+p.spec.x);
+ }
+ return spec;
+}
+const host={
+ contractId:'dari-host/v5',types:{Stack:stackType,TimeUnit:closedEnum('TimeUnit',timeUnits),WindowMode:closedEnum('WindowMode',windowModes)},formatValue,components:Object.keys(COMPONENT_KINDS),reportStyle:REPORT_STYLE,
+ reportHtml(text:string,artifacts:Record<string,string>){return renderMarkdown(text,()=>{throw Error('Unexpected report fence');},(alt,href)=>{const svg=artifacts[href];if(!svg)throw Error('Missing report figure '+href);return '<figure>'+cleanChartSvg(svg)+'</figure>';});},
+ checkFigure(name:string,spec:Record<string,unknown>,fields:Record<string,Type>,nodes?:Record<string,Type>){const normalized=presentationSpec(spec);stacking(normalized,fields);const wide=wideSeries(name,normalized,fields);validate(name,wide.spec,wide.fields);if(name==='NetworkGraph'&&(!nodes?.id||!nodes.depth&&!(nodes.x&&nodes.y)))throw Error('NetworkGraph requires a nodes table with id and depth or x/y');if(name!=='NetworkGraph'&&nodes)throw Error('Only NetworkGraph accepts nodes');},
+ renderFigure(name:string,raw:Record<string,unknown>,rows:Record<string,unknown>[],fields:Record<string,Type>,nodes?:Record<string,unknown>[]){
+  const normalized=presentationSpec(raw);stacking(normalized,fields);const wide=wideSeries(name,normalized,fields,rows);
+  const spec=validate(name,wide.spec,wide.fields);
+  if(spec.kind==='table'){
+   const shown=rows.map(row=>Object.fromEntries(Object.entries(row).map(([key,value])=>[key,fields[key]?formatValue(fields[key],value,precision(raw.precision)):value])));
+   const t=parseTableSpec(spec),content=tableMarkdown(shown,{allowNoData:t.allowNoData,columns:t.columns??Object.keys(fields),labels:t.labels,...(t.title?{title:t.title}:{})});
+   if('error'in content)throw Error(content.error);
+   return {kind:'table' as const,content:content.embedded,html:renderMarkdown(content.embedded,()=>{throw Error('Unexpected table fence');}),title:t.title??'Table'};
+  }
+  const parsed=parseChartSpec(spec);if('error'in parsed)throw Error(parsed.error);
+  const renderRows=wide.rows.map(row=>{const copy:Record<string,unknown>={...row};for(const key of new Set([parsed.spec.value,parsed.spec.second?.value,...(parsed.spec.kind==='scatter'?[parsed.spec.x]:[])])){if(!key||!wide.fields[key])continue;const policy=presentation(wide.fields[key]);if(policy&&typeof copy[key]==='number')copy[key]=Number((Number(copy[key])*policy.multiplier).toPrecision(12));}return copy;});
+  const policy=wide.fields[parsed.spec.value]?presentation(wide.fields[parsed.spec.value]):undefined;
+  if(policy){if(parsed.spec.unit&&parsed.spec.unit!==policy.suffix)throw Error('Figure unit conflicts with the value type presentation');parsed.spec.unit=policy.suffix;}
+  if(parsed.spec.second){const secondary=wide.fields[parsed.spec.second.value]?presentation(wide.fields[parsed.spec.second.value]):undefined;if(secondary)parsed.spec.second.unit=secondary.suffix;}
+  const problem=shapeProblem(renderRows,parsed.spec);if(problem)throw Error(problem);
+  const {option,height}=buildOption(renderRows,parsed.spec,nodes);
+  formatChart(option,wide.fields,parsed.spec,precision(raw.precision));
+  if((option as any).visualMap){const values=renderRows.map(row=>row[parsed.spec.value]).filter((v):v is number=>typeof v==='number');if(values.length)(option as any).visualMap.text=[Math.max(...values),Math.min(...values)].map(v=>String(formatValue({kind:'scalar',name:'Float',presentation:{multiplier:1,suffix:policy?.suffix??parsed.spec.unit??'',precision:policy?.precision}},v,precision(raw.precision))));}
+  return {kind:'chart' as const,content:embedFigureCsv(renderEchartsSvg(option,CHART_WIDTH,height),{rows,spec:{...(Array.isArray(raw.series)?raw:chartOutput(parsed.spec)),precision:precision(raw.precision),default_precision:2,presentation:Object.fromEntries(Object.entries(fields).flatMap(([key,type])=>{const policy=presentation(type);return policy?[[key,policy]]:[];}))},...(nodes?{nodeRows:nodes}:{})}),title:parsed.spec.title??name};
+ },
+ functions:{
+  time_bucket:{
+   sql:{jsonArgs:[1]},
+   check(args:Type[],constants:unknown[]):Type{
+    let t=args[0];const nullable=t?.kind==='option';let role:string|undefined;
+    while(t){role??=t.semantic??(['EpochMillis','DateTimeUtc','DateTimeTz'].includes(t.name??'')?t.name:undefined);t=t.inner!;}
+    role??=args[0]?.name;
+    if(args.length!==2||!['EpochMillis','DateTimeUtc','DateTimeTz'].includes(role??''))throw Error('time_bucket requires an instant and static {unit,time_zone}');
+    bucketOptions(constants[1],true);
+    const result={...scalar('DateTimeUtc'),semantic:'DateTimeUtc'};return nullable?{kind:'option',inner:result}:result;
+   },
+   run(args:unknown[]){
+    if(args[0]===null)return null;
+    const o=bucketOptions(args[1],false);
+    const instant=typeof args[0]==='number'?Temporal.Instant.fromEpochMilliseconds(args[0]):Temporal.Instant.from(String(args[0]).split('[')[0]);
+    let z=instant.toZonedDateTimeISO(o.timeZone);
+    if(o.unit==='minute')z=z.with({second:0,millisecond:0,microsecond:0,nanosecond:0});
+    else if(o.unit==='hour')z=z.with({minute:0,second:0,millisecond:0,microsecond:0,nanosecond:0});
+    else {
+     let d=z.toPlainDate();
+     if(o.unit==='week')d=d.subtract({days:d.dayOfWeek-1});
+     if(o.unit==='month')d=d.with({day:1});
+     if(o.unit==='quarter')d=d.with({month:Math.floor((d.month-1)/3)*3+1,day:1});
+     if(o.unit==='year')d=d.with({month:1,day:1});
+     z=d.toZonedDateTime(o.timeZone);
+    }
+    return z.toInstant().toString({fractionalSecondDigits:3});
+   }
+  },
+  time_windows:{
+   check(args:Type[],constants:unknown[]):Type{
+    if(args.length!==2||args[0].kind!=='schema'||args[0].fields?.epoch_millis?.name!=='EpochMillis'||args[0].fields?.time_zone?.name!=='TimeZone')throw Error('time_windows requires {epoch_millis: EpochMillis, time_zone: TimeZone} and static {unit,count,mode}');
+    windowOptions(constants[1],true);
+    return {kind:'array',inner:schema({label:scalar('String'),zone:scalar('String'),start:boundary,end:boundary})};
+   },
+   run(args:unknown[]){const ctx=args[0] as {epoch_millis:number;time_zone:string|null};if(!ctx.time_zone)throw Error('time_windows requires context.time_zone; clarify the calendar timezone');return timeWindows({utc:{epochMillis:ctx.epoch_millis},tz:{client:{id:ctx.time_zone}}},windowOptions(args[1],false)).map(w=>({...w,start:{epoch_millis:w.start.epochMillis,date_time_utc:w.start.dateTimeUtc,rfc3339:w.start.rfc3339},end:{epoch_millis:w.end.epochMillis,date_time_utc:w.end.dateTimeUtc,rfc3339:w.end.rfc3339}}));}
+  }
+ }
+};
+
+function publicFigureCall<T>(call:()=>T):T{try{return call();}catch(error){if(!(error instanceof Error)||error.message.startsWith("Use "))throw error;let message=error.message;for(const [publicName,internalName]of Object.entries({...chartNames,...layoutNames}))message=message.replaceAll(internalName,publicName);throw new Error(message,{cause:error});}}
+export const dariHost={...host,checkFigure(...args:Parameters<typeof host.checkFigure>){return publicFigureCall(()=>host.checkFigure(...args));},renderFigure(...args:Parameters<typeof host.renderFigure>){return publicFigureCall(()=>host.renderFigure(...args));}};

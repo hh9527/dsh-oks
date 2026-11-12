@@ -1,260 +1,159 @@
-# DARI 手册
+# .dari 语言手册
 
-## 文件与声明
+本环境使用 `.dari`，工具为 dari_check({src})、dari_resolve({src})、dari_renew_context({src})。用宿主文件工具读写工作区内的 .dari 文件。自定义绑定、对象键、列名和函数参数使用 ASCII snake_case；类型、枚举类型、枚举成员和扩展组件使用 PascalCase，HTML 元素保持原标签名；中文展示内容写在正文和标签中。这是围绕数据获取、处理和展现的流水线定义语言：声明式、强类型、有边界、本地与远程两阶段证明。query_remote! 由模型证明领域查询，query! 由本地证明关系处理，tree! 组织展现；关系处理遵循有类型约束的 SQL 语义。data 声明可缓存的数据节点，节点内 let 命名不可变的计划片段，不新增数据节点或物化边界。顶层使用 type、data、report 和唯一的 answer，节点内使用 let；按依赖顺序声明。不开放手写函数、循环、递归、任意代码或物理 source。
 
-用宿主文件工具读写 `.dari`。src 是工作区内的相对路径或绝对路径。`remove_file({path})` 只删一个文件；`move_entry({src,sink})` 的两个参数都是最终名称。`oks_read` 只读取内置手册。
+源码标识使用 oks_info 中模型发布的 .dari 契约。读取 Dataset 获取其精确 Dataset/成员/类型/enum/Relation 符号；读取单个维度或度量获取对应成员契约。源码使用返回的精确符号。知识卡片中的 JSON 查询不是 .dari 语法。
 
-```dari
-data ctx = context();
-data weeks = time_windows(ctx,{unit:"week",count:2,mode:"complete"});
-data prev = weeks[0];
-data last = weeks[1];
-data facts = query({
-    op:"Graph",root:"d",nodes:[{id:"d",entity:"<数据集短名称>"}],edges:[],
-    select:[],count:"d"
-});
-data summary = select_one({from:{s:facts},group_by:(r)=>({}),
-    fields:(g,rows)=>({returned_groups:count(rows)})});
-answer tree! { Answer [
-    h1 ["对象概览"],
-    p ["返回分组数：",Value(data=summary?.returned_groups)],
-] };
+## 查询与后处理
+
+query! / query_remote! 内的 let 支持顺序 shadow：右侧先使用旧绑定，再发布新绑定，后续步骤按新类型访问字段；之前保存的分支仍引用旧计划。`.as!(name)` 是表达式位置的绑定语法糖，绑定后仍返回当前计划，采用相同的 shadow 规则，可用于 from、filter、project 等计划；connect 后命名的是新对端节点。
+
+```telora
+data top = query! {
+    let rows = from(samples);
+    let rows = rows |> filter(rows.cpu > 50.0);
+    let rows = rows |> project({name:rows.name,cpu:rows.cpu});
+    rows |> order_by(desc(rows.cpu)) |> take(10)
+};
 ```
 
-示例中的模型名称是占位符，以知识定义替换。扩展组件使用 PascalCase（如 Value、Lit、UseFigure），普通标签使用小写（如 p、strong）。`data` 定义不可变计算，`figure` 定义图表，`report` 定义报告；`answer tree! { Answer [...] }` 是唯一回答出口。figure/report/answer 的节点树必须用 `tree! { ... }` 包围，内部仍用 `tag(...) [...]`；figure 的根节点为图表组件或 Table。`=` 仅声明不可变绑定，不支持重新赋值。True/False/None 是 DARI 字面量，工具参数与返回 JSON 仍用 true/false/null。所有绑定共用命名空间，先定义后引用，每条声明以 `;` 结束；支持 `//` 和 `/* ... */` 注释。
+query_remote! 投影维度和度量时，模型对完整输入按所投影维度聚合。take 限制的是聚合后的输出行数，不截断参与聚合的原始数据。只有逐对象指标才使用 group_by_identity(a)。
 
-**tree! 中的节点采用 XML-node 语义，括号内是节点属性，使用 `=`，不是对象字段的 `:`。** 正确：`Value(data=summary?.total)`；错误：`Value(data: summary?.total)`。节点属性中嵌入的普通对象仍使用 `:`，例如 `ColumnChart(spec={x:"name",value:"count"},data=rows)`。
+```telora
+data rows = query_remote! {
+    let a = from(ic::current_alarm);
+    let output = project({severity:a.alarm_severity,total:a.alarm_count});
+    output |> order_by(asc(output.severity)) |> take(10)
+};
 
-表达式使用字符串、数字、Bool（True/False）、None、对象、数组、函数和绑定引用。分析稿自行定义的绑定、对象键和表列使用 ASCII 名称；中文用于报告正文、图表和表格标签等展示内容。读取外部模型中已有的特殊键时使用双引号及方括号，例如 `row["设备分类"]`；可空对象使用 `map_opt(obj,r=>r["设备分类"])`。
-
-## 检查与解析
-
-`dari_check({src:"analysis.dari"})` 检查全稿，不执行 SQL、不读取业务行。query 在检查期调用模型的 transform 得到 columns，建立 Table(T)，参与后续类型推导；context/time_windows 等已知计算在检查期执行，context 使用固定示例时刻。运行期取得实际值并校验值域、完整性和资源限制。
-
-检查回执是文本：成功 Succeed，失败 CheckFailed，后接分割线。`diagnostics` 在有诊断时首先列出原稿行列及原因，最多 20 条，超过报告省略数，不重复上游连锁错误。`unresolved-node-types` 列出类型未就绪的公开声明；`inspect-node-types` 列出首次出现、从未就绪恢复或类型形状变化的数据和图表，以及显式 inspect 的类型。与同一会话、同一稿件上一次 check 或 resolve 相比未变化的类型省略。不可恢复的语法错误可能无法列声明。
-
-```js
-dari_check({src:"analysis.dari",inspect:{data:["facts","summary"],figures:["counts"]}})
+answer tree! { Answer [h1 ["告警构成"],PieChart(data = rows,spec = {x:project!(severity),value:project!(total),title:"告警严重级别构成"})]};
 ```
 
-`inspect?: {data?: string[], figures?: string[]}` 是可选参数，仅在忘记已报告的类型时使用，例如上下文压缩后。它使用源码绑定名，每类最多 32 项，强制重报数据和图表输入的类型形状，不重述源码定义。类型比较包含类型、字段、可空性、表列顺序，不含值、源码、数组长度或运行缓存。普通对象字段按名排序；类型状态与数据执行缓存独立。稿件状态回收或插件重启后，下一次检查重新报告类型。
+query_remote! 的 project 使用已发布成员及模型明确支持的分桶、时间转换、not_none；本次任务的常量标签、lookup、case_when 和派生列在后续 query! 中准备。计算若决定分组口径，必须先在远程阶段表达：使用已支持的分桶，或按各时间窗口分别筛选并聚合，再在本地补标签；不能在聚合后补分组而改变统计含义。
 
-```js
-dari_resolve({src:"analysis.dari"})
-dari_renew_context({src:"analysis.dari"})
+逐对象统计先选择代表该对象身份的节点并 group_by_identity，再投影称谓作为展示。设备名称不代表设备身份；按设备汇总 KPI 应关联设备节点并按设备身份分组，KPI 自身身份可能还包含采样时间，不能代替设备身份。
+
+query_remote! 通过 from 引入模型源，用 `from(公开Dataset符号).as!(a) |> connect(公开Relation符号).as!(b)` 遍历关联。as! 绑定当前节点并保留整个计划，connect 从当前节点推导对端 Dataset，连续连接从最新节点继续。Relation 决定连接方向、基数和可选关联；可选关联保留根行，并使关联字段可空。先用 oks_info 读取涉及 Dataset 的 Relation 符号。维度筛选作用于聚合前原始行，独立的度量 filter 作用于聚合后；支持多个度量 filter。维度比较采用 `成员 比较符 参数`，可连续 filter 或嵌套 && / ||；文本筛选使用 contains/not_contains/starts_with/ends_with(成员,String参数)，不区分 ASCII 大小写。参数用声明的逻辑类型，例如 EpochMillis(...)、模型 newtype 或 Type::Variant。模型检查字段是否允许对应算子。排序可引用未投影成员；聚合后只能按已有分组键、已按身份分组的节点维度或聚合度量排序，模型拒绝会改变分组口径的隐藏排序。
+
+```telora
+data rows = query_remote! {
+    let linked = from(ic::frame).as!(f)
+        |> connect(ic::relations::frame_belongs_to_device).as!(d);
+    let output = linked |> project({frame:f.frame_name,device:d.device_name});
+    output |> order_by(asc(output.frame)) |> take(10)
+};
 ```
 
-resolve 先检查全稿，再执行唯一 Answer 及其依赖，把 Answer 作为带来源标记的消息交付到会话，工具回执只给出消息 id、run 和计数。答案已自动交付，不要重复；回执说明交付失败时才转发原文。只接收 src，不提供 data/figures/reports/answer 选择参数。UseFigure/UseReport 在选中分支中发布图表与报告；Table 直接成为 Markdown 表格。检查失败 CheckFailed，执行失败 ResolveFailed，均表现为失败工具调用。
+两期比较可绑定 `let populations = pair(l,r) |> ...; let output = populations |> project({...});`，使用 `pair(l,r)`，两端分别声明独立节点及 Relation，再分别 `group_by_identity` 声明对齐身份，filter 划定各期完整输入。每端投影一个度量；`order_by(desc(growth_rate(output.after,output.before)))`、difference、ratio 在数据库内比较并排名，最后 take。增长率分母非正或比率分母为零时不参与对应排名。多个指标的劣化比较可以分别查询各指标，然后统一投影同一 Schema，通过 union_all 合并，再排序取前 N；不能把不同量纲的绝对差直接排名。
 
-同稿共享计算与缓存，改后处理不重新取数。采集上下文按会话及稿件真实路径冻结；renew_context 创建新上下文，下一次 resolve 重新取数，不接收 refresh。执行使用临时 SQLite 文件，最后一次运行结束后空闲 15 分钟关闭删除；检查使用独立内存库，不延长执行缓存。
+query! 使用显式绑定，例如 `let r = from(rows); let output = project({name:r.name}); output |> order_by(asc(output.name)) |> take(10)`。project 从一个明确输入的成员推导输出 Schema；引用多个输入时，先声明显式 join/Relation，再以关联计划为输入投影。let 只在当前 data 内可见，结果列通过其真实绑定名称访问，名称可以是 output/result/out 等，不存在隐式 out。
 
-默认直接解析；requireRunApproval=true 时宿主申请批准，绑定源码、模型、数据配置及冻结上下文。等待期间源码或配置变化会拒绝继续。
+可组合 filter、group_by、project、order_by、take、take_opt、distinct()。投影前的筛选针对源数据；投影后的筛选针对已聚合或已映射的结果，编译器保留这个顺序。新投影结果用新的 let 名称绑定。紧随投影的排序也可引用该阶段未输出的源字段。group_by 后必须 project 消费分组，分组投影使用 count/sum/avg/min/max。
 
-## 时间
+联接写为 `let joined = join({a,b},a.key == b.key); let output = joined |> project({left:a.value,right:b.value});`。left_join、semi_join、anti_join 使用相同结构；semi_join/anti_join 用数据库 EXISTS/NOT EXISTS 保留或排除左侧行。集合运算写为 `let combined = union({a,b}); combined |> order_by(asc(combined.field)) |> take(10)`；union/union_all/intersect/except 要求一致的字段名、业务类型及可空性。top_per({group:r.group},desc(r.value),n) 在各组内按指定顺序取前 N。
 
-`context()` 提供 `ctx.utc.epochMillis`、`ctx.utc.rfc3339`、`ctx.tz.client.id`（IANA 时区）、该时刻的 offset/offsetMinutes。`time_windows(ctx,{unit,count,mode})` 使用其中的客户端时区：unit=year|quarter|month|week|day，count=1..50。
+有限算术、lookup、coalesce、round(value,precision)、concat、case_when、is_some/is_none、difference/ratio/growth_rate 放在前序 data 或 query! 中。整数余数用 `%`，除零或余数除零返回空值。map_opt(optional_row,project!(field)) 投影可选行字段。lookup 返回可空结果；稳定业务编码由模型映射，任务显示标签用 lookup。in_subnet/not_in_subnet(address,"192.168.1.0/24") 在 query! 中筛选已投影 IPv4 字段，非规范地址为空，子网必须规范且主机位为零。有限补充数据用 `table([{name:"目标",value:1}])`；空表必须声明 Table(Schema(...))。
 
-- complete：最近 N 个已完成日历周期。
-- current：包含当前周期，最后结束于下一日历边界，可能在未来。
-- rolling：以冻结时刻为终点，边界从该时刻平移；月末收缩到可用日期，保留毫秒。
+等值标签映射优先使用 `lookup(value, [{value, label}, ...])`；范围判断或复合条件使用 case_when。lookup 的查找表为非空静态数组，键唯一且与输入的非空业务类型一致，所有 label 类型一致；未命中或输入为空时返回 None，可按展示口径用 coalesce 提供兜底文案。例如在 query! 的 project 中：
 
-窗口从早到晚，周一为周起点，区间 `[start,end)`。自然日可以是 23/25 小时；IANA 日历运算不等于固定偏移或固定毫秒相减。每项有 label、zone、start/end；边界字段如下：
-
-| 字段 | 类型和用途 |
-| --- | --- |
-| epochMillis | EpochMillis，UTC 整数毫秒 |
-| dateTimeUtc | DateTimeUtc，YYYY-MM-DDTHH:MM:SS.SSSZ |
-| rfc3339 | String，含本地偏移的展示文本 |
-
-按知识中的时间维度逻辑类型选择 epochMillis 或 dateTimeUtc；rfc3339 和 zone 用于展示。query.time_windows.dimension 使用实际维度短名称，不是时间角色 ID。日期标签不能替代边界。
-
-```dari
-data ctx = context();
-data days = time_windows(ctx,{unit:"day",count:7,mode:"complete"});
-data facts = query({
-    op:"Graph",root:"a",nodes:[{id:"a",entity:"current_alarm"}],edges:[],
-    select:[{node:"a",dimension:"alarm_tenant_id"}],
-    measures:[{node:"a",measure:"alarm_count"}],
-    time_windows:[{node:"a",dimension:"alarm_occur_utc_raw",
-        start:days[0].start.epochMillis,end:days[6].end.epochMillis}],
-    order_by:[{column:"a_alarm_count",direction:"Desc"}],take:500
-});
+```telora
+category: coalesce(lookup(r.cls, [
+    {value: ic::DeviceClass::Lsw, label: "交换机"},
+    {value: ic::DeviceClass::Router, label: "路由器"},
+    {value: ic::DeviceClass::Ap, label: "无线接入点"}
+]), "未标注分类")
 ```
 
-该时间示例采用 IC 的 EpochMillis 维度；其他模型依实际定义替换，DateTimeUtc 维度使用 dateTimeUtc 边界。
+枚举键使用 oks_info 发布的精确符号。标签用于展示，筛选和计算保留原业务字段；用 lookup 表达标签查找，无需展开嵌套 case_when。
 
-## 有类型后处理
+`case_when(condition, then_value, else_value)` 恰好三个参数，condition 必须为非空 Bool，两支结果类型须兼容。多个条件嵌套在 else_value 中，例如 `case_when(a, "甲", case_when(b, "乙", "其他"))`。可空比较如 `r.severity == Type::Variant` 返回 Option(Bool) 时，按业务明确空值分支；空值表示不命中时可用 `coalesce(原条件, False)`。
 
-query 返回 Table(T)，列名和可空性由模型 columns 决定。行结构是 `r.<from别名>.<完整列名>`：若列叫 a_alarm_severity，访问 `r.s.a_alarm_severity`，不是 `r.s.a.alarm_severity`。使用检查返回的列名。
+本地 `ratio(a,b)` 与 `growth_rate(a,b)` 返回 Option(Ratio)，携带比例计算约束与百分比展示语义；输入为空时返回 None，ratio 分母为零、growth_rate 基线非正时也返回 None。非空 Float 可显式用 `Ratio(value)` 表达比例，例如 `Ratio(0.12)` 展示为 12%。上述结果直接投影、round、avg/min/max 后仍保留 Ratio，无需额外转换或乘以 100。difference 保留兼容输入的名义类型，包括 Percent 与 Ratio。Ratio 构造器不直接接受 Option(Float)；应先按业务处理空值，再转换，不能为了显示百分号擅自补零。记录或标量展示用 `Value(value = prepared_value)`；`Value(data = rows, field = project!(field))` 用于已证明至多一行的表或可选行。展示记录字段时先在 data/do 中绑定该字段，无需制造占位表。
 
-```dari
-data comparison = select({
-    from:{b:base},
-    joins:[{kind:"inner",source:{c:current},on:r=>r.b.server_id==r.c.server_id}],
-    where:r=>is_some(r.b.cpu)&&is_some(r.c.cpu),
-    fields:r=>({id:r.b.server_id,delta:r.c.cpu-r.b.cpu}),
-    order_by:out=>[desc(out.delta),asc(out.id)],limit:3
-});
-data winner = select_one({from:{s:comparison},fields:r=>({id:r.s.id,delta:r.s.delta}),
-    order_by:out=>[desc(out.delta),asc(out.id)],limit:1});
+中间 query_remote!/query! 可保持无上界 SQL 计划，供后续聚合、连接、集合运算和排名；不会先取 500 行再计算。只有交付的表和图表输入必须证明不超过 500 行。query_remote! 无 take 时也不写 order_by，排序放在后续 query! 中。is_empty(table) 使用数据库 EXISTS 判断，不拉取全表。take(n) 的 n 为静态整数 1..500，多行取前 N 必须 order_by；已知有界输入的后处理无需重复 take。无分组聚合至多一行，可直接 take_opt()，返回 Option(Schema)。用 `if let Some(row) = highest [...] else [...]` 消费可选行；行存在不代表字段非空，可继续解构字段。
+
+## 时间与展现
+
+顶层 `data ctx = context! { now: Context::Now, tz: Context::ClientTz };` 选择固定上下文快照，返回 Schema({now:EpochMillis,tz:TimeZone})。字段名可自定，只读取声明的选择项；请求 ClientTz 时客户端时区缺失或无效就报错。窗口调用写为 `time_windows({epoch_millis:ctx.now,time_zone:ctx.tz},{unit:TimeUnit::Day,count:3,mode:WindowMode::Complete})`，返回从早到晚的窗口。unit 使用 TimeUnit::Minute/Hour/Day/Week/Month/Quarter/Year，mode 使用 WindowMode::Complete/Current/Rolling，均为枚举而非字符串；选项在检查期确定。每个窗口有 label、zone、start/end，各边界含 epoch_millis/date_time_utc/rfc3339。静态下标如 windows[0].start.epoch_millis 可用于 query_remote! 参数；窗口采用 [start,end)。
+
+对象字段用冒号，tree! 节点属性用等号。True/False/None 首字母大写。tree! 只组织文本、组件引用和条件，不承担复杂计算。唯一回答为 `answer tree! { Answer [...]};`。Value(value = prepared_value) 展示前序值；Value(data = highest,field = project!(cpu)) 展示静态单行结果的字段。字段选择用 project!(field)，不写字符串访问器或匿名函数。
+
+图表及 Table 直接内联在 Answer/Report 中，例如 `BarChart(data = rows,spec = {...})`。spec 不含 kind，组件标签决定种类。完整组件和配置见 oks://help/dari-figures.md。
+
+报告写 `report report = tree! { Report(title = "标题") [...]};`，Answer 用 UseReport(ref = report)。支持 section、h1/h2/h3、p、div/span、ul/ol/li、blockquote、pre/code、strong/em、a、br/hr、Lit、Value。报告内联图表和 HTML 表格，并携带源码及 context 归档。Answer 中的 Table 直接显示 Markdown 表格。
+
+工作纪律与本手册一并完整加载，以共享的 oks://help/rules.md 为准。
+
+## 检查诊断
+
+dari_check 失败时返回 CheckFailed 文本，列出行列位置、相关声明与可确定的修复建议。一次收集多个独立错误，最多展示 20 条并提示剩余数量。类型及计划错误会说明期望与实际、错误原因和适用的修复方式。可空条件需按业务明确空值含义：若空值表示不满足，用 coalesce(原条件, False)，若需保留空值对应的行，可选择 True 或单独表达空值条件；不要机械套用默认值。语法恢复以可靠的括号或声明边界为限；上游声明失败时，依赖它的内容等待修复后再检查。检查失败的稿件不会执行或发布结果。
+
+query_remote! 的行级 filter 可用 is_some(a.optional_dimension) / is_none(a.optional_dimension) 筛选非 NULL / NULL，并可通过 && / || 与其他维度条件组合。使用模型发布的可空、可筛选维度成员；空字符串仍属于非 NULL，不等同于无数据。这些条件在数据库内执行。
+
+非空投影写为 project({field:not_none(expr)})：expr 必须是 Option(T)，该列输出为 T；任一标记列为空则排除整行，其他列保持原类型。not_none 仅允许在投影字段最外层。query! 支持可推导表达式及聚合，query_remote! 支持已发布的可空成员；筛除在投影结果计算后、后续排序和 take 前执行，空字符串不会被排除。带内置 pair 排名的 query_remote! 请在后续 query! 中作非空投影。
+
+共享类型为 Percent、Ratio、EpochMillis、DateTimeUtc、DateTimeTz、TimeZone。Percent(12.0) 与 Ratio(0.12) 展示为 12%，保留原始计算值及各业务 newtype 的约束。时间转换用 to_epoch_millis(t)、to_datetime_utc(t)、to_datetime_tz(t,"Asia/Shanghai")；DateTimeTz 保留偏移和 IANA 时区。EpochMillis 可加减整数毫秒偏移，两个 EpochMillis 相减得到 Int 时长。time_bucket(t,{unit:TimeUnit::Day,time_zone:"Asia/Shanghai"}) 返回桶起点 DateTimeUtc，unit 使用 TimeUnit::Minute/Hour/Day/Week/Month/Quarter/Year，周从星期一开始；可用于 query! 投影。时间比较、排序按瞬时值进行。
+
+声明职责受类型检查：data name = expr; 绑定数据；report name = tree! {Report [...]}; 绑定报告；answer tree! {Answer [...]}; 为唯一交付根节点，不写名称或等号。
+
+query_remote! { ... } 是模型查询计划入口；context! { ... } 只能直接初始化顶层 data，选择 Context::Now / Context::ClientTz，同次 resolve 共享上下文快照。query_remote! 在检查期取得模型证明，执行期绑定参数取数。
+
+`data x = do { let a = ...; a };` 表达局部纯计算：let 不可变、按依赖顺序声明、仅块内可见，末尾表达式决定返回类型。do 可以嵌套并引用数据节点，不能嵌入上下文获取、查询或展示结构；data 才是缓存边界。
+
+图表在 Answer 中生成独立 SVG 附件和 Markdown 图片引用，在 Report 中直接嵌入 HTML；Table 分别输出 Markdown 或 HTML 表格。两个位置分别渲染，输入 data 结果在同一次 resolve 内共享。图表渲染不使用缓存。Answer 和每份 Report 分别按实际展示顺序自动编号，图与表独立计数为“图 1、图 2”和“表 1、表 2”；未选中的条件分支不占编号，作者无需把编号写进 title。
+
+展示宿主内置 Stack::None/Total/Percent，spec.stack 只接受这些枚举值，默认 None。Total/Percent 均要求指标具有加总能力，宽表不同指标只允许并列展示。数值默认最多两位小数、去尾零，Int 保留整数；Percent/Ratio 自动按百分比显示。图表和 Table 用 spec.precision，Value 用 precision = 3 覆盖精度（0..12 静态整数）；显式精度优先于模型默认。显示舍入不改变原始值、计算、排序和 SVG 内嵌数据。
+
+query! { ... } 是关系计划宏，query_remote! { ... } 是模型查询计划宏；tree! { ... } 构造展示树，context! { ... } 选择执行上下文。! 标识特殊语法或语义边界，不等同于副作用或立即执行。普通管道算子保持函数调用形式。
+
+运行期输入、数据与展示错误采用 ResolveFailed 文本并定位负责节点。输入编码错误应修正输入；模型/context 版本变化后重新检查同一稿件；模型结果违背已证明契约属于实现问题，不靠放宽类型、删条件或伪造数据规避。
+
+### 日历区间准备
+
+在顶层 data 或纯 do 中准备日历区间，向 query_remote!/query! 传递标量端点：
+
+```telora
+data ctx = context! { now: Context::Now, tz: Context::ClientTz };
+data window = do {
+    let today = date_of(ctx.now, ctx.tz);
+    let dates = calendar_period(today, CalendarUnit::Week);
+    at_zone(dates, ctx.tz)
+};
 ```
 
-from 恰好一个别名和表，joins 顺序引入 inner/left 连接。on/where 返回 Bool；left join 的右行是 Option(记录)，用 `r.c?.name ?? "未关联"`。当前 join.on 可访问尚未补空的当前右行；后续表达式处理可空性。类型检查不证明连接键唯一，粒度依据领域知识。
+LocalDate("2026-02-01") 表达日期，TimeZone("Asia/Shanghai") 表达固定时区。CalendarUnit 为 Year/Quarter/Month/Week/Day；Weekday 为 Monday 到 Sunday，默认 Monday；DateOverflow 为 Reject/Clamp，默认 Reject。使用 Type::Variant 枚举符号，不使用字符串单位。
 
-fields 返回标量记录，决定列名；order_by 读取投影后的 out，asc/desc 默认空值排最后，可加 `{nulls:"first"}`。select_one 返回 Option(记录)：零行 None，一行对象，多行 CardinalityViolation；第一名用显式排序和 limit:1。
+calendar_floor/calendar_ceil/date_of/shift_date 返回 LocalDate；calendar_period/date_range/shift_dates 返回 DateRange；at_zone(DateRange,TimeZone) 与 time_range(instant,instant) 返回 TimeRange。calendar_floor/calendar_ceil/calendar_period 接收日期、单位及可选 Weekday；shift_date/shift_dates 接收日期或区间、单位、移动数量及可选 DateOverflow。date_of 接收瞬时值和 TimeZone。intersection/overlaps 接收同类区间；contains 接收区间和端点；is_empty 判断空区间。
 
-```dari
-data groups = select({from:{s:samples},group_by:r=>({tenant:r.s.tenant_id}),
-    fields:(g,rows)=>({tenant:g.tenant,n:count(rows),valid:count(rows.s.cpu),cpu:avg(rows.s.cpu)}),
-    having:out=>out.valid>0,order_by:out=>[desc(out.cpu),asc(out.tenant)]});
+区间端点为 `.start` / `.end`，DateRange 端点为 LocalDate，TimeRange 端点为 EpochMillis。统一使用半开区间，空区间有效，逆向区间报错；普通对象不能冒充区间。日期转瞬时值必须显式指定时区，月末收敛必须显式选择 Clamp。当前这些日历准备函数只在局部计算中使用，不在 SQL 行表达式中展开；地区日历分桶见下节；固定时长分桶、批量分割及 input! 尚未提供。纪律要求保持原有约束。
+
+### 数据库 UTC 分桶
+
+`utc_bucket(value, CalendarUnit::Day)` 支持 DateTimeUtc → DateTimeUtc，Option 输入保留 Option。单位为静态 CalendarUnit::Year/Quarter/Month/Week/Day，周固定从周一 UTC 00:00 开始，不接收时区、字符串单位或隐式 EpochMillis。
+
+query! 中先投影桶字段，再对该字段 group_by 并 project 聚合值。query_remote! 中直接在 project 同时声明分桶维度和模型度量，模型按桶分组，并沿用该度量已发布的聚合规则：
+
+```telora
+data rows = query_remote! {
+    let a = from(ic::device_kpi);
+    let grouped = a |> project({day: utc_bucket(a.device_kpi_ts_raw, CalendarUnit::Day), cpu: a.cpu_usage});
+    grouped |> order_by(asc(grouped.day)) |> take(100)
+};
 ```
 
-分组 fields 接收 `(g,rows)`；g 是键，rows 的列只用于聚合。count(rows) 计行，count(列) 计非空，返回 Int；sum/avg/min/max 忽略缺失。sum/min/max 返回 Option(原类型)，avg 返回 Option(Float)。`group_by:r=>({})` 是全局聚合，空表也有一组，count=0，其余为 None。
+query_remote! 在投影中支持直接 DateTimeUtc 维度，也支持 `utc_bucket(to_datetime_utc(a.epoch), CalendarUnit::Day)`，先显式转换 EpochMillis 再分桶。也可单独投影 `to_datetime_utc(a.epoch)`；转换的源须为直接 EpochMillis/DateTimeUtc 维度，结果保持 DateTimeUtc 及来源可空性，通过已投影字段排序。SQL 在数据库内完成分桶和聚合，不能取回原始记录自行分组。分桶不补齐空桶，不增加业务类型的聚合权限。IC 符号仅作示例，语言能力不依赖具体模型。
 
-| 表达式 | 语义 |
-| --- | --- |
-| is_some(x) / is_none(x) | Option → Bool；`x==None` 等价 is_none(x) |
-| x?.field / x ?? fallback | 可选投影展平 Option；显式缺失行为 |
-| map_opt(x,v=>expr) | 处理可选普通对象或标量 |
-| round(x,digits) | 保留数值类型/可空性，digits 已知 0..15 |
-| concat(a,b,...) | 拼接字符串，保留缺失 |
-| case_when(test,a,b) | test 为 Bool，两分支类型兼容 |
-| lookup(x,[{value,label},...]) | 精确静态查表，返回 Option(LabelType) |
+### 地区 TimeZone 分桶
 
-Int/Float 可提升，String 与数字不隐式转换；Option 算术仍是 Option，不补零。除法返回 Option(Float)，零除为 None；可空比较返回 Option(Bool)，谓词显式用 `(r.s.cpu>0) ?? False`。
+`calendar_bucket(value, CalendarUnit::Day, zone)` 在 query!/query_remote! 中按地区日历分桶，value 为 DateTimeUtc，zone 为非空 TimeZone，结果为 DateTimeUtc，保留输入时间的可空性。支持 Year/Quarter/Month/Week/Day，周从周一开始。EpochMillis 来源显式使用 to_datetime_utc 转换。
 
-lookup 的映射是检查期已知非空数组，每项恰好 value/label。value 同类型非空标量且匹配输入类型，重复报错；label 为兼容标量，可含 null。输入 null 或未命中返回 null，用 `??` 给默认值；映射可复用。
-
-`table([{name:"示例",count:3}],{kind:"example"})` 创建静态演示表；空数组/全 null 列无类型依据会报错。`map(days,(day,index)=>query({...}))` 对已知有界数组展开，最多 50 项、全稿最多 128 个查询；业务结果不能决定新 query 参数或数量。`union_all(parts)` 合并同 schema 表数组，保留重复行，列名和顺序一致，Int/Float 可提升；无 schema 的空数组不能合并，合并后排序用 select。
-
-## 模型查询：{{intentContract}}
-
-Intent 顶层 op 为 Graph、GraphPair 或 GraphUnion。多行查询必须在最终结果层显式 order_by 并 take(n)，n 是检查时已知的 1..500 整数。写为 `order_by:[{column:"<完整结果列名>",direction:"Desc"}],take:10`；排序与取前 N 在数据库中执行，query 的 limit 参数不合法。无分组的标量计数/普通聚合可证明最多一行，无需 take。已有全局 top_by_measure 或 GraphPair.rank_by 也提供上界，其最终 take 同样不超过 500；分区 top_per、分支内 take 不能证明最终上界。query 在 check 时返回 schema 并检查上界，resolve 按已检查的计划取数，不截断结果。
-
-### Graph
-
-```js
-{op:"Graph",root:"d",nodes:[{id:"d",entity:"<数据集短名称>"}],edges:[],
- select:[{node:"d",dimension:"<维度短名称>"}],
- measures:[{node:"d",measure:"<指标短名称>"}],
- order_by:[{column:"d_<指标短名称>",direction:"Desc"}],take:10}
+```telora
+data ctx = context! { tz: Context::ClientTz };
+data daily = query_remote! {
+    let a = from(ic::device_kpi);
+    let grouped = a |> project({day: calendar_bucket(a.device_kpi_ts_raw, CalendarUnit::Day, ctx.tz), cpu: a.cpu_usage});
+    grouped |> order_by(asc(grouped.day)) |> take(100)
+};
 ```
 
-| 键 | 形状/含义 |
-| --- | --- |
-| nodes | `{id,entity}` 数组；entity 是数据集短名称，id 是查询内别名 |
-| edges / constraints | `{relation,from,to}` 数组；relation 是关系短名称，端点是别名，方向依声明 |
-| select / measures | `{node,dimension}` / `{node,measure}` 数组 |
-| filters | `{node,dimension,op,value}` 数组，按维度授权筛选 |
-| any_of | `{node,dimension,values}` 数组，匹配备选值 |
-| time_windows | `{node,dimension,start,end}` 数组，显式 `[start,end)`；end 必填非 null，start 可省略/null 表示此前全部历史 |
-| group_by_identity | 节点别名数组，按声明的完整身份分组 |
-| count / count_value | 节点别名 / `{node,dimension}`；行数/非空值计数 |
-| count_having | `{op,value}`，整数计数筛选；count_groups/include_empty 为 Bool |
-| measure_having | `{node,measure,op,value}` 数组，value 按度量输出类型 |
-| order_by / take | `[{column,direction}]` / 1..500，按输出别名排序取前 N；Graph 可用 `{node,dimension,direction}` / `{node,measure,direction}` 按未输出键排序，隐藏键不进入结果；聚合隐藏维度不得细分分组，DISTINCT 须使用已输出键 |
-| top_by_measure | `{node,measure,direction,take}`，按声明的聚合值排名 |
-| top_per | `{owner,sample,rank,take}`，逐 owner 的原始样本 Top-N |
-| row_grain / distinct | Root 或 Association / Bool，遵循模型粒度约束 |
-
-必填 Graph、root、nodes、edges、select；投影维度/指标或显式指定计数对象。隐藏身份键不可拆分用户可见分组。原始 order_by+take 与聚合 Min/Max 不同，最高平均值与最高样本峰值不同；最终 order_by 应补充已投影的身份列作为并列裁决。Min 忽略空值。top_per 要求恰好一条 sample→owner 边，owner 端 One/Optional，样本有粒度，rank 为有序样本维度。
-
-measure_having 的度量要在 measures 中。常见合法结构是 group_by_identity=[root] 且只选根维度；另一种为 context→owner、sample→owner，两条 owner 端 One/Optional，身份完整，group_by_identity=[root,owner]，只选 context/owner 维度，可附加一条至多为一的 owner→ancestor 边并选 ancestor 维度。后者恰好三或四节点，不附加计数、业务连接或 include_empty；具体合法性由模型检查。exists.having 按自身总体校验。
-
-### 筛选和值域
-
-- Eq/Ne 比较兼容逻辑值；Gt/Ge/Lt/Le 用于授权的数值/时间等有序类型。Bool/Ipv4 不支持有序比较，Text 字典序不代表数字或时间顺序。Ne 不包含 NULL。
-- Contains/NotContains/StartsWith/EndsWith 仅用于授权的 Text 维度，字面文本、当前忽略大小写，不接收 SQL/正则。
-- InSubnet/NotInSubnet 仅用于授权 Ipv4 维度，value 是规范 CIDR，如 10.4.16.0/20；掩码 0..32，主机位零、无前导零，不包含 NULL，不支持 IPv6/隐式 Text 转换。
-- 半开放枚举已知概念用列出的业务 ID；`{unknown:"原始值"}` 匹配一个未知底层值，`{unknowns:True}` 匹配所有未知非空值。结果标记列见维度 value_contract。筛选输入不提供 kind。
-- 逻辑类型与物理存储分开。字段为 String/Int 不代表获得字符串或数值操作；ops、filterable、projectable、input_kinds 和规范值依知识声明，类型能力本身不授予权限。
-- DateTimeUtc 是规范三位毫秒 UTC 文本，EpochMillis 是整数毫秒；Date 不含时区，DateTime 是无时区日历日期时间，转换成绝对时刻需要明确时区。
-- 使用声明的 UTC 分桶维度按小时/天/月聚合，无 granularity 参数；先对原始时间加窗口。UTC 桶不是客户端自然日，月底按日历计算。
-
-### EXISTS 与 Latest
-
-exists 为数组，各项 `{anchor,nodes,edges,filters?,constraints?,time_windows?,any_of?,having?,negated?}`。anchor 是外层别名，内层节点仅在 EXISTS 内存在，edges 可引用锚点；having 项 `{node,measure,op,value}`。只要求关联记录存在时使用 EXISTS 限定外层总体，避免连接倍增，不需要 filters 可省略。
-
-Latest 是模型声明的数值指标，仍用 measures 选择；按权威 UTC 时刻降序、空时刻最后，再按完整剩余样本粒度升序裁决。返回该行原值，保留 NULL，不回退更旧非空值。同一样本节点共用所选行；筛选、关联、时间窗及 EXISTS 在选行前，measure_having 在其后。缺失 owner 采用内关联，不扩展 include_empty。逐 owner 使用完整身份，可用于 top_by_measure/GraphPair；同组只有一个 Latest 样本源/顺序，不支持 distinct、聚合局部 filter、外部依赖、top_per、派生 union 或嵌套 EXISTS 聚合谓词。
-
-### GraphPair
-
-比较同一实体两组总体的一项数值指标；比较多个指标时分别查询，再用后处理统一量纲与排序。
-
-```js
-{op:"GraphPair",left:<Graph>,right:<Graph>,
- align_by:[{left:{node:"a"},right:{node:"b"}}],
- select:[{side:"Left",node:"a",dimension:"<展示维度>"}],
- rank_by:{op:"GrowthRate",current:"Right",baseline:"Left",direction:"Desc",take:10}}
-```
-
-align_by 非空，配对相同实体的完整身份，节点不重复；每侧恰好一个度量，select 为空/省略，group_by_identity 从 root 开始且与对齐节点顺序一致。外层 select 必填（可空），只能选对齐身份决定的属性。两侧按身份内关联；周期比较对齐 owner，包含时间的样本身份不代表周期，互斥时间窗下对齐同一样本会拒绝。
-
-输出为按 select 顺序的展示列及两侧指标，前缀 left_/right_，半开放值域紧邻 __kind。展示值变化不影响对齐。操作数不支持 count/distinct/include_empty/order_by/take/top_by_measure/top_per。
-
-| rank_by.op | 其余键 | 公式 |
-| --- | --- | --- |
-| Subtract | minuend,subtrahend,direction,take | 被减侧−减侧 |
-| Ratio | numerator,denominator,direction,take | 分子侧/分母侧 |
-| GrowthRate | current,baseline,direction,take | (当前侧−基线侧)/基线侧 |
-
-侧名 Left/Right 且互异，direction=Asc|Desc，最终 take=1..500。两指标数值且单位兼容，不同指标 ID 要相同非 null 单位。NULL 排除；Ratio 排除零分母，GrowthRate 排除非正基线。追加 comparison_value，按该值排名，身份并列升序；Subtract 保留单位（百分数相减为百分点），Ratio/GrowthRate 无量纲，0.2 增长率表示 20%。rank_by 与 count_groups:True 不能并用；无排名时 count_groups 计所有对齐身份，无 comparison_value。
-
-GraphUnion 为 `{op:"GraphUnion",branches:[{result_node,graph},...],order_by:[{column:"<首分支完整结果列名>",direction:"Asc"}],take:500}`：至少两个 Graph 返回相同实体、按相同顺序选相同维度，分支是无序原始行，按完整结果身份并集去重。
-
-## 图表与排版
-
-`tag(attr=expression,...) [children]`；属性或子节点为空可省略，children 为字符串或节点，以逗号分隔，允许尾逗号。中文、&、< 直接写，渲染器负责转义。figure 的 data 是 Table(T)，不加 `.rows`，组件标签决定图表类型，spec 不写 kind。
-
-```dari
-figure counts = tree! { ColumnChart(spec={x:"name",value:"count"},data=grouped) };
-report full = tree! { Report [
-    h1 ["对象统计"],
-    p ["总数：",Value(data=summary?.total)],
-    UseFigure(ref=counts,caption="类别分布"),
-] };
-answer tree! { Answer [
-    p ["分析结果如下"],
-    UseFigure(ref=counts,caption="类别分布"),
-    UseReport(ref=full),
-] };
-```
-
-{{figureIndex}}
-
-索引已载入；只在选定图表且需要详细映射/开关时读取对应分册。通用完整规格按需读 oks://help/figure-options.md。先在 query/select 中聚合，图表不汇总重复单元。字段映射使用检查列名。Table.columns 是字符串列名数组，`labels:{level:"告警级别"}` 为列设置展示表头，未映射的列使用列名；只有 NetworkGraph 接受独立 nodes 表。
-
-BarChart/ColumnChart 单组，不接受 series，颜色按 x 类别使用 style.colors，一个颜色可统一；GroupedBarChart/GroupedColumnChart 必填 series，颜色按序列且与图例一致，单序列仍保留图例；分组柱支持 stack=total|percent。
-
-LineChart/AreaChart 的 xType 必填 Int|Float|String|Rfc3339|EpochMillis，不推断编码。Int/Float 数值轴，String 类别轴；Rfc3339 接受带时区 RFC3339 文本，EpochMillis 接受整数毫秒。检查列类型、运行校验实际值；数值/时间 x 在各序列内非递减。
-
-排版用 `layout:{labelFont:12,titleFont:16}`，行高、条厚、间距和画布高度依字号与类别/序列数推导，不设置 height/rowHeight。排序/标签用 `style:{sort:"desc",labels:True}`。未知键及层级放错在检查中报错；颜色、标题、轴名和单位等专用键见所选分册。
-
-图表与 Table 的 `spec.allowNoData` 默认 `False`：无数据时运行报错。显式设为 `True`，有数据正常显示，无数据显示“无数据”（图表使用淡色居中水印，表格保留已知表头）。字段、类型及非空数据合法性检查照常执行，无需构造占位行。
-
-柱条图可显式设置 `spec.valueMin` 为数值轴起点（与 value 列相同单位），例如原值为 99.56 时设 `valueMin:99`、`style:{labels:True}`，条柱从 99 起，标签仍为 99.56；若数据为 0.9956，起点应为 0.99。轴上自动注明起点；下界不能高于任何数据值；不与 stack 合用。无需减去基数或另造标签列。
-
-## Report 与 Answer
-
-Report 支持 section、h1/h2/h3、p、div/span、ul/ol/li、blockquote、pre/code、strong/em、a、br/hr、Value/value、Lit、UseFigure、FigureRef；静态排版属性使用字符串，如 `p(class="lead")`。不直接写 table/tr/td/th 或 figure/figurecaption，表格和图表均通过 UseFigure。`FigureRef(ref=counts)` 在报告中显示图/表编号，caption 是可选静态说明。
-
-Report 的动态数值用 `Value(data=round(summary?.cpu,2))`，普通记录先由 select_one 得到标量；`Lit ["1.2"]` 明确表示静态文本，只接受字符串子节点。
-
-唯一 Answer 使用同样节点风格：h1/h2/h3→Markdown 标题，strong/em→强调，p、列表、引用、代码、链接转为对应 Markdown。动态值写 `Value(data=summary?.total)`，null 显示破折号；文字和值转义 Markdown。Answer 不接受 class/id 等不能转成 Markdown 的属性。
-
-Report/Answer 子节点支持条件分支，分支内仍以逗号分隔同级节点：
-
-```dari
-answer tree! { Answer [
-    if (summary?.total > 0 ?? False) [p ["有数据"]] else [p ["没有数据"]],
-    if let Some(i) = summary [p ["总数：",Value(data=i.total)]] else [],
-] };
-```
-
-条件必须为 Bool，Option(Bool) 显式用 `?? False` 等处理；else 可省略或接 else if。if let 要求 Option(T)，Some 绑定仅在第一个分支内有效，类型为 T；含下标的待解包表达式用括号包围，如 `if let Some(i) = (items[0]) [...]`。所有分支都检查类型、节点和溯源；运行只展示选中分支，未选中的 UseFigure/UseReport 不发布附件。条件不改变 query 取数计划。
-
-UseFigure 在 Answer 中发布图形并嵌入图片，Table 直接嵌入 Markdown 表格；在 Report 中嵌入图形/表格并自动编号。UseReport 仅用于 Answer，发布已声明 Report 的可点击链接，无需另调 present；同一次解析同一产物仅发布一次。
-
-报告归档保留两个不执行的 script：dari-source 保存源码，dari-context 保存实际上下文、执行时间及模型标识等元数据；不再重复保存 dari-values。所有 SVG 在非显示 metadata 节点内携带最终图表输入 CSV（dari-data；网络图另有 dari-nodes）与紧凑 JSON spec（dari-spec），便于读图；不附源码、上下文或溯源信息。表格与正文引用值直接从 HTML 读取；报告仍保留源码与执行元数据。
-
-`report_extract_dari({src:"report.html",sink:"restored.dari"})` 将归档源码写入新的指定文件，附加历史上下文、执行时间和模型标识等注释；目录已存在且不覆盖文件。不执行查询，重新运行会取得新上下文，不保证重现旧结果。提取后用宿主文件工具编辑。
+也可用顶层 `data zone = TimeZone("America/New_York");`。query_remote! 当前接收类型化时区参数，不把模型成员的普通 String 自动转换为地区身份。模型决定 SQL 语义：PostgreSQL 使用原生 date_trunc，SQLite 适配固定注册地区分桶 UDF；不退化为当前固定偏移。桶键采用 PostgreSQL 的本地午夜消歧，重复午夜取较后瞬时值，跳变午夜按跳变前偏移解释。特殊午夜的规范桶键不能直接用作日期覆盖范围的最早边界；筛选范围仍用 DateRange/at_zone。无效地区报错，无默认时区回退。当前尚未提供公开 DateTimeLocal 转换或固定时长分桶。

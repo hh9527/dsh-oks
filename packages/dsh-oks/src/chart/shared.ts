@@ -18,7 +18,7 @@ export type ChartKind = (typeof CHART_KINDS)[number];
  *  两处各写一遍就会漏——漏的后果不是报错，而是开关在这张图上**静默无效**。 */
 export const EXPRESSION_SUPPORT = {
   /** 堆叠：把同一个分组里的序列叠起来。 */
-  stack: ['grouped_column', 'area'],
+  stack: ['grouped_bar', 'grouped_column', 'area'],
   /** 气泡：把第三列映射成点的大小。 */
   size: ['scatter'],
   /** 分箱：直方图的箱子数。 */

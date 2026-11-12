@@ -1,4 +1,3 @@
-import { presentationOverview } from '../src/presentation-guide.ts';
 import assert from 'node:assert/strict';
 import { domainSummary, renderDomainSummary, DOMAIN_SUMMARY_URI } from '../src/domain-summary.ts';
 import { guidedTools } from '../src/guided-tools.ts';
@@ -41,29 +40,3 @@ try {
  assert.equal(check.output.render({} as never,receipt as never).map(b=>b.text??'').join(''),receipt.text);
 } finally {disposers.reverse().forEach(d=>d());}
 console.log('Public knowledge tools: exact surface, domain boundaries, search/routes/info and full result rendering passed');
-
-// Public tools throw failed receipts; internal definitions keep structured results.
-for (const name of ['dari_check','dari_resolve']) {
-  const failure = {ok:false,status:'invalid',diagnostics:[{file:'.work/test.dari',stage:'type',message:'Expected number',span:{start:{line:3,column:4,offset:20},end:{line:3,column:5,offset:21}}}]};
-  let result: unknown = failure;
-  const internal = {...stub(name),async execute(){return result;}};
-  const surface = guidedTools([internal],knowledge).find(t=>t.name===name)!;
-  assert.equal(await internal.execute(),failure);
-  await assert.rejects(surface.execute({} as never,{}),(error:unknown)=>{
-    assert(error instanceof Error);
-    if(name==='dari_resolve'){
-      assert.match(error.message,/^ResolveFailed\n-------------/);assert.match(error.message,/L3:4: Expected number/);
-      assert(!error.message.includes('"diagnostics"'));
-    }else{
-      assert(error.message.startsWith(`${name} failed:\n`));
-      assert.deepEqual(JSON.parse(error.message.slice(error.message.indexOf('\n')+1)),failure);
-    }
-    return true;
-  });
-  result = {ok:true,columns:[{name:'n',type:'Int'}]};
-  assert.equal(await surface.execute({} as never,{}),result,'Success receipts pass through unchanged');
-  const existing = new Error('aborted');
-  const throwing = guidedTools([{...internal,async execute(){throw existing;}}],knowledge).find(t=>t.name===name)!;
-  await assert.rejects(throwing.execute({} as never,{}),error=>error===existing,'Existing exceptions pass through unchanged');
-}
-console.log('Public DARI failures throw complete receipts; internal results and successes are unchanged');

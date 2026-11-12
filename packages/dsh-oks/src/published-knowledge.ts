@@ -4,7 +4,6 @@ import { graphRoots, refPath, resolveFact, encodePart, kindRoles } from './knowl
 import type { SemanticGraph, KnowledgeItem } from './knowledge-graph.ts';
 import type { RetrievalIndex, ReferenceEdge, Term } from './retrieval.ts';
 import { isRecord } from './host.ts';
-import { mountPresentationKnowledge } from './presentation-knowledge.ts';
 
 const own = (target: Record<string, unknown>, key: string, value: unknown): void => {
   Object.defineProperty(target, key, { value, writable: true, configurable: true, enumerable: true });
@@ -113,7 +112,6 @@ export function derivePublishedKnowledge(input: unknown, presentation?: unknown,
     if(path[0]==='types'&&path.length===2)item.names=[...new Set(item.names.map(name=>name===typeIds.canonical.get(item.key)?typeIds.names.get(item.key)!:name))];
   }
   graph.items = [...items.values()].sort((a, b) => a.key.localeCompare(b.key, 'en'));
-  mountPresentationKnowledge(graph);
   let terms: Term[] = graph.items.map(item => {
     const path = refPath(item.key); const rawName = path.at(-1)!;
     const name=path[0]==='types'&&path.length===2?typeIds.names.get(item.key)??rawName:rawName;

@@ -1,0 +1,9 @@
+data rows = query_remote! {
+    let frame = from(ic::frame);
+    let device = from(ic::device);
+    let projected = frame |> connect(ic::relations::frame_belongs_to_device,frame,device)
+          |> project({frame:frame.frame_name,device:device.device_name});
+    projected
+          |> order_by(asc(projected.frame)) |> take(20)
+};
+answer tree! { Answer [h1 ["机框及所属设备"],UseTable(ref = rows)]};

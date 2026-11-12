@@ -25,7 +25,7 @@
     "test": "node scripts/run-tests.mjs",
     "check": "pnpm run typecheck && pnpm run test",
     "test:smoke": "node --import ./scripts/markdown-loader.mjs tests/smoke.ts",
-    "test:integration": "node --import ./scripts/markdown-loader.mjs tests/model-integration-test.ts",
+    "test:integration": "node --import ./scripts/markdown-loader.mjs tests/dari-adapter-test.ts",
     "snapshot": "node --import ./scripts/markdown-loader.mjs scripts/knowledge-snapshot.ts"
   },
   "dsh": {

@@ -27,7 +27,7 @@ assert.equal(sections[0].text,manualPrompt,'Mandatory prefix and readable manual
 assert.match(workflow,/建立一份/);
 assert.equal(sections[0].interpolate,false);
 assert.equal(sections.length,1);
-assert(sections[0].text.includes('ColumnChart'));
+assert(sections[0].text.includes('query_remote!'));
 assert(!sections[0].text.includes('dataset-89'));
 const summary=await readDomainSummary(knowledge,exec('large'));
 assert(summary.startsWith('# 全局领域摘要'));

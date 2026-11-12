@@ -1,0 +1,24 @@
+// Dataset and member references come from the host model.
+type Params = Schema({floor: Float});
+data request: Params = input();
+
+data readings = query_remote! {
+    let a = from(ic::DeviceKpi);
+    let projected = a |> filter(a.cpu_usage > request.floor)
+      |> project({device: a.device_id, cpu: a.cpu_usage});
+    projected
+      |> order_by(desc(a.cpu_usage))
+      |> take(5)
+};
+
+data highest = query! {
+    let a = from(readings);
+    let projected = a |> project({cpu: a.cpu});
+    projected
+      |> order_by(desc(projected.cpu))
+      |> take_opt()
+};
+
+answer tree! { Answer [
+    p ["最高 CPU：", Value(data = highest, field = project!(cpu))]
+] };

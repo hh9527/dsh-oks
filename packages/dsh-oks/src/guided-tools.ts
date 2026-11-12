@@ -1,21 +1,20 @@
+import {semanticId} from './semantic-id.ts';
 import {ENABLE_OKS_SEARCH} from './features.ts';
 import {discoverConcepts,renderConcepts} from './concept-knowledge.ts';
 import {renderInfo} from './info-receipt.ts';
 import {renderSearch,renderRoutes} from './navigation-receipt.ts';
 import {searchPoints,routePoints} from './point-navigation.ts';
-import {renderResolveReceipt} from './draft/resolve-receipt.ts';
 import { readPoints } from './point-knowledge.ts';
 import { isRecord, type ToolDefinition, type ToolExec } from './host.ts';
 import type { Knowledge } from './knowledge.ts';
-import { readTextLines } from './results.ts';
+import {readWindow} from './read.ts';
+const readTextLines=(text:string,rel:string,offset:unknown,limit:unknown,_tool:string)=>readWindow([text],rel,offset,limit);
 import { helpFiles, helpEntries } from './help-files.ts';
-import { presentationManuals } from './presentation-guide.ts';
 import { OBJECT_OUTPUT, renderWorkRead } from './response.ts';
 
 /** Agent surface: fixed knowledge queries; typed relation expressions stay in data analysis drafts. */
-export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge): ToolDefinition[] {
+export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge, infoContracts?: (points:any[],exec:ToolExec)=>Promise<Record<string,unknown>>): ToolDefinition[] {
   const files = { ...helpFiles };
-  Object.assign(files,presentationManuals());
   const check = (args: unknown, allowed: string[]): Record<string, unknown> => {
     if (!isRecord(args) || Object.keys(args).some(k => !allowed.includes(k))) throw new Error('Use only the declared tool parameters: ' + allowed.join(', '));
     return args;
@@ -25,7 +24,27 @@ export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge)
     const entry=knowledge.ensureWorkspace(exec);
     const index=await knowledge.ensureIndex(entry);
     exec.signal?.throwIfAborted();
-    return {ok:true,model:entry.modelHash,data:name==='discover'?discoverConcepts(index.knowledge,args):name==='info'?readPoints(index.knowledge,args):name==='routes'?routePoints(index.knowledge,args):searchPoints(index.knowledge,args)};
+    if(name==='info'){
+      const data=readPoints(index.knowledge,args);
+      if(infoContracts&&data.items.length){
+        const points=data.items.map(item=>{
+          const point:any={id:item.id,kind:item.kind};
+          for(const key of ['dataset','dimension','measure','relation'])if(item[key]!==undefined)point[key]=item[key];
+          if(item.kind==='Entity')point.datasets=Object.entries(index.knowledge.datasets).filter(([,d])=>Array.isArray(d.subjects)&&d.subjects.some((s:any)=>semanticId(s.entity)===item.id)).map(([id])=>id);
+          if(item.kind==='Type')point.type=decodeURIComponent(item.id.slice('types/'.length));
+          if(item.kind==='Value'&&item.id.startsWith('types/')){const parts=item.id.split('/');point.type=decodeURIComponent(parts[1]);point.variant=decodeURIComponent(parts[3]);}
+          if(item.kind==='Field'&&item.dataset){
+            const d=index.knowledge.datasets[item.dataset];point.members=[];
+            for(const [section,kind] of [['dimensions','dimension'],['measures','measure']])for(const [id,m] of Object.entries((d?.[section]??{}) as Record<string,any>))if(typeof m.field==='string'&&semanticId(m.field)===item.id)point.members.push({id,kind});
+          }
+          return point;
+        });
+        const contracts=await infoContracts(points,exec);
+        for(const item of data.items)item.dari=contracts[item.id];
+      }
+      return {ok:true,model:entry.modelHash,data};
+    }
+    return {ok:true,model:entry.modelHash,data:name==='discover'?discoverConcepts(index.knowledge,args):name==='routes'?routePoints(index.knowledge,args):searchPoints(index.knowledge,args)};
   };
   const fixed: ToolDefinition[] = [
     {
@@ -50,7 +69,7 @@ export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge)
       async execute(raw,exec){return method('routes',check(raw,['from','to','via']),exec);},
     },
     {
-      name: 'oks_info', description: 'Read exact knowledge points from scoped search results or routes. Returns Markdown sections headed by exact IDs, explicit short query names and complete definitions; complex expressions remain JSON blocks. ids is a batch of 1..64 complete node IDs; each item contains only its own definition, no recursive navigation or inline child graph. Empty descriptions are omitted. Types, enums, formulas, predicates, identity parts and query constraints are retained. Unknown IDs are reported individually. Query names stay short as defined by each point ID and its facts.',
+      name: 'oks_info', description: 'Read exact knowledge points from scoped search results or routes. Returns Markdown sections headed by exact IDs, explicit short query names and complete definitions; complex expressions remain JSON blocks. ids is a batch of 1..64 complete node IDs; each item contains only its own definition, no recursive navigation or inline child graph. Empty descriptions are omitted. Types, enums, formulas, predicates, identity parts and query constraints are retained. Unknown IDs are reported individually. Query names stay short as defined by each point ID and its facts.'+' Includes model-published .dari source contracts: Dataset and member symbols, logical types, enum variants and Relation endpoints/cardinalities. Use these exact symbols in source. Entity definitions include carrier Dataset symbols. Read Dataset info for its full source contract.',
       parameters:{type:'object',properties:{ids:{type:'array',minItems:1,maxItems:64,items:{type:'string'}}},required:['ids'],additionalProperties:false},
       output: {schema:OBJECT_OUTPUT,render:renderInfo},
       async execute(raw,exec){return method('info',check(raw,['ids']),exec);},
@@ -72,17 +91,5 @@ export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge)
       return readTextLines(files[args.path],args.path,args.offset,args.limit,'oks_read');
     },
   };
-  return [builtinRead, ...definitions.map(t => {
-    if (['dari_check','dari_resolve'].includes(t.name)) return {
-      ...t,
-      async execute(raw: never, exec: ToolExec) {
-        const result = await t.execute(raw, exec);
-        // Only the public tool boundary turns domain failures into host tool errors.
-        // DSH exposes Error.message to the agent; format compact diagnostics at this boundary.
-        if (isRecord(result) && result.ok === false) throw new Error(typeof result.text==='string'?result.text:t.name==='dari_resolve'?renderResolveReceipt(result):`${t.name} failed:\n${JSON.stringify(result, null, 2)}`);
-        return result;
-      },
-    };
-    return t;
-  }), ...fixed.filter(tool=>ENABLE_OKS_SEARCH||tool.name!=='oks_search')];
+  return [builtinRead, ...definitions, ...fixed.filter(tool=>ENABLE_OKS_SEARCH||tool.name!=='oks_search')];
 }
