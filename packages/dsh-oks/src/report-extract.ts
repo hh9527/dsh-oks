@@ -11,8 +11,8 @@ export function extractDariSource(html:string):string {
  const archive=readReportPage(html);
  if('error' in archive)throw new Error(archive.error);
  // Line comments keep arbitrary archived strings (including */) inert.
- const metadata=JSON.stringify(archive.context,null,2).split('\n').map(line=>'// '+line).join('\n');
- return '// Report execution metadata (historical; rerunning uses a new context)\n'+metadata+'\n\n'+archive.source;
+ const metadata=JSON.stringify(archive.context,null,2).split('\n').map(line=>'# '+line).join('\n');
+ return '# Report execution metadata (historical; rerunning uses a new context)\n'+metadata+'\n\n'+archive.source;
 }
 export function reportExtractDariTool(options:{knowledge:Knowledge;approval?:()=>ApprovalService|undefined;filePolicy?:()=>FilePolicyService|undefined}):ToolDefinition {
  const extension='.dari';

@@ -1,5 +1,7 @@
 # .dari 语言手册
 
+源码注释使用 `#`，从 `#` 到行尾；字符串中的 `#` 保持原值。
+
 本环境使用 `.dari`，工具为 dari_check({src})、dari_resolve({src})、dari_renew_context({src})。用宿主文件工具读写工作区内的 .dari 文件。自定义绑定、对象键、列名和函数参数使用 ASCII snake_case；类型、枚举类型、枚举成员和扩展组件使用 PascalCase，HTML 元素保持原标签名；中文展示内容写在正文和标签中。这是围绕数据获取、处理和展现的流水线定义语言：声明式、强类型、有边界、本地与远程两阶段证明。query_remote! 由模型证明领域查询，query! 由本地证明关系处理，tree! 组织展现；关系处理遵循有类型约束的 SQL 语义。data 声明可缓存的数据节点，节点内 let 命名不可变的计划片段，不新增数据节点或物化边界。顶层使用 type、data、report 和唯一的 answer，节点内使用 let；按依赖顺序声明。不开放手写函数、循环、递归、任意代码或物理 source。
 
 源码标识使用 oks_info 中模型发布的 .dari 契约。读取 Dataset 获取其精确 Dataset/成员/类型/enum/Relation 符号；读取单个维度或度量获取对应成员契约。源码使用返回的精确符号。知识卡片中的 JSON 查询不是 .dari 语法。

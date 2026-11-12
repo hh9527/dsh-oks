@@ -16,7 +16,7 @@ try{
  const result=await call({src:'report.html',sink:'restored.dari'}) as any;
  assert.equal(result.sink,'restored.dari');
  const text=readFileSync(join(root,'restored.dari'),'utf8');
- assert(text.endsWith(archive.dari.source));assert(text.includes('2026-11-02T00:00:00Z'));assert(text.includes('historical */'));
+ assert(text.startsWith('# Report execution metadata'));assert(text.slice(0,-archive.dari.source.length).split('\n').every(line=>!line||line.startsWith('# ')));assert(text.endsWith(archive.dari.source));assert(text.includes('2026-11-02T00:00:00Z'));assert(text.includes('historical */'));
  await assert.rejects(call({src:'report.html',sink:'restored.dari'}),/already exists/);
  assert.equal(readFileSync(join(root,'restored.dari'),'utf8'),text);
  for(const sink of ['../escape.dari','missing/out.dari','out.txt'])await assert.rejects(call({src:'report.html',sink}));
