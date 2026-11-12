@@ -1,4 +1,4 @@
 {
   "title": "知识服务查询 (OKS)",
-  "description": "通过 va_ask 对齐词汇，oks_discover 模糊发现概念映射，oks_routes/oks_info 查询关系与定义。使用宿主文件工具编写 DARI，dari_check 检查，dari_resolve 交付 Answer，dari_renew_context 更新取数上下文。oks_read 读取内置手册。"
+  "description": "通过 va_ask 对齐词汇，oks_discover 模糊发现概念映射，oks_routes/oks_info 查询关系与定义。使用宿主文件工具编写 DARI，dari_check 检查，dari_submit 交付 Answer，dari_renew_context 更新取数上下文。oks_read 读取内置手册。"
 }

@@ -18,6 +18,9 @@ const boundary=schema({epoch_millis:scalar('EpochMillis'),date_time_utc:scalar('
 function closedEnum(name:string,variants:string[]){const parse=(value:unknown)=>{if(typeof value!=='string'||!variants.includes(value))throw Error('Invalid '+name+' variant');return value;};return {kind:'nominal',name,inner:scalar('String'),codec:{variants,parse,encode:parse,decode:parse}};}
 const stackVariants=['None','Total','Percent'];
 const stackType=closedEnum('Stack',stackVariants);
+const barNames=new Set(['BarChart','GroupedBarChart','MultiBarChart','StackedBarChart']);
+const orientations=['Horizontal','Vertical'];
+const stackModes=['Absolute','Percent'];
 const timeUnits=['Minute','Hour','Day','Week','Month','Quarter','Year'];
 const windowModes=['Complete','Current','Rolling'];
 function enumOption(value:any,name:string,variants:string[],checking:boolean):string{
@@ -45,14 +48,26 @@ function chartInput(raw:Record<string,unknown>,names=chartNames):Record<string,u
  }
  return result;
 }
-function chartOutput(raw:object):Record<string,unknown>{
- const reverse=Object.fromEntries(Object.entries({...chartNames,...layoutNames}).map(([a,b])=>[b,a]));
- return Object.fromEntries(Object.entries(raw).map(([k,v])=>[reverse[k]??k,k==='layout'&&v&&typeof v==='object'?chartOutput(v as Record<string,unknown>):v]));
-}
-
-function presentationSpec(raw:Record<string,unknown>):Record<string,unknown>{
+function presentationSpec(raw:Record<string,unknown>,name:string):Record<string,unknown>{
+ raw={...raw};
+ if(!barNames.has(name)&&(raw.orientation!==undefined||raw.category!==undefined||raw.mode!==undefined||raw.metrics!==undefined))throw Error('orientation/category/mode/metrics belong to bar chart contracts; use the component mappings in oks://help/dari-figures.md');
+ if(barNames.has(name)){
+  if(raw.x!==undefined)throw Error(name+' uses category: project!(field)');
+  if(raw.stack!==undefined)throw Error('StackedBarChart uses mode: StackMode::Absolute or StackMode::Percent; other bar charts are parallel');
+  if(raw.category===undefined)throw Error(name+' requires category: project!(field)');
+  raw.x=raw.category;delete raw.category;
+  raw.orientation=raw.orientation===undefined?'vertical':enumOption(raw.orientation,'Orientation',orientations,true);
+  if(name==='MultiBarChart'){
+   if(!Array.isArray(raw.metrics)||raw.series!==undefined||raw.value!==undefined)throw Error('MultiBarChart requires metrics: [{value: project!(field), label: "...", unit: "..."}]; each column keeps its business type');
+   raw.series=raw.metrics;delete raw.metrics;
+  }else if(Array.isArray(raw.series)||raw.metrics!==undefined)throw Error(name+' requires long-table series: project!(group) and value: project!(metric); independent columns use MultiBarChart');
+  if(name==='StackedBarChart'){
+   const mode=raw.mode===undefined?'absolute':enumOption(raw.mode,'StackMode',stackModes,true);
+   raw.stack=mode==='absolute'?'total':'percent';delete raw.mode;
+  }else if(raw.mode!==undefined)throw Error('Only StackedBarChart accepts mode');
+ }
  precision(raw.precision);const spec=chartInput(raw);delete spec.precision;
- if(raw.stack!==undefined){const value=raw.stack as any;if(!value||value[Symbol.for('dari.enum')]!==true||value.enum!=='Stack'||!stackVariants.includes(value.variant))throw Error('stack requires Stack::None, Stack::Total or Stack::Percent');if(value.variant==='None')delete spec.stack;else spec.stack=value.variant==='Total'?'total':'percent';}
+ if(raw.stack!==undefined&&!barNames.has(name)){const value=raw.stack as any;if(!value||value[Symbol.for('dari.enum')]!==true||value.enum!=='Stack'||!stackVariants.includes(value.variant))throw Error('stack requires Stack::None, Stack::Total or Stack::Percent');if(value.variant==='None')delete spec.stack;else spec.stack=value.variant==='Total'?'total':'percent';}
  return spec;
 }
 function stacking(raw:Record<string,unknown>,fields:Record<string,Type>){
@@ -85,11 +100,11 @@ function formatChart(option:any,fields:Record<string,Type>,spec:any,digits?:numb
 // Wide series are a presentation projection: source columns keep their nominal types.
 function wideSeries(name:string,raw:Record<string,unknown>,fields:Record<string,Type>,rows:Record<string,unknown>[]=[]):{spec:Record<string,unknown>;fields:Record<string,Type>;rows:Record<string,unknown>[]}{
  if(!Array.isArray(raw.series))return {spec:raw,fields,rows};
- if(!['GroupedBarChart','GroupedColumnChart','LineChart'].includes(name))throw Error('Wide series require GroupedBarChart, GroupedColumnChart or LineChart');
+ if(!['MultiBarChart','LineChart'].includes(name))throw Error('Wide series require MultiBarChart or LineChart');
  if(raw.second!==undefined)throw Error('Wide series use a shared value axis; omit second');
  if(!raw.series.length)throw Error('Wide series must contain at least one column');
  if(raw.value!==undefined)throw Error('Wide series specify value per series; remove spec.value');
- if(raw.stack || (raw.style as any)?.sort && (raw.style as any).sort!=='none')throw Error('Wide metrics support parallel display; sort the input table and omit stack/style.sort');
+ if(raw.stack || (raw.style as any)?.sort && (raw.style as any).sort!=='none')throw Error('宽表独立指标只并列展示，并在输入计划中排序；同一指标按类别堆叠使用 StackedBarChart 的 category/series/value 长表契约');
  if(typeof raw.x!=='string'||!fields[raw.x])throw Error('Wide series require an existing x column');
  const labels=new Set<string>(),columns=new Set<string>(),units=new Set<string>();
  const series=raw.series.map((entry:any)=>{
@@ -106,8 +121,13 @@ function wideSeries(name:string,raw:Record<string,unknown>,fields:Record<string,
  return {spec:{...raw,x:'__x',series:'__series',value:'__value',unit:series[0].unit},fields:{__x:fields[x],__series:scalar('String'),__value:scalar('Float')},rows:rows.flatMap(row=>series.map(entry=>({__x:row[x],__series:entry.label,__value:typeof row[entry.value]==='number'?Number((Number(row[entry.value])*(presentation(fields[entry.value])?.multiplier??1)).toPrecision(12)):row[entry.value]})))};
 }
 function validate(name:string,raw:Record<string,unknown>,fields:Record<string,Type>){
- const kind=COMPONENT_KINDS[name as keyof typeof COMPONENT_KINDS];if(!kind)throw Error('Unknown figure component '+name);
- const spec=componentSpec(raw,kind) as Record<string,unknown>,columns=Object.keys(fields);
+ let kind=COMPONENT_KINDS[name as keyof typeof COMPONENT_KINDS];if(barNames.has(name)){kind=(name==='BarChart'?(raw.orientation==='horizontal'?'bar':'column'):(raw.orientation==='horizontal'?'grouped_bar':'grouped_column')) as typeof kind;}if(!kind)throw Error('Unknown figure component '+name);
+ const {orientation,...settings}=raw;
+ if(barNames.has(name)){
+  if(name==='BarChart'&&raw.series!==undefined)throw Error('BarChart accepts category/value; grouped data uses GroupedBarChart or StackedBarChart, independent columns use MultiBarChart');
+  if(name!=='BarChart'&&(typeof raw.series!=='string'||typeof raw.value!=='string'))throw Error(name+' requires category/series/value field projections');
+ }
+ const spec=componentSpec(settings,kind) as Record<string,unknown>,columns=Object.keys(fields);
  if(kind==='table'){const t=parseTableSpec(spec);const missing=[...(t.columns??[]),...Object.keys(t.labels)].filter(k=>!columns.includes(k));if(missing.length)throw Error('Unknown table columns: '+missing.join(', '));return spec;}
  const p=parseChartSpec(spec);if('error'in p)throw Error(p.error);
  const policy=fields[p.spec.value]?presentation(fields[p.spec.value]):undefined;if(policy&&p.spec.unit&&p.spec.unit!==policy.suffix)throw Error('Figure unit conflicts with the value type presentation');
@@ -121,11 +141,11 @@ function validate(name:string,raw:Record<string,unknown>,fields:Record<string,Ty
  return spec;
 }
 const host={
- contractId:'dari-host/v5',types:{Stack:stackType,TimeUnit:closedEnum('TimeUnit',timeUnits),WindowMode:closedEnum('WindowMode',windowModes)},formatValue,components:Object.keys(COMPONENT_KINDS),reportStyle:REPORT_STYLE,
+ contractId:'dari-host/v6',types:{Orientation:closedEnum('Orientation',orientations),StackMode:closedEnum('StackMode',stackModes),Stack:stackType,TimeUnit:closedEnum('TimeUnit',timeUnits),WindowMode:closedEnum('WindowMode',windowModes)},formatValue,components:Object.keys(COMPONENT_KINDS),reportStyle:REPORT_STYLE,
  reportHtml(text:string,artifacts:Record<string,string>){return renderMarkdown(text,()=>{throw Error('Unexpected report fence');},(alt,href)=>{const svg=artifacts[href];if(!svg)throw Error('Missing report figure '+href);return '<figure>'+cleanChartSvg(svg)+'</figure>';});},
- checkFigure(name:string,spec:Record<string,unknown>,fields:Record<string,Type>,nodes?:Record<string,Type>){const normalized=presentationSpec(spec);stacking(normalized,fields);const wide=wideSeries(name,normalized,fields);validate(name,wide.spec,wide.fields);if(name==='NetworkGraph'&&(!nodes?.id||!nodes.depth&&!(nodes.x&&nodes.y)))throw Error('NetworkGraph requires a nodes table with id and depth or x/y');if(name!=='NetworkGraph'&&nodes)throw Error('Only NetworkGraph accepts nodes');},
+ checkFigure(name:string,spec:Record<string,unknown>,fields:Record<string,Type>,nodes?:Record<string,Type>){const normalized=presentationSpec(spec,name);stacking(normalized,fields);const wide=wideSeries(name,normalized,fields);validate(name,wide.spec,wide.fields);if(name==='NetworkGraph'&&(!nodes?.id||!nodes.depth&&!(nodes.x&&nodes.y)))throw Error('NetworkGraph requires a nodes table with id and depth or x/y');if(name!=='NetworkGraph'&&nodes)throw Error('Only NetworkGraph accepts nodes');},
  renderFigure(name:string,raw:Record<string,unknown>,rows:Record<string,unknown>[],fields:Record<string,Type>,nodes?:Record<string,unknown>[]){
-  const normalized=presentationSpec(raw);stacking(normalized,fields);const wide=wideSeries(name,normalized,fields,rows);
+  const normalized=presentationSpec(raw,name);stacking(normalized,fields);const wide=wideSeries(name,normalized,fields,rows);
   const spec=validate(name,wide.spec,wide.fields);
   if(spec.kind==='table'){
    const shown=rows.map(row=>Object.fromEntries(Object.entries(row).map(([key,value])=>[key,fields[key]?formatValue(fields[key],value,precision(raw.precision)):value])));
@@ -142,7 +162,7 @@ const host={
   const {option,height}=buildOption(renderRows,parsed.spec,nodes);
   formatChart(option,wide.fields,parsed.spec,precision(raw.precision));
   if((option as any).visualMap){const values=renderRows.map(row=>row[parsed.spec.value]).filter((v):v is number=>typeof v==='number');if(values.length)(option as any).visualMap.text=[Math.max(...values),Math.min(...values)].map(v=>String(formatValue({kind:'scalar',name:'Float',presentation:{multiplier:1,suffix:policy?.suffix??parsed.spec.unit??'',precision:policy?.precision}},v,precision(raw.precision))));}
-  return {kind:'chart' as const,content:embedFigureCsv(renderEchartsSvg(option,CHART_WIDTH,height),{rows,spec:{...(Array.isArray(raw.series)?raw:chartOutput(parsed.spec)),precision:precision(raw.precision),default_precision:2,presentation:Object.fromEntries(Object.entries(fields).flatMap(([key,type])=>{const policy=presentation(type);return policy?[[key,policy]]:[];}))},...(nodes?{nodeRows:nodes}:{})}),title:parsed.spec.title??name};
+  return {kind:'chart' as const,content:embedFigureCsv(renderEchartsSvg(option,CHART_WIDTH,height),{rows,spec:{component:name,...raw,precision:precision(raw.precision),default_precision:2,presentation:Object.fromEntries(Object.entries(fields).flatMap(([key,type])=>{const policy=presentation(type);return policy?[[key,policy]]:[];}))},...(nodes?{nodeRows:nodes}:{})}),title:parsed.spec.title??name};
  },
  functions:{
   time_bucket:{

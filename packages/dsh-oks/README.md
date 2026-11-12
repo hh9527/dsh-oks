@@ -6,7 +6,7 @@
 
 `data` 声明可缓存数据节点，`let` 命名节点内部计划；`query_remote!` 由模型 check_type 证明，`query!` 组合本地有类型关系计划，`tree!` 编排展现。上界、字段、业务类型、可空性、图表映射在检查期验证；执行绑定已经检查的参数化 SQL。
 
-`dari_check({src})` 检查完整分析稿，返回文本诊断、位置和适用的修复建议；`dari_resolve({src})` 检查并执行，发布附件并投递唯一 Answer。`dari_renew_context({src})` 更新会话时间快照。行为纪律见 [rules.md](src/help/rules.md)，语言和图表写法见 [dari.md](src/help/dari.md) 与 [dari-figures.md](src/help/dari-figures.md)。
+`dari_check({src})` 检查完整分析稿，返回文本诊断、位置和适用的修复建议；`dari_submit({src})` 检查并执行，发布附件并投递唯一 Answer。`dari_renew_context({src})` 更新会话时间快照。行为纪律见 [rules.md](src/help/rules.md)，语言和图表写法见 [dari.md](src/help/dari.md) 与 [dari-figures.md](src/help/dari-figures.md)。
 
 图表直接内联于 Answer 或 Report；UseReport 引用报告。报告保留源码、上下文和执行元数据，SVG 内嵌最终输入 CSV 与 spec。`report_extract_dari({src,sink})` 提取源码和历史执行上下文，不执行查询。
 

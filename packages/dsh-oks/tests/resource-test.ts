@@ -13,7 +13,7 @@ const definitions=createTools({knowledge,va:{async ask(_caller:unknown,_key:stri
 const tools=guidedTools(definitions,knowledge),exec={callId:'resource-call',agent:{session:{id:'resources'}}} as any;
 const call=async(name:string,args:unknown)=>tools.find(t=>t.name===name)!.execute(args as never,exec) as Promise<any>;
 try {
- assert.deepEqual(tools.map(t=>t.name).sort(),['report_extract_dari','move_entry','remove_file','va_ask','oks_discover','oks_routes','oks_info','oks_read','dari_check','dari_resolve','dari_renew_context'].sort());
+ assert.deepEqual(tools.map(t=>t.name).sort(),['report_extract_dari','move_entry','remove_file','va_ask','oks_discover','oks_routes','oks_info','oks_read','dari_check','dari_submit','dari_renew_context'].sort());
  const aligned=await call('va_ask',{query:'告警'});assert.equal(aligned.answer,'词汇参考');assert.deepEqual(asks,['告警']);
  await assert.rejects(call('va_ask',{query:' '}),/需要一个问题/);
  const index=await call('oks_read',{path:'oks://help/'});
@@ -29,6 +29,6 @@ try {
  for(const path of [join(outside,'escape.dari'),'../escape.dari','escape/escape.dari','.work/a.dari'])assert.throws(()=>readDariSource(root,path,'test'));
  await assert.rejects(call('dari_check',{src:'reports/a.dari',answer:'a'}),/Only src/);
  await assert.rejects(call('dari_check',{src:'reports/a.dari'}),/dataFile/);
- await assert.rejects(call('dari_resolve',{answer:false,src:'reports/a.dari',data:['a'],refresh:true}),/Only src/);
+ await assert.rejects(call('dari_submit',{answer:false,src:'reports/a.dari',data:['a'],refresh:true}),/Only src/);
  console.log('Public tools: exact ten-tool surface, built-in manuals, local file boundaries, canonical cache identity and rejected retired parameters passed');
 } finally {definitions.dispose();rmSync(root,{recursive:true,force:true});rmSync(outside,{recursive:true,force:true});}

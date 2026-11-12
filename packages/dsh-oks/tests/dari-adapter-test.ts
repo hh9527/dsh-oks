@@ -15,6 +15,8 @@ const runtime=createDariTools(options),tools=guidedTools(runtime.tools,options.k
 const call=(name:string,args:any)=>tools.find(t=>t.name===name)!.execute(args as never,exec);
 try{
  assert(!tools.some(t=>t.name==='dari_symbols'));
+ assert(!tools.some(t=>t.name==='dari_'+'resolve'));
+ assert(tools.some(t=>t.name==='dari_submit'));
  const info:any=await call('oks_info',{ids:['datasets/device_kpi','datasets/device_kpi/measures/cpu_usage','entities/device','relations/frame_belongs_to_device','datasets/missing']});
  const text=renderInfo({},info)[0].text!;
  assert.match(text,/ic::device_kpi/);assert.match(text,/symbol:.*cpu_usage/);assert.match(text,/Percent|CpuUtilization/);assert.match(text,/ic::relations::frame_belongs_to_device/);assert.match(text,/读取失败/);
@@ -24,10 +26,10 @@ try{
  data rows = query_remote! {let a = from(ic::device_kpi);let output = a |> group_by_identity(a)
  |> project({device:a.device_kpi_res_id,cpu:a.cpu_usage}); output |> order_by(desc(output.cpu)) |> take(5)};
 
- report report = tree! {Report [h1 ["CPU"],UseTable(ref = rows),ColumnChart(data = rows, spec = {x:project!(device),value:project!(cpu)})]};
- answer tree! {Answer [Value(value = ctx.time_zone),UseTable(ref = rows),UseReport(ref = report),ColumnChart(data = rows, spec = {x:project!(device),value:project!(cpu)})]};`);
+ report report = tree! {Report [h1 ["CPU"],UseTable(ref = rows),BarChart(data = rows, spec = {category:project!(device),value:project!(cpu)})]};
+ answer tree! {Answer [Value(value = ctx.time_zone),UseTable(ref = rows),UseReport(ref = report),BarChart(data = rows, spec = {category:project!(device),value:project!(cpu)})]};`);
  const checked:any=await call('dari_check',{src:'test.dari'});assert.match(checked.text,/Succeed/);
- const receipt:any=await call('dari_resolve',{src:'test.dari'});assert.match(receipt.text,/answer message/);assert.equal(messages.length,1);
+ const receipt:any=await call('dari_submit',{src:'test.dari'});assert.match(receipt.text,/answer message/);assert.equal(messages.length,1);
  const answer=messages[0].content[0].text;assert.match(answer,/Asia\/Shanghai/);assert.match(answer,/\| device \| cpu \|/);assert.match(answer,/\/attachments\/chart_1.svg/);assert.match(answer,/\/attachments\/report.html/);
  assert(saved.get('report.html')!.includes('<svg'));
  assert(saved.get('chart_1.svg')!.includes('dari-data'));
@@ -35,9 +37,13 @@ try{
  await assert.rejects(()=>call('dari_check',{src:'invalid.dari'}),/L1:.*Node attributes use/);
  writeFileSync(join(root,'invalid.dari'),'data bad = missing;\ndata dependent = bad;\nanswer tree! {Answer [Value(value = absent),Value(data: nope)]};');
  const beforeFiles=saved.size,beforeMessages=messages.length;
- for(const tool of ['dari_check','dari_resolve'])await assert.rejects(()=>call(tool,{src:'invalid.dari'}),(error:Error)=>{
+ for(const tool of ['dari_check','dari_submit'])await assert.rejects(()=>call(tool,{src:'invalid.dari'}),(error:Error)=>{
   assert.match(error.message,/CheckFailed\n-----------/);assert.match(error.message,/Unknown binding missing/);assert.match(error.message,/Unknown binding absent/);assert.match(error.message,/Node attributes use/);assert.match(error.message,/修复建议/);assert(!error.message.includes('Unknown binding bad'));return true;
  });
+ assert.equal(saved.size,beforeFiles);assert.equal(messages.length,beforeMessages);
+ writeFileSync(join(root,'empty.dari'),'data rows:Table(Schema({label:String,n:Int}))=table([]);answer tree! {Answer [BarChart(data = rows,spec = {category:project!(label),value:project!(n)})]};');
+ await call('dari_check',{src:'empty.dari'});
+ await assert.rejects(()=>call('dari_submit',{src:'empty.dari'}),/SubmitFailed\n------------/);
  assert.equal(saved.size,beforeFiles);assert.equal(messages.length,beforeMessages);
  await assert.rejects(()=>call('dari_check',{src:'../escape.dari'}));
  console.log('DARI adapter: symbols, real database, type proof, attachments, answer delivery and diagnostics passed');
