@@ -31,7 +31,7 @@ data top = query! {
 };
 ```
 
-中间 query_remote!/query! 可保持无上界 SQL 计划，供后续聚合、连接、集合运算和排名；不会先取 500 行再计算。只有交付的表和图表输入必须证明不超过 500 行。query_remote! 无 take 时也不写 order_by，排序放在后续 query! 中。is_empty(table) 使用数据库 EXISTS 判断，不拉取全表。take(n) 的 n 为静态整数 1..500，多行取前 N 必须 order_by；已知有界输入的后处理无需重复 take。无分组聚合至多一行，可直接 take_opt()，返回 Option(Schema)。可选行在展示树中解构，见下文。
+每个顶层 `data x = query_remote! { ... };` 在 check 时必须证明结果至多 500 行，包括未使用的远端节点；不能先取无界远端结果，再依赖本地 take。query! 可保留无界 SQL 计划供后续组合，物化到 JS 前必须证明至多 500 行；单个 Table 或图表输入必须证明至多 110 行，超界先聚合或按业务排序后 take，不自动截断，也不按整份报告累计。展现还须满足组件类型及空数据规则。聚合针对完整输入，不先截取样本。is_empty(table) 使用数据库 EXISTS 判断，不拉取全表。take(n) 的 n 为静态整数 1..500，多行取前 N 必须 order_by；已知有界输入的后处理无需重复 take。无分组聚合至多一行，可直接 take_opt()，返回 Option(Schema)。可选行在展示树中解构，见下文。
 
 ## 远端领域查询
 
@@ -51,7 +51,7 @@ answer tree! { Answer [h1 ["告警构成"],PieChart(data = rows,spec = {x:$.seve
 
 逐对象指标先关联到对象身份节点并 group_by_identity，再投影称谓。设备名不能替代身份；KPI 身份可能包含采样时间，不能代替设备身份。
 
-query_remote! 通过 from 引入模型源，用 `from(公开Dataset符号).as!(a) |> connect(公开Relation符号).as!(b)` 遍历关联。as! 绑定当前节点并保留整个计划，connect 从当前节点推导对端 Dataset，连续连接从最新节点继续。Relation 决定连接方向、基数和可选关联；可选关联保留根行，并使对端维度可空，即使其字段声明本身非空。先用 oks_info 读取涉及 Dataset 的 Relation 符号。维度筛选作用于聚合前原始行，独立的度量 filter 作用于聚合后；支持多个度量 filter。维度比较采用 `成员 比较符 参数`，可连续 filter 或嵌套 && / ||；文本筛选使用 contains/not_contains/starts_with/ends_with(成员,String参数)，不区分 ASCII 大小写。参数用声明的逻辑类型，例如 EpochMillis(...)、模型 newtype 或 Type::Variant。模型检查字段是否允许对应算子。排序可引用未投影成员；聚合后只能按已有分组键、已按身份分组的节点维度或聚合度量排序，模型拒绝会改变分组口径的隐藏排序。
+query_remote! 通过 from 引入模型源，用 `from(公开Dataset符号).as!(a) |> connect(公开Relation符号).as!(b)` 遍历关联。as! 绑定当前节点并保留整个计划，connect 从当前节点推导对端 Dataset，连续连接从最新节点继续。Relation 决定连接方向、基数和可选关联；可选关联保留根行，并使对端维度可空，即使其字段声明本身非空。自关联使用 `connect(Relation, from_node, to_node)`：先分别 `let parent = from(Dataset); let child = from(Dataset);`，端点顺序对应 Relation 发布的 from/to，管道输入可以是任一端。先用 oks_info 读取涉及 Dataset 的 Relation 符号及端点。维度筛选作用于聚合前原始行，独立的度量 filter 作用于聚合后；支持多个度量 filter。维度比较采用 `成员 比较符 参数`，可连续 filter 或嵌套 && / ||；文本筛选使用 contains/not_contains/starts_with/ends_with(成员,String参数)，不区分 ASCII 大小写。参数用声明的逻辑类型，例如 EpochMillis(...)、模型 newtype 或 Type::Variant。模型检查字段是否允许对应算子。排序可引用未投影成员；聚合后只能按已有分组键、已按身份分组的节点维度或聚合度量排序，模型拒绝会改变分组口径的隐藏排序。
 
 ```telora
 data rows = query_remote! {
@@ -62,11 +62,11 @@ data rows = query_remote! {
 };
 ```
 
-query_remote! 的行级 filter 可用 is_some(a.optional_dimension) / is_none(a.optional_dimension) 筛选非 NULL / NULL，并可通过 && / || 与其他维度条件组合。使用模型发布的可空、可筛选维度成员；空字符串仍属于非 NULL，不等同于无数据。这些条件在数据库内执行。
+query_remote! 的行级 filter 可用 is_some(a.optional_dimension) / is_none(a.optional_dimension) 筛选非 NULL / NULL，并可通过 && / || 与其他维度条件组合。使用模型发布的可空、可筛选维度成员；空字符串仍属于非 NULL，不等同于无数据。可空性包括字段声明和可选 Relation 引入的缺失；is_some/is_none 仅筛行，不自动改变输出字段类型，需要非空列时投影使用 not_none。这些条件在数据库内执行。可空标量参数可以保留身份下钻，例如 `filter((a.tenant_id == selected_tenant).unwrap_or!(False))`：Some(id) 精确匹配，None 配 False 返回空集，配 True 接受未知条件；None 不会取消筛选。参数保留业务类型及内部 codec。聚合度量阈值仍要求非空参数。
 
 远端查询中的参数表达式若不引用模型节点，会在本地计算并携带类型传入模型，例如 `a.ts >= to_datetime_utc(days[0].start.epoch_millis)`。引用模型列的时间转换由模型检查与执行。
 
-两期比较可绑定 `let populations = pair(l,r) |> ...; let output = populations |> project({...});`，使用 `pair(l,r)`，两端分别声明独立节点及 Relation，再分别 `group_by_identity` 声明对齐身份，filter 划定各期完整输入。每端投影一个度量；`order_by(desc(growth_rate(output.after,output.before)))`、difference、ratio 在数据库内比较并排名，最后 take。增长率分母非正或比率分母为零时不参与对应排名。多个指标的劣化比较可以分别查询各指标，然后统一投影同一 Schema，通过 union_all 合并，再排序取前 N；不能把不同量纲的绝对差直接排名。
+两期比较可绑定 `let populations = l |> pair(r) |> ...; let output = populations |> project({...});`，使用 `l |> pair(r)`，两端分别声明独立节点及 Relation，再分别 `group_by_identity` 声明对齐身份，filter 划定各期完整输入。每端投影一个度量；`order_by(desc(growth_rate(output.after,output.before)))`、difference、ratio 在数据库内比较并排名，最后 take。增长率分母非正或比率分母为零时不参与对应排名。多个指标的劣化比较可以分别查询各指标，然后统一投影同一 Schema，通过 union_all 合并，再排序取前 N；不能把不同量纲的绝对差直接排名。
 
 ## 本地关系处理
 
@@ -74,7 +74,23 @@ query_remote! 的行级 filter 可用 is_some(a.optional_dimension) / is_none(a.
 
 局部计划绑定不可变：`let g = r |> group_by({tenant: r.tenant});` 后，从 `g |> project({tenant: g.tenant, n: count()})` 消费分组结果。全表计数直接使用 `r |> project({n: count()})`。
 
-联接写为 `let joined = join({a,b},a.key == b.key); let output = joined |> project({left:a.value,right:b.value});`。left_join、semi_join、anti_join 使用相同结构；semi_join/anti_join 用数据库 EXISTS/NOT EXISTS 保留或排除左侧行。集合运算写为 `let combined = union({a,b}); combined |> order_by(asc(combined.field)) |> take(10)`；union/union_all/intersect/except 要求一致的字段名、业务类型及可空性。top_per({group:r.group},desc(r.value),n) 在各组内按指定顺序取前 N。
+顶层 data 是数据节点；进入本地计划先 from(data)。联接、集合运算统一以管道传入左输入，参数引用已有右关系绑定，不用对象键声明别名。按身份求两组前十的交集可写：
+
+```telora
+data overlap = query! {
+    let a = from(top_devices);
+    let b = from(top_interfaces);
+    let kept = a |> semi_join(b, a.device_id == b.device_id);
+    let output = kept |> project({device_id:a.device_id, name:a.name});
+    output |> order_by(asc(output.name))
+};
+```
+
+semi_join/anti_join 用 EXISTS/NOT EXISTS 保留或排除左侧行，右侧重复不放大结果；上例继承 top_devices 的十行上界，无需重复 take。join/left_join 写为 a |> join(b, a.id == b.id)，可继续串接；最终 project 命名输出字段。union/union_all/intersect/except 写为 a |> intersect(b) 等，要求一致的字段名、业务类型及可空性。top_per({group:r.group},desc(r.value),n) 在各组内按指定顺序取前 N。
+
+本地、远端均支持一次调用中的多键排序：`output |> order_by(desc(output.rank), asc(output.name)) |> take(10)`，按参数顺序决定优先级，不需要拼接复合数字键。显示值相同不证明底层值完全相同；确定性破除并列可追加稳定身份键。
+
+远端投影前，字段引用属于具体 from/connect 节点，group_by_identity 不合并节点成员；投影后，通过结果绑定引用新的列。project 改变行 Schema，distinct 保留该 Schema；写 `let output = rows |> project({...}) |> distinct(); output |> order_by(asc(output.field))`，不要继续用投影前名称引用新列。
 
 有限算术、lookup、unwrap_or!、round(value,precision)、concat、case_when、is_some/is_none、difference/ratio/growth_rate 放在前序 data 或 query! 中。整数余数用 `%`，除零或余数除零返回空值。map_opt(optional_row,$.field) 投影可选行字段。in_subnet/not_in_subnet(address,"192.168.1.0/24") 在 query! 中筛选已投影 IPv4 字段，非规范地址为空，子网必须规范且主机位为零。有限补充数据用 `table([{name:"目标",value:1}])`；空表必须声明 Table(Schema(...))。
 
