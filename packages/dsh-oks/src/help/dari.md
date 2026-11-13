@@ -44,7 +44,7 @@ data rows = query_remote! {
     output |> order_by(asc(output.severity)) |> take(10)
 };
 
-answer tree! { Answer [h1 ["告警构成"],PieChart(data = rows,spec = {x:project!(severity),value:project!(total),title:"告警严重级别构成"})]};
+answer tree! { Answer [h1 ["告警构成"],PieChart(data = rows,spec = {x:$.severity,value:$.total,title:"告警严重级别构成"})]};
 ```
 
 远端 project 接受已发布成员及模型支持的分桶、时间转换、not_none。常量标签、lookup、case_when 和派生列放在后续 query!；影响分组口径的计算须在聚合前完成，例如远端分桶或分别筛选完整时间窗口。
@@ -76,12 +76,12 @@ query_remote! 的行级 filter 可用 is_some(a.optional_dimension) / is_none(a.
 
 联接写为 `let joined = join({a,b},a.key == b.key); let output = joined |> project({left:a.value,right:b.value});`。left_join、semi_join、anti_join 使用相同结构；semi_join/anti_join 用数据库 EXISTS/NOT EXISTS 保留或排除左侧行。集合运算写为 `let combined = union({a,b}); combined |> order_by(asc(combined.field)) |> take(10)`；union/union_all/intersect/except 要求一致的字段名、业务类型及可空性。top_per({group:r.group},desc(r.value),n) 在各组内按指定顺序取前 N。
 
-有限算术、lookup、coalesce、round(value,precision)、concat、case_when、is_some/is_none、difference/ratio/growth_rate 放在前序 data 或 query! 中。整数余数用 `%`，除零或余数除零返回空值。map_opt(optional_row,project!(field)) 投影可选行字段。in_subnet/not_in_subnet(address,"192.168.1.0/24") 在 query! 中筛选已投影 IPv4 字段，非规范地址为空，子网必须规范且主机位为零。有限补充数据用 `table([{name:"目标",value:1}])`；空表必须声明 Table(Schema(...))。
+有限算术、lookup、unwrap_or!、round(value,precision)、concat、case_when、is_some/is_none、difference/ratio/growth_rate 放在前序 data 或 query! 中。整数余数用 `%`，除零或余数除零返回空值。map_opt(optional_row,$.field) 投影可选行字段。in_subnet/not_in_subnet(address,"192.168.1.0/24") 在 query! 中筛选已投影 IPv4 字段，非规范地址为空，子网必须规范且主机位为零。有限补充数据用 `table([{name:"目标",value:1}])`；空表必须声明 Table(Schema(...))。
 
-等值标签映射用 lookup(value, [{value, label}, ...])：非空静态数组、键唯一且与输入业务类型一致、label 类型一致；未命中或输入为空返回 None，可按口径 coalesce。稳定业务编码用模型映射，任务显示标签用 lookup。例如 query! 的 project 字段：
+等值标签映射用 lookup(value, [{value, label}, ...])：非空静态数组、键唯一且与输入业务类型一致、label 类型一致；未命中或输入为空返回 None，可按口径使用 value.unwrap_or!(default_expr)。前置 unwrap_or!(value,default_expr) 与后置形式等价，默认表达式只在 None 时求值，类型为 Option(T) × T → T。稳定业务编码用模型映射，任务显示标签用 lookup。例如 query! 的 project 字段：
 
 ```telora
-category: coalesce(lookup(r.cls, [
+category: unwrap_or!(lookup(r.cls, [
     {value: ic::DeviceClass::Lsw, label: "交换机"},
     {value: ic::DeviceClass::Router, label: "路由器"},
     {value: ic::DeviceClass::Ap, label: "无线接入点"}
@@ -96,7 +96,7 @@ ratio(a,b) / growth_rate(a,b) 返回 Option(Ratio)；输入为空、ratio 分母
 
 ### 空值与非空投影
 
-条件必须为 Bool。可空比较得到 Option(Bool) 时，按业务明确空值分支：空值表示不满足可用 coalesce(原条件, False)，需要保留空值行则选择 True 或显式判断，不能机械补零或套默认值。空字符串仍是非 NULL。
+条件必须为 Bool。可空比较得到 Option(Bool) 时，按业务明确空值分支：空值表示不满足可用 unwrap_or!(原条件, False)，需要保留空值行则选择 True 或显式判断，不能机械补零或套默认值。空字符串仍是非 NULL。
 
 非空投影写为 project({field:not_none(expr)})：expr 必须是 Option(T)，该列输出为 T；任一标记列为空则排除整行，其他列保持原类型。not_none 仅允许在投影字段最外层。query! 支持可推导表达式及聚合，query_remote! 支持自身可空或由可选 Relation 变为可空的直接成员；筛除在投影结果计算后、后续排序和 take 前执行，空字符串不会被排除。带内置 pair 排名的 query_remote! 请在后续 query! 中作非空投影。
 
@@ -160,19 +160,19 @@ data daily = query_remote! {
 
 ## 展示树与交付
 
-树节点写 `Component(attr = value) [children]`。tree! 只组织文本、组件引用和条件；计算、映射和格式准备放在前序 data/do/query!。字段访问器写 project!(field)，由组件 data 的行 Schema 校验，不使用匿名函数。
+树节点写 `Component(attr = value) [children]`。tree! 只组织文本、组件引用和条件；计算、映射和格式准备放在前序 data/do/query!。字段访问器写 $.field，由组件 data 的行 Schema 校验，不使用匿名函数。
 
-tree! 子节点可直接写字符串，例如 p ["统计窗口：", Value(value = window_label)]。直接字符串包含数字时，check 成功并给出 warning：查询结果应通过 Value(...) 引用；确属固定文案时，用 Lit(value = "最近 3 天") 显式确认。Lit 只接受 value 属性中的静态字符串，不对其数字发出 warning。
+tree! 子节点可直接写字符串，例如 p ["统计窗口：", UseValue(ref = window_label)]。直接字符串包含数字时，check 成功并给出 warning：查询结果应通过 UseValue(...) 引用；确属固定文案时，用 Lit(value = "最近 3 天") 显式确认。Lit 只接受 value 属性中的静态字符串，不对其数字发出 warning。
 
-Value(value = prepared_value) 展示标量引用；Value(data = highest, field = project!(cpu)) 展示已证明至多一行的表或可选行字段。记录字段可先在 data/do 中绑定。条件写 `if condition [...] else [...]`；可选行写 `if let Some(row) = highest [...] else [...]`，行存在不代表其中字段非空，可继续解构。各分支均检查类型，执行时只渲染选中分支。
+UseValue(ref = a.b.c) 只接受直接标量引用，字面量、调用、算术和空值默认值处理提前放在 data 中。先用 data highest_cpu = map_opt(highest,$.cpu); 准备可选标量，再用 UseValue(ref = highest_cpu) 展示。记录字段可先在 data/do 中绑定。条件写 `if condition [...] else [...]`；可选行写 `if let Some(row) = highest [...] else [...]`，行存在不代表其中字段非空，可继续解构。各分支均检查类型，执行时只渲染选中分支。
 
 图表及 Table 直接内联在 Answer/Report 中，例如 `BarChart(data = rows,spec = {...})`。spec 不含 kind，组件标签决定种类。完整组件和配置见 oks://help/dari-figures.md。
 
-Table 的列配置写 spec = {columns:[project!(label),project!(n)]}，也接受字符串列名列表 ["label","n"]；裸标识 [label,n] 表示静态绑定引用。spec 配置在检查期确定，字段选择必须存在于 data 的行 Schema。
+Table 的列配置写 spec = {columns:[$.label,$.n]}，也接受字符串列名列表 ["label","n"]；裸标识 [label,n] 表示静态绑定引用。spec 配置在检查期确定，字段选择必须存在于 data 的行 Schema。
 
 报告写 `report report = tree! { Report(title = "标题") [...] };`，Answer 用 UseReport(ref = report) 交付链接。title 用于 document.title 和链接名，默认取报告绑定名；正文标题用 h1/h2/h3，图表标题用 spec.title。支持 section、h1/h2/h3、p、div/span、ul/ol/li、blockquote、pre/code、strong/em、a、br/hr、Lit、Value；报告归档源码和 context。
 
-Answer 的图表为 SVG 附件与 Markdown 图片，Report 内嵌图表；Table 分别为 Markdown/HTML 表格。两处分别渲染、共享同次执行的数据。Answer 和各 Report 按实际展示顺序分别编号“图 1、图 2”与“表 1、表 2”；未选中分支不占编号，title 无需手写编号。
+Answer 的图表为 SVG 附件与 Markdown 图片，Report 内嵌图表；Table 分别为 Markdown/HTML 表格。两处分别渲染、共享同次执行的数据。submit 回执提供本次实际展示的数据文档：图表为 CSV，表格为 Markdown，Value 按引用列出展示值；按 answer/reports 路径与图表编号定位。根据回执理解数据，无需读取 HTML/SVG 附件。Answer 和各 Report 按实际展示顺序分别编号“图 1、图 2”与“表 1、表 2”；未选中分支不占编号，title 无需手写编号。
 
 数值默认最多两位小数并去尾零，Int 保留整数。Percent(12.0) 与 Ratio(0.12) 都显示为 12%，原值、排序和计算不变；无需手动乘以 100。Value 用 precision = 3 覆盖精度（静态整数 0..12）；图表与 Table 的类型展示、精度和数据形态见图表分册。
 
@@ -181,3 +181,5 @@ Answer 的图表为 SVG 附件与 Markdown 图片，Report 内嵌图表；Table 
 dari_check 失败时返回 CheckFailed 文本，列出行列位置、相关声明与可确定的修复建议。一次收集多个独立错误，最多展示 20 条并提示剩余数量。类型及计划错误会说明期望与实际、错误原因和适用的修复方式。语法恢复以可靠的括号或声明边界为限；上游声明失败时，依赖它的内容等待修复后再检查。检查失败的稿件不会执行或发布结果。
 
 运行期输入、数据与展示错误采用 SubmitFailed 文本并定位负责节点。输入编码错误应修正输入；模型/context 版本变化后重新检查同一稿件；模型结果违背已证明契约属于实现问题，不靠放宽类型、删条件或伪造数据规避。
+
+`$.x.y` 按输入行类型逐级选择记录字段；`$.x?.y` 在 x 为 None 时整个选择器返回 None，否则继续取字段。`?` 要求 Option，返回类型为 Option(最终字段类型)，不叠加 Option。普通 `.` 不隐式穿透 Option。`$` 只在组件字段配置或 map_opt 的行上下文中使用。UseValue(ref = prepared.value) 使用具名数据引用。

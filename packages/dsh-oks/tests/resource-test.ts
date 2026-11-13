@@ -22,7 +22,7 @@ try {
  for(const path of paths){const manual=await call('oks_read',{path});assert(manual.lines.length);}
  for(const path of ['analysis.dari',join(root,'analysis.dari'),'.work/a.dari','oks://help/../x','oks://knowledge'])await assert.rejects(call('oks_read',{path}),/built-in manuals/);
  mkdirSync(join(root,'reports'));
- const local=join(root,'reports/a.dari');writeFileSync(local,'data a = 1; answer tree! { Answer [p [Value(data=a)]] };');
+ const local=join(root,'reports/a.dari');writeFileSync(local,'data a = 1; answer tree! { Answer [p [UseValue(ref=a)]] };');
  for(const path of ['reports/a.dari','./reports/a.dari',local])assert.equal(readDariSource(root,path,'test').file,'reports/a.dari');
  symlinkSync(local,join(root,'alias.dari'));assert.equal(readDariSource(root,'alias.dari','test').file,'reports/a.dari');
  writeFileSync(join(outside,'escape.dari'),'data a = 1;');symlinkSync(outside,join(root,'escape'));

@@ -19,6 +19,8 @@ data highest = query! {
       |> take_opt()
 };
 
+data highest_cpu = map_opt(highest, $.cpu);
+
 answer tree! { Answer [
-    p ["最高 CPU：", Value(data = highest, field = project!(cpu))]
+    p ["最高 CPU：", UseValue(ref = highest_cpu)]
 ] };

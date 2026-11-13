@@ -1,8 +1,7 @@
 import type {Row} from './shared.ts';
 
 /** CSV preserves column order; empty strings are quoted, missing values are empty cells. */
-function csv(rows:Row[]):string {
-  const columns=[...new Set(rows.flatMap(row=>Object.keys(row)))];
+export function csv(rows:Row[],columns=[...new Set(rows.flatMap(row=>Object.keys(row)))]):string {
   const cell=(value:unknown):string=>{
     if(value===null||value===undefined)return '';
     const text=typeof value==='object'?JSON.stringify(value):String(value);

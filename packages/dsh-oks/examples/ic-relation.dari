@@ -6,4 +6,4 @@ data rows = query_remote! {
     projected
           |> order_by(asc(projected.frame)) |> take(20)
 };
-answer tree! { Answer [h1 ["机框及所属设备"],UseTable(ref = rows)]};
+answer tree! { Answer [h1 ["机框及所属设备"],Table(data = rows)]};

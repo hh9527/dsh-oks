@@ -26,22 +26,22 @@ try{
  data rows = query_remote! {let a = from(ic::device_kpi);let output = a |> group_by_identity(a)
  |> project({device:a.device_kpi_res_id,cpu:a.cpu_usage}); output |> order_by(desc(output.cpu)) |> take(5)};
 
- report report = tree! {Report [h1 ["CPU"],UseTable(ref = rows),BarChart(data = rows, spec = {category:project!(device),value:project!(cpu)})]};
- answer tree! {Answer [Value(value = ctx.time_zone),UseTable(ref = rows),UseReport(ref = report),BarChart(data = rows, spec = {category:project!(device),value:project!(cpu)})]};`);
+ report report = tree! {Report [h1 ["CPU"],Table(data = rows),BarChart(data = rows, spec = {category:$.device,value:$.cpu})]};
+ answer tree! {Answer [UseValue(ref = ctx.time_zone),Table(data = rows),UseReport(ref = report),BarChart(data = rows, spec = {category:$.device,value:$.cpu})]};`);
  const checked:any=await call('dari_check',{src:'test.dari'});assert.match(checked.text,/Succeed/);
  const receipt:any=await call('dari_submit',{src:'test.dari'});assert.match(receipt.text,/answer message/);assert.equal(messages.length,1);
- const answer=messages[0].content[0].text;assert.match(answer,/Asia\/Shanghai/);assert.match(answer,/\| device \| cpu \|/);assert.match(answer,/\/attachments\/chart_1.svg/);assert.match(answer,/\/attachments\/report.html/);
+ assert.equal(messages[0].source.kind,'push-to-user');assert(messages[0].source.href.startsWith('file:///'));assert.match(messages[0].source.href,/-answer.md$/);assert(!messages[0].content[0].text.includes('Asia/Shanghai'));assert.match(receipt.text,/reports\/report\/figures\/1/);const answer=saved.get(messages[0].source.href.split('/').at(-1))!;assert.match(answer,/Asia\/Shanghai/);assert.match(answer,/\| device \| cpu \|/);assert.match(answer,/\/attachments\/chart_1.svg/);assert.match(answer,/\/attachments\/report.html/);
  assert(saved.get('report.html')!.includes('<svg'));
  assert(saved.get('chart_1.svg')!.includes('dari-data'));
- writeFileSync(join(root,'invalid.dari'),'answer tree! { Answer [Value(data: nope)] };');
+ writeFileSync(join(root,'invalid.dari'),'answer tree! { Answer [UseValue(data: nope)] };');
  await assert.rejects(()=>call('dari_check',{src:'invalid.dari'}),/L1:.*Node attributes use/);
- writeFileSync(join(root,'invalid.dari'),'data bad = missing;\ndata dependent = bad;\nanswer tree! {Answer [Value(value = absent),Value(data: nope)]};');
+ writeFileSync(join(root,'invalid.dari'),'data bad = missing;\ndata dependent = bad;\nanswer tree! {Answer [UseValue(ref = absent),UseValue(data: nope)]};');
  const beforeFiles=saved.size,beforeMessages=messages.length;
  for(const tool of ['dari_check','dari_submit'])await assert.rejects(()=>call(tool,{src:'invalid.dari'}),(error:Error)=>{
   assert.match(error.message,/CheckFailed\n-----------/);assert.match(error.message,/Unknown binding missing/);assert.match(error.message,/Unknown binding absent/);assert.match(error.message,/Node attributes use/);assert.match(error.message,/修复建议/);assert(!error.message.includes('Unknown binding bad'));return true;
  });
  assert.equal(saved.size,beforeFiles);assert.equal(messages.length,beforeMessages);
- writeFileSync(join(root,'empty.dari'),'data rows:Table(Schema({label:String,n:Int}))=table([]);answer tree! {Answer [BarChart(data = rows,spec = {category:project!(label),value:project!(n)})]};');
+ writeFileSync(join(root,'empty.dari'),'data rows:Table(Schema({label:String,n:Int}))=table([]);answer tree! {Answer [BarChart(data = rows,spec = {category:$.label,value:$.n})]};');
  await call('dari_check',{src:'empty.dari'});
  await assert.rejects(()=>call('dari_submit',{src:'empty.dari'}),/SubmitFailed\n------------/);
  assert.equal(saved.size,beforeFiles);assert.equal(messages.length,beforeMessages);

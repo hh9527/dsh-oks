@@ -24,13 +24,13 @@
 
 图表共同配置：title、x_label、value_label、unit、style:{labels:True,colors:["#..."],sort:"none"}、layout:{label_font:12,title_font:16,slant_ticks:False,tick_count:8}。这些字段的适用范围仍由组件校验。bar/column 的行高由字体驱动，不需手调画布高度。BarChart 不接纳 series；同一指标分组使用 GroupedBarChart，独立指标使用 MultiBarChart，按组加和使用 StackedBarChart。四者均以 category 映射类别；orientation:Orientation::Horizontal/Vertical 默认为 Vertical。
 
-四种柱条图的 value_min 可设置轴基线，例如 99.0；条/柱上的标注仍是原始数值。空输入默认报错；显式 allow_no_data:True 接受空表并显示“无数据”。Table 同样支持 allow_no_data，保留表头。表格 labels 例如 {device:"设备",cpu:"CPU (%)"}，columns 决定列顺序，例如 [project!(device),project!(cpu)]，也接受字符串列名。SVG 内嵌最终图表输入的 CSV 和 spec，报告保留这些信息。
+四种柱条图的 value_min 可设置轴基线，例如 99.0；条/柱上的标注仍是原始数值。空输入默认报错；显式 allow_no_data:True 接受空表并显示“无数据”。Table 同样支持 allow_no_data，保留表头。表格 labels 例如 {device:"设备",cpu:"CPU (%)"}，columns 决定列顺序，例如 [$.device,$.cpu]，也接受字符串列名。SVG 内嵌最终图表输入的 CSV 和 spec，报告保留这些信息。
 
 ## 柱条图：数据形态与可加和性
 
 | 目标 | 数据形态 | 映射配置 | 堆叠 |
 | --- | --- | --- | --- |
-| 同一指标按类别比较，如两周各告警级别的条数 | 长表：week、severity、count，每行一个周与级别组合 | GroupedBarChart 的 series:project!(severity) | 指标允许 Sum 时选择 StackedBarChart |
+| 同一指标按类别比较，如两周各告警级别的条数 | 长表：week、severity、count，每行一个周与级别组合 | GroupedBarChart 的 series:$.severity | 指标允许 Sum 时选择 StackedBarChart |
 | 多个独立指标并列，如每周 CPU、内存、在线率 | 宽表：week、cpu、memory、online，每行一周 | MultiBarChart 的 metrics 列表 | 独立指标只并列展示 |
 
 长表中所有 value 共用一个字段类型，series 列的取值决定分组。宽表中各数值列保留独立业务类型，列的身份决定序列。不能为适配长表而剥离不同指标的业务类型或强行 union_all。
@@ -48,9 +48,9 @@
 
 ```text
 StackedBarChart(data = severity_counts, spec = {
-  category:project!(week),
-  series:project!(severity),
-  value:project!(count),
+  category:$.week,
+  series:$.severity,
+  value:$.count,
   mode:StackMode::Absolute
 })
 ```
@@ -70,34 +70,34 @@ MultiBarChart 使用 metrics 列表，每个数值列对应一个序列，各列
 
 ```text
 answer tree! {Answer [MultiBarChart(data = weekly, spec = {
-  category:project!(period),
+  category:$.period,
   metrics:[
-    {value:project!(cpu),label:"CPU 平均使用率",unit:"%"},
-    {value:project!(memory),label:"内存平均使用率",unit:"%"},
-    {value:project!(online),label:"设备在线率",unit:"%"}
+    {value:$.cpu,label:"CPU 平均使用率",unit:"%"},
+    {value:$.memory,label:"内存平均使用率",unit:"%"},
+    {value:$.online,label:"设备在线率",unit:"%"}
   ]
 })]};
 ```
 
 ## 折线与面积图
 
-LineChart/AreaChart 的 x_type 为 "Int"/"Float"/"String"/"Rfc3339"/"EpochMillis"，且必须与横轴类型匹配；可选 connect_nulls。AreaChart 使用 stack:Stack::None/Total/Percent；堆叠要求指标允许 Sum。适用的图表支持 second:{value:project!(other),label:"...",unit:"...",kind:"line"} 和 marks:[{value:80.0,label:"阈值"}]。
+LineChart/AreaChart 的 x_type 为 "Int"/"Float"/"String"/"Rfc3339"/"EpochMillis"，且必须与横轴类型匹配；可选 connect_nulls。AreaChart 使用 stack:Stack::None/Total/Percent；堆叠要求指标允许 Sum。适用的图表支持 second:{value:$.other,label:"...",unit:"...",kind:"line"} 和 marks:[{value:80.0,label:"阈值"}]。
 
 LineChart 使用 series 列表（而非 metrics），并声明 x_type，例如：
 
 ```text
 LineChart(data = daily, spec = {
-  x:project!(day), x_type:"Rfc3339",
+  x:$.day, x_type:"Rfc3339",
   series:[
-    {value:project!(cpu),label:"CPU 平均使用率",unit:"%"},
-    {value:project!(memory),label:"内存平均使用率",unit:"%"}
+    {value:$.cpu,label:"CPU 平均使用率",unit:"%"},
+    {value:$.memory,label:"内存平均使用率",unit:"%"}
   ]
 })
 ```
 
 不同业务类型可以共用展示单位一致的数值轴，无需转成长表或剥离类型。各列按自身 presentation 转换到展示尺度，例如 Ratio 与 Percent 都显示为百分比；空值默认断开折线，可用 connect_nulls:True 连线。宽表多序列共用一个数值轴，不能同时声明 second。
 
-多张结果表先通过 query! 中的 join 按共同键（如周期）对齐，再 project 成宽表；不能按行位置配对。单次 query_remote! 能投影出各指标时直接使用该宽表。类别分组使用 GroupedBarChart 或 StackedBarChart 的 series:project!(group)、value:project!(value) 长表形式。
+多张结果表先通过 query! 中的 join 按共同键（如周期）对齐，再 project 成宽表；不能按行位置配对。单次 query_remote! 能投影出各指标时直接使用该宽表。类别分组使用 GroupedBarChart 或 StackedBarChart 的 series:$.group、value:$.value 长表形式。
 
 ## 类型与显示精度
 

@@ -34,7 +34,27 @@ loader.load({
 
     function MarkdownMessageView(props: any): any {
       const data = props && props.node && props.node.data ? props.node.data : {};
-      const text = typeof data.text === "string" ? data.text : "";
+      const inline = typeof data.text === "string" ? data.text : "";
+      const [loaded,setLoaded] = React.useState(null);
+      const [problem,setProblem] = React.useState("");
+      React.useEffect(() => {
+        if(!data.source?.href)return;
+        const controller = new AbortController();setLoaded(null);setProblem("");
+        let url: URL;
+        try {
+          const reference = new URL(data.source.href,window.location.href);
+          // file: names a host file; the browser reads it through DSH's authenticated endpoint.
+          if(reference.protocol === "file:") {
+            if(reference.hostname && reference.hostname !== "localhost")throw Error("Remote file host");
+            url = new URL("api/file",window.location.href);
+            url.searchParams.set("path",decodeURIComponent(reference.pathname));
+          } else url = reference;
+        }catch {setProblem("无法加载交付：附件地址无效");return;}
+        if(url.origin !== window.location.origin){setProblem("无法加载交付：附件必须同源");return;}
+        fetch(url.href,{credentials:"same-origin",signal:controller.signal}).then(response=>{if(!response.ok)throw Error("HTTP "+response.status);return response.text();}).then(setLoaded).catch(error=>{if(!controller.signal.aborted)setProblem("交付加载失败："+error.message);});
+        return ()=>controller.abort();
+      },[data.source?.href]);
+      const text = Boolean(data.source?.href) ? problem || loaded || "正在加载交付…" : inline;
       const source = data.source && typeof data.source === "object" ? data.source : {};
       const label = labelOf(source);
       const labelled = label !== "" && label !== SOURCE_KIND;

@@ -10,8 +10,8 @@ host 插件推送一条 user 消息，`source.kind` 使用保留值：
 agent.inject({
   id: messageId,
   role: 'user',
-  source: { kind: 'push-to-user', label: 'dsh-oks' },
-  content: [{ type: 'text', text: markdown }],
+  source: { kind: 'push-to-user', label: 'dsh-oks', href: 'file:///path/to/answer.md' },
+  content: [{ type: 'text', text: 'Answer delivered' }],
 });
 ```
 
@@ -19,11 +19,13 @@ agent.inject({
 | --- | --- |
 | `source.kind` | 必须是 `push-to-user`，客户端据此认领该消息 |
 | `source.label` | 可选，显示在卡片左上角的来源名；缺省时回退到 `source.kind` |
-| `content` | 文本块，按 Markdown 渲染 |
+| `source.href` | 可选，Markdown 附件的 file URL 或同源 HTTP(S) URL；file URL 由 pathToFileURL 生成，经 DSH 鉴权的 api/file 通道读取，重载会话时重新读取 |
+| `content` | 合法 DSH 文本块；无 `href` 时按 Markdown 展示，有 `href` 时作为简短交付通知进入模型上下文 |
 
 ## 行为
 
-- 模型侧：普通 user 消息，进入上下文
+- 模型侧：普通 user 消息，正文进入上下文；外置模式的附件内容由客户端加载
+- 外置模式：同源请求携带会话凭据；显示加载与失败状态，失败不回退为另一份正文
 - 界面侧：淡色卡片、来源标签、圆角背景，不折叠
 - 没有这类消息的会话里不渲染任何内容
 

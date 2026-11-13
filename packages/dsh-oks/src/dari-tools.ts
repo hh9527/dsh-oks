@@ -1,8 +1,7 @@
 import {readDariSource} from './source-file.ts';
 import {spawn,type ChildProcessWithoutNullStreams} from 'node:child_process';
 import {createInterface} from 'node:readline';
-import {randomUUID} from 'node:crypto';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 import type {PluginConfig} from './config.ts';
 import type {Knowledge} from './knowledge.ts';
 import type {AttachmentsService,ToolDefinition,ToolExec} from './host.ts';
@@ -40,7 +39,7 @@ export function createDariTools(options:{config:PluginConfig['dari'];knowledge:K
   return {entry,key,context,host:worker(entry.settings.dataFile)};
  }
  const tools:ToolDefinition[]=[...(['check','resolve'] as const).map(method=>({
-  name:'dari_'+(method==='resolve'?'submit':method),description:method==='check'?'Check the complete .dari file without reading business rows. Uses external model type proof for query_remote! and internal proof for query!/tree!. Accepts only src.':'Check and execute a .dari file, publish its artifacts and deliver the unique Answer as a visible conversation message. Accepts only src. Do not repeat the delivered Answer. If delivery is unavailable, forward the returned Answer verbatim; add observations separately.',
+  name:'dari_'+(method==='resolve'?'submit':method),description:method==='check'?'Check the complete .dari file without reading business rows. Uses external model type proof for query_remote! and internal proof for query!/tree!. Accepts only src.':'Check and execute a .dari file, publish its artifacts and deliver the unique Answer as a visible conversation message. Accepts only src. Do not repeat the delivered Answer. The tool receipt includes displayed chart/table/value data for analysis. If delivery is unavailable, forward the returned Answer verbatim; add observations separately.',
   parameters:{type:'object',properties:{src:{type:'string'}},required:['src'],additionalProperties:false},output,
   async execute(args:{src:string},exec:ToolExec){
    if(Object.keys(args).some(k=>k!=='src'))throw Error('Only src is accepted');
@@ -48,15 +47,19 @@ export function createDariTools(options:{config:PluginConfig['dari'];knowledge:K
    if(method==='resolve'&&env.entry.settings.requireRunApproval)throw Error('DARI execution is unavailable when requireRunApproval is enabled');
    const result=await env.host.request({method,source:source(env.entry.root,args.src),context:env.context,contextContractId:'dari-context/v2'});exec.signal?.throwIfAborted();
    if(method==='check')return {text:'Succeed\n-------\n'+result.types.map((t:any)=>'- '+t.name+': '+t.type).join('\n')+(result.warnings?'\n\n'+result.warnings:'')};
-   const links=new Map<string,string>(),artifacts=result.artifacts as Record<string,string>;
-   const publish=async(name:string,content:string)=>{const attachments=options.attachments?.();if(!attachments)throw Error('Attachments service unavailable');const file=await attachments.saveFile({name,data:Buffer.from(content)});const path=attachments.fileHostPath(file);if(!path)throw Error('Attachment has no displayable path');links.set(name,encodeURI(path).replaceAll('(','%28').replaceAll(')','%29').replaceAll('#','%23').replaceAll('?','%3F'));};
+   if(typeof result.dataDocument!=='string'||typeof result.deliveryId!=='string')throw Error('DARI service must provide deliveryId and dataDocument');
+   const links=new Map<string,string>(),fileUrls=new Map<string,string>(),artifacts=result.artifacts as Record<string,string>;
+   const publish=async(name:string,content:string)=>{const attachments=options.attachments?.();if(!attachments)throw Error('Attachments service unavailable');const file=await attachments.saveFile({name,data:Buffer.from(content)});const path=attachments.fileHostPath(file);if(!path)throw Error('Attachment has no displayable path');fileUrls.set(name,pathToFileURL(path).href);links.set(name,encodeURI(path).replaceAll('(','%28').replaceAll(')','%29').replaceAll('#','%23').replaceAll('?','%3F'));};
    for(const [name,content]of Object.entries(artifacts))if(name.endsWith('.svg'))await publish(name,content);
    for(const [name,content]of Object.entries(artifacts))if(name.endsWith('.html')){let html=content;for(const [file,url]of links)html=html.replaceAll('src="'+file+'"','src="'+url.replaceAll('&','&amp;').replaceAll('"','&quot;')+'"');await publish(name,html);}
    let answer=result.answer as string;for(const [file,url]of links)answer=answer.replaceAll(']('+file+')',']('+url+')');
    const agent=exec.agent as {inject?:(message:unknown)=>void}|undefined;
    if(typeof agent?.inject!=='function')return {text:'Answer delivery unavailable; forward the following Markdown verbatim:\n\n'+answer};
-   const messageId=randomUUID();agent.inject({id:messageId,role:'user',source:{kind:'push-to-user',label:'dsh-oks'},content:[{type:'text',text:answer}]});
-   return {text:'Succeed\n-------\n- answer message: '+messageId+'\nThe Answer is delivered; do not repeat it. Add commentary only when useful.'};
+   const deliveryId=result.deliveryId;
+   await publish(deliveryId+'-data.md',result.dataDocument);
+   await publish(deliveryId+'-answer.md',answer);
+   const messageId=deliveryId;agent.inject({id:messageId,role:'user',source:{kind:'push-to-user',label:'dsh-oks',href:fileUrls.get(deliveryId+'-answer.md')!},content:[{type:'text',text:'Answer delivered: '+deliveryId}]});
+   return {text:'Succeed\n-------\n- answer message: '+messageId+'\nThe Answer is delivered; do not repeat it. Use the following displayed data for observations; HTML/SVG reading is unnecessary.\n\n'+result.dataDocument};
   }
  })),{
   name:'dari_renew_context',description:'Start a fresh context time snapshot for this session. Takes src, a local .dari file. Subsequent dari_submit reads current data with the fresh snapshot.',parameters:{type:'object',properties:{src:{type:'string'}},required:['src'],additionalProperties:false},output,
