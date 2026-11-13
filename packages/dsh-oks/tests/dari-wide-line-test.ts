@@ -3,7 +3,7 @@ import {dariHost} from '../src/dari-host.ts';
 const float:any={kind:'scalar',name:'Float'};
 const metric=(name:string,multiplier:number):any=>({kind:'nominal',name,inner:float,presentation:{multiplier,suffix:'%'}});
 const fields:any={day:{kind:'scalar',name:'DateTimeUtc'},cpu:metric('CpuUtilization',1),memory:metric('MemoryUtilization',100)};
-const spec:any={x:'day',x_type:'Rfc3339',style:{labels:true},series:[{value:'cpu',label:'CPU',unit:'%'},{value:'memory',label:'Memory',unit:'%'}]};
+const spec:any={x:'day',style:{labels:true},series:[{value:'cpu',label:'CPU',unit:'%'},{value:'memory',label:'Memory',unit:'%'}]};
 const rows=[{day:'2026-11-01T00:00:00Z',cpu:42,memory:0.61},{day:'2026-11-02T00:00:00Z',cpu:null,memory:0.65},{day:'2026-11-03T00:00:00Z',cpu:44,memory:0.63}];
 const saved=JSON.stringify({fields,rows,spec});
 dariHost.checkFigure('LineChart',spec,fields);
@@ -21,9 +21,9 @@ assert.throws(()=>dariHost.checkFigure('LineChart',{...spec,series:[spec.series[
 const watts={...fields,memory:{kind:'nominal',name:'Power',inner:float,presentation:{multiplier:1,suffix:'W'}}};
 assert.throws(()=>dariHost.checkFigure('LineChart',{...spec,series:[spec.series[0],{...spec.series[1],unit:'W'}]},watts as any),/shared value axis/);
 assert.throws(()=>dariHost.checkFigure('LineChart',{...spec,second:{value:'cpu'}},fields),/omit second/);
-assert.throws(()=>dariHost.checkFigure('LineChart',{...spec,x_type:'EpochMillis'},fields),/incompatible/);
+assert.throws(()=>dariHost.checkFigure('LineChart',{...spec,x_axis:{[Symbol.for('dari.enum')]:true,enum:'Axis',variant:'Value'}},fields),/numeric/);
 assert.throws(()=>dariHost.renderFigure('LineChart',spec,[],fields),/没有数据/);
 assert.match(dariHost.renderFigure('LineChart',{...spec,allow_no_data:true},[],fields).content,/无数据/);
 // Existing long-table mode remains available.
-dariHost.checkFigure('LineChart',{x:'day',x_type:'Rfc3339',series:'metric',value:'value'}, {day:fields.day,metric:{kind:'scalar',name:'String'},value:float});
+dariHost.checkFigure('LineChart',{x:'day',series:'metric',value:'value'}, {day:fields.day,metric:{kind:'scalar',name:'String'},value:float});
 console.log('Wide LineChart: nominal metrics, shared units, display scaling, null gaps, embedded raw input and long-table mode passed');

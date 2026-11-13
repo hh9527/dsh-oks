@@ -8,7 +8,7 @@
 | GroupedBarChart | 长表：category 类别，series 分组列，value 同一指标，并列展示 |
 | MultiBarChart | 宽表：category 类别，metrics 独立指标列表，各列保留业务类型 |
 | StackedBarChart | 长表：category 类别，series 分组列，value 必须允许 Sum |
-| LineChart / AreaChart | x 横轴，value 数值，显式 x_type，可选 series |
+| LineChart / AreaChart | x 横轴，value 数值，按字段类型推导横轴，可选 series |
 | PieChart | x 类别，value 数值，可选 donut |
 | ScatterChart | x 与 value 数值，可选 size |
 | Histogram | value 原始观测值，可选 bins（1..200） |
@@ -81,13 +81,13 @@ answer tree! {Answer [MultiBarChart(data = weekly, spec = {
 
 ## 折线与面积图
 
-LineChart/AreaChart 的 x_type 为 "Int"/"Float"/"String"/"Rfc3339"/"EpochMillis"，且必须与横轴类型匹配；可选 connect_nulls。AreaChart 使用 stack:Stack::None/Total/Percent；堆叠要求指标允许 Sum。适用的图表支持 second:{value:$.other,label:"...",unit:"...",kind:"line"} 和 marks:[{value:80.0,label:"阈值"}]。
+LineChart/AreaChart 从字段类型推导横轴，可用 x_axis:Axis::Time/Category/Value 显式选择；可选 connect_nulls。AreaChart 使用 stack:Stack::None/Total/Percent；堆叠要求指标允许 Sum。适用的图表支持 second:{value:$.other,label:"...",unit:"...",kind:"line"} 和 marks:[{value:80.0,label:"阈值"}]。
 
-LineChart 使用 series 列表（而非 metrics），并声明 x_type，例如：
+LineChart 使用 series 列表（而非 metrics），例如：
 
 ```text
 LineChart(data = daily, spec = {
-  x:$.day, x_type:"Rfc3339",
+  x:$.day,
   series:[
     {value:$.cpu,label:"CPU 平均使用率",unit:"%"},
     {value:$.memory,label:"内存平均使用率",unit:"%"}
@@ -101,6 +101,34 @@ LineChart(data = daily, spec = {
 
 ## 类型与显示精度
 
-比例类型的显示遵循模型发布的 presentation：Percent(12) 和 Ratio(0.12) 都显示为 12%。Value 和表格自动附加百分号；图表将数值映射到百分比显示尺度，并在轴上声明单位。原始数据与运算尺度保持不变，不需要手写乘以 100。value_min 等坐标轴配置使用显示尺度；显式 unit 必须与类型显示单位一致。SVG 的内嵌 CSV 保留原值，spec.presentation 记录相应列的显示倍率和后缀。
+比例类型的显示遵循模型发布的 presentation：Percent(12) 和 Ratio(0.12) 都显示为 12%。UseValue 和表格自动附加百分号；图表将数值映射到百分比显示尺度，并在轴上声明单位。原始数据与运算尺度保持不变，不需要手写乘以 100。value_min 等坐标轴配置使用显示尺度；显式 unit 必须与类型显示单位一致。SVG 的内嵌 CSV 保留原值，spec.presentation 记录相应列的显示倍率和后缀。
 
 数值默认最多两位小数并去尾零；Int 完整显示。图表及 Table 可设 spec.precision:3（静态整数 0..12），优先于模型发布的展示精度，模型默认优先于系统默认。轴刻度、数值标签及提示框使用同一规则，Percent/Ratio 自动显示百分号；几何计算、排序及 SVG 内嵌输入保留原值。百分比堆叠只在最终显示时舍入，不能用其消除业务指标之间的加总限制。
+
+## 时间展示
+
+计算值与展示解耦：EpochMillis / DateTimeUtc 表达确定时刻，DateTimeTz 为同一时刻附带地区时区；LocalDate 只有日历日期，不参与时区转换。显示格式不改变原值、类型、分组或排序。不要截取 UTC 字符串来获得本地日期。
+
+```dari
+data ctx = context! { now: Context::Now, tz: Context::ClientTz };
+data date_format = { time_zone: ctx.tz, date_style: DateStyle::Date };
+data local_now = to_datetime_tz(ctx.now, ctx.tz);
+data today = date_of(local_now);
+answer tree! { Answer [
+    UseValue(ref = ctx.now, format = date_format),
+    UseValue(ref = local_now),
+    Table(data = daily, spec = { formats: { day: date_format } }),
+    LineChart(data = daily, spec = {
+        x: $.day, value: $.cpu,
+        formats: { day: date_format }
+    })
+] };
+```
+
+示例中的 daily 是先前取得的有界表，day 为 EpochMillis / DateTimeUtc / DateTimeTz，cpu 为数值指标。`formats` 的键为输入字段名，UseValue 的 `format` 使用同一配置。time_zone 接受非空 TimeZone（如 ctx.tz 或预先构造的 TimeZone），date_style 使用 DateStyle::Date / DateTime / Time。配置结构和枚举在检查期确定；time_zone 的类型在检查期校验，实际地区值来自本次执行的缓存数据节点。
+
+未指定格式时，EpochMillis / DateTimeUtc 明确按 UTC 展示；DateTimeTz 按自身地区展示。默认 DateTime 显示日期、时分秒、实际 UTC 偏移和地区名，以区分夏令时回拨的重复时刻。Date 只显示 YYYY-MM-DD；Time 只显示 HH:mm:ss。LocalDate 原样显示 YYYY-MM-DD，不接受 time_zone 或非 Date 的 date_style。空值保留为空，不伪造日期，不采用服务器默认时区。
+
+LineChart / AreaChart 从字段类型推导横轴：三种时刻类型为连续时间轴，LocalDate / String 为类别轴，普通数值为数值轴。需要显式选择时使用 x_axis: Axis::Time / Category / Value；Time 要求时刻类型，Value 要求数值。轴标签、axis pointer、tooltip 与交付数据采用同一时间格式；原始输入仍保留在 SVG 元数据。DateTimeTz 连续轴包含不同地区时必须显式指定统一 time_zone。类别轴的格式若把不同瞬时值压成同一标签会报错，避免图表悄悄合并数据。
+
+`date_of(instant, zone)` 计算 LocalDate；单参数 `date_of(zoned)` 要求 DateTimeTz，使用其自带地区。date_of 与日期区间运算用于前序 data/do；行级日历聚合在 query! / query_remote! 使用 calendar_bucket。地区分桶键保持 DateTimeUtc，表格或图表通过 formats 显示对应地区的日期；无需把分组键降成 String。地区日可能为 23 / 25 小时，不能用固定 86400000 毫秒代替日历日期推进。

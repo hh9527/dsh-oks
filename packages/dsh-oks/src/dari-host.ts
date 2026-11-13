@@ -1,3 +1,4 @@
+import {temporal,timeSemantic,formatTime,embeddedTimeZone,validateTimeFormat,type TimeFormat} from './time-display.ts';
 import {formatValue,precision,type Type} from './display-values.ts';
 import {COMPONENT_KINDS,componentSpec} from './chart/components.ts';
 import {parseChartSpec,parseTableSpec,missingColumns,shapeProblem} from './chart/spec.ts';
@@ -38,7 +39,7 @@ function bucketOptions(value:any,checking:boolean){
 }
 
 // Public DARI names are independent of the chart renderer's JS vocabulary.
-const chartNames:Record<string,string>={allow_no_data:'allowNoData',value_min:'valueMin',connect_nulls:'connectNulls',entity_color:'entityColor',x_type:'xType',x_label:'xLabel',value_label:'valueLabel'};
+const chartNames:Record<string,string>={allow_no_data:'allowNoData',value_min:'valueMin',connect_nulls:'connectNulls',entity_color:'entityColor',x_label:'xLabel',value_label:'valueLabel'};
 const layoutNames:Record<string,string>={label_font:'labelFont',title_font:'titleFont',slant_ticks:'slantTicks',tick_count:'tickCount'};
 function chartInput(raw:Record<string,unknown>,names=chartNames):Record<string,unknown>{
  const result:Record<string,unknown>={};
@@ -48,8 +49,21 @@ function chartInput(raw:Record<string,unknown>,names=chartNames):Record<string,u
  }
  return result;
 }
-function presentationSpec(raw:Record<string,unknown>,name:string):Record<string,unknown>{
+function presentationSpec(raw:Record<string,unknown>,name:string,fields:Record<string,Type>):Record<string,unknown>{
  raw={...raw};
+ const formats=(raw.formats??{}) as Record<string,TimeFormat>;
+ if(!formats||typeof formats!=='object'||Array.isArray(formats))throw Error('formats requires field names mapped to time formats');
+ for(const [key,format]of Object.entries(formats)){if(!fields[key])throw Error('Unknown format field '+key);validateTimeFormat(fields[key],format);}
+ delete raw.formats;
+ let axisType:unknown;
+ if(name==='LineChart'||name==='AreaChart'){
+  const type=fields[String(raw.x)],role=timeSemantic(type),numeric=['Int','Float'].includes(storage(type??scalar('String')));
+  const mode=raw.x_axis===undefined?(['EpochMillis','DateTimeUtc','DateTimeTz'].includes(role??'')?'time':numeric?'value':'category'):enumOption(raw.x_axis,'Axis',['Time','Category','Value'],true);
+  if(mode==='time'&&!['EpochMillis','DateTimeUtc','DateTimeTz'].includes(role??''))throw Error('Axis::Time requires EpochMillis, DateTimeUtc or DateTimeTz; a String encoding is not a time type');
+  if(mode==='value'&&!numeric)throw Error('Axis::Value requires a numeric x field');
+  axisType=mode==='time'?(role==='DateTimeUtc'?'Rfc3339':role):mode==='value'?storage(type!):'String';
+  delete raw.x_axis;
+ }else if(raw.x_axis!==undefined)throw Error('x_axis belongs to LineChart or AreaChart');
  if(!barNames.has(name)&&(raw.orientation!==undefined||raw.category!==undefined||raw.mode!==undefined||raw.metrics!==undefined))throw Error('orientation/category/mode/metrics belong to bar chart contracts; use the component mappings in oks://help/dari-figures.md');
  if(barNames.has(name)){
   if(raw.x!==undefined)throw Error(name+' uses category: $.field');
@@ -66,7 +80,7 @@ function presentationSpec(raw:Record<string,unknown>,name:string):Record<string,
    raw.stack=mode==='absolute'?'total':'percent';delete raw.mode;
   }else if(raw.mode!==undefined)throw Error('Only StackedBarChart accepts mode');
  }
- precision(raw.precision);const spec=chartInput(raw);delete spec.precision;
+ const axis=axisType;precision(raw.precision);const spec=chartInput(raw);if(axis!==undefined)spec.xType=axis;delete spec.precision;
  if(raw.stack!==undefined&&!barNames.has(name)){const value=raw.stack as any;if(!value||value[Symbol.for('dari.enum')]!==true||value.enum!=='Stack'||!stackVariants.includes(value.variant))throw Error('stack requires Stack::None, Stack::Total or Stack::Percent');if(value.variant==='None')delete spec.stack;else spec.stack=value.variant==='Total'?'total':'percent';}
  return spec;
 }
@@ -91,12 +105,37 @@ function formatChart(option:any,fields:Record<string,Type>,spec:any,digits?:numb
  for(const series of axes(option.series)){
   const type=series.yAxisIndex===1?fields[spec.second?.value]:count?scalar('Int'):base;
   const suffix=spec.stack==='percent'?'%':series.yAxisIndex===1?(presentation(type??scalar('Float'))?.suffix??spec.second?.unit??''):(policy?.suffix??spec.unit??'');
-  const display=(v:any)=>Array.isArray(v)?spec.kind==='heatmap'?fmt(v[2],type,suffix):v.map((x:unknown,i:number)=>fmt(x,spec.kind==='scatter'&&i===0?fields[spec.x]:type,spec.kind==='scatter'&&i===0?presentation(fields[spec.x])?.suffix??'':suffix)).join(', '):fmt(v,type,suffix);
+  const display=(v:any)=>Array.isArray(v)?(spec.kind==='line'||spec.kind==='area')&&spec.xType!=='String'?fmt(v[1],type,suffix):spec.kind==='heatmap'?fmt(v[2],type,suffix):v.map((x:unknown,i:number)=>fmt(x,spec.kind==='scatter'&&i===0?fields[spec.x]:type,spec.kind==='scatter'&&i===0?presentation(fields[spec.x])?.suffix??'':suffix)).join(', '):fmt(v,type,suffix);
   if(!series.label?.formatter)series.label={...series.label,formatter:(p:any)=>(series.type==='pie'?p.name+': ':'')+display(p.value)};
   if(series.type==='gauge')series.detail={...series.detail,formatter:(v:number)=>fmt(v,type,suffix)};
   series.tooltip={...series.tooltip,valueFormatter:display};
  }
 }
+// Keep continuous coordinates as instants; only labels and tooltips use local time.
+export function formatTimeChart(option:any,fields:Record<string,Type>,spec:any,rows:Record<string,unknown>[],formats:Record<string,TimeFormat>){
+ const type=fields[spec.x];if(!temporal(type))return;
+ const continuous=(spec.kind==='line'||spec.kind==='area')&&['Rfc3339','DateTimeTz','EpochMillis'].includes(spec.xType);
+ if(!continuous)return;
+ const supplied=formats[spec.x]??{},zones=new Set(rows.map(row=>embeddedTimeZone(row[spec.x])).filter(Boolean));
+ if(!supplied.time_zone&&zones.size>1)throw Error('Mixed DateTimeTz axis zones require an explicit formats.'+spec.x+'.time_zone');
+ const format:TimeFormat={...supplied,time_zone:supplied.time_zone??[...zones][0]??'UTC'};
+ const show=(v:unknown)=>String(formatTime(scalar('EpochMillis'),v,format)??'');
+ option.useUTC=true;
+ const axes=Array.isArray(option.xAxis)?option.xAxis:[option.xAxis];
+ for(const axis of axes)if(axis?.type==='time'){axis.axisLabel={...axis.axisLabel,formatter:show};axis.axisPointer={...axis.axisPointer,label:{...axis.axisPointer?.label,formatter:(p:any)=>show(p.value)}};}
+ const escape=(v:unknown)=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
+ const series=Array.isArray(option.series)?option.series:[option.series];
+ option.tooltip={...option.tooltip,trigger:'axis',formatter:(input:any)=>{
+  const points=Array.isArray(input)?input:[input];if(!points.length)return '';
+  const header=show(points[0].axisValue??points[0].value?.[0]);
+  return [escape(header),...points.map((point:any)=>{
+   const item=series[point.seriesIndex],value=Array.isArray(point.value)?point.value[1]:point.value;
+   const shown=item?.tooltip?.valueFormatter?.(value)??value;
+   return escape(point.seriesName)+': '+escape(shown);
+  })].join('<br/>');
+ }};
+}
+
 // Wide series are a presentation projection: source columns keep their nominal types.
 function wideSeries(name:string,raw:Record<string,unknown>,fields:Record<string,Type>,rows:Record<string,unknown>[]=[]):{spec:Record<string,unknown>;fields:Record<string,Type>;rows:Record<string,unknown>[]}{
  if(!Array.isArray(raw.series))return {spec:raw,fields,rows};
@@ -134,38 +173,42 @@ function validate(name:string,raw:Record<string,unknown>,fields:Record<string,Ty
  if(p.spec.second){const secondary=fields[p.spec.second.value]?presentation(fields[p.spec.second.value]):undefined;if(secondary&&p.spec.second.unit&&p.spec.second.unit!==secondary.suffix)throw Error('Figure second unit conflicts with the value type presentation');}
  const missing=missingColumns(p.spec,columns,1);if(missing.length)throw Error('Unknown figure columns: '+missing.join(', '));
  for(const key of [p.spec.value,p.spec.size,p.spec.second?.value,...(p.spec.kind==='scatter'?[p.spec.x]:[])])if(key&&fields[key]&&!['Int','Float'].includes(storage(fields[key])))throw Error('Figure numeric mapping '+key+' must have Int/Float representation');
- if(p.spec.kind==='line'||p.spec.kind==='area'){
-  const accepted:Record<string,string[]>={Int:['Int'],Float:['Int','Float'],String:['String'],Rfc3339:['String','Rfc3339','DateTimeUtc'],EpochMillis:['Int','EpochMillis']};
-  if(!accepted[p.spec.xType!]?.includes(storage(fields[p.spec.x])))throw Error('Figure xType '+p.spec.xType+' is incompatible with '+p.spec.x);
- }
+
  return spec;
 }
 const host={
- contractId:'dari-host/v6',types:{Orientation:closedEnum('Orientation',orientations),StackMode:closedEnum('StackMode',stackModes),Stack:stackType,TimeUnit:closedEnum('TimeUnit',timeUnits),WindowMode:closedEnum('WindowMode',windowModes)},formatValue,components:Object.keys(COMPONENT_KINDS),reportStyle:REPORT_STYLE,
+ contractId:'dari-host/v7',types:{Orientation:closedEnum('Orientation',orientations),StackMode:closedEnum('StackMode',stackModes),Stack:stackType,Axis:closedEnum('Axis',['Time','Category','Value']),TimeUnit:closedEnum('TimeUnit',timeUnits),WindowMode:closedEnum('WindowMode',windowModes)},formatValue,components:Object.keys(COMPONENT_KINDS),reportStyle:REPORT_STYLE,
  reportHtml(text:string,artifacts:Record<string,string>){return renderMarkdown(text,()=>{throw Error('Unexpected report fence');},(alt,href)=>{const svg=artifacts[href];if(!svg)throw Error('Missing report figure '+href);return '<figure>'+cleanChartSvg(svg)+'</figure>';});},
- checkFigure(name:string,spec:Record<string,unknown>,fields:Record<string,Type>,nodes?:Record<string,Type>){const normalized=presentationSpec(spec,name);stacking(normalized,fields);const wide=wideSeries(name,normalized,fields);validate(name,wide.spec,wide.fields);if(name==='NetworkGraph'&&(!nodes?.id||!nodes.depth&&!(nodes.x&&nodes.y)))throw Error('NetworkGraph requires a nodes table with id and depth or x/y');if(name!=='NetworkGraph'&&nodes)throw Error('Only NetworkGraph accepts nodes');},
+ checkFigure(name:string,spec:Record<string,unknown>,fields:Record<string,Type>,nodes?:Record<string,Type>){const normalized=presentationSpec(spec,name,fields);stacking(normalized,fields);const wide=wideSeries(name,normalized,fields);validate(name,wide.spec,wide.fields);if(name==='NetworkGraph'&&(!nodes?.id||!nodes.depth&&!(nodes.x&&nodes.y)))throw Error('NetworkGraph requires a nodes table with id and depth or x/y');if(name!=='NetworkGraph'&&nodes)throw Error('Only NetworkGraph accepts nodes');},
  renderFigure(name:string,raw:Record<string,unknown>,rows:Record<string,unknown>[],fields:Record<string,Type>,nodes?:Record<string,unknown>[]){
-  const normalized=presentationSpec(raw,name);stacking(normalized,fields);const wide=wideSeries(name,normalized,fields,rows);
+  const normalized=presentationSpec(raw,name,fields);stacking(normalized,fields);const wide=wideSeries(name,normalized,fields,rows);
   const spec=validate(name,wide.spec,wide.fields);
   if(spec.kind==='table'){
-   const shown=rows.map(row=>Object.fromEntries(Object.entries(row).map(([key,value])=>[key,fields[key]?formatValue(fields[key],value,precision(raw.precision)):value])));
+   const shown=rows.map(row=>Object.fromEntries(Object.entries(row).map(([key,value])=>[key,fields[key]?formatValue(fields[key],value,precision(raw.precision),(raw.formats as any)?.[key]):value])));
    const t=parseTableSpec(spec),content=tableMarkdown(shown,{allowNoData:t.allowNoData,columns:t.columns??Object.keys(fields),labels:t.labels,...(t.title?{title:t.title}:{})});
    if('error'in content)throw Error(content.error);
    return {kind:'table' as const,content:content.embedded,html:renderMarkdown(content.embedded,()=>{throw Error('Unexpected table fence');}),title:t.title??'Table'};
   }
   const parsed=parseChartSpec(spec);if('error'in parsed)throw Error(parsed.error);
-  const renderRows=wide.rows.map(row=>{const copy:Record<string,unknown>={...row};for(const key of new Set([parsed.spec.value,parsed.spec.second?.value,...(parsed.spec.kind==='scatter'?[parsed.spec.x]:[])])){if(!key||!wide.fields[key])continue;const policy=presentation(wide.fields[key]);if(policy&&typeof copy[key]==='number')copy[key]=Number((Number(copy[key])*policy.multiplier).toPrecision(12));}return copy;});
+  const renderRows=wide.rows.map(row=>{const copy:Record<string,unknown>={...row};if(temporal(wide.fields[parsed.spec.x])&&!['Rfc3339','DateTimeTz','EpochMillis'].includes(parsed.spec.xType??''))copy[parsed.spec.x]=formatValue(wide.fields[parsed.spec.x],copy[parsed.spec.x],undefined,(raw.formats as any)?.[parsed.spec.x]);if(parsed.spec.xType==='String'&&copy[parsed.spec.x]!=null)copy[parsed.spec.x]=String(copy[parsed.spec.x]);for(const key of new Set([parsed.spec.value,parsed.spec.second?.value,...(parsed.spec.kind==='scatter'?[parsed.spec.x]:[])])){if(!key||!wide.fields[key])continue;const policy=presentation(wide.fields[key]);if(policy&&typeof copy[key]==='number')copy[key]=Number((Number(copy[key])*policy.multiplier).toPrecision(12));}return copy;});
   const policy=wide.fields[parsed.spec.value]?presentation(wide.fields[parsed.spec.value]):undefined;
   if(policy){if(parsed.spec.unit&&parsed.spec.unit!==policy.suffix)throw Error('Figure unit conflicts with the value type presentation');parsed.spec.unit=policy.suffix;}
   if(parsed.spec.second){const secondary=wide.fields[parsed.spec.second.value]?presentation(wide.fields[parsed.spec.second.value]):undefined;if(secondary)parsed.spec.second.unit=secondary.suffix;}
+  if(temporal(wide.fields[parsed.spec.x])&&!['Rfc3339','DateTimeTz','EpochMillis'].includes(parsed.spec.xType??'')){
+   const labels=new Map<unknown,unknown>();
+   renderRows.forEach((row,i)=>{const label=row[parsed.spec.x],raw=wide.rows[i][parsed.spec.x],instant=timeSemantic(wide.fields[parsed.spec.x])==='LocalDate'?raw:typeof raw==='number'?raw:raw==null?raw:Date.parse(String(raw).replace(/\[[^\]]+\]$/,''));
+    if(labels.has(label)&&labels.get(label)!==instant)throw Error('Time category labels collapse distinct instants; use Axis::Time or a more precise date_style');labels.set(label,instant);
+   });
+  }
   const problem=shapeProblem(renderRows,parsed.spec);if(problem)throw Error(problem);
   const {option,height}=buildOption(renderRows,parsed.spec,nodes);
   formatChart(option,wide.fields,parsed.spec,precision(raw.precision));
+  formatTimeChart(option,wide.fields,parsed.spec,wide.rows,(raw.formats??{}) as Record<string,TimeFormat>);
   if((option as any).visualMap){const values=renderRows.map(row=>row[parsed.spec.value]).filter((v):v is number=>typeof v==='number');if(values.length)(option as any).visualMap.text=[Math.max(...values),Math.min(...values)].map(v=>String(formatValue({kind:'scalar',name:'Float',presentation:{multiplier:1,suffix:policy?.suffix??parsed.spec.unit??'',precision:policy?.precision}},v,precision(raw.precision))));}
   const used=new Set<string>();
   const collect=(v:unknown):void=>{if(typeof v==='string'&&Object.hasOwn(fields,v))used.add(v);else if(Array.isArray(v))v.forEach(collect);else if(v&&typeof v==='object')Object.values(v).forEach(collect);};
   for(const key of ['x','y','category','series','value','size','source','target','metrics','second','open','close','low','high'])collect(raw[key]);
-  const shown=rows.map(row=>Object.fromEntries([...used].map(key=>{const policy=presentation(fields[key]);const v=row[key];return [key+(policy?.suffix?' ('+policy.suffix+')':''),policy&&typeof v==='number'?Number((v*policy.multiplier).toPrecision(12)):v];})));
+  const shown=rows.map(row=>Object.fromEntries([...used].map(key=>{const policy=presentation(fields[key]);const v=row[key];return [key+(policy?.suffix?' ('+policy.suffix+')':''),temporal(fields[key])?formatValue(fields[key],v,undefined,(raw.formats as any)?.[key]):policy&&typeof v==='number'?Number((v*policy.multiplier).toPrecision(12)):v];})));
   const fence='\x60'.repeat(3);
   const dataText=fence+'csv\n'+csv(shown,[...used].map(key=>key+(presentation(fields[key])?.suffix?' ('+presentation(fields[key])!.suffix+')':'')))+'\n'+fence+(nodes?'\n\n### nodes\n\n'+fence+'csv\n'+csv(nodes)+'\n'+fence:'');
   return {kind:'chart' as const,dataText,content:embedFigureCsv(renderEchartsSvg(option,CHART_WIDTH,height),{rows,spec:{component:name,...raw,precision:precision(raw.precision),default_precision:2,presentation:Object.fromEntries(Object.entries(fields).flatMap(([key,type])=>{const policy=presentation(type);return policy?[[key,policy]]:[];}))},...(nodes?{nodeRows:nodes}:{})}),title:parsed.spec.title??name};

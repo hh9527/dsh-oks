@@ -716,7 +716,7 @@ export const buildOption = (
   // x 轴：横条图是数值轴（第二维度就挂在它旁边），其余是类别轴或时间轴。
   const continuous = (spec.kind==='line'||spec.kind==='area')&&spec.xType!==null&&spec.xType!=='String';
   const baseXAxis = horizontal ? measureAxis : continuous
-    ? { ...categoryAxis, type: (spec.xType==='Rfc3339'||spec.xType==='EpochMillis'?'time':'value') as 'time'|'value', data: undefined }
+    ? { ...categoryAxis, type: (spec.xType==='Rfc3339'||spec.xType==='DateTimeTz'||spec.xType==='EpochMillis'?'time':'value') as 'time'|'value', data: undefined }
     : categoryAxis;
 
   // 直方图：一列数值先分箱再按箱画柱。散点表现不了"一组值怎么分布"（三档数据画出来就是三个点），

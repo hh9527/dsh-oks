@@ -4,7 +4,7 @@ import { isRecord } from '../host.ts';
 import { CHART_KINDS, supportedKinds, supports, toNumber } from './shared.ts';
 import type { ChartKind, ExpressionSwitch, LayoutOverrides, MarkLine, SecondMetric, StyleOverrides } from './shared.ts';
 
-export const X_TYPES = ['Int','Float','String','Rfc3339','EpochMillis'] as const;
+export const X_TYPES = ['Int','Float','String','Rfc3339','DateTimeTz','EpochMillis'] as const;
 export type XType = typeof X_TYPES[number];
 
 export interface ChartSpec {
@@ -409,6 +409,10 @@ export const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: str
 /** Deterministic axis conversion shared by validation and rendering. */
 export function axisValue(value:unknown,type:XType):number|string|null {
   if(type==='String')return typeof value==='string'&&value.length>0?value:null;
+  if(type==='DateTimeTz'){
+    if(typeof value!=='string')return null;
+    try{return Temporal.ZonedDateTime.from(value).epochMilliseconds;}catch{return null;}
+  }
   if(type==='Rfc3339'){
     if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(value))return null;
     try{return Temporal.Instant.from(value).epochMilliseconds;}catch{return null;}

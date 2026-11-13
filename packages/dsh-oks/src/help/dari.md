@@ -104,7 +104,7 @@ ratio(a,b) / growth_rate(a,b) 返回 Option(Ratio)；输入为空、ratio 分母
 
 顶层 `data ctx = context! { now: Context::Now, tz: Context::ClientTz };` 选择同次执行的固定上下文快照，类型为 Schema({now:EpochMillis,tz:TimeZone})。字段名可自定，仅读声明项；ClientTz 缺失或无效即报错。
 
-时间转换用 to_epoch_millis(t)、to_datetime_utc(t)、to_datetime_tz(t,"Asia/Shanghai")；DateTimeTz 保留偏移和 IANA 时区。EpochMillis 可加减整数毫秒偏移，两个 EpochMillis 相减得到 Int 时长。time_bucket(t,{unit:TimeUnit::Day,time_zone:"Asia/Shanghai"}) 返回桶起点 DateTimeUtc，unit 使用 TimeUnit::Minute/Hour/Day/Week/Month/Quarter/Year，周从星期一开始；可用于 query! 投影。时间比较、排序按瞬时值进行。
+时间转换用 to_epoch_millis(t)、to_datetime_utc(t)、to_datetime_tz(t,ctx.tz)，地区参数为 TimeZone；DateTimeTz 保留偏移和 IANA 时区。EpochMillis 可加减整数毫秒偏移，两个 EpochMillis 相减得到 Int 时长。时间比较、排序按瞬时值进行，日历分桶用下文的 calendar_bucket，时间显示见图表分册的“时间展示”。
 
 time_windows({epoch_millis:ctx.now,time_zone:ctx.tz},{unit:TimeUnit::Day,count:3,mode:WindowMode::Complete}) 返回从早到晚的窗口。unit 为 TimeUnit::Minute/Hour/Day/Week/Month/Quarter/Year，mode 为 WindowMode::Complete/Current/Rolling，均须检查期确定。每项含 label、zone、start/end；边界含 epoch_millis/date_time_utc/rfc3339。参数可写 windows[0].start.epoch_millis；窗口为 [start,end)。
 
@@ -123,7 +123,7 @@ data window = do {
 
 LocalDate("2026-02-01") 表达日期，TimeZone("Asia/Shanghai") 表达固定时区。CalendarUnit 为 Year/Quarter/Month/Week/Day；Weekday 为 Monday 到 Sunday，默认 Monday；DateOverflow 为 Reject/Clamp，默认 Reject。使用 Type::Variant 枚举符号，不使用字符串单位。
 
-calendar_floor/calendar_ceil/date_of/shift_date 返回 LocalDate；calendar_period/date_range/shift_dates 返回 DateRange；at_zone(DateRange,TimeZone) 与 time_range(instant,instant) 返回 TimeRange。calendar_floor/calendar_ceil/calendar_period 接收日期、单位及可选 Weekday；shift_date/shift_dates 接收日期或区间、单位、移动数量及可选 DateOverflow。date_of 接收瞬时值和 TimeZone。intersection/overlaps 接收同类区间；contains 接收区间和端点；is_empty 判断空区间。
+calendar_floor/calendar_ceil/date_of/shift_date 返回 LocalDate；calendar_period/date_range/shift_dates 返回 DateRange；at_zone(DateRange,TimeZone) 与 time_range(instant,instant) 返回 TimeRange。calendar_floor/calendar_ceil/calendar_period 接收日期、单位及可选 Weekday；shift_date/shift_dates 接收日期或区间、单位、移动数量及可选 DateOverflow。date_of 接收瞬时值和 TimeZone；单参数 date_of(zoned) 要求 DateTimeTz，使用其自带地区。LocalDate 是无时刻的日期，不做时区转换。intersection/overlaps 接收同类区间；contains 接收区间和端点；is_empty 判断空区间。
 
 区间端点为 `.start` / `.end`，DateRange 端点为 LocalDate，TimeRange 端点为 EpochMillis。统一使用半开区间，空区间有效，逆向区间报错；普通对象不能冒充区间。日期转瞬时值必须显式指定时区，月末收敛必须显式选择 Clamp。当前这些日历准备函数只在局部计算中使用，不在 SQL 行表达式中展开；地区日历分桶见下节；固定时长分桶、批量分割及 input! 尚未提供。
 
@@ -168,13 +168,13 @@ UseValue(ref = a.b.c) 只接受直接标量引用，字面量、调用、算术�
 
 图表及 Table 直接内联在 Answer/Report 中，例如 `BarChart(data = rows,spec = {...})`。spec 不含 kind，组件标签决定种类。完整组件和配置见 oks://help/dari-figures.md。
 
-Table 的列配置写 spec = {columns:[$.label,$.n]}，也接受字符串列名列表 ["label","n"]；裸标识 [label,n] 表示静态绑定引用。spec 配置在检查期确定，字段选择必须存在于 data 的行 Schema。
+Table 的列配置写 spec = {columns:[$.label,$.n]}，也接受字符串列名列表 ["label","n"]；裸标识 [label,n] 表示静态绑定引用。spec 的结构、字段选择和格式枚举在检查期确定；formats 中 time_zone 可引用已准备的非空 TimeZone，如 ctx.tz。字段必须存在于 data 的行 Schema。
 
-报告写 `report report = tree! { Report(title = "标题") [...] };`，Answer 用 UseReport(ref = report) 交付链接。title 用于 document.title 和链接名，默认取报告绑定名；正文标题用 h1/h2/h3，图表标题用 spec.title。支持 section、h1/h2/h3、p、div/span、ul/ol/li、blockquote、pre/code、strong/em、a、br/hr、Lit、Value；报告归档源码和 context。
+报告写 `report report = tree! { Report(title = "标题") [...] };`，Answer 用 UseReport(ref = report) 交付链接。title 用于 document.title 和链接名，默认取报告绑定名；正文标题用 h1/h2/h3，图表标题用 spec.title。支持 section、h1/h2/h3、p、div/span、ul/ol/li、blockquote、pre/code、strong/em、a、br/hr、Lit、UseValue；报告归档源码和 context。
 
-Answer 的图表为 SVG 附件与 Markdown 图片，Report 内嵌图表；Table 分别为 Markdown/HTML 表格。两处分别渲染、共享同次执行的数据。submit 回执提供本次实际展示的数据文档：图表为 CSV，表格为 Markdown，Value 按引用列出展示值；按 answer/reports 路径与图表编号定位。根据回执理解数据，无需读取 HTML/SVG 附件。Answer 和各 Report 按实际展示顺序分别编号“图 1、图 2”与“表 1、表 2”；未选中分支不占编号，title 无需手写编号。
+Answer 的图表为 SVG 附件与 Markdown 图片，Report 内嵌图表；Table 分别为 Markdown/HTML 表格。两处分别渲染、共享同次执行的数据。submit 回执提供本次实际展示的数据文档：图表为 CSV，表格为 Markdown，UseValue 按引用列出展示值；按 answer/reports 路径与图表编号定位。根据回执理解数据，无需读取 HTML/SVG 附件。Answer 和各 Report 按实际展示顺序分别编号“图 1、图 2”与“表 1、表 2”；未选中分支不占编号，title 无需手写编号。
 
-数值默认最多两位小数并去尾零，Int 保留整数。Percent(12.0) 与 Ratio(0.12) 都显示为 12%，原值、排序和计算不变；无需手动乘以 100。Value 用 precision = 3 覆盖精度（静态整数 0..12）；图表与 Table 的类型展示、精度和数据形态见图表分册。
+数值默认最多两位小数并去尾零，Int 保留整数。Percent(12.0) 与 Ratio(0.12) 都显示为 12%，原值、排序和计算不变；无需手动乘以 100。UseValue 用 precision = 3 覆盖数值精度（静态整数 0..12）；图表与 Table 的类型展示、精度和数据形态见图表分册。
 
 ## 诊断
 
