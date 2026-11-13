@@ -14,4 +14,4 @@ Markdown 在构建期内联到单文件插件；手册内容改变就改变实�
 
 词表进入独立 VA；VA 不注入主 agent 的 DARI 手册。暂不生成目录/行号索引。
 
-语法或工具接口发生改变时，同步核对实现（lab-ontology/dari/src、dari-tools.ts、dari-host.ts）、dari.md、dari-figures.md 中的签名与示例、examples，以及 tree-sitter-dari 的文法与样例。dari.md 是运行时提示词，描述必须与实现一致；示例通过现有的手册示例与组件执行检查验证，不能仅修改解析器而留下旧写法。
+语法或工具接口发生改变时，同步核对实现（vendors/dari/packages/dari-core/src 与 vendors/dari/packages/dari/src、dari-tools.ts、dari-host.ts）、dari.md、dari-figures.md 中的签名与示例、examples，以及 tree-sitter-dari 的文法与样例。dari.md 是运行时提示词，描述必须与实现一致；示例通过现有的手册示例与组件执行检查验证，不能仅修改解析器而留下旧写法。

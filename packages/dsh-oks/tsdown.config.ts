@@ -20,7 +20,7 @@ export default defineConfig([
     hash: false,
     minify: false,
     unbundle: false,
-    deps: { alwaysBundle: [/^echarts/, /^zrender/, /^tslib$/, /^@js-temporal\//, /^jsbi$/] },
+    deps: { alwaysBundle: [/^@hh9527\/dari-core/,/^echarts/, /^zrender/, /^tslib$/, /^@js-temporal\//, /^jsbi$/] },
     // 提示词与 Markdown 帮助 由打包器在构建期内联成字符串常量——
     // 产物因此不需要任何旁文件。
     loader: { '.md': 'text' },

@@ -58,7 +58,7 @@ export interface OptionInput {
   x: string;
   value: string;
   series: string | null;
-  xType: XType | null;
+  x_type: XType | null;
   xLabel: string | null;
   valueLabel: string | null;
   unit: string | null;
@@ -181,7 +181,7 @@ export const buildOption = (
   const originalKind=spec.kind;
   const grouped=originalKind==='grouped_bar'||originalKind==='grouped_column';
   if(grouped)spec={...spec,kind:originalKind==='grouped_bar'?'bar':'column'};
-  if((spec.kind==='line'||spec.kind==='area')&&!(X_TYPES as readonly unknown[]).includes(spec.xType))throw new Error('spec.xType is required: Int / Float / String / Rfc3339 / EpochMillis');
+  if((spec.kind==='line'||spec.kind==='area')&&!(X_TYPES as readonly unknown[]).includes(spec.x_type))throw new Error('spec.x_type is required: Int / Float / String / Rfc3339 / EpochMillis');
   // 桑基图：行是**边**——`x` 起点、`series` 终点、`value` 权重（不填时每条边计 1）。
   // 布局由 echarts 从 DAG 自己分层，作者不给层级。它与别的图元不同，先于通用分组处理。
   if (spec.kind === 'sankey') {
@@ -714,9 +714,9 @@ export const buildOption = (
   });
 
   // x 轴：横条图是数值轴（第二维度就挂在它旁边），其余是类别轴或时间轴。
-  const continuous = (spec.kind==='line'||spec.kind==='area')&&spec.xType!==null&&spec.xType!=='String';
+  const continuous = (spec.kind==='line'||spec.kind==='area')&&spec.x_type!==null&&spec.x_type!=='String';
   const baseXAxis = horizontal ? measureAxis : continuous
-    ? { ...categoryAxis, type: (spec.xType==='Rfc3339'||spec.xType==='DateTimeTz'||spec.xType==='EpochMillis'?'time':'value') as 'time'|'value', data: undefined }
+    ? { ...categoryAxis, type: (spec.x_type==='Rfc3339'||spec.x_type==='DateTimeTz'||spec.x_type==='EpochMillis'?'time':'value') as 'time'|'value', data: undefined }
     : categoryAxis;
 
   // 直方图：一列数值先分箱再按箱画柱。散点表现不了"一组值怎么分布"（三档数据画出来就是三个点），
@@ -951,7 +951,7 @@ export const buildOption = (
     //（值为 null）——把整条删掉等于说"这段时间不在轴上"，缺口会消失、线会直接跨过去。
     data: continuous
       ? categories
-        .map((category) => [axisValue(firstRowByCategory.get(category)?.[spec.x],spec.xType!), toNumber(firstRowByCategory.get(category)?.[second.value])] as [number, number | null])
+        .map((category) => [axisValue(firstRowByCategory.get(category)?.[spec.x],spec.x_type!), toNumber(firstRowByCategory.get(category)?.[second.value])] as [number, number | null])
       : categories.map((category) => toNumber(firstRowByCategory.get(category)?.[second.value])),
   };
 
@@ -999,7 +999,7 @@ export const buildOption = (
           const values = (item as { data?: (number | null)[] }).data ?? [];
           return {
             ...item,
-            data: categories.map((category, i) => [axisValue(firstRowByCategory.get(category)?.[spec.x],spec.xType!), values[i] ?? null] as [number, number | null]),
+            data: categories.map((category, i) => [axisValue(firstRowByCategory.get(category)?.[spec.x],spec.x_type!), values[i] ?? null] as [number, number | null]),
           };
         })
         : allSeries,

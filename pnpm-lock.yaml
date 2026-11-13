@@ -28,6 +28,9 @@ importers:
 
   packages/dsh-oks:
     dependencies:
+      '@hh9527/dari-core':
+        specifier: link:../../vendors/dari/packages/dari-core
+        version: link:../../vendors/dari/packages/dari-core
       '@js-temporal/polyfill':
         specifier: 'catalog:'
         version: 0.5.1

@@ -11,13 +11,14 @@
   },
   "icon": "./icon.svg",
   "files": [
-    "lib/index.mjs",
+    "lib",
+    "dari-runtime",
     "cordis.patch.yml",
     "icon.svg",
     "locale/*.json"
   ],
   "scripts": {
-    "build": "tsdown",
+    "build": "pnpm run build:dari && tsdown && node scripts/copy-runtime.mjs",
     "dev": "tsdown --watch",
     "typecheck": "tsc --noEmit",
     "prepare": "pnpm run build",
@@ -26,7 +27,8 @@
     "check": "pnpm run typecheck && pnpm run test",
     "test:smoke": "node --import ./scripts/markdown-loader.mjs tests/smoke.ts",
     "test:integration": "node --import ./scripts/markdown-loader.mjs tests/dari-adapter-test.ts",
-    "snapshot": "node --import ./scripts/markdown-loader.mjs scripts/knowledge-snapshot.ts"
+    "snapshot": "node --import ./scripts/markdown-loader.mjs scripts/knowledge-snapshot.ts",
+    "build:dari": "npm --prefix ../../vendors/dari run build"
   },
   "dsh": {
     "bundle": {
@@ -40,6 +42,7 @@
   },
   "dependencies": {
     "@js-temporal/polyfill": "catalog:",
-    "echarts": "catalog:"
+    "echarts": "catalog:",
+    "@hh9527/dari-core": "link:../../vendors/dari/packages/dari-core"
   }
 }

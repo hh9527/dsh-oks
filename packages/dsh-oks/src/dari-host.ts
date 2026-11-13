@@ -1,3 +1,4 @@
+import type {ComponentContract} from '@hh9527/dari-core';
 import {temporal,timeSemantic,formatTime,embeddedTimeZone,validateTimeFormat,type TimeFormat} from './time-display.ts';
 import {formatValue,precision,type Type} from './display-values.ts';
 import {COMPONENT_KINDS,componentSpec} from './chart/components.ts';
@@ -80,7 +81,7 @@ function presentationSpec(raw:Record<string,unknown>,name:string,fields:Record<s
    raw.stack=mode==='absolute'?'total':'percent';delete raw.mode;
   }else if(raw.mode!==undefined)throw Error('Only StackedBarChart accepts mode');
  }
- const axis=axisType;precision(raw.precision);const spec=chartInput(raw);if(axis!==undefined)spec.xType=axis;delete spec.precision;
+ const axis=axisType;precision(raw.precision);const spec=chartInput(raw);if(axis!==undefined)spec.x_type=axis;delete spec.precision;
  if(raw.stack!==undefined&&!barNames.has(name)){const value=raw.stack as any;if(!value||value[Symbol.for('dari.enum')]!==true||value.enum!=='Stack'||!stackVariants.includes(value.variant))throw Error('stack requires Stack::None, Stack::Total or Stack::Percent');if(value.variant==='None')delete spec.stack;else spec.stack=value.variant==='Total'?'total':'percent';}
  return spec;
 }
@@ -105,7 +106,7 @@ function formatChart(option:any,fields:Record<string,Type>,spec:any,digits?:numb
  for(const series of axes(option.series)){
   const type=series.yAxisIndex===1?fields[spec.second?.value]:count?scalar('Int'):base;
   const suffix=spec.stack==='percent'?'%':series.yAxisIndex===1?(presentation(type??scalar('Float'))?.suffix??spec.second?.unit??''):(policy?.suffix??spec.unit??'');
-  const display=(v:any)=>Array.isArray(v)?(spec.kind==='line'||spec.kind==='area')&&spec.xType!=='String'?fmt(v[1],type,suffix):spec.kind==='heatmap'?fmt(v[2],type,suffix):v.map((x:unknown,i:number)=>fmt(x,spec.kind==='scatter'&&i===0?fields[spec.x]:type,spec.kind==='scatter'&&i===0?presentation(fields[spec.x])?.suffix??'':suffix)).join(', '):fmt(v,type,suffix);
+  const display=(v:any)=>Array.isArray(v)?(spec.kind==='line'||spec.kind==='area')&&spec.x_type!=='String'?fmt(v[1],type,suffix):spec.kind==='heatmap'?fmt(v[2],type,suffix):v.map((x:unknown,i:number)=>fmt(x,spec.kind==='scatter'&&i===0?fields[spec.x]:type,spec.kind==='scatter'&&i===0?presentation(fields[spec.x])?.suffix??'':suffix)).join(', '):fmt(v,type,suffix);
   if(!series.label?.formatter)series.label={...series.label,formatter:(p:any)=>(series.type==='pie'?p.name+': ':'')+display(p.value)};
   if(series.type==='gauge')series.detail={...series.detail,formatter:(v:number)=>fmt(v,type,suffix)};
   series.tooltip={...series.tooltip,valueFormatter:display};
@@ -114,7 +115,7 @@ function formatChart(option:any,fields:Record<string,Type>,spec:any,digits?:numb
 // Keep continuous coordinates as instants; only labels and tooltips use local time.
 export function formatTimeChart(option:any,fields:Record<string,Type>,spec:any,rows:Record<string,unknown>[],formats:Record<string,TimeFormat>){
  const type=fields[spec.x];if(!temporal(type))return;
- const continuous=(spec.kind==='line'||spec.kind==='area')&&['Rfc3339','DateTimeTz','EpochMillis'].includes(spec.xType);
+ const continuous=(spec.kind==='line'||spec.kind==='area')&&['Rfc3339','DateTimeTz','EpochMillis'].includes(spec.x_type);
  if(!continuous)return;
  const supplied=formats[spec.x]??{},zones=new Set(rows.map(row=>embeddedTimeZone(row[spec.x])).filter(Boolean));
  if(!supplied.time_zone&&zones.size>1)throw Error('Mixed DateTimeTz axis zones require an explicit formats.'+spec.x+'.time_zone');
@@ -176,8 +177,16 @@ function validate(name:string,raw:Record<string,unknown>,fields:Record<string,Ty
 
  return spec;
 }
+const componentContracts:Record<string,ComponentContract>=Object.fromEntries(Object.keys(COMPONENT_KINDS).map(name=>[name,{
+ description:name==='Histogram'?'直方图：对 value 原始观测值分箱，bins 可选（1..200）':name==='Table'?'展示有界表格':name+' 图表组件，配置由宿主校验',
+ children:false,attributes:{
+  data:{type:'Table(Schema)',required:true,description:'输入数据表引用；已证明的行数上界不超过 110'},
+  ...(name==='NetworkGraph'?{nodes:{type:'Table(Schema)',required:true,description:'节点数据表引用，需要 id 与 depth 或 x/y'}}:{}),
+  spec:{type:'Schema',description:name==='Histogram'?'直方图配置：value 为观测值字段，bins 为分箱数；支持公共展示配置':'组件配置；用 $.field 选择输入表字段'}
+ }
+}]));
 const host={
- contractId:'dari-host/v7',types:{Orientation:closedEnum('Orientation',orientations),StackMode:closedEnum('StackMode',stackModes),Stack:stackType,Axis:closedEnum('Axis',['Time','Category','Value']),TimeUnit:closedEnum('TimeUnit',timeUnits),WindowMode:closedEnum('WindowMode',windowModes)},formatValue,components:Object.keys(COMPONENT_KINDS),reportStyle:REPORT_STYLE,
+ contractId:'dari-host/v7',types:{Orientation:closedEnum('Orientation',orientations),StackMode:closedEnum('StackMode',stackModes),Stack:stackType,Axis:closedEnum('Axis',['Time','Category','Value']),TimeUnit:closedEnum('TimeUnit',timeUnits),WindowMode:closedEnum('WindowMode',windowModes)},formatValue,componentContracts,components:Object.keys(COMPONENT_KINDS),reportStyle:REPORT_STYLE,
  reportHtml(text:string,artifacts:Record<string,string>){return renderMarkdown(text,()=>{throw Error('Unexpected report fence');},(alt,href)=>{const svg=artifacts[href];if(!svg)throw Error('Missing report figure '+href);return '<figure>'+cleanChartSvg(svg)+'</figure>';});},
  checkFigure(name:string,spec:Record<string,unknown>,fields:Record<string,Type>,nodes?:Record<string,Type>){const normalized=presentationSpec(spec,name,fields);stacking(normalized,fields);const wide=wideSeries(name,normalized,fields);validate(name,wide.spec,wide.fields);if(name==='NetworkGraph'&&(!nodes?.id||!nodes.depth&&!(nodes.x&&nodes.y)))throw Error('NetworkGraph requires a nodes table with id and depth or x/y');if(name!=='NetworkGraph'&&nodes)throw Error('Only NetworkGraph accepts nodes');},
  renderFigure(name:string,raw:Record<string,unknown>,rows:Record<string,unknown>[],fields:Record<string,Type>,nodes?:Record<string,unknown>[]){
@@ -190,11 +199,11 @@ const host={
    return {kind:'table' as const,content:content.embedded,html:renderMarkdown(content.embedded,()=>{throw Error('Unexpected table fence');}),title:t.title??'Table'};
   }
   const parsed=parseChartSpec(spec);if('error'in parsed)throw Error(parsed.error);
-  const renderRows=wide.rows.map(row=>{const copy:Record<string,unknown>={...row};if(temporal(wide.fields[parsed.spec.x])&&!['Rfc3339','DateTimeTz','EpochMillis'].includes(parsed.spec.xType??''))copy[parsed.spec.x]=formatValue(wide.fields[parsed.spec.x],copy[parsed.spec.x],undefined,(raw.formats as any)?.[parsed.spec.x]);if(parsed.spec.xType==='String'&&copy[parsed.spec.x]!=null)copy[parsed.spec.x]=String(copy[parsed.spec.x]);for(const key of new Set([parsed.spec.value,parsed.spec.second?.value,...(parsed.spec.kind==='scatter'?[parsed.spec.x]:[])])){if(!key||!wide.fields[key])continue;const policy=presentation(wide.fields[key]);if(policy&&typeof copy[key]==='number')copy[key]=Number((Number(copy[key])*policy.multiplier).toPrecision(12));}return copy;});
+  const renderRows=wide.rows.map(row=>{const copy:Record<string,unknown>={...row};if(temporal(wide.fields[parsed.spec.x])&&!['Rfc3339','DateTimeTz','EpochMillis'].includes(parsed.spec.x_type??''))copy[parsed.spec.x]=formatValue(wide.fields[parsed.spec.x],copy[parsed.spec.x],undefined,(raw.formats as any)?.[parsed.spec.x]);if(parsed.spec.x_type==='String'&&copy[parsed.spec.x]!=null)copy[parsed.spec.x]=String(copy[parsed.spec.x]);for(const key of new Set([parsed.spec.value,parsed.spec.second?.value,...(parsed.spec.kind==='scatter'?[parsed.spec.x]:[])])){if(!key||!wide.fields[key])continue;const policy=presentation(wide.fields[key]);if(policy&&typeof copy[key]==='number')copy[key]=Number((Number(copy[key])*policy.multiplier).toPrecision(12));}return copy;});
   const policy=wide.fields[parsed.spec.value]?presentation(wide.fields[parsed.spec.value]):undefined;
   if(policy){if(parsed.spec.unit&&parsed.spec.unit!==policy.suffix)throw Error('Figure unit conflicts with the value type presentation');parsed.spec.unit=policy.suffix;}
   if(parsed.spec.second){const secondary=wide.fields[parsed.spec.second.value]?presentation(wide.fields[parsed.spec.second.value]):undefined;if(secondary)parsed.spec.second.unit=secondary.suffix;}
-  if(temporal(wide.fields[parsed.spec.x])&&!['Rfc3339','DateTimeTz','EpochMillis'].includes(parsed.spec.xType??'')){
+  if(temporal(wide.fields[parsed.spec.x])&&!['Rfc3339','DateTimeTz','EpochMillis'].includes(parsed.spec.x_type??'')){
    const labels=new Map<unknown,unknown>();
    renderRows.forEach((row,i)=>{const label=row[parsed.spec.x],raw=wide.rows[i][parsed.spec.x],instant=timeSemantic(wide.fields[parsed.spec.x])==='LocalDate'?raw:typeof raw==='number'?raw:raw==null?raw:Date.parse(String(raw).replace(/\[[^\]]+\]$/,''));
     if(labels.has(label)&&labels.get(label)!==instant)throw Error('Time category labels collapse distinct instants; use Axis::Time or a more precise date_style');labels.set(label,instant);

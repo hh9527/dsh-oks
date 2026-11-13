@@ -16,8 +16,8 @@ export function createDariTools(options:{config:PluginConfig['dari'];knowledge:K
   let w=workers.get(database);if(w)return w;
   if(closed)throw Error('DARI tools disposed');
   const c=options.config;
-  if(!c)throw Error('Configure dari.service, dari.model and dari.runner for model type proof and execution');
-  const child=spawn(process.execPath,[c.service,c.model,c.runner,database,c.hostModule??fileURLToPath(new URL('./index.mjs',import.meta.url))],{stdio:['pipe','pipe','pipe'],detached:true});
+  if(!c)throw Error('Configure dari.model and dari.runner for model type proof and execution');
+  const child=spawn(process.execPath,[c.service??fileURLToPath(new URL('../dari-runtime/node_modules/@hh9527/dari/dist/service.js',import.meta.url)),'--integration',c.integration??fileURLToPath(new URL('./index.mjs',import.meta.url)),'--options',JSON.stringify({model:c.model,runner:c.runner}),'--database',database],{stdio:['pipe','pipe','pipe'],detached:true});
   let stderr='',sequence=0;const pending=new Map<number,{resolve:(v:any)=>void;reject:(e:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
   const stop=()=>{if(child.pid)try{process.kill(-child.pid,'SIGTERM');}catch(e){if((e as NodeJS.ErrnoException).code!=='ESRCH')throw e;}};
   const fail=(error:Error)=>{for(const p of pending.values()){clearTimeout(p.timer);p.reject(error);}pending.clear();workers.delete(database);};
@@ -67,6 +67,6 @@ export function createDariTools(options:{config:PluginConfig['dari'];knowledge:K
  }];
  return {tools,async infoContracts(points:any[],exec:ToolExec){
   exec.signal?.throwIfAborted();const entry=options.knowledge.ensureWorkspace(exec);
-  const result=await worker(entry.settings.dataFile??'').request({method:'info_contracts',points});exec.signal?.throwIfAborted();return result;
+  const result=await worker(entry.settings.dataFile??'').request({method:'inspect',input:points});exec.signal?.throwIfAborted();return result;
  },dispose(){closed=true;for(const {child}of workers.values()){child.stdin.end();const timer=setTimeout(()=>{if(child.pid)try{process.kill(-child.pid,'SIGTERM');}catch{}},2000);timer.unref();child.once('exit',()=>clearTimeout(timer));}workers.clear();contexts.clear();}};
 }

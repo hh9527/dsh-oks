@@ -1,0 +1,11 @@
+import {copyFileSync,rmSync,writeFileSync} from 'node:fs';
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+const root=new URL('../../../',import.meta.url);
+const engine=new URL('vendors/dari/',root);
+const runtime=new URL('dist/dsh-oks/dari-runtime/',root);
+copyFileSync(new URL('../src/model-worker.mjs',import.meta.url),new URL('dist/dsh-oks/lib/model-worker.mjs',root));
+rmSync(runtime,{recursive:true,force:true});
+execFileSync(process.execPath,[fileURLToPath(new URL('scripts/package-runtime.mjs',engine)),fileURLToPath(runtime)],{stdio:'inherit'});
+const commit=execFileSync('git',['rev-parse','HEAD'],{cwd:engine,encoding:'utf8'}).trim();
+writeFileSync(new URL('source.json',runtime),JSON.stringify({repository:'https://github.com/hh9527/dari.git',commit},null,2)+'\n');

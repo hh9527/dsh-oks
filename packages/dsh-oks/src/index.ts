@@ -55,3 +55,5 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
 
 // Finite host capabilities consumed by the isolated DARI service.
 export {dariHost} from './dari-host.ts';
+
+export {createIntegration} from './dari-integration.ts';

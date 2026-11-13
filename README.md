@@ -3,6 +3,7 @@
 将工作区的本体知识与只读数据源接入 DSH，使用 DARI 组织分析、图表与报告。
 图表和自包含 HTML 报告通过宿主附件交付，生命周期由宿主管理。
 
+- `vendors/dari/`：固定版本的 DARI 引擎、语言服务与 LSP（Git submodule）。
 - `packages/dsh-oks/`：知识工具、只读取数、DARI 运行与附件导出。
 - `packages/dsh-push-to-user/`：Web 客户端通用能力，把 host 插件推送的 Markdown 消息渲染成对话卡片。
 - `dist/`：`just build` 生成的发布目录，安装只消费它，不进入版本控制。发布产物自包含：清单不含任何依赖；依赖只有两种来源——构建期打包进产物，或由插件环境注入。
@@ -14,6 +15,8 @@
 安装需要 just、watchexec、Node.js、pnpm。依赖版本统一在 `pnpm-workspace.yaml` 的 `catalog`，升级时改那里再执行 `just update-deps`，lockfile 会一起更新。
 
 ```sh
+pnpm run setup:dari
+pnpm install --ignore-scripts
 just build
 just install-profile
 (cd ~/ws/oks-demo/dsh-oks-10923 && just run)
@@ -45,7 +48,7 @@ just port=10924 target=/srv/oks workspace="$HOME/ws/oks-demo/demo-ws" install-pr
 
 ## DARI 编辑器语法
 
-[tree-sitter-dari](tree-sitter-dari/README.md) 以 Git submodule 固定版本，提供 DARI 的增量语法树、C parser 和高亮查询；运行期语义检查由插件解析器负责。
+[tree-sitter-dari](tree-sitter-dari/README.md) 以 Git submodule 固定版本，提供 DARI 的增量语法树、C parser 和高亮查询；运行期语义检查由 DARI 引擎负责。
 
 ```sh
 git submodule update --init --recursive

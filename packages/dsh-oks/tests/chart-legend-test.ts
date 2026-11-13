@@ -15,7 +15,7 @@ for (const kind of ['grouped_column', 'grouped_bar', 'line', 'area'] as const) {
         { tenant: 'B', severity: 'major', n: -6 },
       ], {
         kind, title: null, x: 'tenant', value: 'n', series: 'severity',
-        xType: kind==='line'||kind==='area'?'String':null, xLabel: null, valueLabel: null, unit: null,
+        x_type: kind==='line'||kind==='area'?'String':null, xLabel: null, valueLabel: null, unit: null,
         stack: 'total', style, entityColor,
       });
       const svg = renderEchartsSvg(built.option, CHART_WIDTH, built.height);
@@ -34,7 +34,7 @@ for (const kind of ['grouped_column', 'grouped_bar', 'line', 'area'] as const) {
 }
 const signed = buildOption([{ x: 'positive', v: 2 }, { x: 'negative', v: -1 }], {
   kind: 'column', title: null, x: 'x', value: 'v', series: null,
-  xType: null, xLabel: null, valueLabel: null, unit: null,
+  x_type: null, xLabel: null, valueLabel: null, unit: null,
 });
 const signedSvg = renderEchartsSvg(signed.option, CHART_WIDTH, signed.height);
 assert.ok(signedSvg.includes(`fill="${SERIES_COLORS[1]}"`));

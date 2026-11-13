@@ -20,7 +20,7 @@ export interface ChartSpec {
   x: string;
   value: string;
   series: string | null;
-  xType: XType | null;
+  x_type: XType | null;
   xLabel: string | null;
   valueLabel: string | null;
   unit: string | null;
@@ -195,7 +195,14 @@ const parseMarks = (raw: unknown, kind: ChartKind): { marks: MarkLine[] } | { er
 
 /** 顶层与嵌套对象的键名清单：错误层级诊断指向正确路径。 */
 const STYLE_KEYS = ['sort', 'labels', 'colors'];
-const SPEC_KEYS = ['valueMin', 'allowNoData', 'kind', 'title', 'x', 'value', 'series', 'xType', 'xLabel', 'valueLabel', 'unit', 'stack', 'size', 'second', 'marks', 'bins', 'donut', 'connectNulls', 'entityColor', 'style', 'layout'];
+const SPEC_KEYS = ['valueMin', 'allowNoData', 'kind', 'title', 'x', 'value', 'series', 'x_type', 'xLabel', 'valueLabel', 'unit', 'stack', 'size', 'second', 'marks', 'bins', 'donut', 'connectNulls', 'entityColor', 'style', 'layout'];
+const specKeys = (kind:ChartKind):string[] => SPEC_KEYS.filter(key => {
+  if(key==='x_type')return kind==='line'||kind==='area';
+  if(kind==='histogram'&&(key==='x'||key==='series'))return false;
+  if(key==='valueMin')return ['bar','column','grouped_bar','grouped_column'].includes(kind);
+  if(['stack','size','second','marks','bins','donut','connectNulls','entityColor'].includes(key))return supports(kind,key as ExpressionSwitch);
+  return true;
+});
 const LAYOUT_KEYS = ['labelFont', 'titleFont', 'slantTicks', 'tickCount'];
 
 /** Reject misplaced fields and point to their accepted path before normalizing values. */
@@ -204,7 +211,7 @@ const unknownFields = (record: Record<string, unknown>, keys: readonly string[],
   if (!unknown.length) return null;
   return unknown.map(key => {
     const destination = LAYOUT_KEYS.includes(key) ? `spec.layout.${key}`
-      : STYLE_KEYS.includes(key) ? `spec.style.${key}` : SPEC_KEYS.includes(key) ? `spec.${key}` : undefined;
+      : STYLE_KEYS.includes(key) ? `spec.style.${key}` : path!=='spec'&&SPEC_KEYS.includes(key) ? `spec.${key}` : undefined;
     return `${path}.${key} is not supported${destination ? `; use ${destination}` : `; allowed fields: ${keys.join(', ')}`}`;
   }).join('; ');
 };
@@ -256,14 +263,14 @@ export const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: str
   if (typeof kind !== 'string' || !(CHART_KINDS as readonly string[]).includes(kind)) {
     return { error: `spec.kind 必须是 ${CHART_KINDS.join(' / ')} 之一，收到 ${JSON.stringify(kind)}` };
   }
-  const error = unknownFields(record, SPEC_KEYS, 'spec');
+  const error = unknownFields(record, specKeys(kind as ChartKind), 'spec');
   if (error) return { error };
   for (const key of ['title', 'x', 'value', 'series', 'xLabel', 'valueLabel', 'unit', 'size']) {
     if (record[key] !== undefined && record[key] !== null && typeof record[key] !== 'string') return { error: `spec.${key} must be a string` };
   }
   if (kind === 'line' || kind === 'area') {
-    if (!(X_TYPES as readonly unknown[]).includes(record.xType)) return {error:'spec.xType is required for line / area and must be Int / Float / String / Rfc3339 / EpochMillis'};
-  } else if (record.xType !== undefined) return {error:`spec.xType is only supported by line / area (${kind} does not use it)`};
+    if (!(X_TYPES as readonly unknown[]).includes(record.x_type)) return {error:'spec.x_type is required for line / area and must be Int / Float / String / Rfc3339 / EpochMillis'};
+  } else if (record.x_type !== undefined) return {error:`spec.x_type is only supported by line / area (${kind} does not use it)`};
   const text = (name: string): string | null => {
     const value = record[name];
     return typeof value === 'string' && value.length > 0 ? value : null;
@@ -276,7 +283,7 @@ export const parseChartSpec = (raw: unknown): { spec: ChartSpec } | { error: str
     x: text('x') ?? '',
     value: text('value') ?? '',
     series: text('series'),
-    xType: (X_TYPES as readonly unknown[]).includes(record.xType) ? record.xType as XType : null,
+    x_type: (X_TYPES as readonly unknown[]).includes(record.x_type) ? record.x_type as XType : null,
     xLabel: text('xLabel'),
     valueLabel: text('valueLabel'),
     unit: text('unit'),
@@ -428,7 +435,7 @@ const lineProblem = (rows: readonly Record<string, unknown>[], spec: ChartSpec):
   const valueColumn = spec.value;
   // String 类别轴的顺序由数据本身决定，
   // 既不要求横轴是数值，也不要求递增——类目折线是常见形状。
-  if (spec.xType === 'String') {
+  if (spec.x_type === 'String') {
     for (const row of rows) {
       const raw = row[xColumn];
       if (axisValue(raw,'String')===null) {
@@ -444,10 +451,10 @@ const lineProblem = (rows: readonly Record<string, unknown>[], spec: ChartSpec):
     if (rawX === null || rawX === undefined || rawX === '') {
       return `横轴列 ${xColumn} 有空值：折线要求每行都有横轴值`;
     }
-    const x = spec.xType===null?null:axisValue(rawX,spec.xType);
+    const x = spec.x_type===null?null:axisValue(rawX,spec.x_type);
     if (typeof x !== 'number' || !Number.isFinite(x)) {
       return `横轴列 ${xColumn} 的值 ${JSON.stringify(rawX)} 不是有效的`
-        + `${spec.xType}`;
+        + `${spec.x_type}`;
     }
     const previous = lastX.get(seriesKey);
     if (previous !== undefined && x < previous) {

@@ -5,6 +5,7 @@
     "packages/*"
   ],
   "scripts": {
-    "check:dari-grammar": "npm --prefix tree-sitter-dari run check"
+    "check:dari-grammar": "npm --prefix tree-sitter-dari run check",
+    "setup:dari": "git submodule update --init --recursive vendors/dari && npm --prefix vendors/dari ci"
   }
 }

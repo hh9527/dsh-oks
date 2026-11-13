@@ -27,3 +27,8 @@ assert.match(dariHost.renderFigure('LineChart',{...spec,allow_no_data:true},[],f
 // Existing long-table mode remains available.
 dariHost.checkFigure('LineChart',{x:'day',series:'metric',value:'value'}, {day:fields.day,metric:{kind:'scalar',name:'String'},value:float});
 console.log('Wide LineChart: nominal metrics, shared units, display scaling, null gaps, embedded raw input and long-table mode passed');
+const histogramFields={sample:float};
+dariHost.checkFigure('Histogram',{value:'sample',bins:4},histogramFields);
+assert.throws(()=>dariHost.checkFigure('Histogram',{value:'sample',x_type:'Float'},histogramFields),(error:Error)=>error.message.includes('x_type')&&!/[a-z][A-Z]/.test(error.message.replaceAll('DateTimeTz','').replaceAll('EpochMillis','').replaceAll('Rfc3339','')));
+
+assert.throws(()=>dariHost.checkFigure('Histogram',{value:'sample',unexpected:true},histogramFields),(error:Error)=>{const fields=error.message.split('allowed fields: ')[1];return !!fields&&!fields.includes('x_type')&&!fields.includes('series')&&!fields.includes('donut')&&fields.includes('bins');});

@@ -4,7 +4,7 @@ import {buildOption,CHART_WIDTH} from '../src/chart/option.ts';
 import {renderEchartsSvg} from '../src/chart/echarts.ts';
 import {tableMarkdown} from '../src/view/table.ts';
 for(const kind of ['bar','column','line','area','grouped_bar','grouped_column','pie','scatter','radar','histogram','box','heatmap','sankey','graph']){
- const base={kind,x:'name',value:'n',...(['line','area'].includes(kind)?{xType:'Rfc3339'}:{}),...(['grouped_bar','grouped_column','radar','heatmap','sankey','graph'].includes(kind)?{series:'group'}:{})};
+ const base={kind,...(kind==='histogram'?{}:{x:'name'}),value:'n',...(['line','area'].includes(kind)?{x_type:'Rfc3339'}:{}),...(['grouped_bar','grouped_column','radar','heatmap','sankey','graph'].includes(kind)?{series:'group'}:{})};
  const parsed=parseChartSpec(base);assert('spec' in parsed,JSON.stringify(parsed));
  assert.throws(()=>buildOption([],parsed.spec),/allowNoData/);
  const allowed=parseChartSpec({...base,allowNoData:true});assert('spec' in allowed,JSON.stringify(allowed));
@@ -17,7 +17,7 @@ for(const allowNoData of [undefined,false,true]){
  const built=buildOption([{name:'A',n:5}],parsed.spec);assert.match(renderEchartsSvg(built.option,CHART_WIDTH,built.height),/A/);
  assert.deepEqual(missingColumns(parsed.spec,['name'],1),['n']);
 }
-const invalidLine=parseChartSpec({kind:'line',x:'at',value:'n',xType:'Rfc3339',allowNoData:true});assert('spec' in invalidLine);
+const invalidLine=parseChartSpec({kind:'line',x:'at',value:'n',x_type:'Rfc3339',allowNoData:true});assert('spec' in invalidLine);
 assert(shapeProblem([{at:123,n:5}],invalidLine.spec));
 assert('error' in tableMarkdown([],{columns:['name']}));
 const tableSpec=parseTableSpec({kind:'table',columns:['name'],labels:{name:'名称'},allowNoData:true});

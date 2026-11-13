@@ -1,6 +1,6 @@
 # dsh-oks
 
-围绕模型知识发现和有类型数据流水线的插件。分析稿扩展名为 .dari，语言定义和编译器位于 lab-ontology/dari，插件提供知识导航、图表展现、附件发布与 Answer 投递。
+围绕模型知识发现和有类型数据流水线的插件。分析稿扩展名为 .dari，语言定义和编译器位于独立 dari 仓的 dari-core/dari workspace，插件提供知识导航、图表展现、附件发布与 Answer 投递。
 
 ## 分析稿
 
@@ -18,29 +18,34 @@
 {"domain":"ic","model":"models/ic.wasm","dataFile":"data/ic.sqlite"}
 ```
 
-插件 config 的 dari 项指定语言服务、类型证明模型和 Telora runner，路径为绝对路径：
+插件 config 的 dari 项指定类型证明模型和 Telora runner，路径为绝对路径：
 
 ```json
-{"dari":{"service":"/path/to/lab-ontology/dari/service.ts","model":"/path/to/ic-dari.wasm","runner":"/path/to/telora-run"}}
+{"dari":{"model":"/path/to/ic-dari.wasm","runner":"/path/to/telora-run"}}
 ```
 
-语言服务在独立常驻进程中运行，需支持 TypeScript 与 node:sqlite 的 Node.js。hostModule 可显式指定展现宿主，默认使用插件发布入口导出的 dariHost。模型契约绑定具体构建身份，修改模型后重新检查。
+语言服务随插件发布于 dari-runtime，默认使用该入口；service 可显式指定可信服务路径。语言服务在独立常驻进程中运行，需要 Node.js 24 或以上版本。integration 可指定可信集成模块，默认使用插件发布入口导出的 createIntegration，组合模型桥接、展现宿主及知识契约。模型契约绑定具体构建身份，修改模型后重新检查。
 
 知识来自 Wasm 的 ontology.knowledge 构建信息；VA 提供领域词汇，oks_discover 定位承载属性的 Dataset，oks_routes 发现关系路径，oks_info 返回局部知识及精确源码符号。工具和参数规则见 [workflow.md](src/help/workflow.md)。
 
 ## 构建与验收
 
 ```sh
-pnpm install
-pnpm run typecheck
+# 在仓库根目录初始化固定版本的引擎并安装其构建依赖
+pnpm run setup:dari
+pnpm install --ignore-scripts
+cd packages/dsh-oks
 pnpm run build
+pnpm run typecheck
 pnpm test
 ```
 
-构建和 pretest 更新 dist/dsh-oks/lib；执行前告知并确认运行环境不会提前加载未验收产物。测试临时文件使用 TMPDIR。默认套件不要求真实工作区，模型集成通过 tests/dari-adapter-test.ts 显式运行，独立 bundle 冒烟通过 tests/smoke.ts 验证。
+构建和 pretest 更新 dist/dsh-oks/lib 与 dari-runtime；执行前告知并确认运行环境不会提前加载未验收产物。测试临时文件使用 TMPDIR。默认套件不要求真实工作区，模型集成通过 tests/dari-adapter-test.ts 显式运行，独立 bundle 冒烟通过 tests/smoke.ts 验证。
 
 安装及独立环境配置见[仓库说明](../../README.md)。插件通过宿主附件服务持久保存 SVG 与 HTML。Answer 使用 push-to-user 消息投递，可见卡片由 @local/dsh-push-to-user 渲染。
 
 ## 手册维护
 
 固定前缀按 workflow.md、dari.md、rules.md 顺序组成，与 oks_read 读取同源；纪律始终位于末段。图表分册按需读取。变更语法时同步语言实现、手册、样例及 tree-sitter-dari，维护细则见 [help/README.md](src/help/README.md)。
+
+DARI 位于 `vendors/dari` Git submodule，父仓提交固定其精确版本。插件通过 link 使用 submodule 的 dari-core；构建先编译同一版本的 core 与 dari，再生成自包含运行包。产物记录 DARI 提交，不依赖相邻源码仓库。升级时先更新 submodule 指针，完成集成验收后与适配改动一起提交。

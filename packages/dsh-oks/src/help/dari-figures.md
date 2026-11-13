@@ -22,6 +22,8 @@
 
 ## 通用配置
 
+配置字段统一采用 snake_case，组件、类型和枚举成员采用 PascalCase。
+
 图表共同配置：title、x_label、value_label、unit、style:{labels:True,colors:["#..."],sort:"none"}、layout:{label_font:12,title_font:16,slant_ticks:False,tick_count:8}。这些字段的适用范围仍由组件校验。bar/column 的行高由字体驱动，不需手调画布高度。BarChart 不接纳 series；同一指标分组使用 GroupedBarChart，独立指标使用 MultiBarChart，按组加和使用 StackedBarChart。四者均以 category 映射类别；orientation:Orientation::Horizontal/Vertical 默认为 Vertical。
 
 四种柱条图的 value_min 可设置轴基线，例如 99.0；条/柱上的标注仍是原始数值。空输入默认报错；显式 allow_no_data:True 接受空表并显示“无数据”。Table 同样支持 allow_no_data，保留表头。表格 labels 例如 {device:"设备",cpu:"CPU (%)"}，columns 决定列顺序，例如 [$.device,$.cpu]，也接受字符串列名。SVG 内嵌最终图表输入的 CSV 和 spec，报告保留这些信息。
