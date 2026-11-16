@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import {encodeLocatedInput} from '../src/located-input.mjs';
+assert.equal(encodeLocatedInput(null).toString('hex'),'544c4931000000000000000000');
+assert.equal(encodeLocatedInput(true).toString('hex'),'544c4931020000000000000000');
+const max=encodeLocatedInput(9223372036854775807n);assert.equal(max.readBigInt64LE(13),9223372036854775807n);
+assert.throws(()=>encodeLocatedInput(9223372036854775808n),/Int64/);
+for(const value of [undefined,NaN,Infinity,()=>{},new Date(),Symbol('x')])assert.throws(()=>encodeLocatedInput(value));
+assert.throws(()=>encodeLocatedInput('\ud800'),/Unicode/);
+assert.throws(()=>encodeLocatedInput('x',[{path:[],span:{start:2,end:1}}]),/span/);
+assert.throws(()=>encodeLocatedInput('x',[{path:[],span:{start:0,end:2**25}}]),/span/);
+const loop:any={};loop.self=loop;assert.throws(()=>encodeLocatedInput(loop),/depth/);
+const located=encodeLocatedInput('cpu',[{path:[],span:{start:0,end:7}}]);assert.equal(located.readUInt32LE(5),0);assert.equal(located.readUInt32LE(9),7);
+console.log('TLI1 encoding: fixed wire vectors, Int64, Unicode, offsets and bounded recursion passed');

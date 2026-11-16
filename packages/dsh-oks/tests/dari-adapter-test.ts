@@ -6,11 +6,11 @@ import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {createDariTools} from '../src/dari-tools.ts';
-const [service,model,runner,dataFile]=process.argv.slice(2).map(p=>resolve(p));
+const [service,model,dataFile]=process.argv.slice(2).map(p=>resolve(p));
 const root=mkdtempSync(join(tmpdir(),'dari-adapter-'));
 const saved=new Map<string,string>(),messages:any[]=[];
 const session={id:'dari-adapter'};
-const options:any={config:{service,model,runner,integration:fileURLToPath(new URL('../src/dari-integration.ts',import.meta.url))},knowledge:{ensureWorkspace:()=>({root,settings:{dataFile,requireRunApproval:false}}),ensureIndex:async()=>({knowledge:{datasets:{device_kpi:{dimensions:{device_kpi_res_id:{}},measures:{cpu_usage:{}},subjects:[{entity:'entities/device',field:'datasets/device_kpi#fields/id'}]}},entities:{device:{}},types:{},relations:{frame_belongs_to_device:{}},tools:{},items:[]}})},timeContext:{zones:new Map([[session,{kind:'resolved',timeZone:'Asia/Shanghai'}]])},attachments:()=>({async saveFile({data,name}:any){saved.set(name,Buffer.from(data).toString());return {name,attachmentId:name,bytes:data.length};},fileHostPath:({name}:any)=>'/attachments/'+name})};
+const options:any={config:{service,model,integration:fileURLToPath(new URL('../src/dari-integration.ts',import.meta.url))},knowledge:{ensureWorkspace:()=>({root,settings:{dataFile,requireRunApproval:false}}),ensureIndex:async()=>({knowledge:{datasets:{device_kpi:{dimensions:{device_kpi_res_id:{}},measures:{cpu_usage:{}},subjects:[{entity:'entities/device',field:'datasets/device_kpi#fields/id'}]}},entities:{device:{}},types:{},relations:{frame_belongs_to_device:{}},tools:{},items:[]}})},timeContext:{zones:new Map([[session,{kind:'resolved',timeZone:'Asia/Shanghai'}]])},attachments:()=>({async saveFile({data,name}:any){saved.set(name,Buffer.from(data).toString());return {name,attachmentId:name,bytes:data.length};},fileHostPath:({name}:any)=>'/attachments/'+name})};
 const runtime=createDariTools(options),tools=guidedTools(runtime.tools,options.knowledge,runtime.infoContracts),exec:any={agent:{session,inject:(message:any)=>messages.push(message)}};
 const call=(name:string,args:any)=>tools.find(t=>t.name===name)!.execute(args as never,exec);
 try{

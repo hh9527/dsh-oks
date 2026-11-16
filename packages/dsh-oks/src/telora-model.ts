@@ -1,4 +1,4 @@
-import {modelErrorText} from '@hh9527/dari-core';
+import {modelErrorText,ModelCheckFailure,type InputOrigin} from '@hh9527/dari-core';
 import {sharedTypes} from '@hh9527/dari-core';
 import {Worker} from 'node:worker_threads';
 import {accessSync,readFileSync} from 'node:fs';
@@ -12,19 +12,19 @@ import {primaryCodecs} from '@hh9527/dari-core/codecs';
 type WireMember={id:string;symbol:string;kind:'dimension'|'measure';logical:string;storage:string;nullable:boolean};
 type WireDataset={id:string;symbol:string;members:WireMember[]};
 type WireTemplate={container:'table'|'option';receipt:ProofReceipt;sql:string;bindings:any[];columns:(ResultColumn&{logical:string})[];max_rows:number|null};
-export async function openModel(artifact:string,runner=pathResolve('bin/telora-run')){
-    accessSync(artifact);accessSync(runner);
+export async function openModel(artifact:string){
+    accessSync(artifact);
     const buffer=new SharedArrayBuffer(8+8*1024*1024),state=new Int32Array(buffer,0,2),bytes=new Uint8Array(buffer,8);
-    const worker=new Worker(new URL('./model-worker.mjs',import.meta.url),{execArgv:[],workerData:{buffer,artifact:pathResolve(artifact),runner}});
+    const worker=new Worker(new URL('./model-worker.mjs',import.meta.url),{execArgv:[],workerData:{buffer,artifact:pathResolve(artifact)}});
     const stats={requests:0,checkMs:[] as number[],contractMs:0};
-    let closed=false;
-    function request(method:string,input:unknown):any{
+    let closed=false;const exited=new Promise<void>(resolve=>worker.once('exit',()=>resolve()));
+    function request(method:string,input:unknown,origins:InputOrigin[]=[]):any{
         if(closed)throw Error('Model bridge is closed');
-        Atomics.store(state,0,0);worker.postMessage({method,input});
-        if(Atomics.wait(state,0,0,60000)==='timed-out')throw Error('Model ABI request timed out');
+        Atomics.store(state,0,0);worker.postMessage({method,input,origins});
+        if(Atomics.wait(state,0,0,60000)==='timed-out'){closed=true;void worker.terminate();throw Error('Model ABI request timed out');}
         const response=JSON.parse(new TextDecoder().decode(bytes.subarray(0,Atomics.load(state,1))));
         stats.requests++;
-        if(response.error)throw Error(modelErrorText(response.error));return response.value;
+        if(response.error){if(Array.isArray(response.error))throw new ModelCheckFailure(response.error);throw Error(modelErrorText(response.error));}return response.value;
     }
     function scalar(name:string):Type{return sharedTypes[name]??{kind:'scalar',name};}
     const types:Record<string,Type>=Object.create(null),businessTypes=new Map<string,Type>();
@@ -76,7 +76,7 @@ export async function openModel(artifact:string,runner=pathResolve('bin/telora-r
         datasets,types,relations:Object.fromEntries(contract.relations.map(r=>[r.symbol,{...r,kind:'relation' as const}])),
         check_type(intent:IntentType,encoded:EncodedIntent){
             const start=performance.now();
-            const checked:WireTemplate=request('ontology/dari',{method:'check_type',input:{intent_json:encoded.json}});
+            const checked:WireTemplate=request('ontology/dari',{method:'check_type',input:{intent:encoded.wire}},encoded.origins.map(o=>({...o,path:['input','intent',...o.path]})));
             stats.checkMs.push(performance.now()-start);
             const fields:Record<string,Type>=Object.create(null);
             for(const c of checked.columns){const t=business(c.logical,c.type);fields[c.name]=c.nullable?{kind:'option',inner:t}:t;}
@@ -100,7 +100,7 @@ export async function openModel(artifact:string,runner=pathResolve('bin/telora-r
         }
     };
     return {model,stats,contract,codecs,codecModuleSource:contract.codec_module,
-        checkWire(intentJson:string):WireTemplate{return request('ontology/dari',{method:'check_type',input:{intent_json:intentJson}});},
+        checkWire(intentJson:string):WireTemplate{return request('ontology/dari',{method:'check_type',input:{intent:JSON.parse(intentJson)}});},
         transform(input:unknown){return request('ontology/dari',{method:'transform',input});},
-        async close(){if(closed)return;closed=true;const exited=new Promise<void>(resolve=>worker.once('exit',()=>resolve()));worker.postMessage({close:true});await exited;}};
+        async close(){if(!closed){closed=true;worker.postMessage({close:true});}await exited;}};
 }

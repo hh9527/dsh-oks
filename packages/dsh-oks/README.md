@@ -18,10 +18,10 @@
 {"domain":"ic","model":"models/ic.wasm","dataFile":"data/ic.sqlite"}
 ```
 
-插件 config 的 dari 项指定类型证明模型和 Telora runner，路径为绝对路径：
+插件 config 的 dari 项指定类型证明模型，路径为绝对路径。模型由 worker 中的 Node 内置 WebAssembly 引擎直接加载：
 
 ```json
-{"dari":{"model":"/path/to/ic-dari.wasm","runner":"/path/to/telora-run"}}
+{"dari":{"model":"/path/to/ic-dari.wasm"}}
 ```
 
 语言服务随插件发布于 dari-runtime，默认使用该入口；service 可显式指定可信服务路径。语言服务在独立常驻进程中运行，需要 Node.js 24 或以上版本。integration 可指定可信集成模块，默认使用插件发布入口导出的 createIntegration，组合模型桥接、展现宿主及知识契约。模型契约绑定具体构建身份，修改模型后重新检查。
@@ -49,3 +49,18 @@ pnpm test
 固定前缀按 workflow.md、dari.md、rules.md 顺序组成，与 oks_read 读取同源；纪律始终位于末段。图表分册按需读取。变更语法时同步语言实现、手册、样例及 tree-sitter-dari，维护细则见 [help/README.md](src/help/README.md)。
 
 DARI 位于 `vendors/dari` Git submodule，父仓提交固定其精确版本。插件通过 link 使用 submodule 的 dari-core；构建先编译同一版本的 core 与 dari，再生成自包含运行包。产物记录 DARI 提交，不依赖相邻源码仓库。升级时先更新 submodule 指针，完成集成验收后与适配改动一起提交。
+
+### 模型检查与来源诊断
+
+DARI 集成要求 `dari-model/v3` 契约和 Telora publication v4 / Guest ABI 43。worker 内的 Node WebAssembly 引擎直接实例化零导入制品，支持内嵌服务快照及自包含服务初始化。请求使用 TLI1 结构化输入，通过 `run-service-located` 进入模型，不解析嵌套业务 JSON。每次请求重置服务与可变全局，trap 后从初始化快照恢复；超过宿主期限则终止 worker。
+
+query_remote! 的来源范围经请求一起导入。模型 codec 或领域检查返回的输入 subject 会直接定位到 DARI 表达式，模型规则位置作为相关来源保留。模型对实际收到的 intent 计算规范摘要，宿主继续校验步骤消费凭据和输出类型。
+
+隔离验收命令：
+
+```sh
+node tests/located-input-test.ts
+node tests/model-located-integration.ts /path/to/ic-dari.wasm
+```
+
+模型构建使用 release 版 Telora，制品路径与线上模型分开。

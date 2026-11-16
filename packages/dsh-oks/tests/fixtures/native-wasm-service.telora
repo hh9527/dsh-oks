@@ -1,0 +1,24 @@
+use std::transform_service as service;
+use std::codec as codec;
+use std::value::{Value};
+type Request = struct { method: String, input: Value };
+def overflow: Fn(Int) -> Int = fn(n) { n + overflow(n + 1) };
+type Model = struct {};
+impl service::TransformService for Model {
+    init: fn(ctx) { {}.ty!(Self) },
+    transform: fn(self, input) {
+        let request = codec::decode@[Request](input).unwrap!();
+        if request.method == "divide" {
+            let divisor = codec::decode@[Int](request.input).unwrap!();
+            Value::Int(100 / divisor)
+        } else if request.method == "trap" {
+            Value::Int(overflow(0))
+        } else {
+            request.input
+        }
+    },
+};
+@service::collection
+pub type MainService = struct {
+    @service::slot("test") model: Model,
+};
