@@ -64,3 +64,9 @@ node tests/model-located-integration.ts /path/to/ic-dari.wasm
 ```
 
 模型构建使用 release 版 Telora，制品路径与线上模型分开。
+
+## 远端执行与本地后处理
+
+DARI 的 query_remote! 由可信集成适配器执行已证明的计划；IC 适配器按需只读打开业务 SQLite，并注册模型所需的地区分桶函数。CLI/service 的 options.database 来自 --database。检查阶段只获取模型契约，不打开业务数据库。
+
+本地 query! 使用独立内存 SQLite，只在消费远端结果时按已检查 Schema 导入临时表。直接展示远端结果不导入；同次执行共享远端取数及导入缓存。远端每阶段最多 500 行，单个图表或表格最多 110 行，执行时继续核对；不拼接远端与本地 SQL。

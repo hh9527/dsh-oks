@@ -4,7 +4,7 @@ import {Worker} from 'node:worker_threads';
 import {accessSync,readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {resolve as pathResolve} from 'node:path';
-import type {ModelPort,IntentType,MemberSymbol,DatasetSymbol,RelationSymbol,ResultColumn,ValueCodec} from '@hh9527/dari-core';
+import type {ModelCheckPort,IntentType,MemberSymbol,DatasetSymbol,RelationSymbol,ResultColumn,ValueCodec} from '@hh9527/dari-core';
 import {MODEL_ABI_VERSION,type EncodedIntent,type ProofReceipt} from '@hh9527/dari-core';
 import type {Type} from '@hh9527/dari-core';
 import {primaryCodecs} from '@hh9527/dari-core/codecs';
@@ -70,7 +70,7 @@ export async function openModel(artifact:string){
         if(Object.hasOwn(datasets,item.symbol))throw Error('Ambiguous published Dataset '+item.symbol);
         datasets[item.symbol]={kind:'dataset',id:item.id,symbol:item.symbol,members};
     }
-    const model:ModelPort={
+    const model:ModelCheckPort={
         contractId:contract.contract_id,
         implementationId:createHash('sha256').update(readFileSync(artifact)).digest('hex'),
         datasets,types,relations:Object.fromEntries(contract.relations.map(r=>[r.symbol,{...r,kind:'relation' as const}])),
@@ -81,8 +81,9 @@ export async function openModel(artifact:string){
             const fields:Record<string,Type>=Object.create(null);
             for(const c of checked.columns){const t=business(c.logical,c.type);fields[c.name]=c.nullable?{kind:'option',inner:t}:t;}
             return {element:{kind:'schema',fields},container:checked.container,receipt:checked.receipt,maxRows:checked.max_rows??undefined,plan:{checked,constants:encoded.constants,parameterTypes:encoded.parameterTypes}};
-        },
-        bind(plan:unknown,parameters:unknown[]){
+        }
+    };
+    function bind(plan:unknown,parameters:unknown[]){
             const {checked,constants,parameterTypes}=plan as {checked:WireTemplate;constants:Map<number,unknown>;parameterTypes:Map<number,Type>};
             const bindings:any[]=[];
             // Scan SQL tokens: placeholders in quoted text/comments are not bindings.
@@ -97,9 +98,8 @@ export async function openModel(artifact:string){
                 bindings.push(parameter!==undefined&&unwrapped!==null&&type?.codec?type.codec.encode(unwrapped):unwrapped);return '?';
             });
             return {sql,bindings,columns:checked.columns.map(({logical,...column})=>column),max_rows:checked.max_rows??undefined};
-        }
-    };
-    return {model,stats,contract,codecs,codecModuleSource:contract.codec_module,
+    }
+    return {model,bind,stats,contract,codecs,codecModuleSource:contract.codec_module,
         checkWire(intentJson:string):WireTemplate{return request('ontology/dari',{method:'check_type',input:{intent:JSON.parse(intentJson)}});},
         transform(input:unknown){return request('ontology/dari',{method:'transform',input});},
         async close(){if(!closed){closed=true;worker.postMessage({close:true});}await exited;}};

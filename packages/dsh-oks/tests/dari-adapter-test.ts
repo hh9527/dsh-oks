@@ -26,8 +26,9 @@ try{
  data rows = query_remote! {let a = from(ic::device_kpi);let output = a |> group_by_identity(a)
  |> project({device:a.device_kpi_res_id,cpu:a.cpu_usage}); output |> order_by(desc(output.cpu)) |> take(5)};
 
+ data local=query! {from(rows).as!(r) |> project({device:r.device,cpu:r.cpu}).as!(out) |> take(5)};
  report report = tree! {Report [h1 ["CPU"],Table(data = rows),BarChart(data = rows, spec = {category:$.device,value:$.cpu})]};
- answer tree! {Answer [UseValue(ref = ctx.time_zone),Table(data = rows),UseReport(ref = report),BarChart(data = rows, spec = {category:$.device,value:$.cpu})]};`);
+ answer tree! {Answer [UseValue(ref = ctx.time_zone),Table(data = local),UseReport(ref = report),BarChart(data = rows, spec = {category:$.device,value:$.cpu})]};`);
  const checked:any=await call('dari_check',{src:'test.dari'});assert.match(checked.text,/Succeed/);
  const receipt:any=await call('dari_submit',{src:'test.dari'});assert.match(receipt.text,/answer message/);assert.equal(messages.length,1);
  assert.equal(messages[0].source.kind,'push-to-user');assert(messages[0].source.href.startsWith('file:///'));assert.match(messages[0].source.href,/-answer.md$/);assert(!messages[0].content[0].text.includes('Asia/Shanghai'));assert.match(receipt.text,/reports\/report\/figures\/1/);const answer=saved.get(messages[0].source.href.split('/').at(-1))!;assert.match(answer,/Asia\/Shanghai/);assert.match(answer,/\| device \| cpu \|/);assert.match(answer,/\/attachments\/chart_1.svg/);assert.match(answer,/\/attachments\/report.html/);

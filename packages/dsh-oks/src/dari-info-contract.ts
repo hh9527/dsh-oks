@@ -1,9 +1,9 @@
 import {show,type Type} from '@hh9527/dari-core';
-import type {ModelPort} from '@hh9527/dari-core';
+import type {ModelCheckPort} from '@hh9527/dari-core';
 
 export type InfoPoint={id:string;kind:string;dataset?:string;dimension?:string;measure?:string;relation?:string;type?:string;variant?:string;datasets?:string[];members?:{id:string;kind:string}[]};
 /** Resolve exact knowledge identities against published contracts, never derive symbols from IDs. */
-export function infoContracts(model:ModelPort,points:InfoPoint[]){
+export function infoContracts(model:ModelCheckPort,points:InfoPoint[]){
  const datasets=Object.values(model.datasets),relations=Object.values(model.relations??{});
  const typeContract=(type:Type):any=>{
   const nullable=type.kind==='option',base=nullable?type.inner!:type;
