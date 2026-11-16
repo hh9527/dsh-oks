@@ -26,7 +26,9 @@
 
 图表共同配置：title、x_label、value_label、unit、style:{labels:True,colors:["#..."],sort:"none"}、layout:{label_font:12,title_font:16,slant_ticks:False,tick_count:8}。这些字段的适用范围仍由组件校验。bar/column 的行高由字体驱动，不需手调画布高度。BarChart 不接纳 series；同一指标分组使用 GroupedBarChart，独立指标使用 MultiBarChart，按组加和使用 StackedBarChart。四者均以 category 映射类别；orientation:Orientation::Horizontal/Vertical 默认为 Vertical。
 
-类别标签逐项显示，长名称和图例按完整文本换行；渲染层按换行数预留空间，不默认抽样、隐藏重叠类别或截断名称。
+类别标签逐项显示，长名称和图例按完整文本换行；渲染层按换行数预留空间，不默认抽样、隐藏重叠类别或截断名称。单序列柱条图、折线图、面积图、饼图和散点图逐行保留数据；标签可以重复，标签不是行身份。MultiBarChart 与宽表多序列折线图也保留每个原始行的身份。
+
+显式长表序列、Heatmap 和 RadarChart 按类别与序列坐标对齐，每个坐标须唯一；重复坐标报错，由输入计划明确聚合或补充身份。Sankey 和 NetworkGraph 逐行保留平行边，NetworkGraph 节点 id 须唯一。Histogram 的分桶计数、BoxPlot 的分布统计和显式堆叠按组件声明计算；除此之外，渲染层不自动聚合、去重、覆盖或挑选输入行。
 
 四种柱条图的 value_min 可设置轴基线，例如 99.0；条/柱上的标注仍是原始数值。空输入默认报错；显式 allow_no_data:True 接受空表并显示“无数据”。Table 同样支持 allow_no_data，保留表头。表格 labels 例如 {device:"设备",cpu:"CPU (%)"}，columns 决定列顺序，例如 [$.device,$.cpu]，也接受字符串列名。SVG 内嵌最终图表输入的 CSV 和 spec，报告保留这些信息。
 
@@ -133,6 +135,6 @@ answer tree! { Answer [
 
 未指定格式时，EpochMillis / DateTimeUtc 明确按 UTC 展示；DateTimeTz 按自身地区展示。默认 DateTime 显示日期、时分秒、实际 UTC 偏移和地区名，以区分夏令时回拨的重复时刻。Date 只显示 YYYY-MM-DD；Time 只显示 HH:mm:ss。LocalDate 原样显示 YYYY-MM-DD，不接受 time_zone 或非 Date 的 date_style。空值保留为空，不伪造日期，不采用服务器默认时区。
 
-LineChart / AreaChart 从字段类型推导横轴：三种时刻类型为连续时间轴，LocalDate / String 为类别轴，普通数值为数值轴。需要显式选择时使用 x_axis: Axis::Time / Category / Value；Time 要求时刻类型，Value 要求数值。轴标签、axis pointer、tooltip 与交付数据采用同一时间格式；原始输入仍保留在 SVG 元数据。DateTimeTz 连续轴包含不同地区时必须显式指定统一 time_zone。类别轴的格式若把不同瞬时值压成同一标签会报错，避免图表悄悄合并数据。
+LineChart / AreaChart 从字段类型推导横轴：三种时刻类型为连续时间轴，LocalDate / String 为类别轴，普通数值为数值轴。需要显式选择时使用 x_axis: Axis::Time / Category / Value；Time 要求时刻类型，Value 要求数值。轴标签、axis pointer、tooltip 与交付数据采用同一时间格式；原始输入仍保留在 SVG 元数据。DateTimeTz 连续轴包含不同地区时必须显式指定统一 time_zone。显式长表多序列的类别轴格式若把不同瞬时值压成同一标签会报错，避免坐标歧义；单序列与宽表多序列仍逐行保留重复标签。
 
 `date_of(instant, zone)` 计算 LocalDate；单参数 `date_of(zoned)` 要求 DateTimeTz，使用其自带地区。date_of 与日期区间运算用于前序 data/do；行级日历聚合在 query! / query_remote! 使用 calendar_bucket。地区分桶键保持 DateTimeUtc，表格或图表通过 formats 显示对应地区的日期；无需把分组键降成 String。地区日可能为 23 / 25 小时，不能用固定 86400000 毫秒代替日历日期推进。

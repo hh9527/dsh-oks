@@ -7,6 +7,7 @@ import {axisValue,X_TYPES,type XType} from './spec.ts';
  *  译者只做映射，不做判断：哪些序列要画、配色怎么轮、空数据怎么办，都由这里与调用方共享的规则决定。
  */
 import {
+  CHART_ROW_ID,
   ENTITY_COLORS,
   NEGATIVE_COLOR,
   PAGE_WIDTH,
@@ -87,37 +88,36 @@ export interface OptionInput {
 const axisName = (label: string | null, unit: string | null): string | undefined =>
   valueAxisLabel(label, unit) ?? undefined;
 
-/** 把结果行按 x 归类，再按 series 分组；返回类别顺序与每个序列的取值。
- *  类别顺序默认沿用数据——数据本身常带语义顺序（如告警等级的严重度）；有 style.sort 时按合计重排。 */
-const group = (
-  rows: readonly Row[],
-  spec: OptionInput,
-): { categories: string[]; seriesNames: string[]; points: Map<string, Map<string, number>> } => {
-  const categories = distinct(rows, spec.x);
-  const seriesNames = spec.series === null
-    ? ['']
-    : [...new Set(rows.map((row) => toLabel(row[spec.series as string])))];
-  const points = new Map<string, Map<string, number>>();
-  for (const name of seriesNames) points.set(name, new Map<string, number>());
-  for (const row of rows) {
+/** 单序列按行保留；显式序列按坐标对齐，重复坐标必须先由作者处理。 */
+const group = (rows: readonly Row[], spec: OptionInput) => {
+  const rowMode = (spec.series === null || spec.kind === 'scatter' || spec.kind === 'histogram') && !['box', 'heatmap', 'radar'].includes(spec.kind);
+  const labels = new Map<string, string>();
+  const rowByCategory = new Map<string, Row>();
+  const categories: string[] = [];
+  const seriesNames = spec.series === null ? [''] : [...new Set(rows.map(row => toLabel(row[spec.series!])))];
+  const points = new Map(seriesNames.map(name => [name, new Map<string, number>()]));
+  const coordinates = new Map<string, number>();
+  rows.forEach((row, index) => {
+    const label = toLabel(row[spec.x]);
+    const identity = (row as Record<symbol, unknown>)[CHART_ROW_ID];
+    const key = rowMode || identity !== undefined ? `row:${identity ?? index}` : label;
     const name = spec.series === null ? '' : toLabel(row[spec.series]);
+    const coordinate = JSON.stringify([key, name]);
+    if (spec.kind !== 'box' && coordinates.has(coordinate)) {
+      throw new Error(`${spec.kind}: 第 ${coordinates.get(coordinate)! + 1}、${index + 1} 行映射到同一坐标 ${JSON.stringify([label, name])}；请补充类别/序列身份或在 query! 中显式聚合，渲染层不会合并或覆盖。`);
+    }
+    coordinates.set(coordinate, index);
+    if (!labels.has(key)) { categories.push(key); labels.set(key, label); rowByCategory.set(key, row); }
     const value = toNumber(row[spec.value]);
-    if (value === null) continue;
-    const bucket = points.get(name);
-    if (bucket !== undefined) bucket.set(toLabel(row[spec.x]), value);
-  }
-
+    // 箱线图在专用分支使用全部原始观测值，这里仅记录数据是否存在。
+    if (value !== null) points.get(name)!.set(spec.kind === 'box' ? `sample:${index}` : key, value);
+  });
   const order = spec.style?.sort;
-  if (order === undefined || order === 'none') return { categories, seriesNames, points };
-
-  // 一个类别上的合计才是排序该看的量：多序列时它决定先后，单序列时就是它自己。
-  const totalOf = (category: string): number => {
-    let sum = 0;
-    for (const bucket of points.values()) sum += bucket.get(category) ?? 0;
-    return sum;
-  };
-  const sorted = [...categories].sort((a, b) => (order === 'desc' ? totalOf(b) - totalOf(a) : totalOf(a) - totalOf(b)));
-  return { categories: sorted, seriesNames, points };
+  if (order && order !== 'none') {
+    const total = (key:string) => seriesNames.reduce((sum,name) => sum + (points.get(name)?.get(key) ?? 0), 0);
+    categories.sort((a,b) => order === 'desc' ? total(b)-total(a) : total(a)-total(b));
+  }
+  return {categories, seriesNames, points, labels, rowByCategory};
 };
 
 /** 来源标识：固定在图内左下角，由系统写，不由 agent 决定。 */
@@ -190,28 +190,24 @@ export const buildOption = (
     const frame = chartFrame(spec.title, [], layout.labelFont, layout.titleFont);
     const title = chartTitle(frame, layout.titleFont);
     const weights = spec.style?.colors !== undefined && spec.style.colors.length > 0 ? spec.style.colors : SERIES_COLORS;
-    const links = new Map<string, { source: string; target: string; value: number }>();
+    const links: Array<{ source: string; target: string; value: number }> = [];
     const nodes: Array<{ name: string; itemStyle?: { color: string } }> = [];
     const seen = new Set<string>();
     for (const row of rows) {
       const source = toLabel(row[spec.x]);
       const target = spec.series === null ? '' : toLabel(row[spec.series]);
-      // 自环、空节点与不成对的边不进图：sankey 不接受它们。
-      if (source === '' || target === '' || source === target) continue;
+      // 无法表示的边明确拒绝；平行边逐行保留，不求和。
+      if (source === '' || target === '' || source === target) throw new Error('sankey 边需要非空且不同的起终点；请显式处理无效边');
       const weight = spec.value === '' ? 1 : toNumber(row[spec.value]);
-      if (weight === null || weight <= 0) continue;
-      const key = `${source}\u0000${target}`;
-      const existing = links.get(key);
-      // 同一对起终点出现多次 → 累加合并（echarts 的 sankey 不接受重复 link）。
-      if (existing === undefined) links.set(key, { source, target, value: weight });
-      else existing.value += weight;
+      if (weight === null || weight <= 0) throw new Error('sankey 边权重必须为正数；请显式处理，渲染层不会丢弃边');
+      links.push({ source, target, value: weight });
       for (const name of [source, target]) {
         if (seen.has(name)) continue;
         seen.add(name);
         nodes.push({ name, itemStyle: { color: weights[nodes.length % weights.length]! } });
       }
     }
-    if (links.size === 0) {
+    if (links.length === 0) {
       return { option: emptyOption(spec, layout), height: frame.top + frame.body + frame.bottom };
     }
     return {
@@ -220,7 +216,7 @@ export const buildOption = (
         series: [{
           type: 'sankey',
           data: nodes,
-          links: [...links.values()],
+          links,
           nodeAlign: 'justify',
           // 标题占着顶部中间，而中间层的节点标签正好落在那里——给它留出上边距，别叠在一起。
           top: frame.top,
@@ -335,13 +331,17 @@ export const buildOption = (
       given: toNumber(row['x']) !== null && toNumber(row['y']) !== null
         ? { x: toNumber(row['x'])!, y: toNumber(row['y'])! }
         : null,
-    })).filter((node) => node.id !== '');
+    }));
+    if (parsed.some(node => node.id === '')) throw new Error('graph 节点 id 不能为空');
     if (parsed.length === 0) {
       throw new Error('graph 需要节点表：用 nodesSrc 指向一份行数据，每行一个节点，至少给 id 与 depth。');
     }
-    // 同 id 只留先出现的那个；分层要的层号缺了就明确报错，不猜。
+    // 节点身份必须唯一，不能由渲染层挑选其中一行。
     const unique = new Map<string, (typeof parsed)[number]>();
-    for (const node of parsed) if (!unique.has(node.id)) unique.set(node.id, node);
+    for (const node of parsed) {
+      if (unique.has(node.id)) throw new Error(`graph 节点 id 重复：${node.id}；请在查询中明确节点身份`);
+      unique.set(node.id, node);
+    }
     const all = [...unique.values()];
     if (all.every((node) => node.given === null)) {
       for (const node of all) {
@@ -398,26 +398,14 @@ export const buildOption = (
         },
       };
     });
-    // 边按「起点 / 终点 / 关系名」去重：同一对节点之间的**不同关系名是信息**，各留一条并用曲率错开；
-    // 三样都相同的才合并。关系名取边表的 `label` 列（与节点表同一列名），没有就不写。
-    const graphLinks = new Map<string, { source: string; target: string; label: string; focused: boolean }>();
+    // 每一行都是一条边；相同端点和标签也保留为平行边。
+    const graphLinks: Array<{source:string;target:string;label:string;focused:boolean}> = [];
     for (const row of rows) {
       const source = toLabel(row[spec.x]);
       const target = spec.series === null ? '' : toLabel(row[spec.series]);
-      if (source === '' || target === '' || source === target) continue;
-      if (!placed.has(source) || !placed.has(target)) continue;
-      const label = row['label'] === undefined ? '' : toLabel(row['label']);
-      const key = `${source}\u0000${target}\u0000${label}`;
-      if (!graphLinks.has(key)) {
-        graphLinks.set(key, {
-          source,
-          target,
-          label,
-          focused: toLabel(row['status'] ?? '') === 'focus',
-        });
-      }
+      if (!placed.has(source) || !placed.has(target)) throw new Error(`graph 边端点没有对应节点：${source} → ${target}`);
+      graphLinks.push({source, target, label: toLabel(row['label'] ?? ''), focused: toLabel(row['status'] ?? '') === 'focus'});
     }
-    if (graphLinks.size === 0) return { option: emptyOption(spec, layout), height: frame.top + frame.body + frame.bottom };
     return {
       option: {
         title,
@@ -426,7 +414,7 @@ export const buildOption = (
           top: frame.top, bottom: frame.line, left: frame.gap, right: frame.gap,
           layout: 'none',
           data: graphNodes,
-          links: [...graphLinks.values()].map((link, index) => ({
+          links: graphLinks.map((link, index) => ({
             ...link,
             // 同一对节点上的第 2、3 条边弯得更明显，免得叠在一起看不出来。
             lineStyle: {
@@ -454,16 +442,20 @@ export const buildOption = (
     };
   }
 
-  const { categories, seriesNames, points } = group(rows, spec);
+  const { categories, seriesNames, points, labels, rowByCategory } = group(rows, spec);
+  const categoryLabel = (key:string) => labels.get(key) ?? key;
+  for (const mark of spec.marks ?? []) if (mark.axis === 'x' && typeof mark.value === 'string') {
+    if (categories.filter(key => categoryLabel(key) === mark.value).length > 1) throw new Error(`类别参考线 ${mark.value} 对应多行；请补充唯一展示标签，渲染层不会选择其中一行`);
+  }
   const labelFont = spec.layout?.labelFont ?? LABEL_FONT;
   const layout = resolveLayout({
-    categories,
+    categories: categories.map(categoryLabel),
     overrides: spec.layout ?? {},
   });
   const hasLegend = (grouped || seriesNames.length > 1) && spec.kind !== 'pie' && spec.kind !== 'heatmap';
   const frame = chartFrame(spec.title, hasLegend ? seriesNames : [], labelFont, layout.titleFont);
   const horizontal = spec.kind === 'bar';
-  const categoryLines = Math.max(1, ...categories.map(name => wrapSlots(name, horizontal ? 8 : 6).split('\n').length));
+  const categoryLines = Math.max(1, ...categories.map(name => wrapSlots(categoryLabel(name), horizontal ? 8 : 6).split('\n').length));
   const heatmapLines = Math.max(1, ...seriesNames.map(name => wrapSlots(name, 8).split('\n').length));
   const bodyHeight = (horizontal ? Math.max(1, categories.length) * Math.max(frame.row, categoryLines * frame.line + frame.gap)
     : spec.kind === 'heatmap' ? Math.max(1, seriesNames.length) * Math.max(frame.row, heatmapLines * frame.line + frame.gap)
@@ -579,12 +571,14 @@ export const buildOption = (
   // 饼图：单一序列，数据是"名称 + 数值"，配色按扇区轮转（颜色跟实体时按名字取色）
   if (spec.kind === 'pie') {
     const bucket = points.get(seriesNames[0]) ?? new Map<string, number>();
-    const slices = [...bucket.entries()].filter(([, value]) => value > 0);
+    const slices = [...bucket.entries()];
+    if (slices.some(([,value]) => value < 0)) throw new Error('pie 不接受负数；请在查询中明确处理，渲染层不会丢弃输入行');
     const colorAt = colorResolver(slices.map(([name]) => name));
     const data = slices.map(([name, value], index) => ({
-      name,
+      id: name,
+      name: categoryLabel(name),
       value,
-      itemStyle: { color: colorAt(name, index) },
+      itemStyle: { color: colorAt(categoryLabel(name), index) },
     }));
     if (data.length === 0) return { option: emptyOption(spec, layout), height };
     return {
@@ -607,7 +601,7 @@ export const buildOption = (
 
   const categoryAxis = {
     type: 'category' as const,
-    data: categories,
+    data: categories.map(categoryLabel),
     name: axisName(spec.xLabel, null),
     nameLocation: 'middle' as const,
     nameGap: frame.line * (horizontal ? 6 : 2),
@@ -695,7 +689,7 @@ export const buildOption = (
     const base = {
       name: name === '' ? axisName(spec.valueLabel, spec.unit) ?? 'value' : name,
       data: data.map((value, categoryIndex) => categoryColors !== null && value !== null
-        ? {value,itemStyle:{color:categoryColors.get(categories[categoryIndex])!}}
+        ? {value,itemStyle:{color:categoryColors.get(categoryLabel(categories[categoryIndex]))!}}
         : value),
       itemStyle: { color },
       connectNulls,
@@ -927,12 +921,16 @@ export const buildOption = (
   }
 
   // 第二个度量：独立的右侧数值轴。它存在的前提就是"两个量纲差很远"，所以轴必须分开。
-  // 取值按类别取第一行——有 series 时，第二维度不该随分组变化。
   const second = spec.second ?? null;
-  const firstRowByCategory = new Map<string, Row>();
-  for (const row of rows) {
-    const key = toLabel(row[spec.x]);
-    if (!firstRowByCategory.has(key)) firstRowByCategory.set(key, row);
+  // 逐行图使用同一行的次指标；多序列对齐要求同类别的次指标一致。
+  const firstRowByCategory = rowByCategory;
+  if (second !== null && spec.series !== null) {
+    const values = new Map<string, unknown>();
+    for (const row of rows) {
+      const key = (row as Record<symbol, unknown>)[CHART_ROW_ID] === undefined ? toLabel(row[spec.x]) : `row:${(row as Record<symbol, unknown>)[CHART_ROW_ID]}`;
+      if (values.has(key) && values.get(key) !== row[second.value]) throw new Error(`次指标 ${second.value} 在类别 ${toLabel(row[spec.x])} 的序列之间不一致；请显式对齐，不能取第一行`);
+      values.set(key, row[second.value]);
+    }
   }
   const secondName = second === null ? null : axisName(second.label ?? second.value, second.unit ?? null) ?? second.value;
   // 横条图的数值在 x 轴上：第二个度量与它的轴都要跟着换边（轴在上方，不从左边抢位置）。

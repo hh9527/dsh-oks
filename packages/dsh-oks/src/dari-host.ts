@@ -1,3 +1,4 @@
+import {CHART_ROW_ID} from './chart/shared.ts';
 import type {ComponentContract} from '@hh9527/dari-core';
 import {temporal,timeSemantic,formatTime,embeddedTimeZone,validateTimeFormat,type TimeFormat} from './time-display.ts';
 import {formatValue,precision,type Type} from './display-values.ts';
@@ -158,7 +159,7 @@ function wideSeries(name:string,raw:Record<string,unknown>,fields:Record<string,
  });
  if(units.size!==1||raw.unit!==undefined&&raw.unit!==series[0].unit)throw Error('Wide series units must agree with the shared value axis');
  const x=raw.x;
- return {spec:{...raw,x:'__x',series:'__series',value:'__value',unit:series[0].unit},fields:{__x:fields[x],__series:scalar('String'),__value:scalar('Float')},rows:rows.flatMap(row=>series.map(entry=>({__x:row[x],__series:entry.label,__value:typeof row[entry.value]==='number'?Number((Number(row[entry.value])*(presentation(fields[entry.value])?.multiplier??1)).toPrecision(12)):row[entry.value]})))};
+ return {spec:{...raw,x:'__x',series:'__series',value:'__value',unit:series[0].unit},fields:{__x:fields[x],__series:scalar('String'),__value:scalar('Float')},rows:rows.flatMap((row,index)=>series.map(entry=>({[CHART_ROW_ID]:index,__x:row[x],__series:entry.label,__value:typeof row[entry.value]==='number'?Number((Number(row[entry.value])*(presentation(fields[entry.value])?.multiplier??1)).toPrecision(12)):row[entry.value]})))};
 }
 function validate(name:string,raw:Record<string,unknown>,fields:Record<string,Type>){
  let kind=COMPONENT_KINDS[name as keyof typeof COMPONENT_KINDS];if(barNames.has(name)){kind=(name==='BarChart'?(raw.orientation==='horizontal'?'bar':'column'):(raw.orientation==='horizontal'?'grouped_bar':'grouped_column')) as typeof kind;}if(!kind)throw Error('Unknown figure component '+name);
@@ -203,7 +204,7 @@ const host={
   const policy=wide.fields[parsed.spec.value]?presentation(wide.fields[parsed.spec.value]):undefined;
   if(policy){if(parsed.spec.unit&&parsed.spec.unit!==policy.suffix)throw Error('Figure unit conflicts with the value type presentation');parsed.spec.unit=policy.suffix;}
   if(parsed.spec.second){const secondary=wide.fields[parsed.spec.second.value]?presentation(wide.fields[parsed.spec.second.value]):undefined;if(secondary)parsed.spec.second.unit=secondary.suffix;}
-  if(temporal(wide.fields[parsed.spec.x])&&!['Rfc3339','DateTimeTz','EpochMillis'].includes(parsed.spec.x_type??'')){
+  if(parsed.spec.series!==null&&!renderRows.every(row=>(row as Record<symbol,unknown>)[CHART_ROW_ID]!==undefined)&&temporal(wide.fields[parsed.spec.x])&&!['Rfc3339','DateTimeTz','EpochMillis'].includes(parsed.spec.x_type??'')){
    const labels=new Map<unknown,unknown>();
    renderRows.forEach((row,i)=>{const label=row[parsed.spec.x],raw=wide.rows[i][parsed.spec.x],instant=timeSemantic(wide.fields[parsed.spec.x])==='LocalDate'?raw:typeof raw==='number'?raw:raw==null?raw:Date.parse(String(raw).replace(/\[[^\]]+\]$/,''));
     if(labels.has(label)&&labels.get(label)!==instant)throw Error('Time category labels collapse distinct instants; use Axis::Time or a more precise date_style');labels.set(label,instant);

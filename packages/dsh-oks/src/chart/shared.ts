@@ -2,6 +2,9 @@
 //
 // 所有图元共用配色、字号单位与外围排版规则。
 
+/** 宽表展开后的序列共享原始行身份；不进入 CSV、spec 或业务 Schema。 */
+export const CHART_ROW_ID = Symbol('chart-row-id');
+
 export type Row = Record<string, unknown>;
 
 /** 全部图元。清单只此一份：schema 的枚举、规格的类型、渲染的分支都从这里取，
