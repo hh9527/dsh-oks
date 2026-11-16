@@ -126,7 +126,8 @@ export const chartFrame = (title: string | null, names: readonly string[], font:
   // 每个图例项固定为 12 个字槽 + 图标 + 间距，保证预留量不依赖文字宽度。
   const legendColumns = Math.max(1, Math.floor((PAGE_WIDTH - 2 * u.gap) / (font * 15)));
   const legendRows = Math.ceil(names.length / legendColumns);
-  const legendHeight = legendRows * u.row;
+  const legendLines = Math.max(1, ...names.map(name => wrapSlots(name, 12).split('\n').length));
+  const legendHeight = legendRows * Math.max(u.row, legendLines * u.line + u.gap);
   return {titleText, legendTop: u.gap + titleHeight, top: u.gap + titleHeight + legendHeight + u.gap, bottom: u.line * 3, legendColumns, ...u};
 };
 

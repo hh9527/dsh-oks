@@ -13,6 +13,7 @@ import {
   SERIES_COLORS,
   distinct,
   fontUnits,
+  wrapSlots,
   chartFrame,
   LABEL_FONT,
   needsSlantedTicks,
@@ -462,11 +463,14 @@ export const buildOption = (
   const hasLegend = (grouped || seriesNames.length > 1) && spec.kind !== 'pie' && spec.kind !== 'heatmap';
   const frame = chartFrame(spec.title, hasLegend ? seriesNames : [], labelFont, layout.titleFont);
   const horizontal = spec.kind === 'bar';
-  const bodyHeight = plotHeight(spec.kind,
-    spec.kind === 'heatmap' ? seriesNames.length : categories.length, labelFont)
+  const categoryLines = Math.max(1, ...categories.map(name => wrapSlots(name, horizontal ? 8 : 6).split('\n').length));
+  const heatmapLines = Math.max(1, ...seriesNames.map(name => wrapSlots(name, 8).split('\n').length));
+  const bodyHeight = (horizontal ? Math.max(1, categories.length) * Math.max(frame.row, categoryLines * frame.line + frame.gap)
+    : spec.kind === 'heatmap' ? Math.max(1, seriesNames.length) * Math.max(frame.row, heatmapLines * frame.line + frame.gap)
+    : plotHeight(spec.kind, categories.length, labelFont))
     + (horizontal && grouped ? categories.length * (Math.max(1, seriesNames.length) - 1) * frame.row + Math.max(0, categories.length - 1) * frame.gap : 0);
-  const bottom = spec.kind === 'heatmap' ? frame.bottom + frame.line * 2
-    : !horizontal && layout.slantTicks ? frame.bottom + frame.line * 3 : frame.bottom;
+  const labelSpace = categoryLines * frame.line + (!horizontal && layout.slantTicks ? labelFont * 6 : 0);
+  const bottom = horizontal ? frame.bottom : Math.max(frame.bottom, labelSpace + frame.line * (spec.kind === 'heatmap' ? 4 : 2));
   const height = Math.ceil(frame.top + bodyHeight + bottom);
   const hasValues = [...points.values()].some((bucket) => bucket.size > 0);
   if (!hasValues) return { option: emptyOption(spec, layout), height };
@@ -474,7 +478,8 @@ export const buildOption = (
   const legend = !hasLegend ? undefined : {
     top: frame.legendTop, left: frame.gap, width: CHART_WIDTH - 2 * frame.gap,
     itemWidth: labelFont, itemHeight: labelFont, itemGap: labelFont,
-    textStyle: {fontSize: labelFont, lineHeight: frame.line, width: labelFont * 12, overflow: 'truncate' as const, color: '#1c2b3a'},
+    formatter: (name:string) => wrapSlots(name, 12),
+    textStyle: {fontSize: labelFont, lineHeight: frame.line, width: labelFont * 12, overflow: 'break' as const, color: '#1c2b3a'},
   };
   const grid = {
     left: labelFont * (horizontal || spec.kind === 'heatmap' ? 10 : 6),
@@ -588,6 +593,7 @@ export const buildOption = (
         title,
         series: [{
           type: 'pie',
+          labelLayout: { hideOverlap: false },
           // 环形：中心留白（`donut` 开关，只有饼图有这个形状）。
           radius: [spec.donut === true ? bodyHeight * 0.25 : 0, bodyHeight * 0.38],
           center: [CHART_WIDTH / 2, frame.top + bodyHeight / 2],
@@ -611,9 +617,10 @@ export const buildOption = (
       color: '#1c2b3a',
       // 类别在横轴上、又挤的时候斜排；横条的类别在纵轴上，保持水平。
       rotate: !horizontal && layout.slantTicks ? 45 : 0,
-      width: labelFont * (horizontal ? 8 : 6),
-      overflow: 'truncate' as const,
-      ...(horizontal ? { interval: 0, hideOverlap: false } : { hideOverlap: true }),
+      lineHeight: frame.line,
+      formatter: (name:string) => wrapSlots(name, horizontal ? 8 : 6),
+      interval: 0,
+      hideOverlap: false,
     },
     axisLine: { lineStyle: { color: '#d8e0ea' } },
     axisTick: { show: false },
@@ -742,6 +749,7 @@ export const buildOption = (
             fontSize: labelFont,
             color: '#1c2b3a',
             interval: 0,
+            hideOverlap: false,
             // 箱标签本来就长，斜排比挤成一团好读。
             rotate: needsSlantedTicks(labels, labelFont) ? 45 : 0,
           },
@@ -845,7 +853,7 @@ export const buildOption = (
         // 纵轴是分组（可能是设备名或日期），左边留得比柱状图宽一些；底部留给颜色标尺。
         grid,
         xAxis: { ...categoryAxis, data: categories },
-        yAxis: { ...verticalCategoryAxis, data: yNames, axisLabel: { fontSize: labelFont, color: '#1c2b3a', rotate: 0, interval: 0, hideOverlap: false, width: labelFont * 8, overflow: 'truncate' as const } },
+        yAxis: { ...verticalCategoryAxis, data: yNames, axisLabel: { fontSize: labelFont, color: '#1c2b3a', lineHeight: frame.line, rotate: 0, interval: 0, hideOverlap: false, formatter: (name:string) => wrapSlots(name, 8) } },
         visualMap: {
           type: 'continuous' as const,
           min: floor,

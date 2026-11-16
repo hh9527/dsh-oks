@@ -10,39 +10,68 @@
 - `rfc/`：设计与变更记录。
 - `justfile`：构建和安装 OKS profile。
 
-安装分两步：`just build` 构建两个包到 `dist/`，`just install-profile` 复制发布目录并写入 profile 配置。主 Agent 启用官方文件读取、创建、编辑和搜索工具，VA 保持独立工具清单。
+`just deploy <PORT>` 构建两个插件并安装到仓库内的 `.deploy/dsh-<PORT>/`。每个端口拥有独立的 profile、插件安装文件、会话目录和 `demo-ws`。主 Agent 启用官方文件工具、ask user、skill、present 与 OKS 工具，VA 使用独立 preset。
 
-安装需要 just、watchexec、Node.js、pnpm。依赖版本统一在 `pnpm-workspace.yaml` 的 `catalog`，升级时改那里再执行 `just update-deps`，lockfile 会一起更新。
+需要 just、watchexec、Node.js、pnpm。依赖版本统一在 `pnpm-workspace.yaml` 的 `catalog`；升级时修改 catalog 并执行 `just update-deps`。
 
 ```sh
 pnpm run setup:dari
 pnpm install --ignore-scripts
-just build
-just install-profile
-(cd ~/ws/oks-demo/dsh-oks-10923 && just run)
+just deploy 10924
+./.deploy/dsh-10924/run.sh
 
-# 修改端口，默认安装目录随端口变化。
-just port=10924 install-profile
-(cd ~/ws/oks-demo/dsh-oks-10924 && just run)
-
-# 自定义安装目录和会话工作区。
-just port=10924 target=/srv/oks workspace="$HOME/ws/oks-demo/demo-ws" install-profile
-(cd /srv/oks && just run)
+# 另一套独立环境
+just deploy 10925
+./.deploy/dsh-10925/run.sh
 ```
 
-默认端口为 `10923`，安装目录为 `~/ws/oks-demo/dsh-oks-10923/`，
-工作区为 `~/ws/oks-demo/demo-ws/`（需已有 `oks.json`）。`profile` 默认 `web`，可单独覆盖。
-安装命令把 `dist/dsh-oks` 与 `dist/dsh-push-to-user` 复制到安装目录的 `packages/`，
-运行配置和会话数据使用该目录作为 `DSH_HOME`，运行目录只生成一个 `justfile`：`just run-dsh` 直接启动，`just run` 通过 watchexec 监听 `.ctrl` 并调用 `run-dsh`。
-重新构建需再次执行 `just build`；运行时链接安装目录中的插件。安装完成后手动启动；
-更新正在使用的安装目录前先停止对应进程，安装完成后再启动。
-运行目录的 `just run` 使用安装时保存的端口和工作区，并透传额外参数，例如 `just run --help`；源码仓不提供运行入口。
-从其他目录调用时可用 `just --justfile /path/to/dsh-oks/justfile install-profile`。
+部署只准备文件，服务由用户手动启动。生成目录如下，`.deploy/` 不进入版本控制。
 
-运行目录的 `just run` 使用 watchexec 监听安装目录内的 `.ctrl`，文件变化时重启进程。
-例如 `touch ~/ws/oks-demo/dsh-oks-10924/.ctrl` 重启验证区，
-`touch ~/ws/oks-demo/dsh-oks-10923/.ctrl` 重启正式区。
-首次使用新启动器时，先退出原进程，再在运行目录执行 `just run`；之后可通过 `.ctrl` 触发重启。
+```text
+.deploy/dsh-10924/
+├── packages/
+├── profiles/web/
+├── demo-ws/
+├── .ctrl
+├── run.sh
+├── run-dsh.sh
+└── justfile
+```
+
+首次部署创建空的 `demo-ws/`，允许没有 `oks.json`，可直接启动服务。需要使用模型工具时，在工作区创建 `oks.json` 配置模型与数据库；相对路径以该工作区为基准，例如：
+
+```json
+{
+  "domain": "demo",
+  "model": "model.wasm",
+  "dataFile": "demo.sqlite"
+}
+```
+
+模型和数据库由用户提供，可在部署 profile 的插件 config 配置默认的 `domain`、`model`、`dataFile`；工作区的 `oks.json` 可选，显式字段覆盖部署默认值。VA、知识工具与 DARI 共用解析后的模型。两处均未配置模型时，模型工具明确报告缺失项。部署命令不绑定特定模型，也不复制其他环境的凭据。
+
+`run.sh` 从任意当前目录均可执行，通过 watchexec 仅监听 `.ctrl`；`run-dsh.sh` 是直接启动入口。启动参数原样透传，例如：
+
+```sh
+./.deploy/dsh-10924/run.sh --host 127.0.0.1
+touch .deploy/dsh-10924/.ctrl
+```
+
+`DSH_HOME` 指向部署目录，服务在其中的 `demo-ws` 工作区运行。生成的 `justfile` 也提供 `just run` 与 `just run-dsh`，分别调用这两个脚本。
+
+重复执行 `just deploy <PORT>` 会重新构建并更新插件安装，保留已有工作区、`oks.json`、用户 profile 配置与 `.ctrl` 内容；不会自动触发重启。更新正在使用的安装目录前先停止对应进程，安装完成后再启动。
+
+已有发布产物或需要自定义目录时，可单独使用安装器：
+
+```sh
+just build
+just port=10924 target=/srv/oks workspace=/srv/my-workspace install-profile
+/srv/oks/run.sh
+```
+
+`install-profile` 只消费 `dist/`，自动创建指定工作区，允许没有 `oks.json`。默认 `profile` 为 `web`；默认安装目录为 `.deploy/dsh-<port>`，工作区为其下的 `demo-ws`。可通过 `DSH_CMD` 指定宿主调用方式；安装器优先使用已安装的 dsh，否则使用 pnpm dlx。
+
+从其他目录也可调用 `just --justfile /path/to/dsh-oks/justfile deploy 10924`；部署目录始终位于该仓库内。
 
 安装和工具说明见 [插件 README](packages/dsh-oks/README.md)。
 

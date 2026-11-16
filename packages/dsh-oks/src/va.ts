@@ -1,13 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { singleFlight } from './single-flight.ts';
 import type { AgentLike, ContentBlock, LogFn, PluginContext, RenderBlock, SubagentActivation } from './host.ts';
-import type { PluginConfig } from './config.ts';
+import type { PluginConfig, Settings } from './config.ts';
+
+// 仅在咨询存续期间传递已解析配置，不写入工作区或暴露给模型。
+export const VA_SETTINGS = new Map<string, Settings>();
 
 export const VA_HELPER_PREFIX = 'session-va-';
 export const CONSULT_TIMEOUT_MS = 120_000;
 export interface AskResult { helper: string; messageId: string; answer: string }
 export interface VaRuntime {
-  ask(caller: AgentLike, key: string, query: string, signal?: AbortSignal): Promise<AskResult>;
+  ask(caller: AgentLike, key: string, query: string, signal?: AbortSignal, settings?: Settings): Promise<AskResult>;
 }
 export function renderAsk(_args: unknown, value: AskResult | null | undefined): RenderBlock[] {
   return [{ type: 'text', text: value?.answer ?? '' }];
@@ -50,7 +53,7 @@ export function createVaRuntime({ ctx, log, config }: {
   });
   ctx.effect(() => () => { lifetime.abort(new Error('词汇助手插件已卸载')); });
   return {
-    ask(caller, _key, query, signal) {
+    ask(caller, _key, query, signal, settings) {
       let state = states.get(caller);
       if (!state) { state = { tail: Promise.resolve(), flights: new Map() }; states.set(caller, state); }
       const owned = state;
@@ -76,6 +79,7 @@ export function createVaRuntime({ ctx, log, config }: {
             requestSignal.throwIfAborted();
             const existing = owned.childId;
             childId = existing ?? `${prefix}${randomUUID()}`;
+            if (settings) VA_SETTINGS.set(childId, settings);
             const prompt = [{ type: 'text', text: query }];
             let messageId: string;
             let completion: Promise<Outcome>;
@@ -107,7 +111,7 @@ export function createVaRuntime({ ctx, log, config }: {
               else if (childId) await ctx.get('subagents')?.drainChildren(caller, [childId]);
             }
             throw error;
-          } finally { clearTimeout(timer); if (childId) pending.delete(childId); }
+          } finally { clearTimeout(timer); if (childId) { pending.delete(childId); VA_SETTINGS.delete(childId); } }
         });
         owned.tail = run.then(() => {}, () => {});
         return run;

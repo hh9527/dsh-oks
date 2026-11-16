@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createVaRuntime, renderAsk, CONSULT_TIMEOUT_MS } from '../src/va.ts';
+import { createVaRuntime, renderAsk, CONSULT_TIMEOUT_MS, VA_SETTINGS } from '../src/va.ts';
 import { installVocabularyHelper, resetVocabularyContext } from '../src/va-helper.ts';
 const caller = (id = 'parent') => ({ id, ctx: { tools: { restrict() {} } }, session: { id, header: { cwd: '/workspace' } } }) as any;
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -141,4 +141,17 @@ test('咨询超时释放子执行，排队的取消请求不被发送',async(t)=
  const abort=new AbortController();const queued=h.runtime.ask(parent,'p','取消排队',abort.signal);abort.abort(Error('cancel queued'));
  t.mock.timers.tick(CONSULT_TIMEOUT_MS+1);await assert.rejects(first,/超时/);await assert.rejects(queued,/cancel queued/);
  assert.equal(h.disposed.length,1);assert.equal(h.sends.length,0);
+});
+
+test('VA 在独立 preset 装配时继承父调用已解析模型，咨询结束释放配置',async()=>{
+ const h=harness({manual:true}),parent=caller();
+ const settings={domain:'profile-domain',model:'/profile/model.wasm'} as any;
+ const result=h.runtime.ask(parent,'p','词汇',undefined,settings);await flush();
+ const childId=h.starts[0].childId;assert.equal(VA_SETTINGS.get(childId),settings);
+ let assemble:any,received:any;
+ installVocabularyHelper({ctx:{systemPrompt:{section(){}},on(name:string,fn:any){if(name==='system-prompt/assemble')assemble=fn;return()=>{}},effect(){}},
+  knowledge:{ensureWorkspace(_exec:any,inherited:any){received=inherited;return{}},async ensureIndex(){return{knowledge:{},terms:[]}}},log(){}} as any);
+ const child=caller(childId);child.session.append=()=>{};
+ await assemble({},{agent:child},async()=>({sections:[],tools:[]}));assert.equal(received,settings);
+ h.settled(childId);await result;assert(!VA_SETTINGS.has(childId));
 });

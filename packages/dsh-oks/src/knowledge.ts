@@ -37,7 +37,7 @@ export interface ExecutorEntry {
 }
 
 export interface Knowledge {
-  ensureWorkspace(exec: WorkspaceProbe | undefined): WorkspaceEntry;
+  ensureWorkspace(exec: WorkspaceProbe | undefined, inherited?: PluginConfig): WorkspaceEntry;
   ensureIndex(entry: WorkspaceEntry): Promise<RetrievalIndex>;
   executorFor(settings: Settings): ExecutorEntry;
   dispose(): void;
@@ -48,7 +48,7 @@ export function createKnowledge({ ctx, log, config }: {
   log: LogFn;
   config: PluginConfig | undefined;
 }): Knowledge {
-  // 插件不认识模型：设置与 wasm 宿主都在**第一次用到某个工作区**时按那份 oks.json 惰性建立；
+  // 插件不认识模型：设置与 wasm 宿主都在**第一次用到某个工作区**时按部署默认值及工作区覆盖惰性建立；
   // 一个进程里可以有任意多个工作区，互不影响。
   const workspaces = new Map<string, WorkspaceEntry>(); // root -> entry
   // 执行器按**数据文件**持有：同一个数据文件被多个工作区声明时共享一个只读连接。
@@ -84,12 +84,12 @@ export function createKnowledge({ ctx, log, config }: {
   registerSkill();
 
   /** 每个工具的入口动作：由**会话**定位工作区，再拿到（或惰性建立）它的运行环境。 */
-  const ensureWorkspace = (exec: WorkspaceProbe | undefined): WorkspaceEntry => {
+  const ensureWorkspace = (exec: WorkspaceProbe | undefined, inherited?: PluginConfig): WorkspaceEntry => {
     registerSkill(); // 加载时技能服务若还没起来，这里补上（已注册则是空操作）
     const { root, from } = workspaceRootFor(exec);
+    const settings = resolveSettings(root, inherited ?? config);
     const existing = workspaces.get(root);
-    if (existing !== undefined) return existing;
-    const settings = resolveSettings(root, config);
+    if (existing !== undefined && JSON.stringify(existing.settings) === JSON.stringify(settings)) return existing;
     const bytes = readFileSync(settings.model);
     const metadata = readBuildInformation(bytes);
     const presentationFile = `${settings.model}.knowledge-items.json`;
@@ -105,6 +105,7 @@ export function createKnowledge({ ctx, log, config }: {
       modelHash: createHash('sha256').update(bytes).digest('hex'),
       index: null, // 检索层：词汇表 + 反向引用索引
     };
+    existing?.runner?.dispose();
     workspaces.set(root, entry);
     log(`[oks] workspace ${root} (cwd from ${from}) · domain=${settings.domain} · model=${settings.model}`);
     return entry;

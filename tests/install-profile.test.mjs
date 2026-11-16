@@ -10,7 +10,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const REPO = fileURLToPath(new URL('..', import.meta.url));
-const IGNORED = new Set(['.git', 'node_modules', 'target', 'lib', 'dist', '__pycache__']);
+const IGNORED = new Set(['.git', 'node_modules', 'target', 'lib', 'dist', '.deploy', '__pycache__']);
 const CALL_STUB = `#!/usr/bin/env node
 const fs = require('node:fs');
 const path = require('node:path');
@@ -26,8 +26,11 @@ if (name === 'watchexec') {
 if (name === 'pnpm') {
   if (args.join(' ') === 'install --frozen-lockfile --ignore-scripts' && process.env.FAIL_BUILD_INSTALL) process.exit(17);
   if (args.join(' ') === 'run build') {
-    fs.mkdirSync('lib', { recursive: true });
-    fs.writeFileSync('lib/index.mjs', '// published plugin');
+    if (process.env.FAIL_BUILD) process.exit(17);
+    const output = path.resolve(process.cwd(), '../../dist', path.basename(process.cwd()), 'lib');
+    fs.mkdirSync(output, { recursive: true });
+    fs.writeFileSync(path.join(output, 'index.mjs'), '// published plugin');
+    if (path.basename(process.cwd()) === 'dsh-push-to-user') fs.writeFileSync(path.join(output, 'client.js'), '// published client');
   }
 } else if (args[0] === 'plugin') {
   const profile = path.join(process.env.DSH_HOME, 'profiles', args[2]);
@@ -112,7 +115,6 @@ test('install-profile installs twice, upgrades patches and starts the runtime', 
 
     const workspace = join(root, "user's workspace");
     mkdirSync(workspace);
-    writeFileSync(join(workspace, 'oks.json'), '{}');
     const target = join(root, "user's runtime");
     const log = join(root, 'calls.jsonl');
     const env = { ...process.env, PATH: `${tools}:${process.env.PATH}`, CALL_LOG: log, DSH_CMD: 'dsh', JUST_TEMPDIR: root };
@@ -166,7 +168,9 @@ test('install-profile installs twice, upgrades patches and starts the runtime', 
     }
 
     assert.ok(!existsSync(join(target, 'start.sh')));
-    assert.ok(!existsSync(join(target, 'run-dsh.sh')));
+    assert.ok(existsSync(join(target, 'run-dsh.sh')));
+    assert.ok(existsSync(join(target, 'run.sh')));
+    assert.ok(existsSync(join(target, '.ctrl')));
     assert.ok(existsSync(join(target, 'justfile')));
     assert.ok(!existsSync(join(target, 'run-watch')));
 
@@ -185,7 +189,7 @@ test('install-profile installs twice, upgrades patches and starts the runtime', 
     const watcher = readJsonLines(log).at(-2);
     assert.equal(watcher.cmd, 'watchexec');
     assert.deepEqual(watcher.args, ['--restart', '--ignore-nothing', '--shell=none', '-w', join(target, '.ctrl'), '--',
-      'just', '--justfile', join(target, 'justfile'), 'run-dsh', '--host', '127.0.0.1', 'two words']);
+      join(target, 'run-dsh.sh'), '--host', '127.0.0.1', 'two words']);
 
     // 真实 watcher 验证 touch 会重启；子进程为替身，不监听任何服务端口。
     const real = realWatchexec();
@@ -196,7 +200,7 @@ test('install-profile installs twice, upgrades patches and starts the runtime', 
     const restartLog = join(root, 'restart.jsonl');
     const watcherLog = join(root, 'watcher.log');
     const output = openSync(watcherLog, 'w');
-    const child = spawn('just', ['--justfile', join(target, 'justfile'), 'run'], {
+    const child = spawn(join(target, 'run.sh'), [], {
       cwd: root,
       env: { ...env, RESTART_LOG: restartLog },
       detached: true,
@@ -249,6 +253,78 @@ test('defaults follow the port', () => {
   for (const port of ['10923', '10925']) {
     const result = spawnSync('just', ['--set', 'port', port, '--evaluate', 'target'], { cwd: REPO, encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.stdout.trim(), join(process.env.HOME, `ws/oks-demo/dsh-oks-${port}`));
+    assert.equal(result.stdout.trim(), join(REPO, `.deploy/dsh-${port}`));
+  }
+});
+
+test('deploy builds isolated ports and preserves workspaces and control files on updates', () => {
+  const root = mkdtempSync(join(tmpdir(), 'oks-deploy-'));
+  try {
+    const repo = join(root, "author's source repo");
+    copyRepo(repo);
+    const tools = join(root, 'bin');
+    mkdirSync(tools);
+    for (const name of ['pnpm', 'dsh', 'watchexec']) writeTool(tools, name, CALL_STUB);
+    const log = join(root, 'calls.jsonl');
+    const env = { ...process.env, PATH: `${tools}:${process.env.PATH}`, CALL_LOG: log, DSH_CMD: 'dsh', JUST_TEMPDIR: root };
+    const run = (port, extra = {}) => spawnSync('just', ['--justfile', join(repo, 'justfile'), 'deploy', port], {
+      cwd: root, env: { ...env, ...extra }, encoding: 'utf8',
+    });
+    for (const port of ['0', '65536', 'bad', '010924']) {
+      const result = run(port);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /1\.\.65535/);
+    }
+    assert(!existsSync(log), 'Port validation precedes builds and installation');
+    assert(!existsSync(join(repo, '.deploy')));
+    for (const port of ['10924', '10925']) {
+      const result = run(port);
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      const target = join(repo, '.deploy', `dsh-${port}`);
+      for (const file of ['run.sh', 'run-dsh.sh', '.ctrl', 'justfile', 'demo-ws', 'profiles/web/package.json', 'packages/dsh-oks/lib/index.mjs', 'packages/dsh-push-to-user/lib/client.js']) {
+        assert(existsSync(join(target, file)), file);
+      }
+      const manifest = JSON.parse(readFileSync(join(target, 'profiles/web/package.json')));
+      assert.equal(manifest.dependencies['@local/dsh-oks'], `link:${join(target, 'packages/dsh-oks')}`);
+      assert(!existsSync(join(target, 'demo-ws/oks.json')), 'Deployment supports an unconfigured workspace');
+    }
+    assert(readJsonLines(log).filter(call => call.cmd === 'pnpm' && call.args.join(' ') === 'run build').length === 4);
+    assert(readJsonLines(log).every(call => call.cmd !== 'watchexec' && call.args[0] !== 'web'), 'Deployment does not start a service');
+    const target = join(repo, '.deploy/dsh-10924');
+    const workspace = join(target, 'demo-ws');
+    const config = '{"domain":"my-domain","model":"model.wasm","dataFile":"data.sqlite"}\n';
+    writeFileSync(join(workspace, 'oks.json'), config);
+    writeFileSync(join(workspace, 'analysis.dari'), '# user analysis\n');
+    writeFileSync(join(target, '.ctrl'), 'restart checkpoint');
+    const patchFile = join(target, 'profiles/web/cordis.patch.yml');
+    writeFileSync(patchFile, readFileSync(patchFile, 'utf8') + '\n# user setting\n');
+    let result = run('10924');
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(readFileSync(join(workspace, 'oks.json'), 'utf8'), config);
+    assert.equal(readFileSync(join(workspace, 'analysis.dari'), 'utf8'), '# user analysis\n');
+    assert.equal(readFileSync(join(target, '.ctrl'), 'utf8'), 'restart checkpoint');
+    assert(readFileSync(patchFile, 'utf8').includes('# user setting'));
+    assert(!existsSync(join(repo, '.deploy/dsh-10925/demo-ws/oks.json')));
+
+    result = spawnSync(join(target, 'run.sh'), ['--host', '127.0.0.1', 'two words'], { cwd: root, env, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    const [watcher, server] = readJsonLines(log).slice(-2);
+    assert.equal(watcher.cmd, 'watchexec');
+    assert.deepEqual(watcher.args, ['--restart', '--ignore-nothing', '--shell=none', '-w', join(target, '.ctrl'), '--', join(target, 'run-dsh.sh'), '--host', '127.0.0.1', 'two words']);
+    assert.equal(server.cwd, workspace);
+    assert.equal(server.home, target);
+    assert.deepEqual(server.args, ['web', '--port', '10924', '--host', '127.0.0.1', 'two words']);
+
+    const published = readFileSync(join(target, 'packages/dsh-oks/lib/index.mjs'));
+    const before = readJsonLines(log).length;
+    result = run('10924', { FAIL_BUILD: '1' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /构建失败/);
+    assert(readJsonLines(log).slice(before).every(call => call.cmd === 'pnpm'));
+    assert.deepEqual(readFileSync(join(target, 'packages/dsh-oks/lib/index.mjs')), published);
+    assert.equal(readFileSync(join(workspace, 'oks.json'), 'utf8'), config);
+    assert.equal(readFileSync(join(target, '.ctrl'), 'utf8'), 'restart checkpoint');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

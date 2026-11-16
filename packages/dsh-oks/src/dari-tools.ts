@@ -12,20 +12,20 @@ export function createDariTools(options:{config:PluginConfig['dari'];knowledge:K
  const workers=new Map<string,{child:ChildProcessWithoutNullStreams;request:(value:unknown)=>Promise<any>}>();
  const contexts=new Map<string,{now:string;epochMillis:number;timeZone:string|null}>();
  let closed=false;
- function worker(database:string){
-  let w=workers.get(database);if(w)return w;
+ function worker(database:string,model:string){
+  const workerKey=JSON.stringify([database,model,options.config]);
+  let w=workers.get(workerKey);if(w)return w;
   if(closed)throw Error('DARI tools disposed');
-  const c=options.config;
-  if(!c)throw Error('Configure dari.model for model type proof and execution');
-  const child=spawn(process.execPath,[c.service??fileURLToPath(new URL('../dari-runtime/node_modules/@hh9527/dari/dist/service.js',import.meta.url)),'--integration',c.integration??fileURLToPath(new URL('./index.mjs',import.meta.url)),'--options',JSON.stringify({model:c.model}),'--database',database],{stdio:['pipe','pipe','pipe'],detached:true});
+  const c=options.config??{};
+  const child=spawn(process.execPath,[c.service??fileURLToPath(new URL('../dari-runtime/node_modules/@hh9527/dari/dist/service.js',import.meta.url)),'--integration',c.integration??fileURLToPath(new URL('./index.mjs',import.meta.url)),'--options',JSON.stringify({model}),'--database',database],{stdio:['pipe','pipe','pipe'],detached:true});
   let stderr='',sequence=0;const pending=new Map<number,{resolve:(v:any)=>void;reject:(e:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
   const stop=()=>{if(child.pid)try{process.kill(-child.pid,'SIGTERM');}catch(e){if((e as NodeJS.ErrnoException).code!=='ESRCH')throw e;}};
-  const fail=(error:Error)=>{for(const p of pending.values()){clearTimeout(p.timer);p.reject(error);}pending.clear();workers.delete(database);};
+  const fail=(error:Error)=>{for(const p of pending.values()){clearTimeout(p.timer);p.reject(error);}pending.clear();workers.delete(workerKey);};
   child.stderr.on('data',chunk=>{stderr=(stderr+chunk).slice(-6000);});
   child.stdin.on('error',fail);child.on('error',fail);child.on('exit',code=>fail(Error('DARI service exited '+code+': '+stderr)));
   createInterface({input:child.stdout}).on('line',line=>{try{const v=JSON.parse(line),p=pending.get(v.id);if(!p)return;pending.delete(v.id);clearTimeout(p.timer);if(v.error)p.reject(Error(v.error));else p.resolve(v.result);}catch(e){fail(e instanceof Error?e:Error(String(e)));stop();}});
   w={child,request:(value:any)=>new Promise((resolve,reject)=>{const id=++sequence;const timer=setTimeout(()=>{fail(Error('DARI request timed out'));stop();},65000);pending.set(id,{resolve,reject,timer});child.stdin.write(JSON.stringify({...value,id})+'\n');})};
-  workers.set(database,w);return w;
+  workers.set(workerKey,w);return w;
  }
  const output={schema:{type:'object',additionalProperties:true},render:(_args:unknown,value:any)=>[{type:'text',text:value.text}]};
  const source=(root:string,raw:unknown)=>readDariSource(root,raw,'DARI').text;
@@ -36,7 +36,7 @@ export function createDariTools(options:{config:PluginConfig['dari'];knowledge:K
   const key=JSON.stringify([entry.root,session.id]);
   let context=contexts.get(key);
   if(!context){const epochMillis=Date.now(),zone=options.timeContext.zones.get(session);context={epochMillis,now:new Date(epochMillis).toISOString(),timeZone:zone?.kind==='resolved'?zone.timeZone:null};if(contexts.size>=128)contexts.delete(contexts.keys().next().value!);contexts.set(key,context);}
-  return {entry,key,context,host:worker(entry.settings.dataFile)};
+  return {entry,key,context,host:worker(entry.settings.dataFile,entry.settings.model)};
  }
  const tools:ToolDefinition[]=[...(['check','resolve'] as const).map(method=>({
   name:'dari_'+(method==='resolve'?'submit':method),description:method==='check'?'Check the complete .dari file without reading business rows. Uses external model type proof for query_remote! and internal proof for query!/tree!. Accepts only src.':'Check and execute a .dari file, publish its artifacts and deliver the unique Answer as a visible conversation message. Accepts only src. Do not repeat the delivered Answer. The tool receipt includes displayed chart/table/value data for analysis. If delivery is unavailable, forward the returned Answer verbatim; add observations separately.',
@@ -67,6 +67,6 @@ export function createDariTools(options:{config:PluginConfig['dari'];knowledge:K
  }];
  return {tools,async infoContracts(points:any[],exec:ToolExec){
   exec.signal?.throwIfAborted();const entry=options.knowledge.ensureWorkspace(exec);
-  const result=await worker(entry.settings.dataFile??'').request({method:'inspect',input:points});exec.signal?.throwIfAborted();return result;
+  const result=await worker(entry.settings.dataFile??'',entry.settings.model).request({method:'inspect',input:points});exec.signal?.throwIfAborted();return result;
  },dispose(){closed=true;for(const {child}of workers.values()){child.stdin.end();const timer=setTimeout(()=>{if(child.pid)try{process.kill(-child.pid,'SIGTERM');}catch{}},2000);timer.unref();child.once('exit',()=>clearTimeout(timer));}workers.clear();contexts.clear();}};
 }

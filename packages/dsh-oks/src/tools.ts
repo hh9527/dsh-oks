@@ -52,7 +52,9 @@ export function createTools({ knowledge, va, timeContext, attachments, approval,
         if (caller === undefined || typeof key !== 'string' || key.length === 0) {
           throw new Error('dsh-oks: 无法确定调用方会话，va_ask 需要它来登记词汇子会话。');
         }
-        return va.ask(caller, key, query, exec?.signal);
+        const entry = knowledge.ensureWorkspace(exec);
+        await knowledge.ensureIndex(entry);
+        return va.ask(caller, key, query, exec?.signal, entry.settings);
       },
     },
   ];

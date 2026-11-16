@@ -7,7 +7,7 @@ import {guidedTools} from '../src/guided-tools.ts';
 import {readDariSource} from '../src/source-file.ts';
 const root=mkdtempSync(join(tmpdir(),'dari-resources-'));
 const outside=mkdtempSync(join(tmpdir(),'dari-outside-'));
-const knowledge={ensureWorkspace:()=>({root,modelHash:'test',settings:{workspaceRoot:root}})} as any;
+const knowledge={ensureIndex:async()=>({}),ensureWorkspace:()=>({root,modelHash:'test',settings:{workspaceRoot:root}})} as any;
 const asks:string[]=[];
 const definitions=createTools({knowledge,va:{async ask(_caller:unknown,_key:string,query:string){asks.push(query);return {helper:'session-va-test',messageId:'m',answer:'词汇参考'};}} as any,timeContext:{zones:new Map()} as any,log(){},config:undefined});
 const tools=guidedTools(definitions,knowledge),exec={callId:'resource-call',agent:{session:{id:'resources'}}} as any;

@@ -12,17 +12,19 @@
 
 ## 模型与运行配置
 
-会话工作区的 oks.json 指定知识模型和只读 SQLite：
+部署 profile 的插件 config 提供默认领域、模型和只读数据库，路径使用绝对路径。VA、知识导航与 DARI 类型证明、执行共用同一模型，由 Node 内置 WebAssembly 引擎加载：
 
 ```json
-{"domain":"ic","model":"models/ic.wasm","dataFile":"data/ic.sqlite"}
+{"domain":"ic","model":"/path/to/ic.wasm","dataFile":"/path/to/ic.sqlite"}
 ```
 
-插件 config 的 dari 项指定类型证明模型，路径为绝对路径。模型由 worker 中的 Node 内置 WebAssembly 引擎直接加载：
+会话工作区的 `oks.json` 可省略。需要覆盖部署默认值时，只声明要覆盖的字段；相对路径以该工作区为基准，例如：
 
 ```json
-{"dari":{"model":"/path/to/ic-dari.wasm"}}
+{"model":"models/ic.wasm","dataFile":"data/ic.sqlite"}
 ```
+
+配置按当前会话工作区解析；更改后下次工具调用生效。没有模型配置时服务仍可启动，模型工具直接报告缺失项；无效 JSON 或读取权限错误会明确报错。部署配置中的执行审批策略由管理员控制。`dari` 配置仅用于指定可信语言服务 `service` 和集成模块 `integration` 路径。
 
 语言服务随插件发布于 dari-runtime，默认使用该入口；service 可显式指定可信服务路径。语言服务在独立常驻进程中运行，需要 Node.js 24 或以上版本。integration 可指定可信集成模块，默认使用插件发布入口导出的 createIntegration，组合模型桥接、展现宿主及知识契约。模型契约绑定具体构建身份，修改模型后重新检查。
 

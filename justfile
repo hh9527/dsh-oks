@@ -1,8 +1,8 @@
 # OKS 发布与运行环境。命令行示例见 README.md。
 port := "10923"
-target := home_directory() / "ws/oks-demo/dsh-oks-" + port
+target := justfile_directory() / ".deploy/dsh-" + port
 profile := "web"
-workspace := home_directory() / "ws/oks-demo/demo-ws"
+workspace := absolute_path(target) / "demo-ws"
 
 export OKS_INSTALL_PORT := port
 export DSH_HOME := absolute_path(target)
@@ -27,6 +27,18 @@ build:
     (cd packages/dsh-push-to-user && pnpm run build) || { printf 'build: dsh-push-to-user 构建失败\n' >&2; exit 1; }
     node scripts/pack.mjs
 
+# 构建并准备独立部署；服务由生成的 run.sh 手动启动。
+[positional-arguments]
+deploy deploy_port:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    DEPLOY_PORT="$1"
+    [[ "$DEPLOY_PORT" =~ ^[1-9][0-9]{0,4}$ ]] && (( DEPLOY_PORT <= 65535 )) || { printf 'deploy: port 必须是 1..65535 的整数\n' >&2; exit 1; }
+    DEPLOY_DIR="$PWD/.deploy/dsh-$DEPLOY_PORT"
+    just build
+    mkdir -p "$DEPLOY_DIR/demo-ws"
+    just "port=$DEPLOY_PORT" "target=$DEPLOY_DIR" "workspace=$DEPLOY_DIR/demo-ws" install-profile
+
 # 安装已构建的发布目录到完整 Web profile，包含主 Agent 文件工具。
 install-profile:
     #!/usr/bin/env bash
@@ -41,7 +53,7 @@ install-profile:
     say() { printf 'install-profile: %s\n' "$*"; }
     [[ "$OKS_INSTALL_PORT" =~ ^[1-9][0-9]{0,4}$ ]] && (( OKS_INSTALL_PORT <= 65535 )) || fail 'port 必须是 1..65535 的整数'
     [[ "$PROFILE" =~ ^[a-zA-Z0-9_-]+$ ]] || fail 'profile 只能包含字母、数字、下划线与连字符'
-    [ -f "$OKS_WORKSPACE/oks.json" ] || fail "工作区没有 oks.json：$OKS_WORKSPACE"
+    mkdir -p "$OKS_WORKSPACE"
     [ "$PROFILE" != 'desktop' ] || fail 'desktop profile 由 DeepSeek Harness Desktop 自己初始化，先打开它一次并完全退出，再用 dsh plugin 管理'
 
     PROFILE_DIR="$DSH_HOME_DIR/profiles/$PROFILE"
@@ -320,25 +332,33 @@ install-profile:
       say "      只想保留 preset 就把它从 bundles 里删掉（本脚本不动 bundles）。"
     fi
 
-    # 运行目录只生成 justfile：run-dsh 直接运行，run 监听 .ctrl 后调用 run-dsh。
+    # 启动脚本直接运行；justfile 为同一组脚本提供便捷入口。
     WORKSPACE="$OKS_WORKSPACE" PORT="$OKS_INSTALL_PORT" node --input-type=module - "${DSH_ARR[@]}" "$PROFILE" <<'JS'
-    import {writeFileSync} from 'node:fs';
+    import {writeFileSync,chmodSync,existsSync} from 'node:fs';
     import {join} from 'node:path';
     const quote=value=>"'"+value.replaceAll("'", "'\\''")+"'";
     const command=process.argv.slice(2).map(quote).join(' ');
     const home=process.env.DSH_HOME;
     const runtime=join(home,'justfile');
+    const direct=join(home,'run-dsh.sh');
+    const watched=join(home,'run.sh');
+    writeFileSync(direct,
+      '#!/usr/bin/env bash\nset -euo pipefail\nexport DSH_HOME='+quote(home)+
+      '\ncd -- '+quote(process.env.WORKSPACE)+
+      '\nexec '+command+' --port '+quote(process.env.PORT)+' "$@"\n');
+    writeFileSync(watched,
+      '#!/usr/bin/env bash\nset -euo pipefail\nexport DSH_HOME='+quote(home)+
+      '\nCTRL_FILE="$DSH_HOME/.ctrl"\n'+
+      'test -e "$CTRL_FILE" || touch "$CTRL_FILE"\n'+
+      'exec watchexec --restart --ignore-nothing --shell=none -w "$CTRL_FILE" -- '+quote(direct)+' "$@"\n');
+    chmodSync(direct,0o755);chmodSync(watched,0o755);
+    const control=join(home,'.ctrl');
+    if(!existsSync(control))writeFileSync(control,'');
     writeFileSync(runtime,
-      'default:\n    @just --list\n\n[positional-arguments]\nrun-dsh *args:\n'+
-      '    #!/usr/bin/env bash\n    set -euo pipefail\n    export DSH_HOME='+quote(home)+
-      '\n    cd -- '+quote(process.env.WORKSPACE)+
-      '\n    exec '+command+' --port '+quote(process.env.PORT)+' "$@"\n\n'+
-      '[positional-arguments]\nrun *args:\n'+
-      '    #!/usr/bin/env bash\n    set -euo pipefail\n    export DSH_HOME='+quote(home)+
-      '\n    CTRL_FILE="$DSH_HOME/.ctrl"\n    touch "$CTRL_FILE"\n'+
-      '    exec watchexec --restart --ignore-nothing --shell=none -w "$CTRL_FILE" -- just --justfile '+quote(runtime)+' run-dsh "$@"\n');
+      'default:\n    @just --list\n\n[positional-arguments]\nrun-dsh *args:\n    @'+quote(direct)+' "$@"\n\n'+
+      '[positional-arguments]\nrun *args:\n    @'+quote(watched)+' "$@"\n');
     JS
-    say "启动：just --justfile $DSH_HOME_DIR/justfile run（端口 $OKS_INSTALL_PORT，工作区 $OKS_WORKSPACE）"
+    say "启动：$DSH_HOME_DIR/run.sh（端口 $OKS_INSTALL_PORT，工作区 $OKS_WORKSPACE）"
 
 # 隔离核验安装和启动，不构建真实插件、不启动服务。
 test-install:

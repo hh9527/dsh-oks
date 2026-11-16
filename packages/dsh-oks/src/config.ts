@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { errorText } from './host.ts';
 import type { WorkspaceProbe } from './host.ts';
 
-// 与机器、模型无关的默认值：路径、领域名、模型一律来自工作区声明。
+// 与机器、模型无关的默认值：部署配置提供默认模型，工作区可覆盖。
 export const DEFAULTS = {
   // 墙钟上限：死循环只能靠它兜住——到点 terminate 整个 worker 代并拒掉排队请求，下次请求
   // 再拉起。正常单次请求约 2.5 ms。
@@ -28,9 +28,9 @@ export interface OksDeclaration {
   requireRunApproval?: boolean;
 }
 
-/** 插件行 config 里可以覆盖的键（VA 相关配置见 src/va.ts）。 */
+/** 部署 profile 的默认设置与宿主集成配置（VA 配置见 src/va.ts）。 */
 export interface PluginConfig extends OksDeclaration {
-  dari?: { service?:string; model:string; integration?:string };
+  dari?: { service?:string; integration?:string };
   vocabularyHelper?: boolean;
   vaPreset?: string;
   vaReasoningEffort?: string;
@@ -58,25 +58,22 @@ interface WorkspaceConfigResult {
   dataFile: string | undefined;
 }
 
-/** 读工作区的 oks.json：**"哪个模型、哪份数据"由工作区声明**。
- *  `model` 与 `dataFile` 都相对 oks.json 所在目录解析（绝对路径原样用）。 */
+/** 工作区配置可省略；其中的相对路径以工作区为基准。 */
 export function loadWorkspaceConfig(root: string): WorkspaceConfigResult {
   const file = join(root, 'oks.json');
-  let oks: OksDeclaration;
+  let oks: OksDeclaration = {};
   try {
     oks = JSON.parse(readFileSync(file, 'utf8')) as OksDeclaration;
+    if (!oks || typeof oks !== 'object' || Array.isArray(oks)) throw new Error('配置必须为对象');
   } catch (cause) {
-    throw new Error(
-      `dsh-oks: 这个会话的工作区里没有可用的 ${file}（${errorText(cause)}）。`
-      + '在工作区根目录放一份 oks.json 即可开放模型，例如 '
-      + '{"domain":"<知识服务领域名>","model":"<相对 oks.json 的 .wasm 路径>"}。'
-      + '插件不提供默认模型——用错模型比报错贵。',
-    );
+    if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new Error(`dsh-oks: 无法读取工作区配置 ${file}（${errorText(cause)}）。请修正该配置。`);
+    }
   }
   const resolve = (value: unknown): string | undefined => (typeof value === 'string' && value.length > 0
     ? (value.startsWith('/') ? value : join(root, value))
     : undefined);
-  return { root, file, oks, model: resolve(oks?.model), dataFile: resolve(oks?.dataFile) };
+  return { root, file, oks, model: resolve(oks.model), dataFile: resolve(oks.dataFile) };
 }
 
 /** 会话 → 工作区目录。工作区是**会话属性**（会话头里的 cwd），不是进程属性；
@@ -103,29 +100,20 @@ export function workspaceRootFor(exec: WorkspaceProbe | undefined): { root: stri
 /** 把一个工作区解析成一份运行设置。缺 domain / model 时报错并给出补法。 */
 export function resolveSettings(root: string, config: PluginConfig | undefined): Settings {
   const workspace = loadWorkspaceConfig(root);
-  // 优先级：插件行的显式 config > 工作区的 oks.json > 与机器/模型无关的 DEFAULTS。
-  // domain / model 缺失时先落成空串：下面的 missing 检查对"undefined"和"空串"给的是同一条报错。
-  const fromWorkspace: Settings = {
-    domain: workspace.oks.domain ?? '',
-    model: workspace.model ?? '',
-    dataFile: workspace.dataFile,
-    requestTimeoutMs: workspace.oks.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs,
-    retryAcceptedSubset: workspace.oks.retryAcceptedSubset ?? DEFAULTS.retryAcceptedSubset,
-    queryTimeoutMs: workspace.oks.queryTimeoutMs ?? DEFAULTS.queryTimeoutMs,
-    queryMaxRows: workspace.oks.queryMaxRows ?? DEFAULTS.queryMaxRows,
-    requireRunApproval: workspace.oks.requireRunApproval ?? DEFAULTS.requireRunApproval,
-    workspaceRoot: workspace.root,
+  // 工作区显式声明 > 部署 profile 默认配置 > 通用默认值。
+  const declared = Object.fromEntries(Object.entries(workspace.oks).filter(([key, value]) =>
+    Object.hasOwn(DEFAULTS, key) && value !== undefined));
+  const settings: Settings = {
+    ...DEFAULTS,
+    ...Object.fromEntries(Object.entries(config ?? {}).filter(([key, value]) => Object.hasOwn(DEFAULTS, key) && value !== undefined)),
+    ...declared,
+    domain: workspace.oks.domain ?? config?.domain ?? '',
+    model: workspace.model ?? config?.model ?? '',
+    dataFile: workspace.dataFile ?? config?.dataFile,
+    workspaceRoot: root,
     workspaceFile: workspace.file,
   };
-  // 设置有三个来源：与机器无关的默认值、工作区的 oks.json、插件行 config 里的这几个覆盖键。
-  const settings: Settings = { ...DEFAULTS, ...fromWorkspace };
-  if (config?.domain !== undefined) settings.domain = config.domain;
-  if (config?.model !== undefined) settings.model = config.model;
-  if (config?.dataFile !== undefined) settings.dataFile = config.dataFile;
-  if (config?.requestTimeoutMs !== undefined) settings.requestTimeoutMs = config.requestTimeoutMs;
-  if (config?.retryAcceptedSubset !== undefined) settings.retryAcceptedSubset = config.retryAcceptedSubset;
-  if (config?.queryTimeoutMs !== undefined) settings.queryTimeoutMs = config.queryTimeoutMs;
-  if (config?.queryMaxRows !== undefined) settings.queryMaxRows = config.queryMaxRows;
+  // 部署的执行审批策略由管理员控制。
   if(config?.requireRunApproval!==undefined)settings.requireRunApproval=config.requireRunApproval;
   if(typeof settings.requireRunApproval!=='boolean')throw new Error('requireRunApproval must be boolean');
   const missing: string[] = [];
@@ -133,9 +121,9 @@ export function resolveSettings(root: string, config: PluginConfig | undefined):
   if (typeof settings.model !== 'string' || settings.model.length === 0) missing.push('model');
   if (missing.length > 0) {
     throw new Error(
-      `dsh-oks: ${workspace.file} 缺少必要声明: ${missing.join(', ')}。`
-      + '需要 {"domain":"<知识服务领域名>","model":"<相对 oks.json 的 .wasm 路径>"}，'
-      + '也可以在插件行的 config 里覆盖。',
+      `dsh-oks: 当前部署及工作区未配置必要声明: ${missing.join(', ')}。`
+      + '请由用户在部署 profile 配置，或在 '+workspace.file+' 声明 { "domain":"<知识服务领域名>","model":"<相对 oks.json 的 .wasm 路径>"}，'
+      + '请用户指定模型，不要搜索历史目录或猜选模型。',
     );
   }
   return settings;

@@ -1,3 +1,4 @@
+import { VA_SETTINGS } from './va.ts';
 import { randomUUID } from 'node:crypto';
 import { renderWholeVocabulary } from './retrieval.ts';
 import type { Knowledge } from './knowledge.ts';
@@ -88,7 +89,7 @@ export function installVocabularyHelper({ ctx, knowledge, log, config }: {
       agent.session.append('approval/policy', { policy: 'never', source: 'delegation' });
       initialized.add(agent.session);
     }
-    const entry = knowledge.ensureWorkspace({ agent });
+    const entry = knowledge.ensureWorkspace({ agent }, VA_SETTINGS.get(agent.session.id!));
     const index = await knowledge.ensureIndex(entry);
     context.signal?.throwIfAborted();
     const feed = template.replace(MARKER, () => renderWholeVocabulary(index));

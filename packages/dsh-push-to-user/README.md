@@ -56,4 +56,4 @@ DSH 默认把非 `source.kind === 'user'` 的用户消息归为上下文，而�
 
 源码是 `src/*.ts`，`node build.mjs` 用 Node 的类型剥离生成 `lib/*.js`；产物不进入版本控制。类型检查用包自己的 TypeScript：`pnpm run typecheck`。
 
-仓库根目录的 `just install-profile` 会在临时副本里构建这个包，把 `lib/` 与 patch 复制到安装目录，写入 profile 依赖并加入 bundles。
+仓库根目录的 `just deploy <PORT>` 会构建并安装这个包，把 `lib/` 与 patch 复制到独立部署目录，写入 profile 依赖并加入 bundles。已有构建产物可使用 `just install-profile` 安装。
