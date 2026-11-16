@@ -47,7 +47,7 @@ export async function openModel(artifact:string){
     const started=performance.now();
     let contract:{contract_id:string;abi_version:string;datasets:WireDataset[];relations:Omit<RelationSymbol,'kind'>[];types:{name:string;logical:string;storage:string}[];codec_module:string};
     try{
-        contract=request('ontology/dari',{method:'contract',input:{}});
+        contract=request('ontology/model',{method:'contract',input:{}});
         if(contract.abi_version!==MODEL_ABI_VERSION)throw Error('Unsupported model proof ABI '+contract.abi_version);
         // Trusted model build output; .dari text is never executed as JavaScript.
         const generated=await import('data:text/javascript;base64,'+Buffer.from(contract.codec_module).toString('base64'));
@@ -76,7 +76,7 @@ export async function openModel(artifact:string){
         datasets,types,relations:Object.fromEntries(contract.relations.map(r=>[r.symbol,{...r,kind:'relation' as const}])),
         check_type(intent:IntentType,encoded:EncodedIntent){
             const start=performance.now();
-            const checked:WireTemplate=request('ontology/dari',{method:'check_type',input:{intent:encoded.wire}},encoded.origins.map(o=>({...o,path:['input','intent',...o.path]})));
+            const checked:WireTemplate=request('ontology/model',{method:'transform',input:{intent:encoded.wire}},encoded.origins.map(o=>({...o,path:['input','intent',...o.path]})));
             stats.checkMs.push(performance.now()-start);
             const fields:Record<string,Type>=Object.create(null);
             for(const c of checked.columns){const t=business(c.logical,c.type);fields[c.name]=c.nullable?{kind:'option',inner:t}:t;}
@@ -100,7 +100,6 @@ export async function openModel(artifact:string){
             return {sql,bindings,columns:checked.columns.map(({logical,...column})=>column),max_rows:checked.max_rows??undefined};
     }
     return {model,bind,stats,contract,codecs,codecModuleSource:contract.codec_module,
-        checkWire(intentJson:string):WireTemplate{return request('ontology/dari',{method:'check_type',input:{intent:JSON.parse(intentJson)}});},
-        transform(input:unknown){return request('ontology/dari',{method:'transform',input});},
+        checkWire(intentJson:string):WireTemplate{return request('ontology/model',{method:'transform',input:{intent:JSON.parse(intentJson)}});},
         async close(){if(!closed){closed=true;worker.postMessage({close:true});}await exited;}};
 }
