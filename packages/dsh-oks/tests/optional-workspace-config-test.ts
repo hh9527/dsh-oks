@@ -26,7 +26,7 @@ try {
  const tools=createTools({knowledge,va:{async ask(){asked++;return{helper:'va',messageId:'1',answer:'alarm'}}},timeContext:{zones:new WeakMap()} as any,log(){},config:{...profile,dari:{service}}});
  const exec=(cwd:string)=>({agent:{session:{id:'test',header:{cwd}}}} as any);
  try{
-  const va:any=tools.find(t=>t.name==='va_ask')!;
+  const va:any=tools.find(t=>t.name==='dari_vocab')!;
   assert.equal((await va.execute({query:'alarm'},exec(root)) as any).answer,'alarm');assert.equal(asked,1);
   failIndex=true;await assert.rejects(async()=>va.execute({query:'alarm'},exec(root)),/model initialization failed/);assert.equal(asked,1);failIndex=false;
   assert.equal((await tools.infoContracts!([],exec(root)) as any).model,profile.model);

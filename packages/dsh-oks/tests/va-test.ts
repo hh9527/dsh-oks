@@ -126,7 +126,7 @@ test('VA 按职责过滤宿主提示词与工具 schema，保留安全约束',as
   const knowledge={ensureWorkspace(){return{settings:{domain:'test'}}},async ensureIndex(){return{knowledge:{},terms:[]}}};
   installVocabularyHelper({ctx,knowledge,log(){},config:{vocabularyHelper}} as any);
   const agent=caller();agent.session.append=()=>{};
-  const original={sections:[{name:'safety',text:'keep safety'},{name:'ui:deliverable-file-references',text:'Prefer showing the primary results'},{name:'harness:source',text:'source checkout'},{name:'app:web-surface',text:'web development'}],tools:[{name:'va_ask'},{name:'bash'}]};
+  const original={sections:[{name:'safety',text:'keep safety'},{name:'ui:deliverable-file-references',text:'Prefer showing the primary results'},{name:'harness:source',text:'source checkout'},{name:'app:web-surface',text:'web development'}],tools:[{name:'dari_vocab'},{name:'bash'}]};
   const result=await assemble({},{agent},async()=>original);
   assert.deepEqual(result.sections.map((s:any)=>s.name),['safety','oks:knowledge-assistant']);
   assert.deepEqual(result.tools,[]);

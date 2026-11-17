@@ -17,7 +17,7 @@ try{
  assert(!tools.some(t=>t.name==='dari_symbols'));
  assert(!tools.some(t=>t.name==='dari_'+'resolve'));
  assert(tools.some(t=>t.name==='dari_submit'));
- const info:any=await call('oks_info',{ids:['datasets/device_kpi','datasets/device_kpi/measures/cpu_usage','entities/device','relations/frame_belongs_to_device','datasets/missing']});
+ const info:any=await call('dari_kg_info',{ids:['datasets/device_kpi','datasets/device_kpi/measures/cpu_usage','entities/device','relations/frame_belongs_to_device','datasets/missing']});
  const text=renderInfo({},info)[0].text!;
  assert.match(text,/ic::device_kpi/);assert.match(text,/symbol:.*cpu_usage/);assert.match(text,/Percent|CpuUtilization/);assert.match(text,/ic::relations::frame_belongs_to_device/);assert.match(text,/读取失败/);
  assert.equal(info.data.items.find((i:any)=>i.id==='datasets/device_kpi/measures/cpu_usage').dari.dataset,'ic::device_kpi');

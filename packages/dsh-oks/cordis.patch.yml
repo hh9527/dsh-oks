@@ -3,5 +3,5 @@
 # dari_check 检查全稿，dari_submit 解析所选数据、图表和报告。
 - insert:
     - id: oks
-      name: '@local/dsh-oks'
+      name: '@local/dsh-data-seer'
       config: {}

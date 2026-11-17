@@ -1,5 +1,5 @@
 # 仅承载 Web 客户端能力；宿主侧为空插件。
 - insert:
     - id: push-to-user
-      name: '@local/dsh-push-to-user'
+      name: '@local/dsh-data-seer-client'
       config: {}

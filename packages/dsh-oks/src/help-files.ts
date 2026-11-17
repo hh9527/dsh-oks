@@ -14,7 +14,7 @@ export const helpFiles:Record<string,string> = {
 };
 export const PRELOADED_MANUALS=['oks://help/workflow.md','oks://help/dari.md','oks://help/rules.md'] as const;
 export const manualPrompt = [
-  '以下 workflow.md、dari.md、rules.md 三段已完整载入，无需 oks_read。仅在逐字引用或上下文被压缩后重读；dari-figures.md 未载入，选定图表后按需读取。',
+  '以下 workflow.md、dari.md、rules.md 三段已完整载入，无需 dari_read。仅在逐字引用或上下文被压缩后重读；dari-figures.md 未载入，选定图表后按需读取。',
   ...PRELOADED_MANUALS.map(uri=>'<!-- '+uri+' -->\n'+helpFiles[uri].trimEnd()),
 ].join('\n\n');
 export function helpEntries(files:Record<string,string> = helpFiles) {return Object.entries(files).map(([name,text])=>({name,bytes:Buffer.byteLength(text),modifiedAt:''}));}

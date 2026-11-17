@@ -1,5 +1,5 @@
 {
-  "name": "@local/dsh-push-to-user",
+  "name": "@local/dsh-data-seer-client",
   "version": "0.0.0",
   "private": true,
   "type": "module",

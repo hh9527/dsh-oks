@@ -1,6 +1,6 @@
 # 手册维护
 
-主 agent 的固定前缀按 `workflow.md` → `dari.md` → `rules.md` 拼接，文本与 oks_read 完全同源，地址注释用于压缩后重读或逐字引用。rules 始终是插件手册前缀的末段；新增说明放在它之前。
+主 agent 的固定前缀按 `workflow.md` → `dari.md` → `rules.md` 拼接，文本与 dari_read 完全同源，地址注释用于压缩后重读或逐字引用。rules 始终是插件手册前缀的末段；新增说明放在它之前。
 
 - workflow：顺序与知识导航，回答先做什么。
 - dari：语法、接口、类型、查询、时间、图表索引、Report/Answer，回答怎么写。

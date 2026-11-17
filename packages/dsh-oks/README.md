@@ -28,7 +28,7 @@
 
 语言服务随插件发布于 dari-runtime，默认使用该入口；service 可显式指定可信服务路径。语言服务在独立常驻进程中运行，需要 Node.js 24 或以上版本。integration 可指定可信集成模块，默认使用插件发布入口导出的 createIntegration，组合模型桥接、展现宿主及知识契约。模型契约绑定具体构建身份，修改模型后重新检查。
 
-知识来自 Wasm 的 ontology.knowledge 构建信息；VA 提供领域词汇，oks_discover 定位承载属性的 Dataset，oks_routes 发现关系路径，oks_info 返回局部知识及精确源码符号。工具和参数规则见 [workflow.md](src/help/workflow.md)。
+知识来自 Wasm 的 ontology.knowledge 构建信息；VA 提供领域词汇，dari_kg_discover 定位承载属性的 Dataset，dari_kg_routes 发现关系路径，dari_kg_info 返回局部知识及精确源码符号。工具和参数规则见 [workflow.md](src/help/workflow.md)。
 
 ## 构建与验收
 
@@ -44,11 +44,11 @@ pnpm test
 
 构建和 pretest 更新 dist/dsh-oks/lib 与 dari-runtime；执行前告知并确认运行环境不会提前加载未验收产物。测试临时文件使用 TMPDIR。默认套件不要求真实工作区，模型集成通过 tests/dari-adapter-test.ts 显式运行，独立 bundle 冒烟通过 tests/smoke.ts 验证。
 
-安装及独立环境配置见[仓库说明](../../README.md)。插件通过宿主附件服务持久保存 SVG 与 HTML。Answer 使用 push-to-user 消息投递，可见卡片由 @local/dsh-push-to-user 渲染。
+安装及独立环境配置见[仓库说明](../../README.md)。插件通过宿主附件服务持久保存 SVG 与 HTML。Answer 使用 push-to-user 消息投递，可见卡片由 @local/dsh-data-seer-client 渲染。
 
 ## 手册维护
 
-固定前缀按 workflow.md、dari.md、rules.md 顺序组成，与 oks_read 读取同源；纪律始终位于末段。图表分册按需读取。变更语法时同步语言实现、手册、样例及 tree-sitter-dari，维护细则见 [help/README.md](src/help/README.md)。
+固定前缀按 workflow.md、dari.md、rules.md 顺序组成，与 dari_read 读取同源；纪律始终位于末段。图表分册按需读取。变更语法时同步语言实现、手册、样例及 tree-sitter-dari，维护细则见 [help/README.md](src/help/README.md)。
 
 DARI 位于 `vendors/dari` Git submodule，父仓提交固定其精确版本。插件通过 link 使用 submodule 的 dari-core；构建先编译同一版本的 core 与 dari，再生成自包含运行包。产物记录 DARI 提交，不依赖相邻源码仓库。升级时先更新 submodule 指针，完成集成验收后与适配改动一起提交。
 

@@ -1,7 +1,7 @@
 const loader = (window as any).__ModuleLoader__;
 
 loader.load({
-  id: "@local/dsh-push-to-user",
+  id: "@local/dsh-data-seer-client",
   factory: (require: (id: string) => any) => {
     // 只能 require 宿主注入的模块；其他依赖必须在构建期打包。
     const React = require("react");

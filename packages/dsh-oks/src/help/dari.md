@@ -10,7 +10,7 @@
 
 注释使用 `#` 到行尾，字符串内保持原值。绑定、对象键、列名和函数参数采用 ASCII snake_case；类型、枚举成员与扩展组件采用 PascalCase，HTML 元素保持原标签名。对象字段用 `:`，tree! 节点属性用 `=`；布尔与空值为 True/False/None。中文写在展示文案与标签中。
 
-Dataset、成员、类型、enum 和 Relation 使用 oks_info 发布的精确 .dari 符号；知识卡片中的 JSON 查询不是源码语法。
+Dataset、成员、类型、enum 和 Relation 使用 dari_kg_info 发布的精确 .dari 符号；知识卡片中的 JSON 查询不是源码语法。
 
 表结果为 Table(Schema({...}))，可选单行为 Option(Schema({...}))；表字段为逻辑标量或 Option(T)。业务 newtype 保留名义类型和计算约束，相同物理存储不代表可以混算。共享概念包括 Percent、Ratio、EpochMillis、DateTimeUtc、DateTimeTz 和 TimeZone。
 
@@ -51,7 +51,7 @@ answer tree! { Answer [h1 ["告警构成"],PieChart(data = rows,spec = {x:$.seve
 
 逐对象指标先关联到对象身份节点并 group_by_identity，再投影称谓。设备名不能替代身份；KPI 身份可能包含采样时间，不能代替设备身份。
 
-query_remote! 通过 from 引入模型源，用 `from(公开Dataset符号).as!(a) |> connect(公开Relation符号).as!(b)` 遍历关联。as! 绑定当前节点并保留整个计划，connect 从当前节点推导对端 Dataset，连续连接从最新节点继续。Relation 决定连接方向、基数和可选关联；可选关联保留根行，并使对端维度可空，即使其字段声明本身非空。自关联使用 `connect(Relation, from_node, to_node)`：先分别 `let parent = from(Dataset); let child = from(Dataset);`，端点顺序对应 Relation 发布的 from/to，管道输入可以是任一端。先用 oks_info 读取涉及 Dataset 的 Relation 符号及端点。维度筛选作用于聚合前原始行，独立的度量 filter 作用于聚合后；支持多个度量 filter。维度比较采用 `成员 比较符 参数`，可连续 filter 或嵌套 && / ||；文本筛选使用 contains/not_contains/starts_with/ends_with(成员,String参数)，不区分 ASCII 大小写。参数用声明的逻辑类型，例如 EpochMillis(...)、模型 newtype 或 Type::Variant。模型检查字段是否允许对应算子。排序可引用未投影成员；聚合后只能按已有分组键、已按身份分组的节点维度或聚合度量排序，模型拒绝会改变分组口径的隐藏排序。
+query_remote! 通过 from 引入模型源，用 `from(公开Dataset符号).as!(a) |> connect(公开Relation符号).as!(b)` 遍历关联。as! 绑定当前节点并保留整个计划，connect 从当前节点推导对端 Dataset，连续连接从最新节点继续。Relation 决定连接方向、基数和可选关联；可选关联保留根行，并使对端维度可空，即使其字段声明本身非空。自关联使用 `connect(Relation, from_node, to_node)`：先分别 `let parent = from(Dataset); let child = from(Dataset);`，端点顺序对应 Relation 发布的 from/to，管道输入可以是任一端。先用 dari_kg_info 读取涉及 Dataset 的 Relation 符号及端点。维度筛选作用于聚合前原始行，独立的度量 filter 作用于聚合后；支持多个度量 filter。维度比较采用 `成员 比较符 参数`，可连续 filter 或嵌套 && / ||；文本筛选使用 contains/not_contains/starts_with/ends_with(成员,String参数)，不区分 ASCII 大小写。参数用声明的逻辑类型，例如 EpochMillis(...)、模型 newtype 或 Type::Variant。模型检查字段是否允许对应算子。排序可引用未投影成员；聚合后只能按已有分组键、已按身份分组的节点维度或聚合度量排序，模型拒绝会改变分组口径的隐藏排序。
 
 ```telora
 data rows = query_remote! {

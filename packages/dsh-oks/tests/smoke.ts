@@ -3,7 +3,7 @@ const moduleUrl=new URL('../../../dist/dsh-oks/lib/index.mjs',import.meta.url);
 const {apply,dariHost}=await import(moduleUrl.href);
 const tools:any[]=[];
 apply({logger:{info(){}},get(){},on(){return ()=>{};},effect(fn:()=>unknown){fn();},systemPrompt:{section(value:any){assert(!value.text.includes('.darit'));}},tools:{register(tool:any){tools.push(tool);}}},{});
-for(const name of ['dari_check','dari_submit','dari_renew_context','oks_info'])assert(tools.some(t=>t.name===name));
+for(const name of ['dari_check','dari_submit','dari_renew_context','dari_kg_info'])assert(tools.some(t=>t.name===name));
 assert(!tools.some(t=>t.name==='darit_symbols'));
 const figure=dariHost.renderFigure('BarChart',{category:'name',value:'n'},[{name:'设备',n:42}],{name:{kind:'scalar',name:'String'},n:{kind:'scalar',name:'Int'}});
 assert(figure.content.includes('<svg'));

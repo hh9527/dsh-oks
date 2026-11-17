@@ -1,7 +1,7 @@
-仅使用 va_ask 返回的 ASCII 英文词表原词作为 q，不自行翻译、改写或拼接。
+仅使用 dari_vocab 返回的 ASCII 英文词表原词作为 q，不自行翻译、改写或拼接。
 
 ```js
-oks_search({q:["cpu"],scope:["datasets/device_kpi"]})
+dari_kg_search({q:["cpu"],scope:["datasets/device_kpi"]})
 ```
 
 q/scope 是非空数组，最多各 12 项；每词独立匹配、最多返回 10 项，没有额外总结果上限。多个 scope 取并集，按知识 ID 去重后排序；词之间不是 AND。匹配名称、别名、说明和规范值，支持部分词及英文轻微拼写错误，不推断同义词。

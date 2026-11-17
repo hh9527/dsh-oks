@@ -41,7 +41,7 @@ assert.equal(await readDomainSummary(knowledge,exec('large')),summary);
 const tools=guidedTools([],knowledge);
 const call=(name:string,args:object,domain='large')=>tools.find(t=>t.name===name)!.execute(args as never,exec(domain));
 for(const domain of ['large','other']) {
- await assert.rejects(call('oks_read',{path:DOMAIN_SUMMARY_URI},domain),/built-in manuals/);
+ await assert.rejects(call('dari_read',{path:DOMAIN_SUMMARY_URI},domain),/built-in manuals/);
 
 }
 for(const tool of tools)assert(!JSON.stringify({description:tool.description,parameters:tool.parameters}).includes('oks://domain/'));

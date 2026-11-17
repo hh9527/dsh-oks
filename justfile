@@ -34,7 +34,9 @@ deploy deploy_port:
     set -euo pipefail
     DEPLOY_PORT="$1"
     [[ "$DEPLOY_PORT" =~ ^[1-9][0-9]{0,4}$ ]] && (( DEPLOY_PORT <= 65535 )) || { printf 'deploy: port 必须是 1..65535 的整数\n' >&2; exit 1; }
-    DEPLOY_DIR="$PWD/.deploy/dsh-$DEPLOY_PORT"
+    # 部署产物属于使用方项目：默认放在调用者当前目录的 .deploy 下，可用 OKS_DEPLOY_ROOT 指定。
+    DEPLOY_ROOT="${OKS_DEPLOY_ROOT:-$PWD/.deploy}"
+    DEPLOY_DIR="$DEPLOY_ROOT/dsh-$DEPLOY_PORT"
     just build
     mkdir -p "$DEPLOY_DIR/demo-ws"
     just "port=$DEPLOY_PORT" "target=$DEPLOY_DIR" "workspace=$DEPLOY_DIR/demo-ws" install-profile
@@ -44,7 +46,7 @@ install-profile:
     #!/usr/bin/env bash
     set -euo pipefail
     REPO_DIR="$PWD"
-    PACKAGE='@local/dsh-oks'
+    PACKAGE='@local/dsh-data-seer'
     PACKAGE_DIR="$DSH_HOME/packages/dsh-oks"
     PATCH_ID='preset-oks'
     PROFILE="$DSH_PROFILE"
@@ -86,7 +88,7 @@ install-profile:
     DIST_DIR="$REPO_DIR/dist"
     [ -f "$DIST_DIR/dsh-oks/package.json" ] || fail "缺少发布目录 $DIST_DIR/dsh-oks，先运行 just build"
     [ -f "$DIST_DIR/dsh-push-to-user/package.json" ] || fail "缺少发布目录 $DIST_DIR/dsh-push-to-user，先运行 just build"
-    CLIENT_PACKAGE='@local/dsh-push-to-user'
+    CLIENT_PACKAGE='@local/dsh-data-seer-client'
     CLIENT_DIR="$DSH_HOME/packages/dsh-push-to-user"
     rm -rf "$PACKAGE_DIR" "$CLIENT_DIR"
     mkdir -p "$DSH_HOME/packages"
@@ -201,13 +203,13 @@ install-profile:
       rm -f "$tmp"
       cat >> "$PATCH_FILE" <<'YAML'
 
-    # agent preset：OKS 问数 —— 知识发现、DARI 回答源码和只读输出工具 + 追问。
+    # agent preset：Data Seer 问数 —— 知识发现、DARI 回答源码和只读输出工具 + 追问。
     - insert:
         - id: preset-oks
           name: "@deepseek-ai/dsh-agent-preset"
           config:
             id: oks
-            name: OKS 问数
+            name: Data Seer 问数
             description: 业务问句 → 查询结果：词汇规整、知识发现、DARI 分析、只读查询与答案交付。
             order: 5
             plugins:
@@ -223,7 +225,7 @@ install-profile:
               - id: present
                 name: "@deepseek-ai/dsh-tool-present"
               - id: oks
-                name: "@local/dsh-oks"
+                name: "@local/dsh-data-seer"
                 config: {}
               - id: compaction
                 name: cordis:group
@@ -294,11 +296,11 @@ install-profile:
           name: "@deepseek-ai/dsh-agent-preset"
           config:
             id: oks-vocabulary
-            name: OKS 词汇助手
+            name: Data Seer 词汇助手
             description: 完整领域词汇对齐与归属定位。
             plugins:
               - id: oks-vocabulary
-                name: "@local/dsh-oks"
+                name: "@local/dsh-data-seer"
                 config:
                   vocabularyHelper: true
     YAML
@@ -308,7 +310,7 @@ install-profile:
     MANIFEST="$MANIFEST" PATCH_FILE="$PATCH_FILE" node --input-type=module <<'JS'
     import {readFileSync,writeFileSync} from 'node:fs';
     const file=process.env.MANIFEST;const manifest=JSON.parse(readFileSync(file,'utf8'));
-    if(manifest.dependencies)delete manifest.dependencies['@local/dsh-oks-ui'];
+    if(manifest.dependencies)delete manifest.dependencies['@local/dsh-data-seer-ui'];
     writeFileSync(file,JSON.stringify(manifest,null,2)+'\n');
     const patch=process.env.PATCH_FILE;
     let text=readFileSync(patch,'utf8');
