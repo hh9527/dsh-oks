@@ -89,11 +89,15 @@ install-profile:
     [ -f "$DIST_DIR/dsh-plugin-dari/package.json" ] || fail "缺少发布目录 $DIST_DIR/dsh-plugin-dari，先运行 just build"
     [ -f "$DIST_DIR/dsh-plugin-dari-client/package.json" ] || fail "缺少发布目录 $DIST_DIR/dsh-plugin-dari-client，先运行 just build"
     CLIENT_PACKAGE='@local/dsh-plugin-dari-client'
+    PRESET_PACKAGE='@local/dsh-preset-dari'
     CLIENT_DIR="$DSH_HOME/packages/dsh-plugin-dari-client"
+    PRESET_DIR="$DSH_HOME/packages/dsh-preset-dari"
     rm -rf "$PACKAGE_DIR" "$CLIENT_DIR"
     mkdir -p "$DSH_HOME/packages"
     cp -R "$DIST_DIR/dsh-plugin-dari" "$PACKAGE_DIR"
     cp -R "$DIST_DIR/dsh-plugin-dari-client" "$CLIENT_DIR"
+    rm -rf "$PRESET_DIR"
+    cp -R "$DARI_REPO/packages/dsh/dsh-preset-dari" "$PRESET_DIR"
 
     # ── 1b. runtime：锁定 dsh 及其依赖版本 ──────────────────────────────────────
     # runtime/pnpm-lock.yaml 固定全部解析结果；适配器的本地补丁以 pnpm patch 形式
@@ -160,11 +164,31 @@ install-profile:
       ' || fail "写 $MANIFEST 失败"
     fi
 
+    # preset 组合包必须进 bundles：它的 cordis.patch.yml 定义 preset 与默认选择。
+    if MANIFEST="$MANIFEST" PRESET_PACKAGE="$PRESET_PACKAGE" node --input-type=module -e '
+      import { readFileSync } from "node:fs";
+      const manifest = JSON.parse(readFileSync(process.env.MANIFEST, "utf8"));
+      process.exit((manifest.dsh?.profile?.bundles ?? []).includes(process.env.PRESET_PACKAGE) ? 0 : 1);
+    '; then
+      say "bundles 已含 $PRESET_PACKAGE"
+    else
+      say "把 $PRESET_PACKAGE 加进 bundles"
+      MANIFEST="$MANIFEST" PRESET_PACKAGE="$PRESET_PACKAGE" node --input-type=module -e '
+        import { readFileSync, writeFileSync } from "node:fs";
+        const file = process.env.MANIFEST;
+        const manifest = JSON.parse(readFileSync(file, "utf8"));
+        const profile = manifest.dsh?.profile ?? {};
+        const bundles = [...(profile.bundles ?? []), process.env.PRESET_PACKAGE];
+        manifest.dsh = { ...(manifest.dsh ?? {}), profile: { ...profile, bundles } };
+        writeFileSync(file, `${JSON.stringify(manifest, undefined, 2)}\n`, { mode: 0o600 });
+      ' || fail "写 $MANIFEST 失败"
+    fi
+
     # ── 3. 依赖 ──────────────────────────────────────────────────────────────────
     # 先写依赖、再 install：install 在跑之前就把这份清单读成 before，reconcile 因此不会把这个
     # 带 dsh.bundle 的包自动升成 profile bundle 层。
     say "把 $PACKAGE 和 $CLIENT_PACKAGE 链接到发布目录"
-    MANIFEST="$MANIFEST" PACKAGE="$PACKAGE" PACKAGE_DIR="$PACKAGE_DIR" CLIENT_PACKAGE="$CLIENT_PACKAGE" CLIENT_DIR="$CLIENT_DIR" node --input-type=module <<'JS'
+    MANIFEST="$MANIFEST" PACKAGE="$PACKAGE" PACKAGE_DIR="$PACKAGE_DIR" CLIENT_PACKAGE="$CLIENT_PACKAGE" CLIENT_DIR="$CLIENT_DIR" PRESET_PACKAGE="$PRESET_PACKAGE" PRESET_DIR="$PRESET_DIR" node --input-type=module <<'JS'
     import {readFileSync,writeFileSync} from 'node:fs';
     const file=process.env.MANIFEST;
     const manifest=JSON.parse(readFileSync(file,'utf8'));
@@ -172,6 +196,7 @@ install-profile:
       ...(manifest.dependencies??{}),
       [process.env.PACKAGE]:`link:${process.env.PACKAGE_DIR}`,
       [process.env.CLIENT_PACKAGE]:`link:${process.env.CLIENT_DIR}`,
+      [process.env.PRESET_PACKAGE]:`link:${process.env.PRESET_DIR}`,
     };
     writeFileSync(file,JSON.stringify(manifest,null,2)+'\n',{mode:0o600});
     JS
@@ -183,157 +208,7 @@ install-profile:
     [ -f "$PROFILE_DIR/node_modules/$PACKAGE/package.json" ] || fail '插件链接未就位'
     [ -f "$PROFILE_DIR/node_modules/$CLIENT_PACKAGE/package.json" ] || fail '客户端包链接未就位'
 
-    # ── 5. preset ────────────────────────────────────────────────────────────────
-    if grep -qE "^[[:space:]]*-[[:space:]]*id:[[:space:]]*${PATCH_ID}[[:space:]]*\$" "$PATCH_FILE"; then
-      say "preset $PATCH_ID 已在 $PATCH_FILE"
-    else
-      say "把 preset $PATCH_ID 追加进 $PATCH_FILE"
-      tmp="$(mktemp "${PATCH_FILE}.XXXXXX")"
-      # 模板里的空数组占位 [] 恰好是最后一个有意义行时删掉它；文件里别处的 [] 原样保留。
-      # 用重定向而不是 mv：保持补丁文件原有的属主与权限。
-      awk '
-        { line[NR] = $0 }
-        $0 ~ /^[[:space:]]*\[\][[:space:]]*$/ { empty = NR }
-        NF && $0 !~ /^[[:space:]]*#/ { meaning = NR }
-        END {
-          for (i = 1; i <= NR; i++) if (!(i == empty && i == meaning)) print line[i]
-        }
-      ' "$PATCH_FILE" > "$tmp"
-      cat "$tmp" > "$PATCH_FILE"
-      rm -f "$tmp"
-      cat >> "$PATCH_FILE" <<'YAML'
-
-    # agent preset：Dari 问数 —— 知识发现、DARI 回答源码和只读输出工具 + 追问。
-    - insert:
-        - id: preset-dari
-          name: "@deepseek-ai/dsh-agent-preset"
-          config:
-            id: dari
-            name: Dari 问数
-            description: 业务问句 → 查询结果：词汇规整、知识发现、DARI 分析、只读查询与答案交付。
-            order: 5
-            plugins:
-              - id: persona
-                name: "@deepseek-ai/dsh-persona"
-                config:
-                  includeRuntimeContext: false
-                  prefix: ''
-              - id: tool-ask-user
-                name: "@deepseek-ai/dsh-tool-ask-user"
-              - id: tool-skill
-                name: "@deepseek-ai/dsh-tool-skill"
-              - id: present
-                name: "@deepseek-ai/dsh-tool-present"
-              - id: oks
-                name: "@local/dsh-plugin-dari"
-                config: {}
-              - id: compaction
-                name: cordis:group
-                group: true
-                isolate:
-                  compaction: true
-                  toolResultPruner: true
-                config:
-                  - id: compaction-basic
-                    name: "@deepseek-ai/dsh-compaction-basic"
-                  - id: command-compact
-                    name: "@deepseek-ai/dsh-command-compact"
-                  - id: tool-result-pruner
-                    name: "@deepseek-ai/dsh-compaction-tool-result-pruner"
-                    config:
-                      # 阈值管"小于这个数就别动它"：64K 之下原样进上下文（被剪掉的中间段往往是
-                      # 知识节点声明、文件正文与构建输出里最要紧的部分）；head/tail 只服务更大的输出。
-                      thresholdChars: 65536
-                      headChars: 4096
-                      tailChars: 1024
-    YAML
-    fi
-
-    # File tools belong only to the main agent. Reinstalling also upgrades
-    # an existing managed preset without replacing its user configuration.
-    PATCH_FILE="$PATCH_FILE" node --input-type=module <<'JS'
-    import {readFileSync,writeFileSync} from 'node:fs';
-    const file=process.env.PATCH_FILE;
-    let text=readFileSync(file,'utf8');
-    const marker=/^([ \t]*)- id: preset-dari[ \t]*$/m.exec(text);
-    if(!marker)throw new Error('Missing managed OKS preset');
-    const start=marker.index;
-    const remainder=text.slice(start);
-    const next=/^-[ \t]/m.exec(remainder);
-    const end=next?start+next.index:text.length;
-    let block=text.slice(start,end);
-    const plugins=/^([ \t]*)plugins:[ \t]*$/m.exec(block);
-    if(!plugins)throw new Error('Missing OKS preset plugins');
-    const indent=plugins[1]+'  ';
-    const required=[
-     ['fs-observation-policy','@deepseek-ai/dsh-fs-observation-policy'],
-     ['tool-fs','@deepseek-ai/dsh-tool-fs'],
-     ['tool-fs-search','@deepseek-ai/dsh-tool-fs-search'],
-    ];
-    const missing=required.filter(([,name])=>!block.includes('name: "'+name+'"')&&!block.includes("name: '"+name+"'"));
-    const entries=missing.map(([id,name])=>`${indent}- id: ${id}\n${indent}  name: "${name}"`).join('\n');
-    if(entries){const at=plugins.index+plugins[0].length;block=block.slice(0,at)+'\n'+entries+block.slice(at);}
-    // Host preset validation requires this value even when the plugin has defaults.
-    const lines=block.split('\n');
-    const search=lines.findIndex(line=>/name: ['"]@deepseek-ai\/dsh-tool-fs-search['"]/.test(line));
-    if(search<0)throw new Error('Missing file search tool');
-    let stop=search+1;
-    while(stop<lines.length&&!lines[stop].startsWith(indent+'- '))stop++;
-    const settings=lines.slice(search+1,stop);
-    if(!settings.some(line=>/^\s*sampleOverCapGlobResults:/.test(line))){
-      const config=settings.findIndex(line=>line.trim()==='config:');
-      if(config<0)lines.splice(search+1,0,indent+'  config:',indent+'    sampleOverCapGlobResults: false');
-      else lines.splice(search+2+config,0,indent+'    sampleOverCapGlobResults: false');
-    }
-    block=lines.join('\n');text=text.slice(0,start)+block+text.slice(end);writeFileSync(file,text);
-    JS
-
-    if ! grep -qE '^[[:space:]]*-[[:space:]]*id:[[:space:]]*preset-dari-vocabulary[[:space:]]*$' "$PATCH_FILE"; then
-      cat >> "$PATCH_FILE" <<'YAML'
-
-    - insert:
-        - id: preset-dari-vocabulary
-          name: "@deepseek-ai/dsh-agent-preset"
-          config:
-            id: dari-vocabulary
-            name: Dari 词汇助手
-            description: 完整领域词汇对齐与归属定位。
-            plugins:
-              - id: dari-vocabulary
-                name: "@local/dsh-plugin-dari"
-                config:
-                  vocabularyHelper: true
-    YAML
-    fi
-
-    # 清理本安装器管理的旧产出页签，保留宿主文件与附件预览。
-    MANIFEST="$MANIFEST" PATCH_FILE="$PATCH_FILE" node --input-type=module <<'JS'
-    import {readFileSync,writeFileSync} from 'node:fs';
-    const file=process.env.MANIFEST;const manifest=JSON.parse(readFileSync(file,'utf8'));
-    if(manifest.dependencies)delete manifest.dependencies['@local/dsh-plugin-dari-ui'];
-    writeFileSync(file,JSON.stringify(manifest,null,2)+'\n');
-    const patch=process.env.PATCH_FILE;
-    let text=readFileSync(patch,'utf8');
-    text=text.replace(/^- insert:\s*\n    - id: oks-ui\n      name: ['"]@local\/dsh-oks-ui['"]\n/gm,'');
-    text=text.replace(/^- id: ui-sidebar-(files|terminal)\n  disabled: true\n/gm,'');
-    writeFileSync(patch,text);
-    JS
-
-    # ── 8. 默认 preset ───────────────────────────────────────────────────────────
-    # preset 注册了不等于被选中：新会话落在 preset-registry 的 default 上（base 那里是 standard）。
-    # selectedDefault（用户在界面上选过的）优先级更高，所以这里只写 default，不锁死用户的选择。
-    if grep -qE "^[[:space:]]*-[[:space:]]*id:[[:space:]]*agent-preset-registry[[:space:]]*\$" "$PATCH_FILE"; then
-      say "agent-preset-registry 已在 $PATCH_FILE"
-    else
-      say "把默认 preset 写成 $PATCH_ID（追加 agent-preset-registry）"
-      cat >> "$PATCH_FILE" <<'YAML'
-
-    # 默认 preset：新会话落在 OKS 上（preset 注册了不等于被选中）。
-    - id: agent-preset-registry
-      config:
-        default: dari
-    YAML
-    fi
+    # preset 由 @local/dsh-preset-dari 包提供（dsh.bundle.patch），部署不再生成 YAML。
 
     # ── 9. 模型流式工具入参损坏的重试 ───────────────────────────────────────────
     # 提供方偶发下发非法 JSON 的工具入参（MALFORMED_RESPONSE）；默认重试码不含它，
