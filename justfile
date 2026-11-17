@@ -24,7 +24,7 @@ build:
     command -v pnpm >/dev/null 2>&1 || { printf 'build: 需要 pnpm\n' >&2; exit 1; }
     # 插件随 dari 仓库演进：默认从同级 ../dari 构建，可用 DARI_REPO 指定。
     DARI_REPO="${DARI_REPO:-../dari}"
-    (cd "$DARI_REPO/packages/plugins" && pnpm run build) || { printf 'build: 插件构建失败（%s）\n' "$DARI_REPO" >&2; exit 1; }
+    (cd "$DARI_REPO/packages/dsh" && pnpm run build) || { printf 'build: 插件构建失败（%s）\n' "$DARI_REPO" >&2; exit 1; }
 
 # 构建并准备独立部署；服务由生成的 run.sh 手动启动。
 [positional-arguments]
@@ -45,8 +45,8 @@ install-profile:
     #!/usr/bin/env bash
     set -euo pipefail
     REPO_DIR="$PWD"
-    PACKAGE='@local/dsh-dari'
-    PACKAGE_DIR="$DSH_HOME/packages/dsh-dari"
+    PACKAGE='@local/dsh-plugin-dari'
+    PACKAGE_DIR="$DSH_HOME/packages/dsh-plugin-dari"
     PATCH_ID='preset-dari'
     PROFILE="$DSH_PROFILE"
     DSH_HOME_DIR="$DSH_HOME"
@@ -86,14 +86,14 @@ install-profile:
     # 发布目录由 just build 生成；安装只负责复制与接线。
     DARI_REPO="${DARI_REPO:-$REPO_DIR/../dari}"
     DIST_DIR="$DARI_REPO/dist"
-    [ -f "$DIST_DIR/dsh-dari/package.json" ] || fail "缺少发布目录 $DIST_DIR/dsh-dari，先运行 just build"
-    [ -f "$DIST_DIR/dsh-dari-client/package.json" ] || fail "缺少发布目录 $DIST_DIR/dsh-dari-client，先运行 just build"
-    CLIENT_PACKAGE='@local/dsh-dari-client'
-    CLIENT_DIR="$DSH_HOME/packages/dsh-dari-client"
+    [ -f "$DIST_DIR/dsh-plugin-dari/package.json" ] || fail "缺少发布目录 $DIST_DIR/dsh-plugin-dari，先运行 just build"
+    [ -f "$DIST_DIR/dsh-plugin-dari-client/package.json" ] || fail "缺少发布目录 $DIST_DIR/dsh-plugin-dari-client，先运行 just build"
+    CLIENT_PACKAGE='@local/dsh-plugin-dari-client'
+    CLIENT_DIR="$DSH_HOME/packages/dsh-plugin-dari-client"
     rm -rf "$PACKAGE_DIR" "$CLIENT_DIR"
     mkdir -p "$DSH_HOME/packages"
-    cp -R "$DIST_DIR/dsh-dari" "$PACKAGE_DIR"
-    cp -R "$DIST_DIR/dsh-dari-client" "$CLIENT_DIR"
+    cp -R "$DIST_DIR/dsh-plugin-dari" "$PACKAGE_DIR"
+    cp -R "$DIST_DIR/dsh-plugin-dari-client" "$CLIENT_DIR"
 
     # ── 1b. runtime：锁定 dsh 及其依赖版本 ──────────────────────────────────────
     # runtime/pnpm-lock.yaml 固定全部解析结果；适配器的本地补丁以 pnpm patch 形式
@@ -225,7 +225,7 @@ install-profile:
               - id: present
                 name: "@deepseek-ai/dsh-tool-present"
               - id: oks
-                name: "@local/dsh-dari"
+                name: "@local/dsh-plugin-dari"
                 config: {}
               - id: compaction
                 name: cordis:group
@@ -300,7 +300,7 @@ install-profile:
             description: 完整领域词汇对齐与归属定位。
             plugins:
               - id: dari-vocabulary
-                name: "@local/dsh-dari"
+                name: "@local/dsh-plugin-dari"
                 config:
                   vocabularyHelper: true
     YAML
@@ -310,7 +310,7 @@ install-profile:
     MANIFEST="$MANIFEST" PATCH_FILE="$PATCH_FILE" node --input-type=module <<'JS'
     import {readFileSync,writeFileSync} from 'node:fs';
     const file=process.env.MANIFEST;const manifest=JSON.parse(readFileSync(file,'utf8'));
-    if(manifest.dependencies)delete manifest.dependencies['@local/dsh-dari-ui'];
+    if(manifest.dependencies)delete manifest.dependencies['@local/dsh-plugin-dari-ui'];
     writeFileSync(file,JSON.stringify(manifest,null,2)+'\n');
     const patch=process.env.PATCH_FILE;
     let text=readFileSync(patch,'utf8');
