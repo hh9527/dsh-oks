@@ -24,7 +24,7 @@ build:
     command -v pnpm >/dev/null 2>&1 || { printf 'build: 需要 pnpm\n' >&2; exit 1; }
     # 插件随 dari 仓库演进：默认从同级 ../dari 构建，可用 DARI_REPO 指定。
     DARI_REPO="${DARI_REPO:-../dari}"
-    (cd "$DARI_REPO/plugins" && pnpm run build) || { printf 'build: 插件构建失败（%s）\n' "$DARI_REPO" >&2; exit 1; }
+    (cd "$DARI_REPO/packages/plugins" && pnpm run build) || { printf 'build: 插件构建失败（%s）\n' "$DARI_REPO" >&2; exit 1; }
 
 # 构建并准备独立部署；服务由生成的 run.sh 手动启动。
 [positional-arguments]
