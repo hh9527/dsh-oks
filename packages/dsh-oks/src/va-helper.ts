@@ -94,11 +94,11 @@ export function installVocabularyHelper({ ctx, knowledge, log, config }: {
     context.signal?.throwIfAborted();
     const feed = template.replace(MARKER, () => renderWholeVocabulary(index));
     const assembled = await next();
-    log(`[oks] vocabulary system prompt · ${index.terms.length} 条`);
+    log(`[data-seer] vocabulary system prompt · ${index.terms.length} 条`);
     // 宿主在 assemble hook 前已收集 schema；同步裁剪本次请求，执行限制由 Agent scope 保证。
     return { ...assembled, ...(assembled.tools ? { tools: [] } : {}), sections: [
-      ...assembled.sections.filter(section => section.name !== 'oks:knowledge-assistant' && !UNRELATED_SECTIONS.has(section.name)),
-      { name: 'oks:knowledge-assistant', text: feed, interpolate: false },
+      ...assembled.sections.filter(section => section.name !== 'data-seer:knowledge-assistant' && !UNRELATED_SECTIONS.has(section.name)),
+      { name: 'data-seer:knowledge-assistant', text: feed, interpolate: false },
     ] };
   });
   ctx.effect(() => dispose);

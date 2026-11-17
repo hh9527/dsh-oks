@@ -48,7 +48,7 @@ install-profile:
     REPO_DIR="$PWD"
     PACKAGE='@local/dsh-data-seer'
     PACKAGE_DIR="$DSH_HOME/packages/dsh-oks"
-    PATCH_ID='preset-oks'
+    PATCH_ID='preset-data-seer'
     PROFILE="$DSH_PROFILE"
     DSH_HOME_DIR="$DSH_HOME"
     fail() { printf 'install-profile: %s\n' "$*" >&2; exit 1; }
@@ -205,10 +205,10 @@ install-profile:
 
     # agent preset：Data Seer 问数 —— 知识发现、DARI 回答源码和只读输出工具 + 追问。
     - insert:
-        - id: preset-oks
+        - id: preset-data-seer
           name: "@deepseek-ai/dsh-agent-preset"
           config:
-            id: oks
+            id: data-seer
             name: Data Seer 问数
             description: 业务问句 → 查询结果：词汇规整、知识发现、DARI 分析、只读查询与答案交付。
             order: 5
@@ -255,7 +255,7 @@ install-profile:
     import {readFileSync,writeFileSync} from 'node:fs';
     const file=process.env.PATCH_FILE;
     let text=readFileSync(file,'utf8');
-    const marker=/^([ \t]*)- id: preset-oks[ \t]*$/m.exec(text);
+    const marker=/^([ \t]*)- id: preset-data-seer[ \t]*$/m.exec(text);
     if(!marker)throw new Error('Missing managed OKS preset');
     const start=marker.index;
     const remainder=text.slice(start);
@@ -288,18 +288,18 @@ install-profile:
     block=lines.join('\n');text=text.slice(0,start)+block+text.slice(end);writeFileSync(file,text);
     JS
 
-    if ! grep -qE '^[[:space:]]*-[[:space:]]*id:[[:space:]]*preset-oks-vocabulary[[:space:]]*$' "$PATCH_FILE"; then
+    if ! grep -qE '^[[:space:]]*-[[:space:]]*id:[[:space:]]*preset-data-seer-vocabulary[[:space:]]*$' "$PATCH_FILE"; then
       cat >> "$PATCH_FILE" <<'YAML'
 
     - insert:
-        - id: preset-oks-vocabulary
+        - id: preset-data-seer-vocabulary
           name: "@deepseek-ai/dsh-agent-preset"
           config:
-            id: oks-vocabulary
+            id: data-seer-vocabulary
             name: Data Seer 词汇助手
             description: 完整领域词汇对齐与归属定位。
             plugins:
-              - id: oks-vocabulary
+              - id: data-seer-vocabulary
                 name: "@local/dsh-data-seer"
                 config:
                   vocabularyHelper: true
@@ -331,7 +331,7 @@ install-profile:
     # 默认 preset：新会话落在 OKS 上（preset 注册了不等于被选中）。
     - id: agent-preset-registry
       config:
-        default: oks
+        default: data-seer
     YAML
     fi
 

@@ -1,5 +1,5 @@
 import {semanticId} from '@hh9527/dari-model';
-import {ENABLE_OKS_SEARCH} from '@hh9527/dari-model';
+import {ENABLE_KNOWLEDGE_SEARCH} from '@hh9527/dari-model';
 import {discoverConcepts,renderConcepts} from '@hh9527/dari-model';
 import {renderInfo} from '@hh9527/dari-model';
 import {renderSearch,renderRoutes} from '@hh9527/dari-model';
@@ -49,7 +49,7 @@ export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge,
   const fixed: ToolDefinition[] = [
     {
       name: 'dari_kg_discover',
-      description: 'Find conceptual properties and their Dataset query mappings in one call: {queries:[{entity:"term",props:[...],values?:[...]}]}. Prerequisite: call dari_vocab. entity, props and values must contain only verbatim ASCII English vocabulary entries returned by dari_vocab, preserving spelling and case. Never use Chinese, raw user wording, translations, rewrites, abbreviations or concatenated terms. If no suitable entry was returned, ask dari_vocab again. Fuzzy matching is internal; do not manufacture fuzzy query variants. Use entity and property terms; properties include dimensions, measures and counters. Optional values match named enum values/aliases, then find properties of their owning Type. Property terms and value-derived properties are complementary, not a requirement that a measure use the enum type. Returns a compact Markdown list grouped first by matched Entity (# entities/ID), then Dataset (## datasets/ID), with relative dimension/measure paths and each member’s type; append the relative path to the Dataset ID for an dari_kg_info ID. Named value details can be read with dari_kg_info. does not choose joins, infer aggregate safety or read business data. Use dari_kg_routes/dari_kg_info for relationships and complete constraints, for complete definitions. Returns all matches, deduplicated by Entity, Dataset and member; no per-term result cap.'+(ENABLE_OKS_SEARCH?' Use dari_kg_search for scoped lexical searches.':''),
+      description: 'Find conceptual properties and their Dataset query mappings in one call: {queries:[{entity:"term",props:[...],values?:[...]}]}. Prerequisite: call dari_vocab. entity, props and values must contain only verbatim ASCII English vocabulary entries returned by dari_vocab, preserving spelling and case. Never use Chinese, raw user wording, translations, rewrites, abbreviations or concatenated terms. If no suitable entry was returned, ask dari_vocab again. Fuzzy matching is internal; do not manufacture fuzzy query variants. Use entity and property terms; properties include dimensions, measures and counters. Optional values match named enum values/aliases, then find properties of their owning Type. Property terms and value-derived properties are complementary, not a requirement that a measure use the enum type. Returns a compact Markdown list grouped first by matched Entity (# entities/ID), then Dataset (## datasets/ID), with relative dimension/measure paths and each member’s type; append the relative path to the Dataset ID for an dari_kg_info ID. Named value details can be read with dari_kg_info. does not choose joins, infer aggregate safety or read business data. Use dari_kg_routes/dari_kg_info for relationships and complete constraints, for complete definitions. Returns all matches, deduplicated by Entity, Dataset and member; no per-term result cap.'+(ENABLE_KNOWLEDGE_SEARCH?' Use dari_kg_search for scoped lexical searches.':''),
       parameters:{type:'object',properties:{queries:{type:'array',minItems:1,maxItems:12,items:{type:'object',properties:{entity:{type:'string',minLength:1,maxLength:200},props:{type:'array',maxItems:12,items:{type:'string',minLength:1,maxLength:200}},values:{type:'array',maxItems:12,items:{type:'string',minLength:1,maxLength:200}}},required:['entity','props'],additionalProperties:false}}},required:['queries'],additionalProperties:false},
       output:{schema:OBJECT_OUTPUT,render:renderConcepts},
       async execute(raw,exec){return method('discover',check(raw,['queries']),exec);},
@@ -91,5 +91,5 @@ export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge,
       return readTextLines(files[args.path],args.path,args.offset,args.limit,'dari_read');
     },
   };
-  return [builtinRead, ...definitions, ...fixed.filter(tool=>ENABLE_OKS_SEARCH||tool.name!=='dari_kg_search')];
+  return [builtinRead, ...definitions, ...fixed.filter(tool=>ENABLE_KNOWLEDGE_SEARCH||tool.name!=='dari_kg_search')];
 }

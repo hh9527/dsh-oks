@@ -1,4 +1,4 @@
-import {ENABLE_OKS_SEARCH} from '@hh9527/dari-model';
+import {ENABLE_KNOWLEDGE_SEARCH} from '@hh9527/dari-model';
 import search from './help/search.md';
 import workflow from './help/workflow.md';
 import dari from './help/dari.md';
@@ -7,7 +7,7 @@ import rules from './help/rules.md';
 
 /** Readable manuals and the stable main-agent prefix are generated from the same text. */
 export const helpFiles:Record<string,string> = {
-  'data-seer://help/workflow.md':workflow+(ENABLE_OKS_SEARCH?'\n\n## 定域搜索\n\n'+search:''),
+  'data-seer://help/workflow.md':workflow+(ENABLE_KNOWLEDGE_SEARCH?'\n\n## 定域搜索\n\n'+search:''),
   'data-seer://help/dari.md':dari,
   'data-seer://help/rules.md':rules,
   'data-seer://help/dari-figures.md':figures,

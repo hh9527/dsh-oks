@@ -62,13 +62,13 @@ test('助手装配按当前工作区提供完整词表，空工具面与逐字�
  const first=await assemble({},{agent:p},next);await assemble({},{agent:p},next);
  const other=caller('two');other.session.header.cwd='/other';other.session.append=()=>{};const second=await assemble({},{agent:other},next);
  assert.ok(first.sections[1].text.includes('workspace'));assert.ok(first.sections[1].text.includes('literal'));assert.equal(first.sections[1].interpolate,false);
- assert.ok(second.sections[1].text.includes('other'));assert.equal(first.sections.filter((s:any)=>s.name==='oks:knowledge-assistant').length,1);
+ assert.ok(second.sections[1].text.includes('other'));assert.equal(first.sections.filter((s:any)=>s.name==='data-seer:knowledge-assistant').length,1);
  assert(!first.sections[1].text.includes('# 全局领域摘要'));
  assert(first.sections[1].text.includes('领域词典'));
  assert(!second.sections[1].text.includes('workspace'));
  assert(!first.sections[1].text.includes('ColumnChart'));
  const again=await assemble({},{agent:p},async()=>first);
- assert.equal(again.sections.filter((s:any)=>s.name==='oks:knowledge-assistant').length,1);
+ assert.equal(again.sections.filter((s:any)=>s.name==='data-seer:knowledge-assistant').length,1);
  assert.equal(again.sections.at(-1).text,first.sections[1].text);
  assert.deepEqual(policies.map(v=>v[0]),['sandbox/mode','approval/policy']);assert.deepEqual(await assemble({},{},next),await next());assert.equal(seen.length,4);
  await assert.rejects(assemble({},{agent:p,signal:AbortSignal.abort()},next));
@@ -102,7 +102,7 @@ test('VA 作为独立子会话，复用自己的预设与前缀',async()=>{
  const h=harness({vocabulary:true});const parentAgent=caller('session-parent');
  const first=await h.runtime.ask(parentAgent,parentAgent.session.id,'CPU');
  assert.match(first.helper,/^session-va-/);assert.equal(h.starts[0].label,'词汇助手');
- assert.equal(h.starts[0].request.agentPreset,'oks-vocabulary');assert.equal(h.starts[0].request.parent,parentAgent);
+ assert.equal(h.starts[0].request.agentPreset,'data-seer-vocabulary');assert.equal(h.starts[0].request.parent,parentAgent);
  assert.equal((await h.runtime.ask(parentAgent,parentAgent.session.id,'内存')).helper,first.helper);
 });
 
@@ -128,7 +128,7 @@ test('VA 按职责过滤宿主提示词与工具 schema，保留安全约束',as
   const agent=caller();agent.session.append=()=>{};
   const original={sections:[{name:'safety',text:'keep safety'},{name:'ui:deliverable-file-references',text:'Prefer showing the primary results'},{name:'harness:source',text:'source checkout'},{name:'app:web-surface',text:'web development'}],tools:[{name:'dari_vocab'},{name:'bash'}]};
   const result=await assemble({},{agent},async()=>original);
-  assert.deepEqual(result.sections.map((s:any)=>s.name),['safety','oks:knowledge-assistant']);
+  assert.deepEqual(result.sections.map((s:any)=>s.name),['safety','data-seer:knowledge-assistant']);
   assert.deepEqual(result.tools,[]);
   assert.equal(original.sections.length,4);
  }

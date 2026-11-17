@@ -10,7 +10,7 @@ host 插件推送一条 user 消息，`source.kind` 使用保留值：
 agent.inject({
   id: messageId,
   role: 'user',
-  source: { kind: 'push-to-user', label: 'dsh-oks', href: 'file:///path/to/answer.md' },
+  source: { kind: 'push-to-user', label: 'data-seer', href: 'file:///path/to/answer.md' },
   content: [{ type: 'text', text: 'Answer delivered' }],
 });
 ```

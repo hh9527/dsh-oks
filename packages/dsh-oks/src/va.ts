@@ -29,7 +29,7 @@ type Outcome = { output: ContentBlock[]; stopReason: string; diagnostic?: string
 export function createVaRuntime({ ctx, log, config }: {
   ctx: PluginContext; log: LogFn; config: PluginConfig | undefined;
 }): VaRuntime {
-  const preset = config?.vaPreset?.trim() || 'oks-vocabulary';
+  const preset = config?.vaPreset?.trim() || 'data-seer-vocabulary';
   const prefix = VA_HELPER_PREFIX;
   const label = '词汇助手';
   const lifetime = new AbortController();
@@ -68,9 +68,9 @@ export function createVaRuntime({ ctx, log, config }: {
           try {
             requestSignal.throwIfAborted();
             const cwd = caller.session?.header?.cwd;
-            if (!cwd) throw new Error('dsh-oks: 调用方会话没有 cwd。');
+            if (!cwd) throw new Error('data-seer: 调用方会话没有 cwd。');
             const service = ctx.get('subagents');
-            if (!service?.startActivation || !service.sendMessage || !service.listChildren) throw new Error('dsh-oks: 词汇助手需要宿主 subagents 服务。');
+            if (!service?.startActivation || !service.sendMessage || !service.listChildren) throw new Error('data-seer: 词汇助手需要宿主 subagents 服务。');
             if (!owned.discovered) {
               const children = await service.listChildren(caller.session.id!, requestSignal);
               owned.childId = children.findLast(child => child.mode === 'continuable' && child.label === label && child.id.startsWith(prefix))?.id;
@@ -103,7 +103,7 @@ export function createVaRuntime({ ctx, log, config }: {
             if (result.stopReason !== 'completed') throw new Error(`${label}未完成：${result.stopReason}${result.diagnostic ? ' · ' + result.diagnostic : ''}`);
             const answer = result.output.filter(block => block.type === 'text').map(block => block.text ?? '').join('\n').trim();
             if (!answer) throw new Error(`${label}没有返回答案`);
-            log(`[oks] ${label} completed · ${childId}`);
+            log(`[data-seer] ${label} completed · ${childId}`);
             return { helper: childId, messageId, answer };
           } catch (error) {
             if (submitted && requestSignal.aborted) {

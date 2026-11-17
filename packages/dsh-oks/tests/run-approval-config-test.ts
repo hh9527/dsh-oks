@@ -4,7 +4,7 @@ import {homedir} from 'node:os';
 import {join} from 'node:path';
 import {resolveSettings} from '@hh9527/dari-model';
 const root=mkdtempSync(join(process.env.TMPDIR||join(homedir(),'.cache','tmp'),'oks-approval-config-'));
-const workspace=(value:object)=>writeFileSync(join(root,'oks.json'),JSON.stringify({domain:'fixture',model:'model.wasm',...value}));
+const workspace=(value:object)=>writeFileSync(join(root,'data-seer.json'),JSON.stringify({domain:'fixture',model:'model.wasm',...value}));
 try{
  workspace({});assert.equal(resolveSettings(root,undefined).requireRunApproval,false);
  workspace({requireRunApproval:true});assert.equal(resolveSettings(root,undefined).requireRunApproval,true);
