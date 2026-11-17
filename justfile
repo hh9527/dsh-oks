@@ -93,6 +93,10 @@ install-profile:
     cp -R "$DIST_DIR/dsh-oks" "$PACKAGE_DIR"
     cp -R "$DIST_DIR/dsh-push-to-user" "$CLIENT_DIR"
 
+    # 本地补丁：适配器对畸形工具入参的处理，由启动脚本在拉起 dsh 前应用。
+    rm -rf "$DSH_HOME_DIR/patches"
+    cp -R "$REPO_DIR/patches" "$DSH_HOME_DIR/patches"
+
     # ── 2. profile ───────────────────────────────────────────────────────────────
     if [ ! -f "$MANIFEST" ]; then
       say "初始化 profile $PROFILE（$PROFILE_DIR）"
@@ -318,6 +322,30 @@ install-profile:
     YAML
     fi
 
+    # ── 9. 模型流式工具入参损坏的重试 ───────────────────────────────────────────
+    # 提供方偶发下发非法 JSON 的工具入参（MALFORMED_RESPONSE）；默认重试码不含它，
+    # 整个回合会作废，该段任务被拖到下一段重做。把它并入有界重试集合即可就地恢复。
+    if grep -qE "^[[:space:]]*-[[:space:]]*id:[[:space:]]*llm-deepseek[[:space:]]*\$" "$PATCH_FILE"; then
+      say "llm-deepseek 重试策略已在 $PATCH_FILE"
+    else
+      say "给 llm-deepseek 追加 MALFORMED_RESPONSE 重试策略"
+      cat >> "$PATCH_FILE" <<'YAML'
+
+    # 模型流式工具入参损坏时按有界重试恢复，避免整轮作废；其余重试条件沿用默认。
+    - id: llm-deepseek
+      config:
+        retryPolicy:
+          mode: normal
+          retryableCodes:
+            - EMPTY_RESPONSE
+            - RATE_LIMIT
+            - SERVER
+            - TIMEOUT
+            - TRANSPORT
+            - MALFORMED_RESPONSE
+    YAML
+    fi
+
     say "profile $PROFILE 已注册 preset $PATCH_ID"
     say "  profile 目录：$PROFILE_DIR"
     say "  插件链接：$PROFILE_DIR/node_modules/$PACKAGE -> $PACKAGE_DIR"
@@ -342,9 +370,12 @@ install-profile:
     const runtime=join(home,'justfile');
     const direct=join(home,'run-dsh.sh');
     const watched=join(home,'run.sh');
+    const patch=join(home,'patches/patch-dsh-llm-deepseek.mjs');
     writeFileSync(direct,
       '#!/usr/bin/env bash\nset -euo pipefail\nexport DSH_HOME='+quote(home)+
       '\ncd -- '+quote(process.env.WORKSPACE)+
+      '\n# 模型下发的工具入参不是合法 JSON 时，让错误走工具错误通道，而不是中断整轮。\n'+
+      'node '+quote(patch)+' || echo "warn: 适配器补丁未应用（dsh 尚未落到 dlx 缓存？）" >&2\n'+
       '\nexec '+command+' --port '+quote(process.env.PORT)+' "$@"\n');
     writeFileSync(watched,
       '#!/usr/bin/env bash\nset -euo pipefail\nexport DSH_HOME='+quote(home)+
