@@ -1,5 +1,10 @@
 # dsh-oks
 
+> **已归档。** 插件源码迁至 [dari](https://github.com/hh9527/dari) 的
+> `packages/dsh/`（`dsh-plugin-dari`、`dsh-plugin-dari-client`、`dsh-preset-dari`），
+> 部署编排迁至 [dataseer-ic](https://github.com/hh9527/dataseer-ic)。
+> 本仓库只保留历史。
+
 将工作区的本体知识与只读数据源接入 DSH，使用 DARI 组织分析、图表与报告。
 图表和自包含 HTML 报告通过宿主附件交付，生命周期由宿主管理。
 
