@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import {parseChartSpec,parseTableSpec,missingColumns,shapeProblem} from '../src/chart/spec.ts';
-import {buildOption,CHART_WIDTH} from '../src/chart/option.ts';
-import {renderEchartsSvg} from '../src/chart/echarts.ts';
-import {tableMarkdown} from '../src/view/table.ts';
+import {parseChartSpec,parseTableSpec,missingColumns,shapeProblem} from '@hh9527/dari-model';
+import {buildOption,CHART_WIDTH} from '@hh9527/dari-model';
+import {renderEchartsSvg} from '@hh9527/dari-model';
+import {tableMarkdown} from '@hh9527/dari-model';
 for(const kind of ['bar','column','line','area','grouped_bar','grouped_column','pie','scatter','radar','histogram','box','heatmap','sankey','graph']){
  const base={kind,...(kind==='histogram'?{}:{x:'name'}),value:'n',...(['line','area'].includes(kind)?{x_type:'Rfc3339'}:{}),...(['grouped_bar','grouped_column','radar','heatmap','sankey','graph'].includes(kind)?{series:'group'}:{})};
  const parsed=parseChartSpec(base);assert('spec' in parsed,JSON.stringify(parsed));

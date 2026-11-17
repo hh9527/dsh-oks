@@ -1,4 +1,4 @@
-import {readDariSource} from './source-file.ts';
+import {readDariSource} from '@hh9527/dari-model';
 import {spawn,type ChildProcessWithoutNullStreams} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {fileURLToPath,pathToFileURL} from 'node:url';

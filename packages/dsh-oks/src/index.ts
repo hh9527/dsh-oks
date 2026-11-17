@@ -3,9 +3,9 @@
 
 export { createProjector } from './project.ts';
 export type { JsonValue, ProjectRule, Projector } from './project.ts';
-export { buildOption, CHART_WIDTH, plotHeight } from './chart/option.ts';
-export { renderEchartsSvg } from './chart/echarts.ts';
-export { renderMarkdown } from './chart/markdown.ts';
+export { buildOption, CHART_WIDTH, plotHeight } from '@hh9527/dari-model';
+export { renderEchartsSvg } from '@hh9527/dari-model';
+export { renderMarkdown } from '@hh9527/dari-model';
 
 import { createKnowledge } from './knowledge.ts';
 import { installWorkMethods } from './work-methods.ts';
@@ -54,6 +54,6 @@ export function apply(ctx: PluginContext, config: PluginConfig = {}): void {
 }
 
 // Finite host capabilities consumed by the isolated DARI service.
-export {dariHost} from './dari-host.ts';
+export {dariHost} from '@hh9527/dari-model';
 
-export {createIntegration} from './dari-integration.ts';
+export {createIntegration} from '@hh9527/dari-model';

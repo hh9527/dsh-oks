@@ -1,4 +1,4 @@
-import {ENABLE_OKS_SEARCH} from './features.ts';
+import {ENABLE_OKS_SEARCH} from '@hh9527/dari-model';
 import search from './help/search.md';
 import workflow from './help/workflow.md';
 import dari from './help/dari.md';

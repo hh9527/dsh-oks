@@ -1,4 +1,4 @@
-import {ENABLE_OKS_SEARCH} from './features.ts';
+import {ENABLE_OKS_SEARCH} from '@hh9527/dari-model';
 import { encodePart } from './knowledge-graph.ts';
 import { isRecord, type ToolExec } from './host.ts';
 import type { Knowledge } from './knowledge.ts';

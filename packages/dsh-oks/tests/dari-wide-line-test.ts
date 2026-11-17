@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {dariHost} from '../src/dari-host.ts';
+import {dariHost} from '@hh9527/dari-model';
 const float:any={kind:'scalar',name:'Float'};
 const metric=(name:string,multiplier:number):any=>({kind:'nominal',name,inner:float,presentation:{multiplier,suffix:'%'}});
 const fields:any={day:{kind:'scalar',name:'DateTimeUtc'},cpu:metric('CpuUtilization',1),memory:metric('MemoryUtilization',100)};

@@ -4,7 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createTools} from '../src/tools.ts';
 import {guidedTools} from '../src/guided-tools.ts';
-import {readDariSource} from '../src/source-file.ts';
+import {readDariSource} from '@hh9527/dari-model';
 const root=mkdtempSync(join(tmpdir(),'dari-resources-'));
 const outside=mkdtempSync(join(tmpdir(),'dari-outside-'));
 const knowledge={ensureIndex:async()=>({}),ensureWorkspace:()=>({root,modelHash:'test',settings:{workspaceRoot:root}})} as any;

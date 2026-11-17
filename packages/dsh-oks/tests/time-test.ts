@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {timeWindows,timeWindowOptions} from '../src/time-windows.ts';
+import {timeWindows,timeWindowOptions} from '@hh9527/dari-model';
 const context = (at:string, zone='Asia/Shanghai') => ({utc:{epochMillis:Date.parse(at)},tz:{client:{id:zone}}});
 const ctx = context('2026-10-19T11:41:03.456+08:00');
 let checks = 0;

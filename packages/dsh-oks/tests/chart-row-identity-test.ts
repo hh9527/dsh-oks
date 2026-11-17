@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import {buildOption,CHART_WIDTH,type OptionInput} from '../src/chart/option.ts';
-import {renderEchartsSvg} from '../src/chart/echarts.ts';
-import {dariHost} from '../src/dari-host.ts';
+import {buildOption,CHART_WIDTH,type OptionInput} from '@hh9527/dari-model';
+import {renderEchartsSvg} from '@hh9527/dari-model';
+import {dariHost} from '@hh9527/dari-model';
 const spec=(kind:OptionInput['kind'],extra:Partial<OptionInput>={}):OptionInput=>({kind,title:null,x:'name',value:'n',series:null,x_type:null,xLabel:null,valueLabel:null,unit:null,...extra});
 const rows=[{name:'GigabitEthernet0/0/3',n:2.95},{name:'GigabitEthernet0/0/1',n:2.91},{name:'GigabitEthernet0/0/3',n:2.90},{name:'GigabitEthernet0/0/4',n:2.89},{name:'GigabitEthernet0/0/3',n:2.86}];
 const values=(data:any[])=>data.map(v=>typeof v==='object'&&v!==null&&'value'in v?v.value:v);

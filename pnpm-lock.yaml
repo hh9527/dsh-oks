@@ -31,6 +31,9 @@ importers:
       '@hh9527/dari-core':
         specifier: link:../../vendors/dari/packages/dari-core
         version: link:../../vendors/dari/packages/dari-core
+      '@hh9527/dari-model':
+        specifier: link:../../vendors/dari/packages/dari-model
+        version: link:../../vendors/dari/packages/dari-model
       '@js-temporal/polyfill':
         specifier: 'catalog:'
         version: 0.5.1

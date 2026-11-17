@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import {parseChartSpec,shapeProblem} from '../src/chart/spec.ts';
-import {buildOption,CHART_WIDTH} from '../src/chart/option.ts';
-import {renderEchartsSvg} from '../src/chart/echarts.ts';
+import {parseChartSpec,shapeProblem} from '@hh9527/dari-model';
+import {buildOption,CHART_WIDTH} from '@hh9527/dari-model';
+import {renderEchartsSvg} from '@hh9527/dari-model';
 for(const kind of ['bar','column','grouped_bar','grouped_column']){
  const rows=[{name:'A',n:99.56,group:'one'},{name:'B',n:99.79,group:'one'}];
  const raw={kind,x:'name',value:'n',unit:'%',style:{labels:true},...(kind.startsWith('grouped')?{series:'group'}:{})};

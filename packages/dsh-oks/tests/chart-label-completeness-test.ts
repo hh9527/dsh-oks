@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import {buildOption,CHART_WIDTH} from '../src/chart/option.ts';
-import {renderEchartsSvg} from '../src/chart/echarts.ts';
+import {buildOption,CHART_WIDTH} from '@hh9527/dari-model';
+import {renderEchartsSvg} from '@hh9527/dari-model';
 const names=['江州市瑞禾保险代理有限公司 · 打印机','江州市安澄综合门诊部 · 交换机','望舒云计算有限公司 · 无线控制器','清源护理院 · 交换机','清源护理院 · 路由器'];
 const text=(svg:string)=>[...svg.matchAll(/<text\b[^>]*>(.*?)<\/text>/gs)].map(m=>m[1]).join('');
 for(const kind of ['column','bar','grouped_column','grouped_bar','line','area','heatmap'] as const){

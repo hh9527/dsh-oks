@@ -1,5 +1,5 @@
 import {semanticId} from './semantic-id.ts';
-import {ENABLE_OKS_SEARCH} from './features.ts';
+import {ENABLE_OKS_SEARCH} from '@hh9527/dari-model';
 import {discoverConcepts,renderConcepts} from './concept-knowledge.ts';
 import {renderInfo} from './info-receipt.ts';
 import {renderSearch,renderRoutes} from './navigation-receipt.ts';

@@ -1,5 +1,5 @@
 import {createDariTools} from './dari-tools.ts';
-import {ENABLE_OKS_SEARCH} from './features.ts';
+import {ENABLE_OKS_SEARCH} from '@hh9527/dari-model';
 import {reportExtractDariTool} from './report-extract.ts';
 import {moveEntryTool} from './move-entry.ts';
 import {removeFileTool,type FilePolicyService} from './remove-file.ts';

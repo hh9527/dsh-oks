@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { buildOption, CHART_WIDTH } from '../src/chart/option.ts';
-import { renderEchartsSvg } from '../src/chart/echarts.ts';
-import { SERIES_COLORS } from '../src/chart/shared.ts';
+import { buildOption, CHART_WIDTH } from '@hh9527/dari-model';
+import { renderEchartsSvg } from '@hh9527/dari-model';
+import { SERIES_COLORS } from '@hh9527/dari-model';
 
 // Each series has two marks and one legend swatch. The SVG must use its
 // assigned color for all three, including with custom and entity palettes.
