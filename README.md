@@ -38,7 +38,7 @@ just deploy 10925
 └── justfile
 ```
 
-首次部署创建空的 `demo-ws/`，允许没有 `data-seer.json`，可直接启动服务。需要使用模型工具时，在工作区创建 `data-seer.json` 配置模型与数据库；相对路径以该工作区为基准，例如：
+首次部署创建空的 `demo-ws/`，允许没有 `dari.json`，可直接启动服务。需要使用模型工具时，在工作区创建 `dari.json` 配置模型与数据库；相对路径以该工作区为基准，例如：
 
 ```json
 {
@@ -48,7 +48,7 @@ just deploy 10925
 }
 ```
 
-模型和数据库由用户提供，可在部署 profile 的插件 config 配置默认的 `domain`、`model`、`dataFile`；工作区的 `data-seer.json` 可选，显式字段覆盖部署默认值。VA、知识工具与 DARI 共用解析后的模型。两处均未配置模型时，模型工具明确报告缺失项。部署命令不绑定特定模型，也不复制其他环境的凭据。
+模型和数据库由用户提供，可在部署 profile 的插件 config 配置默认的 `domain`、`model`、`dataFile`；工作区的 `dari.json` 可选，显式字段覆盖部署默认值。VA、知识工具与 DARI 共用解析后的模型。两处均未配置模型时，模型工具明确报告缺失项。部署命令不绑定特定模型，也不复制其他环境的凭据。
 
 `run.sh` 从任意当前目录均可执行，通过 watchexec 仅监听 `.ctrl`；`run-dsh.sh` 是直接启动入口。启动参数原样透传，例如：
 
@@ -59,7 +59,7 @@ touch .deploy/dsh-10924/.ctrl
 
 `DSH_HOME` 指向部署目录，服务在其中的 `demo-ws` 工作区运行。生成的 `justfile` 也提供 `just run` 与 `just run-dsh`，分别调用这两个脚本。
 
-重复执行 `just deploy <PORT>` 会重新构建并更新插件安装，保留已有工作区、`data-seer.json`、用户 profile 配置与 `.ctrl` 内容；不会自动触发重启。更新正在使用的安装目录前先停止对应进程，安装完成后再启动。
+重复执行 `just deploy <PORT>` 会重新构建并更新插件安装，保留已有工作区、`dari.json`、用户 profile 配置与 `.ctrl` 内容；不会自动触发重启。更新正在使用的安装目录前先停止对应进程，安装完成后再启动。
 
 已有发布产物或需要自定义目录时，可单独使用安装器：
 
@@ -69,7 +69,7 @@ just port=10924 target=/srv/oks workspace=/srv/my-workspace install-profile
 /srv/oks/run.sh
 ```
 
-`install-profile` 只消费 `dist/`，自动创建指定工作区，允许没有 `data-seer.json`。默认 `profile` 为 `web`；默认安装目录为 `.deploy/dsh-<port>`，工作区为其下的 `demo-ws`。可通过 `DSH_CMD` 指定宿主调用方式；安装器优先使用已安装的 dsh，否则使用 pnpm dlx。
+`install-profile` 只消费 `dist/`，自动创建指定工作区，允许没有 `dari.json`。默认 `profile` 为 `web`；默认安装目录为 `.deploy/dsh-<port>`，工作区为其下的 `demo-ws`。可通过 `DSH_CMD` 指定宿主调用方式；安装器优先使用已安装的 dsh，否则使用 pnpm dlx。
 
 从其他目录也可调用 `just --justfile /path/to/dsh-oks/justfile deploy 10924`；部署目录始终位于该仓库内。
 

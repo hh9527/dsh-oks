@@ -18,7 +18,7 @@
 {"domain":"ic","model":"/path/to/ic.wasm","dataFile":"/path/to/ic.sqlite"}
 ```
 
-会话工作区的 `data-seer.json` 可省略。需要覆盖部署默认值时，只声明要覆盖的字段；相对路径以该工作区为基准，例如：
+会话工作区的 `dari.json` 可省略。需要覆盖部署默认值时，只声明要覆盖的字段；相对路径以该工作区为基准，例如：
 
 ```json
 {"model":"models/ic.wasm","dataFile":"data/ic.sqlite"}
