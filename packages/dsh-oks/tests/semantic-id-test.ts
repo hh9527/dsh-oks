@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { semanticId, internalRef } from '../src/semantic-id.ts';
-import { encodePart } from '../src/knowledge-graph.ts';
+import { semanticId, internalRef } from '@hh9527/dari-model';
+import { encodePart } from '@hh9527/dari-model';
 const name="alarm/a#中文%2F!'()*";
 const root='datasets/'+encodePart(name);
 const ref=root+'#dimensions/'+encodePart('severity/#%');

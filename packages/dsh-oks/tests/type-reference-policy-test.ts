@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {fileURLToPath} from 'node:url';
-import {derivePublishedKnowledge} from '../src/published-knowledge.ts';
-import {resolveFact} from '../src/knowledge-graph.ts';
+import {derivePublishedKnowledge} from '@hh9527/dari-model';
+import {resolveFact} from '@hh9527/dari-model';
 const fact=(key:string,value:Record<string,unknown>={},references:string[]=[])=>({key,value,references});
 const publication=(facts:unknown[])=>({knowledge_contract:'ontology-knowledge-v4',intent_contract:'ontology-intent-v1',addressing:'node-member-uri-v1',revision:'reference-policy',facts,items:[]});
 const names=['Date','DateTime','DateTimeUtc','EpochMillis'];

@@ -1,9 +1,9 @@
 import { VA_SETTINGS } from './va.ts';
 import { randomUUID } from 'node:crypto';
-import { renderWholeVocabulary } from './retrieval.ts';
-import type { Knowledge } from './knowledge.ts';
-import type { LogFn, PluginContext, SessionLike } from './host.ts';
-import type { PluginConfig } from './config.ts';
+import { renderWholeVocabulary } from '@hh9527/dari-model';
+import type { Knowledge } from '@hh9527/dari-model';
+import type { LogFn, PluginContext, SessionLike } from '@hh9527/dari-model';
+import type { PluginConfig } from '@hh9527/dari-model';
 import VA_PROMPT_TEXT from './va-prompt-tpl.md';
 
 const MARKER = '<!-- 词表 -->';
@@ -53,7 +53,7 @@ export function installVocabularyHelper({ ctx, knowledge, log, config }: {
   const template = VA_PROMPT_TEXT.trim();
   const active = new WeakSet<object>();
   const toolScopes = new WeakSet<object>();
-  const prepareTools = (agent: import('./host.ts').AgentLike) => {
+  const prepareTools = (agent: import('@hh9527/dari-model').AgentLike) => {
     if (toolScopes.has(agent)) return;
     if (!agent.ctx?.tools) throw new Error('词汇助手需要 Agent 独立的工具作用域。');
     agent.ctx.tools.restrict({ allow: [] });

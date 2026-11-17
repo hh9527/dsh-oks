@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createTimeContext } from '../src/time-context.ts';
-import { deriveContextTimeZone, resolveZone } from '../src/time.ts';
-import type { ContextMessageLike, EventLike, PluginContext, PreStepHandler, SessionLike, StepDecision } from '../src/host.ts';
+import { createTimeContext } from '@hh9527/dari-model';
+import { deriveContextTimeZone, resolveZone } from '@hh9527/dari-model';
+import type { ContextMessageLike, EventLike, PluginContext, PreStepHandler, SessionLike, StepDecision } from '@hh9527/dari-model';
 
 const user = (clientTimeZone?: string): ContextMessageLike => ({ source: {
   kind: 'user', rpcId: 'rpc', ...(clientTimeZone === undefined ? {} : { clientTimeZone }),

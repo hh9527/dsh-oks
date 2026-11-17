@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {readWindow,formatRead,READ_MAX_BYTES} from '../src/read.ts';
+import {readWindow,formatRead,READ_MAX_BYTES} from '@hh9527/dari-model';
 const read=(text:string,offset?:unknown,limit?:unknown)=>readWindow([text],'.work/test.txt',offset,limit);
 const simple=await read('one\r\ntwo\nthree\n',2,1);
 assert.deepEqual(simple,{path:'.work/test.txt',offset:2,lines:[{number:2,text:'two'}],totalLines:3});

@@ -1,7 +1,7 @@
 // 公共投影函数的语义验收，使用 JSON 数据，不依赖工作区或 Wasm。
 import assert from 'node:assert/strict';
-import { createProjector, PROJECT_SHAPE_KEYS } from '../src/project.ts';
-import type { JsonValue, ProjectRule } from '../src/project.ts';
+import { createProjector, PROJECT_SHAPE_KEYS } from '@hh9527/dari-model';
+import type { JsonValue, ProjectRule } from '@hh9527/dari-model';
 
 const freeze = <T>(value: T): T => {
   if (value !== null && typeof value === 'object') {

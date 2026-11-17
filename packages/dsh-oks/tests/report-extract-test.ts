@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,writeFileSync,readFileSync,existsSync,symlinkSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {reportExtractDariTool,extractDariSource} from '../src/report-extract.ts';
+import {reportExtractDariTool,extractDariSource} from '@hh9527/dari-model';
 const reportArchiveNodes=(a:any)=>'<script type="text/plain" id="dari-source">'+a.dari.source.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;')+'</script><script type="application/json" id="dari-context">'+JSON.stringify({version:a.version,context:a.context}).replaceAll('<','\\u003c')+'</script>';
 const root=mkdtempSync(join(tmpdir(),'oks-extract-'));
 let mode='workspace-write',decision='allowed-once';

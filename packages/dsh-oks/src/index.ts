@@ -1,21 +1,21 @@
 // Workspace-scoped ontology: domain summary, fixed knowledge cards and DARI analysis.
 // Vocabulary assistance and standalone help manuals complement model facts.
 
-export { createProjector } from './project.ts';
-export type { JsonValue, ProjectRule, Projector } from './project.ts';
+export { createProjector } from '@hh9527/dari-model';
+export type { JsonValue, ProjectRule, Projector } from '@hh9527/dari-model';
 export { buildOption, CHART_WIDTH, plotHeight } from '@hh9527/dari-model';
 export { renderEchartsSvg } from '@hh9527/dari-model';
 export { renderMarkdown } from '@hh9527/dari-model';
 
-import { createKnowledge } from './knowledge.ts';
+import { createKnowledge } from '@hh9527/dari-model';
 import { installWorkMethods } from './work-methods.ts';
-import { createTimeContext } from './time-context.ts';
+import { createTimeContext } from '@hh9527/dari-model';
 import { guidedTools } from './guided-tools.ts';
 import { createTools } from './tools.ts';
 import { createVaRuntime } from './va.ts';
 import { installVocabularyHelper } from './va-helper.ts';
-import type { LogFn, PluginContext } from './host.ts';
-import type { PluginConfig } from './config.ts';
+import type { LogFn, PluginContext } from '@hh9527/dari-model';
+import type { PluginConfig } from '@hh9527/dari-model';
 
 export const inject = ['tools', 'systemPrompt'];
 

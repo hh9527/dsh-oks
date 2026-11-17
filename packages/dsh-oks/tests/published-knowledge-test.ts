@@ -1,12 +1,12 @@
-import {searchPoints} from '../src/point-navigation.ts';
-import {readPoints} from '../src/point-knowledge.ts';
+import {searchPoints} from '@hh9527/dari-model';
+import {readPoints} from '@hh9527/dari-model';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { readBuildInformation } from '../src/service-metadata.ts';
-import { derivePublishedKnowledge } from '../src/published-knowledge.ts';
-import { collectProgrammedKnowledge } from '../src/programmed-knowledge.ts';
-import { encodePart, resolveFact } from '../src/knowledge-graph.ts';
+import { readBuildInformation } from '@hh9527/dari-model';
+import { derivePublishedKnowledge } from '@hh9527/dari-model';
+import { collectProgrammedKnowledge } from '@hh9527/dari-model';
+import { encodePart, resolveFact } from '@hh9527/dari-model';
 
 const leb = (n: number): number[] => n < 128 ? [n] : [(n % 128) | 128, ...leb(Math.floor(n / 128))];
 const header = [0,97,115,109,1,0,0,0];

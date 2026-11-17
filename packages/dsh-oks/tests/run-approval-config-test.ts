@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {homedir} from 'node:os';
 import {join} from 'node:path';
-import {resolveSettings} from '../src/config.ts';
+import {resolveSettings} from '@hh9527/dari-model';
 const root=mkdtempSync(join(process.env.TMPDIR||join(homedir(),'.cache','tmp'),'oks-approval-config-'));
 const workspace=(value:object)=>writeFileSync(join(root,'oks.json'),JSON.stringify({domain:'fixture',model:'model.wasm',...value}));
 try{

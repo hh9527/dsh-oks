@@ -1,15 +1,15 @@
-import {createDariTools} from './dari-tools.ts';
+import {createDariTools} from '@hh9527/dari-model';
 import {ENABLE_OKS_SEARCH} from '@hh9527/dari-model';
-import {reportExtractDariTool} from './report-extract.ts';
-import {moveEntryTool} from './move-entry.ts';
-import {removeFileTool,type FilePolicyService} from './remove-file.ts';
-import type { PluginConfig } from './config.ts';
-import type { ApprovalService, AttachmentsService, LogFn, ToolDefinition, ToolExec } from './host.ts';
-import type { Knowledge } from './knowledge.ts';
-import type { TimeContext } from './time-context.ts';
+import {reportExtractDariTool} from '@hh9527/dari-model';
+import {moveEntryTool} from '@hh9527/dari-model';
+import {removeFileTool,type FilePolicyService} from '@hh9527/dari-model';
+import type { PluginConfig } from '@hh9527/dari-model';
+import type { ApprovalService, AttachmentsService, LogFn, ToolDefinition, ToolExec } from '@hh9527/dari-model';
+import type { Knowledge } from '@hh9527/dari-model';
+import type { TimeContext } from '@hh9527/dari-model';
 import { renderAsk } from './va.ts';
 import type { VaRuntime } from './va.ts';
-import { OBJECT_OUTPUT } from './response.ts';
+import { OBJECT_OUTPUT } from '@hh9527/dari-model';
 
 interface AskArgs { query?: string }
 

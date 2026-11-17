@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {createSelector} from '../src/select.ts';
+import {createSelector} from '@hh9527/dari-model';
 const select=(rule:string,input:any)=>createSelector(rule)(input);
 assert.deepEqual(select('a.b',{a:{b:1,c:2}}),{a:{b:1}});
 assert.deepEqual(select("a.'hello world'",{a:{'hello world':3}}),{a:{'hello world':3}});

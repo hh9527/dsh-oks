@@ -1,10 +1,10 @@
-import {searchPoints,routePoints} from '../src/point-navigation.ts';
+import {searchPoints,routePoints} from '@hh9527/dari-model';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {derivePublishedKnowledge} from '../src/published-knowledge.ts';
-import {collectProgrammedKnowledge} from '../src/programmed-knowledge.ts';
-import {readPoints} from '../src/point-knowledge.ts';
-import {renderDomainSummary} from '../src/domain-summary.ts';
+import {derivePublishedKnowledge} from '@hh9527/dari-model';
+import {collectProgrammedKnowledge} from '@hh9527/dari-model';
+import {readPoints} from '@hh9527/dari-model';
+import {renderDomainSummary} from '@hh9527/dari-model';
 const root=(key:string,value:any,reference_sites:any[]=[])=>({key,value,reference_sites,references:[...new Set(reference_sites.map(s=>s.target).filter(t=>t!==key))]});
 const input:any={knowledge_contract:'ontology-knowledge-v5',intent_contract:'ontology-intent-v1',addressing:'node-member-uri-v1',revision:'owned',items:[],facts:[
  root('types/AlarmSeverity',{name:'AlarmSeverity',reverse_references:true,values:{critical:{label:'严重',wires:[{Int:1}]}}}),

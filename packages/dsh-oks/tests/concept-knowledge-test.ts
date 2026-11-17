@@ -1,7 +1,7 @@
-import {readPoints} from '../src/point-knowledge.ts';
+import {readPoints} from '@hh9527/dari-model';
 import assert from 'node:assert/strict';
-import {discoverConcepts,renderConcepts} from '../src/concept-knowledge.ts';
-import type {SemanticGraph} from '../src/knowledge-graph.ts';
+import {discoverConcepts,renderConcepts} from '@hh9527/dari-model';
+import type {SemanticGraph} from '@hh9527/dari-model';
 
 const property=(name:string,dimension:string[],measure:string[]=[],counter:string[]=[],types:string[]=[])=>({name,field:'datasets/device#fields/'+name,dimensions:dimension.map(x=>'datasets/device#dimensions/'+x),measures:measure.map(x=>'datasets/device#measures/'+x),counters:counter.map(x=>'datasets/device#measures/'+x),types});
 const graph:SemanticGraph={

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,symlinkSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {moveEntryTool} from '../src/move-entry.ts';
+import {moveEntryTool} from '@hh9527/dari-model';
 const root=mkdtempSync(join(tmpdir(),'oks-move-')),outside=mkdtempSync(join(tmpdir(),'oks-move-out-'));
 let mode='workspace-write',decision='allowed-once',approvals=0;
 let onApproval=()=>{};

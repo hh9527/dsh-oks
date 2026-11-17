@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { collectProgrammedKnowledge, programmedKnowledgeContract } from '../src/programmed-knowledge.ts';
-import { derivePublishedKnowledge } from '../src/published-knowledge.ts';
-import { renderWholeVocabulary, buildRetrievalIndex } from '../src/retrieval.ts';
+import { collectProgrammedKnowledge, programmedKnowledgeContract } from '@hh9527/dari-model';
+import { derivePublishedKnowledge } from '@hh9527/dari-model';
+import { renderWholeVocabulary, buildRetrievalIndex } from '@hh9527/dari-model';
 const graph = {knowledge_contract:'ontology-knowledge-v4',intent_contract:'ontology-intent-v1',addressing:'node-member-uri-v1',revision:'fixture',
   facts:[{key:'datasets/device',value:{},references:[]},{key:'types/detached',value:{},references:[]}],items:[]};
 const vocabulary = [{key:'datasets/device',kind:'Dataset',name:'device',doc:'设备清单',aliases:['设备'],owner:null,ownerValue:null}];

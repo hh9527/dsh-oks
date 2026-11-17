@@ -1,11 +1,11 @@
 import {guidedTools} from '../src/guided-tools.ts';
-import {renderInfo} from '../src/info-receipt.ts';
+import {renderInfo} from '@hh9527/dari-model';
 import assert from 'node:assert/strict';
 import {mkdtempSync,writeFileSync,rmSync} from 'node:fs';
 import {join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {fileURLToPath} from 'node:url';
-import {createDariTools} from '../src/dari-tools.ts';
+import {createDariTools} from '@hh9527/dari-model';
 const [service,model,dataFile]=process.argv.slice(2).map(p=>resolve(p));
 const root=mkdtempSync(join(tmpdir(),'dari-adapter-'));
 const saved=new Map<string,string>(),messages:any[]=[];

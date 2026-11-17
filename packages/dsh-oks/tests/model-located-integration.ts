@@ -29,7 +29,7 @@ try{
  const malformed=structuredClone(input);malformed.input.input.intent.steps[index].body.fields[0].value.member=42;
  const path=['input','input','intent','steps',index,'body','fields',0,'value','member'];
  const offsets=new SourceOffsets(good),span=offsets.toBytes(good.indexOf('device.cpu_usage'),good.indexOf('device.cpu_usage')+'device.cpu_usage'.length)!;
- const reply=runtime.request(encodeLocatedInput(malformed,[{path,span},{path,span:{start:0,end:1},key:true}]));assert(reply.error);assert(reply.diagnostics.some(d=>d.locs?.some(l=>l.source==='<input>'&&l.start.offset===span.start&&l.end.offset===span.end)));
+ const reply=runtime.request(encodeLocatedInput(malformed,[{path,span},{path,span:{start:0,end:1},key:true}]));assert(reply.error);assert(reply.diagnostics.some((d:any)=>d.locs?.some((l:any)=>l.source==='<input>'&&l.start.offset===span.start&&l.end.offset===span.end)));
  assert(runtime.request(Buffer.from('bad')).error);assert.equal(runtime.request(encodeLocatedInput(input)).error,false);
  assert.equal(runtime.request(encodeLocatedInput({method:'ontology/model',input:{method:'check_type',input:{op:'Unknown'}}})).error,true);
  console.log('Native Wasm model: source ranges, proof digests, model codec errors, malformed requests and recovery passed');

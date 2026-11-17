@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { renderDomainSummary, readDomainSummary, DOMAIN_SUMMARY_URI } from '../src/domain-summary.ts';
+import { renderDomainSummary, readDomainSummary, DOMAIN_SUMMARY_URI } from '@hh9527/dari-model';
 import { guidedTools } from '../src/guided-tools.ts';
 import {manualPrompt} from '../src/help-files.ts';
 import { installWorkMethods } from '../src/work-methods.ts';
-import type { Knowledge, WorkspaceEntry } from '../src/knowledge.ts';
-import type { PluginContext, ToolDefinition, ToolExec, PromptAssembly, AgentLike } from '../src/host.ts';
+import type { Knowledge, WorkspaceEntry } from '@hh9527/dari-model';
+import type { PluginContext, ToolDefinition, ToolExec, PromptAssembly, AgentLike } from '@hh9527/dari-model';
 
 const largeGraph = {entities:{identity:{referenced_by:{datasets:['forbidden reverse']}}},datasets:Object.fromEntries(Array.from({length:90},(_,i)=>['dataset-'+i,{grain:['id'],roles:{subject:{entity:'entities/identity'}},dimensions:Object.fromEntries(Array.from({length:30},(_,j)=>['dimension-'+i+'-'+j,{}])),measures:{count:{type:'Int'}},time_roles:{clock:{}}}])),relations:{edge:{from_dataset:'datasets/dataset-0',to_dataset:'datasets/dataset-1',cardinality:{from:'Many0',to:'Optional'},key:{secret:'local-only'}}},types:{Secret:{values:{'vocabulary-only':{}}}},items:[]};
 const otherGraph = {entities:{other:{}},datasets:{different:{}},relations:{},items:[]};

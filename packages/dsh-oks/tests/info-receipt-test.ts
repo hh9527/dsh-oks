@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {renderInfo} from '../src/info-receipt.ts';
+import {renderInfo} from '@hh9527/dari-model';
 const facts={nullable:false,offset:0,ops:['Eq'],filters:['Eq'],canonical_order:['A'],order:['A'],doc:'',predicate:null,requires:[],formula:{op:'Eq',value:null,parts:[]},expression:{text:'``` literal'},description:'x'.repeat(20000)};
 const value={data:{items:[{id:'datasets/a/dimensions/x',kind:'Dimension',node:'datasets/a',path:['dimensions','x'],dataset:'a',dimension:'x',facts}],errors:[{id:'missing',error:'Unknown point'}]}};
 const before=JSON.stringify(value),text=renderInfo({},value)[0].text!;

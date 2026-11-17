@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,writeFileSync,mkdirSync,symlinkSync,existsSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {removeFileTool} from '../src/remove-file.ts';
+import {removeFileTool} from '@hh9527/dari-model';
 const root=mkdtempSync(join(tmpdir(),'oks-remove-')),outside=mkdtempSync(join(tmpdir(),'oks-outside-'));
 let mode='workspace-write',decision='allowed-once',approvals=0;
 let onApproval=()=>{};

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import {readPoints} from '../src/point-knowledge.ts';
-import {searchPoints,routePoints} from '../src/point-navigation.ts';
-import {renderSearch,renderRoutes} from '../src/navigation-receipt.ts';
+import {readPoints} from '@hh9527/dari-model';
+import {searchPoints,routePoints} from '@hh9527/dari-model';
+import {renderSearch,renderRoutes} from '@hh9527/dari-model';
 const graph:any={datasets:{a:{grain:['tenant','id'],references:[{id:'scoped',fields:['tenant','id']}],fields:{id:{type:'String',nullable:false},tenant:{type:'String'},amount:{type:'Float',roles:['Metric']}},dimensions:{name:{type:'String',filterable:false,projectable:true,ops:['Eq'],canonical_values:['datasets/literal']}},measures:{count:{aggregate:'Count',predicate:{field:'name',input:{Text:'datasets/literal'},op:'Eq'},computed:{left:'n1',op:'Add',right:'n2'},requires:[]}},roles:{owner:{entity:'entities/object',parts:[{source:'tenant',target:'tenant'},{source:'id',target:'id'}]}}},bridge:{fields:{id:{type:'String'}}},b:{dimensions:{cpu:{type:'types/Percent',filterable:true}},fields:{id:{type:'String'}}},isolated:{}},entities:{object:{identity:'types/Identity',roles:['datasets/a#roles/owner']}},types:{Percent:{representation:'Newtype(Float)',reverse_references:false},Identity:{representation:'{tenant: String, id: String}'},Level:{values:{critical:{wires:[{Int:1}],value:'datasets/literal'}}}},relations:{ab:{from_dataset:'datasets/a',to_dataset:'datasets/bridge',key:{op:'eq',from:'datasets/a#fields/id',to:'datasets/bridge#fields/id'},cardinality:{from:'Many',to:'One'}},bc:{from_dataset:'datasets/bridge',to_dataset:'datasets/b',guard:{input:{Text:'datasets/literal'}}}},items:[{key:'datasets/a#dimensions/name',names:['名称'],doc:''},{key:'datasets/b#dimensions/cpu',names:['CPU'],doc:'CPU utilization'}],tools:{secret:{}}};
 const before=JSON.stringify(graph);
 const ids=['datasets/a','datasets/a/dimensions/name','datasets/a/measures/count','datasets/a/roles/owner','relations/ab','types/Level/values/critical','datasets/missing','datasets/__proto__','tools/secret'];
