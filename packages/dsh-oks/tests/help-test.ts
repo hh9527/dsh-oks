@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import {helpFiles,manualPrompt,PRELOADED_MANUALS} from '../src/help-files.ts';
-assert.deepEqual([...PRELOADED_MANUALS],['oks://help/workflow.md','oks://help/dari.md','oks://help/rules.md']);
+assert.deepEqual([...PRELOADED_MANUALS],['data-seer://help/workflow.md','data-seer://help/dari.md','data-seer://help/rules.md']);
 for(const key of PRELOADED_MANUALS)assert(manualPrompt.includes(helpFiles[key].trimEnd()));
-const language=helpFiles['oks://help/dari.md'];
+const language=helpFiles['data-seer://help/dari.md'];
 for(const word of ['query_remote!','query!','context!','lookup','group_by_identity'])assert(language.includes(word));
 assert(!manualPrompt.includes('.darit'));
 assert(!language.includes('x =>'));
-const rules=helpFiles['oks://help/rules.md'];
+const rules=helpFiles['data-seer://help/rules.md'];
 for(const word of ['一个业务问题一份分析稿','探测稿','执行前','不要重复'])assert(rules.includes(word));
-assert(helpFiles['oks://help/dari-figures.md'].includes('LineChart'));
+assert(helpFiles['data-seer://help/dari-figures.md'].includes('LineChart'));
 console.log('DARI manuals: one language source, preloaded discipline, typed plans and figure reference passed');

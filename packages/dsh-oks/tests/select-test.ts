@@ -51,7 +51,7 @@ assert.throws(()=>select('items:map({id})',{items:[{id:1},{}]}),/\$\.items\[1\].
 assert.throws(()=>select('{a:map(x),a:map(y)}',{a:[{x:1,y:2}]}),/conflict/);
 for(const rule of ['a,b','items:map(a,b)','items[0..2]','{}','a.{}','a:map()','a:map({id})|x','a:map({id},x)','a:mapv({id})','a:mapo({id})','a[0:]','a[:2]'])assert.throws(()=>createSelector(rule),/select 示例/);
 for(const rule of ['.data | {id}','items[0:25].id','a,b']){
- try{select(rule,{items:[{id:1}]});assert.fail('must reject');}catch(error){assert.match(String(error),/items\[0:25\]:map\(\{id,name\}\)/);assert.match(String(error),/oks:\/\/help\/project.md/);}
+ try{select(rule,{items:[{id:1}]});assert.fail('must reject');}catch(error){assert.match(String(error),/items\[0:25\]:map\(\{id,name\}\)/);assert.match(String(error),/data-seer:\/\/help\/project.md/);}
 }
 assert.throws(()=>createSelector(':map('.repeat(66)+'id'+')'.repeat(66)),/nesting/);
 assert.throws(()=>createSelector('{'+Array(1025).fill('a').join(',')+'}'),/too many/);

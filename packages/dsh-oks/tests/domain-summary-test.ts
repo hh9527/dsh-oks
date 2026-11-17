@@ -44,7 +44,7 @@ for(const domain of ['large','other']) {
  await assert.rejects(call('dari_read',{path:DOMAIN_SUMMARY_URI},domain),/built-in manuals/);
 
 }
-for(const tool of tools)assert(!JSON.stringify({description:tool.description,parameters:tool.parameters}).includes('oks://domain/'));
+for(const tool of tools)assert(!JSON.stringify({description:tool.description,parameters:tool.parameters}).includes('data-seer://domain/'));
 const other=await readDomainSummary(knowledge,exec('other'));
 assert(other.includes('different') && !other.includes('dataset-89'));
 const abort=new AbortController();abort.abort();

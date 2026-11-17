@@ -78,16 +78,16 @@ export function guidedTools(definitions: ToolDefinition[], knowledge: Knowledge,
   ];
   const builtinRead: ToolDefinition = {
     name: 'dari_read',
-    description: 'Read built-in method manuals only. workflow.md, dari.md and rules.md are already fully loaded in the system context: do not read them to start a task; reread only for exact quotation or after context compression. Figure-specific manuals remain on demand. path="oks://help/" lists manuals; path="oks://help/<name>.md" reads one. offset/limit select line windows. Use the host file tools for local files and DARI source.',
+    description: 'Read built-in method manuals only. workflow.md, dari.md and rules.md are already fully loaded in the system context: do not read them to start a task; reread only for exact quotation or after context compression. Figure-specific manuals remain on demand. path="data-seer://help/" lists manuals; path="data-seer://help/<name>.md" reads one. offset/limit select line windows. Use the host file tools for local files and DARI source.',
     parameters: {type:'object',properties:{path:{type:'string'},offset:{type:'integer',minimum:1},limit:{type:'integer',minimum:1,maximum:2000}},required:['path'],additionalProperties:false},
     output: {schema:OBJECT_OUTPUT,render:renderWorkRead},
     async execute(raw) {
       const args=check(raw,['path','offset','limit']);
-      if(args.path==='oks://help/') {
+      if(args.path==='data-seer://help/') {
         const catalog=helpEntries(files).map(entry=>entry.name).join('\n');
-        return readTextLines(catalog,'oks://help/',args.offset,args.limit,'dari_read');
+        return readTextLines(catalog,'data-seer://help/',args.offset,args.limit,'dari_read');
       }
-      if(typeof args.path!=='string'||!Object.hasOwn(files,args.path)) throw new Error('Use oks://help/ to list built-in manuals; read local files with the host file tools');
+      if(typeof args.path!=='string'||!Object.hasOwn(files,args.path)) throw new Error('Use data-seer://help/ to list built-in manuals; read local files with the host file tools');
       return readTextLines(files[args.path],args.path,args.offset,args.limit,'dari_read');
     },
   };

@@ -16,11 +16,11 @@ try {
  assert.deepEqual(tools.map(t=>t.name).sort(),['report_extract_dari','move_entry','remove_file','dari_vocab','dari_kg_discover','dari_kg_routes','dari_kg_info','dari_read','dari_check','dari_submit','dari_renew_context'].sort());
  const aligned=await call('dari_vocab',{query:'告警'});assert.equal(aligned.answer,'词汇参考');assert.deepEqual(asks,['告警']);
  await assert.rejects(call('dari_vocab',{query:' '}),/需要一个问题/);
- const index=await call('dari_read',{path:'oks://help/'});
+ const index=await call('dari_read',{path:'data-seer://help/'});
  const paths=index.lines.map((line:any)=>line.text);
- for(const path of ['oks://help/workflow.md','oks://help/dari.md','oks://help/rules.md','oks://help/dari-figures.md'])assert(paths.includes(path));
+ for(const path of ['data-seer://help/workflow.md','data-seer://help/dari.md','data-seer://help/rules.md','data-seer://help/dari-figures.md'])assert(paths.includes(path));
  for(const path of paths){const manual=await call('dari_read',{path});assert(manual.lines.length);}
- for(const path of ['analysis.dari',join(root,'analysis.dari'),'.work/a.dari','oks://help/../x','oks://knowledge'])await assert.rejects(call('dari_read',{path}),/built-in manuals/);
+ for(const path of ['analysis.dari',join(root,'analysis.dari'),'.work/a.dari','data-seer://help/../x','oks://knowledge'])await assert.rejects(call('dari_read',{path}),/built-in manuals/);
  mkdirSync(join(root,'reports'));
  const local=join(root,'reports/a.dari');writeFileSync(local,'data a = 1; answer tree! { Answer [p [UseValue(ref=a)]] };');
  for(const path of ['reports/a.dari','./reports/a.dari',local])assert.equal(readDariSource(root,path,'test').file,'reports/a.dari');
