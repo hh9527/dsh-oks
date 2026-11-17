@@ -22,10 +22,9 @@ build:
     #!/usr/bin/env bash
     set -euo pipefail
     command -v pnpm >/dev/null 2>&1 || { printf 'build: 需要 pnpm\n' >&2; exit 1; }
-    rm -rf dist
-    (cd packages/dsh-oks && pnpm run build) || { printf 'build: dsh-oks 构建失败\n' >&2; exit 1; }
-    (cd packages/dsh-push-to-user && pnpm run build) || { printf 'build: dsh-push-to-user 构建失败\n' >&2; exit 1; }
-    node scripts/pack.mjs
+    # 插件随 dari 仓库演进：默认从同级 ../dari 构建，可用 DARI_REPO 指定。
+    DARI_REPO="${DARI_REPO:-../dari}"
+    (cd "$DARI_REPO/plugins" && pnpm run build) || { printf 'build: 插件构建失败（%s）\n' "$DARI_REPO" >&2; exit 1; }
 
 # 构建并准备独立部署；服务由生成的 run.sh 手动启动。
 [positional-arguments]
@@ -46,9 +45,9 @@ install-profile:
     #!/usr/bin/env bash
     set -euo pipefail
     REPO_DIR="$PWD"
-    PACKAGE='@local/dsh-data-seer'
-    PACKAGE_DIR="$DSH_HOME/packages/dsh-oks"
-    PATCH_ID='preset-data-seer'
+    PACKAGE='@local/dsh-dari'
+    PACKAGE_DIR="$DSH_HOME/packages/dsh-dari"
+    PATCH_ID='preset-dari'
     PROFILE="$DSH_PROFILE"
     DSH_HOME_DIR="$DSH_HOME"
     fail() { printf 'install-profile: %s\n' "$*" >&2; exit 1; }
@@ -85,15 +84,16 @@ install-profile:
     say "用 ${DSH_ARR[*]} 调用 dsh"
 
     # 发布目录由 just build 生成；安装只负责复制与接线。
-    DIST_DIR="$REPO_DIR/dist"
-    [ -f "$DIST_DIR/dsh-oks/package.json" ] || fail "缺少发布目录 $DIST_DIR/dsh-oks，先运行 just build"
-    [ -f "$DIST_DIR/dsh-push-to-user/package.json" ] || fail "缺少发布目录 $DIST_DIR/dsh-push-to-user，先运行 just build"
-    CLIENT_PACKAGE='@local/dsh-data-seer-client'
-    CLIENT_DIR="$DSH_HOME/packages/dsh-push-to-user"
+    DARI_REPO="${DARI_REPO:-$REPO_DIR/../dari}"
+    DIST_DIR="$DARI_REPO/dist"
+    [ -f "$DIST_DIR/dsh-dari/package.json" ] || fail "缺少发布目录 $DIST_DIR/dsh-dari，先运行 just build"
+    [ -f "$DIST_DIR/dsh-dari-client/package.json" ] || fail "缺少发布目录 $DIST_DIR/dsh-dari-client，先运行 just build"
+    CLIENT_PACKAGE='@local/dsh-dari-client'
+    CLIENT_DIR="$DSH_HOME/packages/dsh-dari-client"
     rm -rf "$PACKAGE_DIR" "$CLIENT_DIR"
     mkdir -p "$DSH_HOME/packages"
-    cp -R "$DIST_DIR/dsh-oks" "$PACKAGE_DIR"
-    cp -R "$DIST_DIR/dsh-push-to-user" "$CLIENT_DIR"
+    cp -R "$DIST_DIR/dsh-dari" "$PACKAGE_DIR"
+    cp -R "$DIST_DIR/dsh-dari-client" "$CLIENT_DIR"
 
     # ── 1b. runtime：锁定 dsh 及其依赖版本 ──────────────────────────────────────
     # runtime/pnpm-lock.yaml 固定全部解析结果；适配器的本地补丁以 pnpm patch 形式
@@ -203,13 +203,13 @@ install-profile:
       rm -f "$tmp"
       cat >> "$PATCH_FILE" <<'YAML'
 
-    # agent preset：Data Seer 问数 —— 知识发现、DARI 回答源码和只读输出工具 + 追问。
+    # agent preset：Dari 问数 —— 知识发现、DARI 回答源码和只读输出工具 + 追问。
     - insert:
-        - id: preset-data-seer
+        - id: preset-dari
           name: "@deepseek-ai/dsh-agent-preset"
           config:
-            id: data-seer
-            name: Data Seer 问数
+            id: dari
+            name: Dari 问数
             description: 业务问句 → 查询结果：词汇规整、知识发现、DARI 分析、只读查询与答案交付。
             order: 5
             plugins:
@@ -225,7 +225,7 @@ install-profile:
               - id: present
                 name: "@deepseek-ai/dsh-tool-present"
               - id: oks
-                name: "@local/dsh-data-seer"
+                name: "@local/dsh-dari"
                 config: {}
               - id: compaction
                 name: cordis:group
@@ -255,7 +255,7 @@ install-profile:
     import {readFileSync,writeFileSync} from 'node:fs';
     const file=process.env.PATCH_FILE;
     let text=readFileSync(file,'utf8');
-    const marker=/^([ \t]*)- id: preset-data-seer[ \t]*$/m.exec(text);
+    const marker=/^([ \t]*)- id: preset-dari[ \t]*$/m.exec(text);
     if(!marker)throw new Error('Missing managed OKS preset');
     const start=marker.index;
     const remainder=text.slice(start);
@@ -288,19 +288,19 @@ install-profile:
     block=lines.join('\n');text=text.slice(0,start)+block+text.slice(end);writeFileSync(file,text);
     JS
 
-    if ! grep -qE '^[[:space:]]*-[[:space:]]*id:[[:space:]]*preset-data-seer-vocabulary[[:space:]]*$' "$PATCH_FILE"; then
+    if ! grep -qE '^[[:space:]]*-[[:space:]]*id:[[:space:]]*preset-dari-vocabulary[[:space:]]*$' "$PATCH_FILE"; then
       cat >> "$PATCH_FILE" <<'YAML'
 
     - insert:
-        - id: preset-data-seer-vocabulary
+        - id: preset-dari-vocabulary
           name: "@deepseek-ai/dsh-agent-preset"
           config:
-            id: data-seer-vocabulary
-            name: Data Seer 词汇助手
+            id: dari-vocabulary
+            name: Dari 词汇助手
             description: 完整领域词汇对齐与归属定位。
             plugins:
-              - id: data-seer-vocabulary
-                name: "@local/dsh-data-seer"
+              - id: dari-vocabulary
+                name: "@local/dsh-dari"
                 config:
                   vocabularyHelper: true
     YAML
@@ -310,7 +310,7 @@ install-profile:
     MANIFEST="$MANIFEST" PATCH_FILE="$PATCH_FILE" node --input-type=module <<'JS'
     import {readFileSync,writeFileSync} from 'node:fs';
     const file=process.env.MANIFEST;const manifest=JSON.parse(readFileSync(file,'utf8'));
-    if(manifest.dependencies)delete manifest.dependencies['@local/dsh-data-seer-ui'];
+    if(manifest.dependencies)delete manifest.dependencies['@local/dsh-dari-ui'];
     writeFileSync(file,JSON.stringify(manifest,null,2)+'\n');
     const patch=process.env.PATCH_FILE;
     let text=readFileSync(patch,'utf8');
@@ -331,7 +331,7 @@ install-profile:
     # 默认 preset：新会话落在 OKS 上（preset 注册了不等于被选中）。
     - id: agent-preset-registry
       config:
-        default: data-seer
+        default: dari
     YAML
     fi
 
