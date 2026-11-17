@@ -25,6 +25,15 @@ if (name === 'watchexec') {
 }
 if (name === 'pnpm') {
   if (args.join(' ') === 'install --frozen-lockfile --ignore-scripts' && process.env.FAIL_BUILD_INSTALL) process.exit(17);
+  // runtime 安装：替身只需要交出可执行的 dsh 占位。
+  if (args[0] === 'install') {
+    const bin = path.join(process.cwd(), 'node_modules', '.bin', 'dsh');
+    fs.mkdirSync(path.dirname(bin), { recursive: true });
+    const stub = (process.env.PATH ?? '').split(':').map((d) => path.join(d, 'dsh')).find((f) => fs.existsSync(f));
+    if (stub) fs.copyFileSync(stub, bin);
+    else fs.writeFileSync(bin, '#!/usr/bin/env bash\\nexit 0\\n');
+    fs.chmodSync(bin, 0o755);
+  }
   if (args.join(' ') === 'run build') {
     if (process.env.FAIL_BUILD) process.exit(17);
     const output = path.resolve(process.cwd(), '../../dist', path.basename(process.cwd()), 'lib');

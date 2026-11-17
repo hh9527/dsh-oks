@@ -1,0 +1,14 @@
+diff --git a/lib/index.js b/lib/index.js
+index 221d1ede6ab917a36f69d298b328faff0310d678..21fc7c822b77b1fa5a21611436211418c1b963ae 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -2012,7 +2012,8 @@ async function* translate(events, model) {
+ 				try {
+ 					parsed = JSON.parse(content.arguments);
+ 				} catch (_invalidProviderToolJson) {
+-					return malformed("tool input is invalid JSON");
++					// local patch: 非法 JSON 保留原文，交给工具管线的参数校验；回合继续
++					continue;
+ 				}
+ 				object(parsed);
+ 			}

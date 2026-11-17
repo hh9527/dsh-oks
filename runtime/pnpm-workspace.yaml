@@ -1,0 +1,10 @@
+# runtime 是独立安装根：dsh 及其依赖都在这里锁定版本。
+# pnpm 12 用 allowBuilds 映射声明允许运行安装脚本的包。
+allowBuilds:
+  '@deepseek-ai/dsh-subprocess-local': true
+  '@google/genai': true
+  koffi: true
+  node-pty: true
+  protobufjs: true
+patchedDependencies:
+  '@deepseek-ai/dsh-llm-deepseek@0.2.2-rc.1': patches/@deepseek-ai__dsh-llm-deepseek@0.2.2-rc.1.patch

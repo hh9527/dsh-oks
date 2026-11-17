@@ -1,0 +1,8 @@
+{
+  "name": "@local/dsh-runtime",
+  "private": true,
+  "description": "锁定 dsh 及其依赖版本，启动时只消费这份安装。",
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.2.2-rc.1"
+  }
+}

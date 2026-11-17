@@ -93,9 +93,20 @@ install-profile:
     cp -R "$DIST_DIR/dsh-oks" "$PACKAGE_DIR"
     cp -R "$DIST_DIR/dsh-push-to-user" "$CLIENT_DIR"
 
-    # 本地补丁：适配器对畸形工具入参的处理，由启动脚本在拉起 dsh 前应用。
-    rm -rf "$DSH_HOME_DIR/patches"
-    cp -R "$REPO_DIR/patches" "$DSH_HOME_DIR/patches"
+    # ── 1b. runtime：锁定 dsh 及其依赖版本 ──────────────────────────────────────
+    # runtime/pnpm-lock.yaml 固定全部解析结果；适配器的本地补丁以 pnpm patch 形式
+    # 记录在 runtime/pnpm-workspace.yaml，安装时按补丁哈希自动应用，升级不匹配即报错。
+    rm -rf "$DSH_HOME_DIR/runtime"
+    mkdir -p "$DSH_HOME_DIR/runtime/patches"
+    cp "$REPO_DIR/runtime/package.json" "$REPO_DIR/runtime/pnpm-lock.yaml" "$REPO_DIR/runtime/pnpm-workspace.yaml" "$DSH_HOME_DIR/runtime/"
+    cp "$REPO_DIR/runtime"/patches/*.patch "$DSH_HOME_DIR/runtime/patches/"
+    say "安装 runtime 依赖（frozen lockfile）"
+    ( cd "$DSH_HOME_DIR/runtime" && pnpm install --frozen-lockfile --reporter=append-only ) || fail "runtime 依赖安装失败"
+    # 显式给出 DSH_CMD 时保留调用方指定的命令（测试与特殊环境），否则用锁定版本。
+    if [ -z "${DSH_CMD:-}" ]; then
+      DSH_ARR=("$DSH_HOME_DIR/runtime/node_modules/.bin/dsh")
+      [ -x "${DSH_ARR[0]}" ] || fail "runtime 里没有 dsh 可执行文件"
+    fi
 
     # ── 2. profile ───────────────────────────────────────────────────────────────
     if [ ! -f "$MANIFEST" ]; then
@@ -370,13 +381,12 @@ install-profile:
     const runtime=join(home,'justfile');
     const direct=join(home,'run-dsh.sh');
     const watched=join(home,'run.sh');
-    const patch=join(home,'patches/patch-dsh-llm-deepseek.mjs');
+    const dshBin=join(home,'runtime/node_modules/.bin/dsh');
+    const launcher=process.env.DSH_CMD ? command : quote(dshBin)+' web';
     writeFileSync(direct,
       '#!/usr/bin/env bash\nset -euo pipefail\nexport DSH_HOME='+quote(home)+
       '\ncd -- '+quote(process.env.WORKSPACE)+
-      '\n# 模型下发的工具入参不是合法 JSON 时，让错误走工具错误通道，而不是中断整轮。\n'+
-      'node '+quote(patch)+' || echo "warn: 适配器补丁未应用（dsh 尚未落到 dlx 缓存？）" >&2\n'+
-      '\nexec '+command+' --port '+quote(process.env.PORT)+' "$@"\n');
+      '\nexec '+launcher+' --port '+quote(process.env.PORT)+' "$@"\n');
     writeFileSync(watched,
       '#!/usr/bin/env bash\nset -euo pipefail\nexport DSH_HOME='+quote(home)+
       '\nCTRL_FILE="$DSH_HOME/.ctrl"\n'+
